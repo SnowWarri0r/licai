@@ -1,0 +1,62 @@
+# --- Personal data (NEVER COMMIT) ---
+portfolio.db
+portfolio.db-*
+backups/
+*.db
+
+# --- Python ---
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.coverage
+htmlcov/
+
+# --- Node / Frontend ---
+frontend/node_modules/
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# --- Build outputs ---
+# Vite builds into static/ — frontend build artifacts shouldn't be committed
+static/assets/
+static/index.html
+static/manifest.json
+static/sw.js
+static/icon-*.svg
+
+# --- Logs ---
+logs/
+*.log
+server.log
+
+# --- macOS ---
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# --- IDE ---
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# --- Env / secrets ---
+.env
+.env.local
+.env.*.local
+auth-profiles.json
+
+# --- User-specific config (copy config.example.py → config.py) ---
+config.py
+
+# --- Local service configs with user-specific paths ---
+com.lovart.stock-t-assistant.plist
+
+# --- Misc ---
+.claude/
