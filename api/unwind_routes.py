@@ -17,7 +17,7 @@ from database import (
 from services.position_ledger import compute_position_state
 from services.market_data import (
     get_realtime_quotes, get_historical_data, get_commodity_for_stock,
-    get_benchmark_return,
+    get_benchmark_return, is_a_share, normalize_stock_code,
 )
 from services.economics import (
     real_cost as calc_real_cost,
@@ -274,6 +274,7 @@ async def _build_plan_response(h: dict, q: dict) -> dict:
 async def list_plans():
     """Get unwind status for all holdings."""
     holdings = await get_all_holdings()
+    holdings = [h for h in holdings if is_a_share(h["stock_code"])]
     if not holdings:
         return []
     codes = [h["stock_code"] for h in holdings]
@@ -293,6 +294,9 @@ async def recommend(stock_code: str, total_budget: Optional[float] = None):
     """System-generated budget + tranche recommendation for one stock.
     Does NOT save. User must explicitly PUT to save.
     """
+    stock_code = normalize_stock_code(stock_code)
+    if not is_a_share(stock_code):
+        raise HTTPException(400, "解套档位暂只支持 A 股")
     h = await get_holding(stock_code)
     if not h:
         raise HTTPException(404, "Holding not found")
@@ -566,6 +570,7 @@ async def apply_allocation(payload: dict):
 async def allocate(total_budget: float):
     """Recommend per-stock budget allocation across all holdings."""
     holdings = await get_all_holdings()
+    holdings = [h for h in holdings if is_a_share(h["stock_code"])]
     if not holdings:
         return []
 
