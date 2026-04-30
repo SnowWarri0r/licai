@@ -1177,7 +1177,11 @@ function AddAssetForm({ typeKey, onDone, onCancel }) {
   const [platform, setPlatform] = useState('')
   const [shares, setShares] = useState('')
   const [cost, setCost] = useState('')
+  const [costTouched, setCostTouched] = useState(false)
   const [manualValue, setManualValue] = useState('')
+  const [unitPrice, setUnitPrice] = useState('')
+  const [fee, setFee] = useState('')
+  const [feeTouched, setFeeTouched] = useState(false)
   const [note, setNote] = useState('')
   const [lookingUp, setLookingUp] = useState(false)
   const [hint, setHint] = useState('')
@@ -1196,6 +1200,26 @@ function AddAssetForm({ typeKey, onDone, onCancel }) {
       fetchJSON('/api/assets/okx/bots').then(r => setOkxBots(r.bots || [])).catch(() => setOkxBots([]))
     }).catch(() => setOkxBots([]))
   }, [assetType])
+
+  // 按股买: 自动估算手续费 (场内 ETF 默认; 场外公募手动改 0)
+  useEffect(() => {
+    if (!(assetType === 'FUND' || assetType === 'CRYPTO') || feeTouched) return
+    const s = parseFloat(shares); const u = parseFloat(unitPrice)
+    if (s > 0 && u > 0) {
+      const amount = s * u
+      const est = Math.max(amount * BROKER_COMMISSION_RATE, BROKER_COMMISSION_MIN)
+      setFee(est.toFixed(2))
+    }
+  }, [shares, unitPrice, feeTouched, assetType])
+
+  // 按股买: 累计投入 = 单价 × 份额 + 手续费 (用户没手填本金时自动)
+  useEffect(() => {
+    if (!(assetType === 'FUND' || assetType === 'CRYPTO') || costTouched) return
+    const s = parseFloat(shares); const u = parseFloat(unitPrice); const f = parseFloat(fee) || 0
+    if (s > 0 && u > 0) {
+      setCost((s * u + f).toFixed(2))
+    }
+  }, [shares, unitPrice, fee, costTouched, assetType])
 
   const pickOkxBot = (bot) => {
     if (!bot) { setOkxAlgoId(''); setOkxBotType(''); return }
@@ -1366,21 +1390,56 @@ function AddAssetForm({ typeKey, onDone, onCancel }) {
         )}
 
         {assetType === 'FUND' || assetType === 'CRYPTO' ? (
-          <div className="flex flex-col gap-1">
-            <label className="text-[11px] text-text-dim">
-              {assetType === 'FUND' ? '份额' : '数量'}
-            </label>
-            <input type="number" step="0.0001" value={shares} onChange={e => setShares(e.target.value)}
-              className={`${inp} w-28 font-mono`} placeholder={assetType === 'FUND' ? '1500.23' : '0.012'} />
-          </div>
+          <>
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] text-text-dim">
+                {assetType === 'FUND' ? '份额' : '数量'}
+              </label>
+              <input type="number" step="0.0001" value={shares} onChange={e => setShares(e.target.value)}
+                className={`${inp} w-28 font-mono`} placeholder={assetType === 'FUND' ? '1500.23' : '0.012'} />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] text-text-dim">
+                {assetType === 'FUND' ? '净值/单价' : '单价 $'}
+              </label>
+              <input type="number" step="0.0001" value={unitPrice} onChange={e => setUnitPrice(e.target.value)}
+                className={`${inp} w-28 font-mono`} placeholder={assetType === 'FUND' ? '3.4915' : '40000'} />
+            </div>
+          </>
         ) : null}
         {assetType !== 'CASH' && (
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-text-dim">
               {assetType === 'BOT' || assetType === 'WEALTH' ? '投入本金 ¥' : '累计投入 ¥'}
+              {(assetType === 'FUND' || assetType === 'CRYPTO') && !costTouched && parseFloat(shares) > 0 && parseFloat(unitPrice) > 0 && (
+                <span className="text-[9.5px] text-accent ml-1">自动算</span>
+              )}
             </label>
-            <input type="number" step="0.01" value={cost} onChange={e => setCost(e.target.value)}
+            <input type="number" step="0.01" value={cost}
+              onChange={e => { setCost(e.target.value); setCostTouched(true) }}
               className={`${inp} w-32 font-mono`} placeholder="5000" />
+          </div>
+        )}
+        {(assetType === 'FUND' || assetType === 'CRYPTO') && (
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] text-text-dim">
+              手续费 ¥
+              <Tooltip content={
+                <div className="leading-relaxed">
+                  <div className="text-text-bright font-semibold mb-0.5">手续费 (单笔)</div>
+                  <div className="text-text-dim text-[10.5px]">
+                    场内 ETF: 默认按 config.commission_rate (万 {(BROKER_COMMISSION_RATE * 10000).toFixed(2)}) + 最低 ¥{BROKER_COMMISSION_MIN}<br/>
+                    场外公募 (天天基金 / 支付宝): 通常 0 (C 类) 或申购费<br/>
+                    加密货币: 按交易所费率
+                  </div>
+                </div>
+              }>
+                <span className="ml-0.5 cursor-help text-text-muted">ⓘ</span>
+              </Tooltip>
+            </label>
+            <input type="number" step="0.01" value={fee}
+              onChange={e => { setFee(e.target.value); setFeeTouched(true) }}
+              className={`${inp} w-24 font-mono`} placeholder="5.00" />
           </div>
         )}
         {assetType !== 'WEALTH' && assetType !== 'CASH' && (
@@ -1430,6 +1489,21 @@ function AddAssetForm({ typeKey, onDone, onCancel }) {
           取消
         </button>
       </div>
+
+      {/* 按股买预览 (FUND/CRYPTO 同时填了份额 + 单价) */}
+      {(assetType === 'FUND' || assetType === 'CRYPTO') && parseFloat(shares) > 0 && parseFloat(unitPrice) > 0 && (() => {
+        const s = parseFloat(shares); const u = parseFloat(unitPrice); const f = parseFloat(fee) || 0
+        const gross = s * u
+        const total = gross + f
+        const avg = total / s
+        return (
+          <div className="text-[10.5px] font-mono text-bull">
+            ✓ 按股买: {s.toFixed(4)} × ¥{u.toFixed(4)} = ¥{gross.toFixed(2)}
+            {f > 0 && ` + 手续费 ¥${f.toFixed(2)} = ¥${total.toFixed(2)}`}
+            <span className="ml-2 text-text-dim">持有成本 ¥{avg.toFixed(4)}/{assetType === 'FUND' ? '份' : '币'}</span>
+          </div>
+        )
+      })()}
     </div>
   )
 }
