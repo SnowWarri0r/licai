@@ -24,8 +24,8 @@ _SUMMARY_TTL = 300
 _summary_cache: tuple[list[dict], float] | None = None
 _summary_lock = asyncio.Lock()
 
-_KLINE_TOP_N = 30  # 仅 top N 拉 K 线算 5d/30d, 其他只 1d
-_KLINE_CONCURRENCY = 8
+_KLINE_TOP_N = 999  # 全部 90 个板块都拉 K 线 (复用 sector_compare 的 _kline_cache, 命中率高)
+_KLINE_CONCURRENCY = 12
 
 
 def _fetch_summary_sync() -> list[dict]:

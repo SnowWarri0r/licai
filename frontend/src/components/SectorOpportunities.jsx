@@ -177,7 +177,7 @@ export default function SectorOpportunities() {
       </div>
 
       <div className="px-3 md:px-5 py-2 text-[10.5px] text-text-muted bg-surface-2/40 border-t border-border-subtle">
-        仅展示数据，不构成投资建议。前 30 个板块（按 1 日涨幅）有 5d/30d 数据，其余仅 1d。
+        仅展示数据，不构成投资建议。K 线缓存 10 分钟刷新一次。
       </div>
     </section>
   )
