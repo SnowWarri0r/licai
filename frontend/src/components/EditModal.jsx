@@ -8,14 +8,15 @@ export default function EditModal({ holding, onClose, onChange }) {
   const [saving, setSaving] = useState(false)
 
   const handleSave = async () => {
-    if (!code || code.length !== 6) return alert('请输入6位股票代码')
+    if (!code || !code.trim()) return alert('请输入股票代码')
     setSaving(true)
     try {
-      if (code !== holding.stock_code) {
+      const nextCode = code.trim().toUpperCase()
+      if (nextCode !== holding.stock_code) {
         await api.deleteHolding(holding.stock_code)
-        await api.addHolding({ stock_code: code, stock_name: '', shares: parseInt(shares), cost_price: parseFloat(cost) })
+        await api.addHolding({ stock_code: nextCode, stock_name: '', shares: parseInt(shares), cost_price: parseFloat(cost) })
       } else {
-        await api.updateHolding(code, { shares: parseInt(shares), cost_price: parseFloat(cost) })
+        await api.updateHolding(nextCode, { shares: parseInt(shares), cost_price: parseFloat(cost) })
       }
       onChange()
       onClose()
@@ -44,7 +45,8 @@ export default function EditModal({ holding, onClose, onChange }) {
           <div>
             <label className="text-[12px] text-text-dim block mb-1">股票代码</label>
             <input className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] text-text font-mono outline-none focus:border-accent"
-              maxLength={6} value={code} onChange={e => setCode(e.target.value)} />
+              placeholder="600362 / HK.00700 / US.AAPL"
+              value={code} onChange={e => setCode(e.target.value)} />
           </div>
           <div>
             <label className="text-[12px] text-text-dim block mb-1">持仓数量</label>

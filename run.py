@@ -22,6 +22,7 @@ from fastapi.responses import FileResponse
 
 from config import config
 from database import init_db, get_config
+from services import llm_client
 from api.portfolio_routes import router as portfolio_router
 from api.market_routes import router as market_router
 from api.settings_routes import router as settings_router
@@ -36,6 +37,11 @@ from services import feishu_notify
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    # Restore LLM proxy config
+    proxy_url = await get_config("llm_proxy_url")
+    if proxy_url:
+        llm_client.configure_proxy(proxy_url)
+
     # Restore saved feishu webhook config + 静音状态
     url = await get_config("feishu_webhook_url")
     if url:
