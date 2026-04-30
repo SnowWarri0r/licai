@@ -466,24 +466,30 @@ function TypeMiniInfo({ row, unwindByCode }) {
   if (type === 'W') {
     const yieldRate = extra.annualYield ?? extra.impliedYield
     const isImplied = extra.annualYield == null && extra.impliedYield != null
+    // 反推年化的解释 tooltip 包裹整个 "≈ X.XX% 反推" 段, hover 数字也能触发
+    // (避免被 RowActions hover 覆盖区域吃掉事件)
+    const yieldNode = yieldRate != null && (
+      isImplied ? (
+        <Tooltip content={
+          <div className="leading-relaxed">
+            <div>基于<span className="text-text-bright">当前总额 ÷ 本金 − 1</span></div>
+            <div>除以<span className="text-text-bright">持有天数</span>得隐含年化</div>
+            <div className="text-text-dim mt-1 text-[10.5px]">非产品标定年化，仅作参考</div>
+          </div>
+        }>
+          <span className="cursor-help">
+            <span className="font-mono text-bull">≈{(yieldRate * 100).toFixed(2)}%</span>
+            <span className="text-text-muted ml-0.5 underline decoration-dotted decoration-text-muted underline-offset-2">反推</span>
+          </span>
+        </Tooltip>
+      ) : (
+        <span className="font-mono text-bull">{(yieldRate * 100).toFixed(2)}%</span>
+      )
+    )
     return (
       <span className="text-[10.5px] text-text-dim">
         {extra.platform || '理财'}
-        {yieldRate != null && (
-          <> · 年化 <span className="font-mono text-bull">
-            {isImplied && '≈'}{(yieldRate * 100).toFixed(2)}%
-          </span>{isImplied && (
-            <Tooltip content={
-              <div className="leading-relaxed">
-                <div>基于<span className="text-text-bright">当前总额 ÷ 本金 − 1</span></div>
-                <div>除以<span className="text-text-bright">持有天数</span>得隐含年化</div>
-                <div className="text-text-dim mt-1 text-[10.5px]">非产品标定年化，仅作参考</div>
-              </div>
-            }>
-              <span className="text-text-muted ml-0.5 cursor-help underline decoration-dotted decoration-text-muted underline-offset-2">反推</span>
-            </Tooltip>
-          )}</>
-        )}
+        {yieldNode && <> · 年化 {yieldNode}</>}
         {extra.daysHeld != null && <> · 持有 <span className="font-mono">{extra.daysHeld}天</span></>}
       </span>
     )
@@ -541,13 +547,15 @@ function RowActions({ row, visible, onEdit, onHistory, onRemove, onAddLot }) {
           >{a.short}</button>
         ))}
       </div>
-      {/* 桌面: hover 显示, 全名 */}
-      <div className="hidden md:flex gap-1 justify-end items-center"
+      {/* 桌面: hover 显示, 全名. bg-surface-2 + shadow 让按钮 chip 化, 避免和左边 TypeMiniInfo 视觉混叠 */}
+      <div className="hidden md:flex gap-1 justify-end items-center px-1.5 rounded-md"
         style={{
           opacity: visible ? 1 : 0,
           transform: visible ? 'translateX(0)' : 'translateX(4px)',
           transition: 'opacity .18s, transform .18s',
           pointerEvents: visible ? 'auto' : 'none',
+          background: visible ? 'var(--color-surface-2)' : 'transparent',
+          boxShadow: visible ? '0 2px 8px rgba(0,0,0,.35)' : 'none',
         }}>
         {actions.map(a => (
           <button key={a.label} onClick={a.fn}
@@ -1026,11 +1034,14 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
                     <WeightBar weight={row.mv / (agg.totalMv || 1)} color={TYPE_COLOR[row.type]} />
                   </div>
                   <div className="relative pl-1 md:pl-2">
-                    {/* TypeMiniInfo: 桌面 hover 时被 RowActions 盖住; 移动隐藏 (空间不够) */}
-                    <div className="hidden md:block transition-opacity" style={{ opacity: hoverId === row.id ? 0 : 1 }}>
+                    {/* TypeMiniInfo: 桌面始终可见 (不再 hover 隐藏); 移动隐藏 */}
+                    <div className="hidden md:block">
                       <TypeMiniInfo row={row} unwindByCode={unwindPlans} />
                     </div>
-                    <div className="md:absolute md:inset-0 flex items-center justify-end md:pr-0">
+                    {/* RowActions: 桌面 hover 显示, 绝对覆盖右半. 容器 pointer-events-none 让事件
+                        穿透到 TypeMiniInfo (反推 tooltip 之类), 子元素重置 auto 接收点击.
+                        bg-surface-2 强遮挡, 与 row hover 背景色一致, 视觉自然. */}
+                    <div className="md:absolute md:inset-y-0 md:right-0 flex items-center md:pr-0 md:pointer-events-none [&>div]:pointer-events-auto">
                       <RowActions row={row} visible={hoverId === row.id}
                         onEdit={handleEdit} onHistory={onHistory} onRemove={removeAsset} onAddLot={handleAddLot} />
                     </div>
