@@ -122,7 +122,7 @@ body::after {
 /* UnifiedPortfolio: holdings table */
 .licai-row {
   display: grid;
-  grid-template-columns: 36% 18% 22% 14% 10%;
+  grid-template-columns: 30% 18% 22% 12% 18%;
 }
 @media (min-width: 768px) {
   .licai-row {
