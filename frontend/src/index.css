@@ -112,3 +112,66 @@ body::after {
   from { opacity: 0; }
   to   { opacity: 1; }
 }
+
+/* ========================================================
+ * Responsive table grids
+ * Mobile: 5-column compact (name | mv | pnl | today | actions)
+ * Desktop (≥768): full 8-column with cost / weight / days / type-info
+ * ======================================================== */
+
+/* UnifiedPortfolio: holdings table */
+.licai-row {
+  display: grid;
+  grid-template-columns: 36% 18% 22% 14% 10%;
+}
+@media (min-width: 768px) {
+  .licai-row {
+    grid-template-columns: 22% 10% 9% 14% 14% 13% 5% 13%;
+  }
+}
+/* Cells visible only on desktop (cost / weight / days / type-info) */
+@media (max-width: 767px) {
+  .licai-row > .licai-md-only { display: none !important; }
+}
+
+/* Sector radar: compact 4-col on mobile (name | sector | 60d | α) */
+.licai-sec-row {
+  display: grid;
+  grid-template-columns: 32% 24% 26% 18%;
+}
+@media (min-width: 768px) {
+  .licai-sec-row {
+    grid-template-columns: 24% 14% 18% 18% 14% 12%;
+  }
+}
+@media (max-width: 767px) {
+  .licai-sec-row > .licai-md-only { display: none !important; }
+}
+
+/* Sector opportunities: 4-col on mobile (name | 5d | 30d | sparkline) */
+.licai-opp-row {
+  display: grid;
+  grid-template-columns: 30% 16% 16% 38%;
+}
+@media (min-width: 768px) {
+  .licai-opp-row {
+    grid-template-columns: 18% 9% 9% 9% 13% 16% 12% 14%;
+  }
+}
+@media (max-width: 767px) {
+  .licai-opp-row > .licai-md-only { display: none !important; }
+}
+
+/* AllocationAdvisor: 3-col on mobile (类别 | 当前/目标 | 调整) */
+.licai-alloc-row {
+  display: grid;
+  grid-template-columns: 24% 30% 46%;
+}
+@media (min-width: 768px) {
+  .licai-alloc-row {
+    grid-template-columns: 14% 14% 14% 28% 30%;
+  }
+}
+@media (max-width: 767px) {
+  .licai-alloc-row > .licai-md-only { display: none !important; }
+}

@@ -44,7 +44,7 @@ export default function MorningBriefing() {
   }
   if (!data || !data.briefings || data.briefings.length === 0) {
     return (
-      <section className="rounded-xl border border-border bg-surface/60 px-5 py-4">
+      <section className="rounded-xl border border-border bg-surface/60 px-3 md:px-5 py-4">
         <div className="flex items-center justify-between">
           <div>
             <h3 className="text-[13px] font-semibold text-text-bright m-0">早盘简报</h3>
@@ -62,7 +62,7 @@ export default function MorningBriefing() {
   return (
     <section className="rounded-xl border border-border bg-surface/60 overflow-hidden"
       style={{ animation: 'fade-up 0.4s ease-out' }}>
-      <div className="px-5 py-3 border-b border-border flex items-center justify-between"
+      <div className="px-3 md:px-5 py-3 border-b border-border flex items-center justify-between"
         style={{ background: 'linear-gradient(180deg, var(--color-surface-2), var(--color-surface))' }}>
         <div className="flex items-baseline gap-2">
           <h3 className="text-[13px] font-semibold text-text-bright m-0">早盘简报</h3>
@@ -83,7 +83,7 @@ export default function MorningBriefing() {
           const conf = CONFIDENCE_META[b.confidence] || CONFIDENCE_META.med
           const isExp = expanded[b.stock_code]
           return (
-            <div key={b.stock_code} className="px-5 py-3"
+            <div key={b.stock_code} className="px-3 md:px-5 py-3"
               style={{ borderLeft: `3px solid ${meta.color}` }}>
               <div className="flex items-start gap-3">
                 <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2 py-[2px] rounded shrink-0"
