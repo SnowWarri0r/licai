@@ -2,6 +2,27 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { fetchJSON } from '../hooks/useApi'
 import Tooltip from './Tooltip'
 
+function Sparkline({ data, width = 60, height = 20 }) {
+  if (!data || data.length < 2) return <span className="text-text-dim text-[10px]">--</span>
+  const closes = data.map(d => d.close).filter(c => c > 0)
+  if (closes.length < 2) return <span className="text-text-dim text-[10px]">--</span>
+  const min = Math.min(...closes)
+  const max = Math.max(...closes)
+  const range = max - min || 1
+  const stepX = width / (closes.length - 1)
+  const points = closes.map((c, i) => {
+    const x = i * stepX
+    const y = height - ((c - min) / range) * height
+    return `${x.toFixed(1)},${y.toFixed(1)}`
+  }).join(' ')
+  const isUp = closes[closes.length - 1] >= closes[0]
+  return (
+    <svg width={width} height={height} className="shrink-0">
+      <polyline points={points} fill="none" stroke={isUp ? '#cf5c5c' : '#5fa86c'} strokeWidth="1.2" />
+    </svg>
+  )
+}
+
 const fmtPct = (v) => v == null ? '--' : (v >= 0 ? '+' : '') + v.toFixed(1) + '%'
 const colorOf = (v) => v == null ? 'text-text-dim'
   : v > 3 ? 'text-bear-bright'
@@ -83,7 +104,7 @@ export default function SectorOpportunities() {
       </div>
 
       <div className="grid px-5 py-1.5 text-[10.5px] text-text-dim tracking-wider font-medium border-b border-border-subtle"
-        style={{ gridTemplateColumns: '22% 11% 11% 11% 14% 18% 13%' }}>
+        style={{ gridTemplateColumns: '18% 9% 9% 9% 13% 16% 12% 14%' }}>
         <div>板块</div>
         <div className="text-right">1 日</div>
         <div className="text-right">5 日</div>
@@ -100,6 +121,7 @@ export default function SectorOpportunities() {
         </div>
         <div className="text-right">领涨股</div>
         <div className="text-right">兜底 ETF</div>
+        <div className="text-right">走势 60d</div>
       </div>
 
       <div className="divide-y divide-border-subtle max-h-[480px] overflow-y-auto">
@@ -111,7 +133,7 @@ export default function SectorOpportunities() {
           </div>
         ) : visibleRows.map(r => (
           <div key={r.name} className="grid px-5 py-2 items-center text-[11.5px]"
-            style={{ gridTemplateColumns: '22% 11% 11% 11% 14% 18% 13%' }}>
+            style={{ gridTemplateColumns: '18% 9% 9% 9% 13% 16% 12% 14%' }}>
             <div className="flex items-center gap-1.5 min-w-0">
               <span className="text-text-bright font-semibold truncate">{r.name}</span>
               {r.held && (
@@ -148,6 +170,9 @@ export default function SectorOpportunities() {
               {r.etf_code ? (
                 <span className="font-mono text-[10.5px] text-text">{r.etf_code}</span>
               ) : <span className="text-text-dim">--</span>}
+            </div>
+            <div className="flex justify-end">
+              <Sparkline data={r.kline_tail} />
             </div>
           </div>
         ))}
