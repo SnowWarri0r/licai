@@ -4,6 +4,7 @@ import UnwindCard from './UnwindCard'
 import BudgetAllocator from './BudgetAllocator'
 import MorningBriefing from './MorningBriefing'
 import SectorRadar from './SectorRadar'
+import SectorOpportunities from './SectorOpportunities'
 import AllocationAdvisor from './AllocationAdvisor'
 
 export default function UnwindView() {
@@ -37,6 +38,7 @@ export default function UnwindView() {
     <div className="space-y-4">
       <MorningBriefing />
       <SectorRadar />
+      <SectorOpportunities />
       <AllocationAdvisor />
       <BudgetAllocator onAllocated={loadPlans} />
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
