@@ -101,13 +101,6 @@ const FAMILY_LABEL = {
   overseas: '海外股票', cn_broad: 'A股宽基',
 }
 
-const daysSince = (iso) => {
-  if (!iso) return null
-  const d = Date.parse(iso)
-  if (isNaN(d)) return null
-  return Math.max(0, Math.floor((Date.now() - d) / 86400000))
-}
-
 // Normalize raw A-share holding → unified row
 function normalizeHolding(h) {
   const mv = h.market_value || (h.current_price * h.shares) || 0
@@ -123,7 +116,6 @@ function normalizeHolding(h) {
     pnl: h.unrealized_pnl ?? (mv - cost),
     pnlPct: h.pnl_pct,
     today: h.price_change_pct,
-    days: daysSince(h.created_at),
     _raw: h,
     extra: {
       shares: h.shares,
@@ -162,7 +154,6 @@ function normalizeAsset(a) {
     pnl: a.pnl,
     pnlPct: a.pnl_pct,
     today,
-    days: daysSince(a.created_at),
     _raw: a,
     extra: {
       platform: a.platform,
@@ -887,7 +878,6 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
           <div className="text-right">浮动盈亏</div>
           <div className="text-right">今日</div>
           <div className="text-right licai-md-only">占比</div>
-          <div className="text-right licai-md-only">天</div>
           <div className="text-left pl-2">操作</div>
         </div>
       )}
@@ -922,7 +912,6 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
               </div>
               <div />
               <div className="text-right font-mono text-text licai-md-only">{(g.weight * 100).toFixed(1)}%</div>
-              <div className="licai-md-only" />
               <div />
             </div>
 
@@ -1036,9 +1025,6 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
                   <div className="text-right licai-md-only">
                     <WeightBar weight={row.mv / (agg.totalMv || 1)} color={TYPE_COLOR[row.type]} />
                   </div>
-                  <div className="text-right font-mono text-[10.5px] text-text-dim licai-md-only">
-                    {row.days ?? '--'}
-                  </div>
                   <div className="relative pl-1 md:pl-2">
                     {/* TypeMiniInfo: 桌面 hover 时被 RowActions 盖住; 移动隐藏 (空间不够) */}
                     <div className="hidden md:block transition-opacity" style={{ opacity: hoverId === row.id ? 0 : 1 }}>
@@ -1082,7 +1068,6 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
                             {cl.pnl >= 0 ? '+' : ''}{fmtMoney(cl.pnl)}
                           </div>
                           <div />
-                          <div className="licai-md-only" />
                           <div className="licai-md-only" />
                           <div />
                         </div>
