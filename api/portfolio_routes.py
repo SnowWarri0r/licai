@@ -10,7 +10,10 @@ from database import (
     get_position_actions, add_position_action, update_position_action, delete_position_action,
     get_unwind_plan, get_tranches, mark_tranche_executed,
 )
-from services.market_data import get_realtime_quotes, get_stock_name, get_stock_sector
+from services.market_data import (
+    get_realtime_quotes, get_stock_name, get_stock_sector,
+    normalize_stock_code, split_stock_code, get_fx_info, is_a_share,
+)
 from services.position_ledger import compute_position_state
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
@@ -67,6 +70,16 @@ async def list_holdings() -> list[HoldingResponse]:
         q = quotes.get(code)
         current_price = q["price"] if q else None
         change_pct = q["change_pct"] if q else None
+        market = (q or {}).get("market") or split_stock_code(code)[0]
+        currency = (q or {}).get("currency") or ("HKD" if market == "HK" else "USD" if market == "US" else "CNY")
+        fx_info = {
+            "rate": (q or {}).get("fx_rate") or 1.0,
+            "source": (q or {}).get("fx_source") or ("CNY" if currency == "CNY" else ""),
+            "time": (q or {}).get("fx_time") or "",
+        }
+        if currency != "CNY" and not (q or {}).get("fx_rate"):
+            fx_info = get_fx_info(currency)
+        fx_rate = float(fx_info.get("rate") or 1.0)
 
         # Auto-fix empty stock name
         if not h["stock_name"] and q and q.get("stock_name"):
@@ -76,21 +89,33 @@ async def list_holdings() -> list[HoldingResponse]:
         unrealized_pnl = None
         pnl_pct = None
         market_value = None
+        original_cost_value = round(h["cost_price"] * h["shares"], 2)
+        original_market_value = None
+        cost_value = round(original_cost_value * fx_rate, 2)
         if current_price and current_price > 0:
-            market_value = round(current_price * h["shares"], 2)
-            unrealized_pnl = round((current_price - h["cost_price"]) * h["shares"], 2)
+            original_market_value = round(current_price * h["shares"], 2)
+            market_value = round(original_market_value * fx_rate, 2)
+            unrealized_pnl = round((original_market_value - original_cost_value) * fx_rate, 2)
             if h["cost_price"] > 0:
                 pnl_pct = round((current_price - h["cost_price"]) / h["cost_price"] * 100, 2)
 
         result.append(HoldingResponse(
             stock_code=code,
             stock_name=h["stock_name"] or (q["stock_name"] if q else ""),
+            market=market,
+            currency=currency,
             shares=h["shares"],
             cost_price=h["cost_price"],
             current_price=current_price,
+            fx_rate=fx_rate,
+            fx_time=fx_info.get("time") or "",
+            fx_source=fx_info.get("source") or "",
             price_change_pct=change_pct,
             unrealized_pnl=unrealized_pnl,
             pnl_pct=pnl_pct,
+            original_cost_value=original_cost_value,
+            original_market_value=original_market_value,
+            cost_value=cost_value,
             market_value=market_value,
             sector=sector_map.get(code),
         ))
@@ -112,6 +137,7 @@ async def sector_concentration():
         }
     """
     holdings = await get_all_holdings()
+    holdings = [h for h in holdings if is_a_share(h["stock_code"])]
     if not holdings:
         return {"total_value": 0, "sectors": [], "max_concentration": 0, "level": "ok", "message": ""}
 
@@ -179,27 +205,29 @@ async def sector_concentration():
 
 @router.post("")
 async def create_holding(data: HoldingCreate):
-    existing = await get_holding(data.stock_code)
+    stock_code = normalize_stock_code(data.stock_code)
+    existing = await get_holding(stock_code)
     if existing:
-        raise HTTPException(400, f"持仓 {data.stock_code} 已存在")
+        raise HTTPException(400, f"持仓 {stock_code} 已存在")
 
     name = data.stock_name
     if not name:
-        name = await get_stock_name(data.stock_code)
+        name = await get_stock_name(stock_code)
 
     # 1) 用裸成交价建持仓 (data.cost_price)
-    await add_holding(data.stock_code, name, data.shares, data.cost_price)
+    await add_holding(stock_code, name, data.shares, data.cost_price)
     # 2) 同时写一笔 BUY action,然后重算综合成本 (会自动加佣金/印花税/过户费)
     await add_position_action(
-        data.stock_code, "BUY", data.cost_price, data.shares,
+        stock_code, "BUY", data.cost_price, data.shares,
         note="initial (auto)",
     )
-    await _recompute_holding(data.stock_code)
-    return {"message": "添加成功", "stock_code": data.stock_code, "stock_name": name}
+    await _recompute_holding(stock_code)
+    return {"message": "添加成功", "stock_code": stock_code, "stock_name": name}
 
 
 @router.put("/{stock_code}")
 async def modify_holding(stock_code: str, data: HoldingUpdate):
+    stock_code = normalize_stock_code(stock_code)
     existing = await get_holding(stock_code)
     if not existing:
         raise HTTPException(404, f"持仓 {stock_code} 不存在")
@@ -218,6 +246,7 @@ async def modify_holding(stock_code: str, data: HoldingUpdate):
 
 @router.delete("/{stock_code}")
 async def remove_holding(stock_code: str):
+    stock_code = normalize_stock_code(stock_code)
     existing = await get_holding(stock_code)
     if not existing:
         raise HTTPException(404, f"持仓 {stock_code} 不存在")
@@ -231,6 +260,7 @@ async def remove_holding(stock_code: str):
 @router.get("/{stock_code}/actions")
 async def list_actions(stock_code: str):
     """List all buy/sell actions for a stock, chronologically."""
+    stock_code = normalize_stock_code(stock_code)
     return await get_position_actions(stock_code, limit=500)
 
 
@@ -270,6 +300,7 @@ async def create_action(stock_code: str, data: ActionCreate):
     If this is a BUY/ADD/T_BUY that matches a pending tranche's trigger price
     (within ±5%), auto-mark that tranche as executed so the plan view stays in sync.
     """
+    stock_code = normalize_stock_code(stock_code)
     holding = await get_holding(stock_code)
     if not holding:
         raise HTTPException(404, f"持仓 {stock_code} 不存在")

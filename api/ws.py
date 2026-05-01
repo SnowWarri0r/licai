@@ -6,7 +6,7 @@ import time
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from database import get_all_holdings, get_custom_alerts, mark_alert_triggered
-from services.market_data import get_realtime_quotes, is_market_hours, is_trading_day_active
+from services.market_data import get_realtime_quotes, is_market_hours, is_trading_day_active, is_a_share
 from services import feishu_notify
 from config import config
 
@@ -148,6 +148,8 @@ async def _check_unwind_alerts(holdings, quotes):
 
     for h in holdings:
         code = h["stock_code"]
+        if not is_a_share(code):
+            continue
         q = quotes.get(code)
         if not q or q["price"] <= 0:
             continue

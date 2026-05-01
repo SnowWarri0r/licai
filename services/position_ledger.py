@@ -15,6 +15,8 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Iterable
 
+from services.market_data import is_a_share
+
 ACQUIRE = {"BUY", "ADD", "T_BUY"}
 RELEASE = {"SELL", "REDUCE", "T_SELL"}
 
@@ -34,6 +36,8 @@ def estimate_trade_fee(action_type: str, price: float, shares: int, stock_code: 
 
     Returns total fee in yuan. Used to adjust cost basis to match broker display.
     """
+    if stock_code and not is_a_share(stock_code):
+        return 0.0
     amount = price * shares
     if amount <= 0:
         return 0.0

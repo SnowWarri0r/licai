@@ -3,7 +3,10 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from fastapi import APIRouter
 
-from services.market_data import get_realtime_quotes, get_historical_data, get_intraday_data, get_market_indices
+from services.market_data import (
+    get_realtime_quotes, get_historical_data, get_intraday_data,
+    get_market_indices, normalize_stock_code,
+)
 
 router = APIRouter(prefix="/api/market", tags=["market"])
 
@@ -73,6 +76,7 @@ async def trading_day_status():
 
 @router.get("/quote/{stock_code}")
 async def get_quote(stock_code: str):
+    stock_code = normalize_stock_code(stock_code)
     quotes = await get_realtime_quotes([stock_code])
     if stock_code not in quotes:
         return {"error": f"无法获取 {stock_code} 的行情数据"}
@@ -81,6 +85,7 @@ async def get_quote(stock_code: str):
 
 @router.get("/history/{stock_code}")
 async def get_history(stock_code: str, days: int = 60):
+    stock_code = normalize_stock_code(stock_code)
     df = await get_historical_data(stock_code, days)
     if df.empty:
         return []
@@ -100,6 +105,7 @@ async def get_history(stock_code: str, days: int = 60):
 
 @router.get("/intraday/{stock_code}")
 async def get_intraday(stock_code: str):
+    stock_code = normalize_stock_code(stock_code)
     df = await get_intraday_data(stock_code)
     if df.empty:
         return []

@@ -3,6 +3,23 @@ import { fetchJSON } from '../hooks/useApi'
 import { fmtMoney, fmtPct, priceColor } from '../helpers'
 import Tooltip from './Tooltip'
 
+function currencySymbol(currency = 'CNY') {
+  if (currency === 'USD') return '$'
+  if (currency === 'HKD') return 'HK$'
+  return '¥'
+}
+
+function formatCurrencyMoney(currency, value) {
+  return `${currencySymbol(currency)}${fmtMoney(value)}`
+}
+
+function fxSourceLabel(source) {
+  if (source === 'sina_bid_ask_mid') return '新浪外汇买卖价中间价'
+  if (source === 'fallback') return '备用汇率'
+  if (source === 'CNY') return '人民币'
+  return source || '汇率'
+}
+
 export default function Dashboard({ holdings }) {
   const [indices, setIndices] = useState([])
   const [unwindStats, setUnwindStats] = useState(null)
@@ -57,20 +74,40 @@ export default function Dashboard({ holdings }) {
     if (!external || !external.summary?.total_value) return null
   }
 
-  // --- A股 aggregates ---
+  // --- Stock aggregates ---
   const aValue = holdings.reduce((s, h) => s + (h.market_value || 0), 0)
-  const aCost = holdings.reduce((s, h) => s + h.cost_price * h.shares, 0)
+  const aCost = holdings.reduce((s, h) => s + (h.cost_value ?? h.cost_price * h.shares), 0)
   const aPnl = holdings.reduce((s, h) => s + (h.unrealized_pnl || 0), 0)
-  // A股今日浮动：非交易日（周末/法定假日）显示 0；否则按 price_change_pct × shares 算今日变动
+  // 股票今日浮动：先沿用 A 股交易日判断，港美股盘中精细交易时段后续再拆。
   // 兜底：tradingDay 还没加载时用客户端 weekday 判断
   const isTradingDay = tradingDay
     ? !!tradingDay.is_trading_day
     : ![0, 6].includes(new Date().getDay())
   const aTodayPnl = !isTradingDay ? 0 : holdings.reduce((s, h) => {
     if (!h.current_price || !h.price_change_pct) return s
-    const prev = h.current_price / (1 + h.price_change_pct / 100)
-    return s + (h.current_price - prev) * h.shares
+    const mv = h.market_value || h.current_price * h.shares * (h.fx_rate || 1)
+    return s + (mv * h.price_change_pct / 100) / (1 + h.price_change_pct / 100)
   }, 0)
+  const foreignExposure = Object.values(holdings.reduce((acc, h) => {
+    const currency = h.currency
+    if (!currency || currency === 'CNY') return acc
+    if (!acc[currency]) {
+      acc[currency] = {
+        currency,
+        originalMarketValue: 0,
+        marketValue: 0,
+        fxRate: h.fx_rate || 1,
+        fxTime: h.fx_time || '',
+        fxSource: h.fx_source || '',
+      }
+    }
+    acc[currency].originalMarketValue += h.original_market_value || (h.current_price ? h.current_price * h.shares : 0)
+    acc[currency].marketValue += h.market_value || 0
+    acc[currency].fxRate = h.fx_rate || acc[currency].fxRate
+    acc[currency].fxTime = h.fx_time || acc[currency].fxTime
+    acc[currency].fxSource = h.fx_source || acc[currency].fxSource
+    return acc
+  }, {})).filter(e => e.originalMarketValue > 0)
 
   // --- 场外 aggregates ---
   const eValue = external?.summary?.total_value || 0
@@ -114,12 +151,43 @@ export default function Dashboard({ holdings }) {
     <div className="flex items-center gap-4 px-4 py-2 border-b border-border-subtle bg-surface/40 overflow-x-auto"
       style={{ animation: 'fade-up 0.25s ease-out' }}>
 
-      {/* Total (combined A-share + external) */}
+      {/* Total (combined stock + external) */}
       <div className="flex items-center gap-1.5 shrink-0">
-        <span className="text-[11px] text-text-muted">总资产</span>
+        <Tooltip content={
+          <div className="leading-relaxed">
+            <div className="text-text-bright font-semibold mb-1">总资产口径</div>
+            <div>主数字统一按人民币估值。</div>
+            {foreignExposure.length > 0 && (
+              <div className="mt-1 text-text-dim text-[10.5px]">
+                港美股按近实时汇率折算，非银行最终结算价。
+              </div>
+            )}
+          </div>
+        }>
+          <span className="text-[11px] text-text-muted cursor-help">总资产</span>
+        </Tooltip>
         <span className="text-[14px] font-mono font-semibold text-text-bright">
           ¥{fmtMoney(totalValue)}
         </span>
+        {foreignExposure.length > 0 && (
+          <span className="text-[9.5px] text-text-muted">人民币口径</span>
+        )}
+        {foreignExposure.map(e => (
+          <Tooltip key={e.currency} content={
+            <div className="leading-relaxed">
+              <div className="text-text-bright font-semibold mb-1">{e.currency} 持仓原币市值</div>
+              <div>{formatCurrencyMoney(e.currency, e.originalMarketValue)} → ¥{fmtMoney(e.marketValue)}</div>
+              <div className="text-text-dim text-[10.5px] mt-1">
+                {e.currency}/CNY {Number(e.fxRate || 1).toFixed(4)} · {fxSourceLabel(e.fxSource)} · 5分钟缓存
+                {e.fxTime ? ` · ${e.fxTime}` : ''}
+              </div>
+            </div>
+          }>
+            <span className="text-[9.5px] font-mono text-text-muted cursor-help hidden sm:inline">
+              {formatCurrencyMoney(e.currency, e.originalMarketValue)}
+            </span>
+          </Tooltip>
+        ))}
       </div>
       <div className="flex items-center gap-1.5 shrink-0">
         <span className="text-[11px] text-text-muted">总盈亏</span>
@@ -137,9 +205,25 @@ export default function Dashboard({ holdings }) {
           <div className="w-px h-4 bg-border shrink-0" />
           <div className="flex items-center gap-1.5 shrink-0">
             <span className="text-[10px] px-1.5 py-0.5 rounded border border-border text-text-dim">
-              A股
+              股票
             </span>
             <span className="text-[12px] font-mono text-text">¥{fmtMoney(aValue)}</span>
+            {foreignExposure.map(e => (
+              <Tooltip key={e.currency} content={
+                <div className="leading-relaxed">
+                  <div className="text-text-bright font-semibold mb-1">{e.currency} 敞口</div>
+                  <div>{formatCurrencyMoney(e.currency, e.originalMarketValue)} → ¥{fmtMoney(e.marketValue)}</div>
+                  <div className="text-text-dim text-[10.5px] mt-1">
+                    {e.currency}/CNY {Number(e.fxRate || 1).toFixed(4)} · {fxSourceLabel(e.fxSource)} · 5分钟缓存
+                    {e.fxTime ? ` · ${e.fxTime}` : ''}
+                  </div>
+                </div>
+              }>
+                <span className="text-[9.5px] font-mono text-text-muted cursor-help">
+                  {formatCurrencyMoney(e.currency, e.originalMarketValue)}
+                </span>
+              </Tooltip>
+            ))}
             <span className={`text-[10px] font-mono ${priceColor(aPnl)}`}>
               {aPnl >= 0 ? '+' : ''}{fmtMoney(aPnl)}
             </span>

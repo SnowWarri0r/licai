@@ -10,7 +10,7 @@ import Tooltip from './Tooltip'
 // ============================================================
 
 const TYPE_META = {
-  A: { label: 'A股',   short: 'A', tintVar: '--color-accent',     desc: '沪深上市' },
+  A: { label: '股票',   short: '股', tintVar: '--color-accent',     desc: 'A股 / 港股 / 美股' },
   F: { label: '基金',   short: '基', tintVar: '--color-info',       desc: '公募 / ETF / LOF' },
   W: { label: '理财',   short: '理', tintVar: '--color-bull',       desc: '银证理财 (T+30 锁定)' },
   M: { label: '现金',   short: '现', tintVar: '--color-text-dim',   desc: 'T+0 货币基金 / 银行活期' },
@@ -34,6 +34,61 @@ const KEY_TO_ASSET_TYPE = { F: 'FUND', C: 'CRYPTO', R: 'BOT', W: 'WEALTH', M: 'C
 // 券商佣金率（默认万 2.5; 在 config.py 改为你自己的费率）。影响"按股买"模式的手续费自动估算.
 const BROKER_COMMISSION_RATE = 0.00025
 const BROKER_COMMISSION_MIN = 5
+
+const STOCK_MARKETS = {
+  A: { label: 'A股', placeholder: '600362', hint: '6位代码', minShares: 100, step: 100 },
+  HK: { label: '港股', placeholder: '00700', hint: '港股5位代码', minShares: 1, step: 1 },
+  US: { label: '美股', placeholder: 'AAPL', hint: '美股Ticker', minShares: 1, step: 1 },
+}
+
+function stockMarketOfCode(code = '') {
+  const c = String(code).toUpperCase()
+  if (c.startsWith('HK.')) return 'HK'
+  if (c.startsWith('US.')) return 'US'
+  return 'A'
+}
+
+function stockCodeForMarket(market, code) {
+  const raw = String(code || '').trim().toUpperCase()
+  if (market === 'HK') return `HK.${raw.replace(/^HK\.?/, '').padStart(5, '0')}`
+  if (market === 'US') return `US.${raw.replace(/^US\.?/, '')}`
+  return raw.replace(/^A\./, '')
+}
+
+function currencySymbol(currency = 'CNY') {
+  if (currency === 'USD') return '$'
+  if (currency === 'HKD') return 'HK$'
+  return '¥'
+}
+
+function formatCurrencyMoney(currency, value) {
+  return `${currencySymbol(currency)}${fmtMoney(value)}`
+}
+
+function fxSourceLabel(source) {
+  if (source === 'sina_bid_ask_mid') return '新浪外汇买卖价中间价'
+  if (source === 'fallback') return '备用汇率'
+  if (source === 'CNY') return '人民币'
+  return source || '汇率'
+}
+
+function FxHint({ extra, children }) {
+  if (!extra?.currency || extra.currency === 'CNY') return children
+  return (
+    <Tooltip content={
+      <div className="leading-relaxed">
+        <div className="text-text-bright font-semibold mb-1">人民币折算口径</div>
+        <div>{extra.currency}/CNY {Number(extra.fxRate || 1).toFixed(4)}</div>
+        <div className="text-text-dim text-[10.5px] mt-1">
+          {fxSourceLabel(extra.fxSource)} · 5分钟缓存
+          {extra.fxTime ? ` · ${extra.fxTime}` : ''}
+        </div>
+      </div>
+    }>
+      {children}
+    </Tooltip>
+  )
+}
 
 // Fund subcategory: derived from name keywords. Order = render order.
 const FUND_CATEGORIES = [
@@ -74,6 +129,13 @@ function aShareCategoryOf(name = '', sector = '') {
   return { id: 'other', label: '其他' }
 }
 
+function stockCategoryOf(h) {
+  const market = h.market || stockMarketOfCode(h.stock_code)
+  if (market === 'HK') return { id: 'hk', label: '港股' }
+  if (market === 'US') return { id: 'us', label: '美股' }
+  return aShareCategoryOf(h.stock_name, h.sector)
+}
+
 // Cross-type risk family: identifies same underlying exposure across A股 / 基金.
 // Returns array of family ids (a row can belong to multiple, e.g. 白银 is both silver + metals).
 function riskFamiliesOf(row) {
@@ -104,11 +166,13 @@ const FAMILY_LABEL = {
 // Normalize raw A-share holding → unified row
 function normalizeHolding(h) {
   const mv = h.market_value || (h.current_price * h.shares) || 0
-  const cost = h.cost_price * h.shares
+  const cost = h.cost_value ?? (h.cost_price * h.shares)
+  const originalMarketValue = h.original_market_value ?? (h.current_price ? h.current_price * h.shares : null)
+  const originalCostValue = h.original_cost_value ?? (h.cost_price * h.shares)
   return {
     id: `A-${h.stock_code}`,
     type: 'A',
-    category: aShareCategoryOf(h.stock_name, h.sector),
+    category: stockCategoryOf(h),
     code: h.stock_code,
     name: h.stock_name,
     mv,
@@ -118,6 +182,13 @@ function normalizeHolding(h) {
     today: h.price_change_pct,
     _raw: h,
     extra: {
+      market: h.market || stockMarketOfCode(h.stock_code),
+      currency: h.currency || 'CNY',
+      fxRate: h.fx_rate || 1,
+      fxTime: h.fx_time || '',
+      fxSource: h.fx_source || '',
+      originalMarketValue,
+      originalCostValue,
       shares: h.shares,
       price: h.current_price,
       avgCost: h.cost_price,
@@ -187,6 +258,7 @@ function normalizeAsset(a) {
 function aggregate(rows, aShareTradingDay = true) {
   const totalMv = rows.reduce((s, r) => s + (r.mv || 0), 0)
   const groups = {}
+  const fxExposure = {}
   for (const r of rows) {
     if (!groups[r.type]) groups[r.type] = { items: [], mv: 0, cost: 0, pnl: 0, todayPnl: 0 }
     const g = groups[r.type]
@@ -194,6 +266,24 @@ function aggregate(rows, aShareTradingDay = true) {
     g.mv += r.mv || 0
     g.cost += r.cost || 0
     g.pnl += r.pnl || 0
+    const currency = r.extra?.currency
+    if (r.type === 'A' && currency && currency !== 'CNY') {
+      if (!fxExposure[currency]) {
+        fxExposure[currency] = {
+          currency,
+          originalMarketValue: 0,
+          marketValue: 0,
+          fxRate: r.extra?.fxRate || 1,
+          fxTime: r.extra?.fxTime || '',
+          fxSource: r.extra?.fxSource || '',
+        }
+      }
+      fxExposure[currency].originalMarketValue += r.extra?.originalMarketValue || 0
+      fxExposure[currency].marketValue += r.mv || 0
+      fxExposure[currency].fxRate = r.extra?.fxRate || fxExposure[currency].fxRate
+      fxExposure[currency].fxTime = r.extra?.fxTime || fxExposure[currency].fxTime
+      fxExposure[currency].fxSource = r.extra?.fxSource || fxExposure[currency].fxSource
+    }
     // T+1 markets (A-share + fund + wealth + cash货基) — `today` is stale on weekends/holidays.
     // Crypto (C) and Bot (R) trade 24/7 and stay correct.
     const isT1Market = r.type === 'A' || r.type === 'F' || r.type === 'W' || r.type === 'M'
@@ -213,6 +303,7 @@ function aggregate(rows, aShareTradingDay = true) {
     totalCost: rows.reduce((s, r) => s + (r.cost || 0), 0),
     totalPnl: rows.reduce((s, r) => s + (r.pnl || 0), 0),
     totalToday: Object.values(groups).reduce((s, g) => s + g.todayPnl, 0),
+    fxExposure: Object.values(fxExposure).filter(e => e.originalMarketValue > 0),
   }
 }
 
@@ -296,6 +387,18 @@ function TypeChip({ type, compact = false }) {
         lineHeight: 1.2,
       }}>
       {compact ? TYPE_META[type].short : TYPE_META[type].label}
+    </span>
+  )
+}
+
+function MarketChip({ market }) {
+  if (!market || market === 'A') return null
+  const label = market === 'HK' ? '港' : market === 'US' ? '美' : market
+  const color = market === 'HK' ? '#5fa86c' : market === 'US' ? '#85a0b4' : '#8a8378'
+  return (
+    <span className="inline-flex items-center rounded font-semibold shrink-0 px-1 py-[1px] text-[9.5px]"
+      style={{ color, background: `${color}18`, border: `1px solid ${color}40` }}>
+      {label}
     </span>
   )
 }
@@ -434,7 +537,7 @@ function TypeMiniInfo({ row, unwindByCode }) {
     const plan = unwindByCode?.[code]
     if (!plan) {
       return <span className="text-[10.5px] text-text-muted font-mono">
-        {extra.shares} 股 · ¥{fmtPrice(extra.avgCost)}
+        {extra.shares} 股 · {currencySymbol(extra.currency)}{fmtPrice(extra.avgCost)}
       </span>
     }
     // unwind progress: pnl% recovered relative to initial loss
@@ -569,8 +672,15 @@ function RowActions({ row, visible, onEdit, onHistory, onRemove, onAddLot }) {
 // Summary strip
 // ============================================================
 function SummaryStrip({ agg, aShareClosed }) {
+  const fxExposure = agg.fxExposure || []
   const items = [
-    { label: '总资产', val: `¥${fmtMoney(agg.totalMv)}`, big: true, color: 'text-text-bright' },
+    {
+      label: '总资产',
+      val: `¥${fmtMoney(agg.totalMv)}`,
+      big: true,
+      color: 'text-text-bright',
+      note: fxExposure.length ? '人民币口径 · 含外币折算' : '人民币口径',
+    },
     {
       label: '总盈亏',
       val: `${agg.totalPnl >= 0 ? '+' : ''}${fmtMoney(agg.totalPnl)}`,
@@ -593,6 +703,18 @@ function SummaryStrip({ agg, aShareClosed }) {
               style={{ letterSpacing: '-.01em' }}>{it.val}</span>
             {it.sub && <span className={`font-mono text-[10.5px] md:text-[11px] opacity-80 ${it.color}`}>{it.sub}</span>}
           </span>
+          {it.note && <span className="text-[9.5px] text-text-muted">{it.note}</span>}
+          {i === 0 && fxExposure.length > 0 && (
+            <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+              {fxExposure.map(e => (
+                <FxHint key={e.currency} extra={{ currency: e.currency, fxRate: e.fxRate, fxTime: e.fxTime, fxSource: e.fxSource }}>
+                  <span className="font-mono text-[9.5px] px-1.5 py-[1px] rounded border border-border-med text-text-dim cursor-help bg-surface/50">
+                    {formatCurrencyMoney(e.currency, e.originalMarketValue)} → ¥{fmtMoney(e.marketValue)}
+                  </span>
+                </FxHint>
+              ))}
+            </div>
+          )}
         </div>
       ))}
     </div>
@@ -670,6 +792,9 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
     ? !!tradingDay.is_trading_day
     : ![0, 6].includes(new Date().getDay())
   const agg = useMemo(() => aggregate(filtered, aShareTradingDay), [filtered, aShareTradingDay])
+  // tabTypes: always show all types regardless of holdings
+  const tabTypes = TYPE_ORDER
+  // visibleTypes: from filtered rows — drives content section rendering
   const visibleTypes = TYPE_ORDER.filter(t => agg.groups[t])
 
   // Risk insights: concentration warnings + cross-type overlap families.
@@ -780,7 +905,7 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
         <div className="flex flex-col gap-3 w-full md:flex-1 md:w-auto min-w-0 md:min-w-[340px]">
           <div className="flex items-baseline gap-3">
             <h2 className="text-[14px] font-semibold text-text-bright tracking-wide m-0">持仓总览</h2>
-            <span className="text-[11px] text-text-dim">A股 · 基金 · 理财 · 现金 · 加密 · 机器人</span>
+            <span className="text-[11px] text-text-dim">股票 · 基金 · 理财 · 现金 · 加密 · 机器人</span>
           </div>
           {isEmpty
             ? <div className="text-text-dim text-[12px] py-2">还没有持仓,点击下方「+ 添加」开始</div>
@@ -810,7 +935,7 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
       <div className="px-3 md:px-6 py-2 border-b border-border flex justify-between items-center gap-3 flex-wrap"
         style={{ background: 'var(--color-surface-2)' }}>
         <div className="flex gap-1.5 flex-wrap">
-          {[['ALL', '全部'], ['A', 'A股'], ['F', '基金'], ['C', '加密'], ['R', '机器人']].map(([k, l]) => {
+          {[['ALL', '全部'], ...tabTypes.map(t => [t, TYPE_META[t].label])].map(([k, l]) => {
             const active = filter === k
             const c = k === 'ALL' ? '#c8a876' : TYPE_COLOR[k]
             return (
@@ -842,10 +967,15 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
       {addTarget === 'menu' && (
         <div className="px-3 md:px-6 py-3 border-b border-border bg-surface-2/60 flex flex-wrap gap-2 items-center">
           <span className="text-[11px] text-text-dim mr-2">添加到哪一类?</span>
-          {TYPE_ORDER.map(t => (
-            <button key={t} onClick={() => setAddTarget(t)}
+          {[
+            ['A:A', 'A股'],
+            ['A:HK', '港股'],
+            ['A:US', '美股'],
+            ...TYPE_ORDER.filter(t => t !== 'A').map(t => [t, TYPE_META[t].label]),
+          ].map(([target, label]) => (
+            <button key={target} onClick={() => setAddTarget(target)}
               className="px-3 py-1 rounded border border-border-med text-[12px] text-text hover:border-accent hover:text-accent transition-colors cursor-pointer">
-              + {TYPE_META[t].label}
+              + {label}
             </button>
           ))}
           <button onClick={() => setAddTarget(null)}
@@ -853,8 +983,9 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
         </div>
       )}
 
-      {addTarget === 'A' && (
-        <AddAShareForm onDone={() => { setAddTarget(null); onAdd?.() }} onCancel={() => setAddTarget(null)} />
+      {String(addTarget || '').startsWith('A:') && (
+        <AddAShareForm initialMarket={addTarget.split(':')[1]}
+          onDone={() => { setAddTarget(null); onAdd?.() }} onCancel={() => setAddTarget(null)} />
       )}
       {(addTarget === 'F' || addTarget === 'C' || addTarget === 'R' || addTarget === 'W' || addTarget === 'M') && (
         <AddAssetForm typeKey={addTarget}
@@ -891,6 +1022,7 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
       {visibleTypes.map(type => {
         const g = agg.groups[type]
         const isCol = collapsed[type]
+        const groupFxExposure = type === 'A' ? (agg.fxExposure || []) : []
         const items = [...g.items].sort((a, b) =>
           sortKey === 'pnl'
             ? (b.pnl || 0) - (a.pnl || 0)
@@ -909,7 +1041,14 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
                 <span>{TYPE_META[type].label}</span>
                 <span className="text-text-dim font-normal text-[10.5px]">{items.length} 项</span>
               </div>
-              <div className="text-right font-mono text-text">¥{fmtMoney(g.mv)}</div>
+              <div className="text-right flex flex-col items-end">
+                <span className="font-mono text-text">¥{fmtMoney(g.mv)}</span>
+                {groupFxExposure.length > 0 && (
+                  <span className="font-mono text-[9.5px] text-text-muted hidden md:inline">
+                    {groupFxExposure.map(e => formatCurrencyMoney(e.currency, e.originalMarketValue)).join(' / ')}
+                  </span>
+                )}
+              </div>
               <div className="text-right font-mono text-text-dim text-[10.5px] licai-md-only">¥{fmtMoney(g.cost)}</div>
               <div className={`text-right font-mono ${priceColor(g.pnl)}`}>
                 {g.pnl >= 0 ? '+' : ''}{fmtMoney(g.pnl)}
@@ -935,6 +1074,7 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
                     <div className="flex items-center gap-1.5 min-w-0">
                       <span className="text-[13px] font-semibold text-text-bright truncate">{row.name}</span>
                       <TypeChip type={row.type} compact />
+                      {row.type === 'A' && <MarketChip market={row.extra?.market} />}
                       {row.extra?.okxSynced && (
                         <Tooltip content="OKX 自动同步中">
                           <span className="text-bull cursor-help text-[12px] leading-none">🔗</span>
@@ -966,11 +1106,29 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
                     </div>
                     <span className="font-mono text-[10px] text-text-muted truncate">{row.code}</span>
                   </div>
-                  <div className="text-right font-mono text-[12.5px] text-text-bright tabular-nums">
-                    ¥{fmtMoney(row.mv)}
+                  <div className="text-right flex flex-col items-end">
+                    <span className="font-mono text-[12.5px] text-text-bright tabular-nums">
+                      ¥{fmtMoney(row.mv)}
+                    </span>
+                    {row.extra?.currency && row.extra.currency !== 'CNY' && row.extra?.originalMarketValue != null && (
+                      <FxHint extra={row.extra}>
+                        <span className="font-mono text-[10px] text-text-muted tabular-nums cursor-help">
+                          {formatCurrencyMoney(row.extra.currency, row.extra.originalMarketValue)}
+                        </span>
+                      </FxHint>
+                    )}
                   </div>
-                  <div className="text-right font-mono text-[11px] text-text-dim licai-md-only">
-                    ¥{fmtMoney(row.cost)}
+                  <div className="text-right flex flex-col items-end licai-md-only">
+                    <span className="font-mono text-[11px] text-text-dim tabular-nums">
+                      ¥{fmtMoney(row.cost)}
+                    </span>
+                    {row.extra?.currency && row.extra.currency !== 'CNY' && row.extra?.originalCostValue != null && (
+                      <FxHint extra={row.extra}>
+                        <span className="font-mono text-[9.5px] text-text-muted tabular-nums cursor-help">
+                          {formatCurrencyMoney(row.extra.currency, row.extra.originalCostValue)}
+                        </span>
+                      </FxHint>
+                    )}
                   </div>
                   <div className="text-right flex flex-col items-end">
                     {row.type === 'M' && row.extra?.monthlyInterestEst ? (
@@ -1102,31 +1260,38 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
 }
 
 // ============================================================
-// Add A-share form — compact, inline
+// Add stock form — compact, inline
 // ============================================================
-function AddAShareForm({ onDone, onCancel }) {
+function AddAShareForm({ initialMarket = 'A', onDone, onCancel }) {
   const [form, setForm] = useState({ code: '', name: '', shares: '', cost: '' })
+  const [market, setMarket] = useState(initialMarket)
   const [submitting, setSubmitting] = useState(false)
   const [nameLooking, setNameLooking] = useState(false)
 
-  const lookup = useCallback(async (code) => {
-    if (code.length !== 6) return
+  const lookup = useCallback(async (nextCode, nextMarket = market) => {
+    const fullCode = stockCodeForMarket(nextMarket, nextCode)
+    if (!nextCode) return
     setNameLooking(true)
     try {
-      const q = await fetchJSON(`/api/market/quote/${code}`)
+      const q = await fetchJSON(`/api/market/quote/${encodeURIComponent(fullCode)}`)
       if (q?.stock_name) setForm(f => ({ ...f, name: q.stock_name }))
     } catch {}
     setNameLooking(false)
-  }, [])
+  }, [market])
 
   const submit = async () => {
-    if (!form.code || form.code.length !== 6) return alert('请输入6位股票代码')
-    if (!form.shares || parseInt(form.shares) < 100) return alert('持仓数量至少100股')
+    const meta = STOCK_MARKETS[market]
+    const stockCode = stockCodeForMarket(market, form.code)
+    if (!form.code) return alert('请输入股票代码')
+    if (market === 'A' && !/^\d{6}$/.test(stockCode)) return alert('请输入6位A股代码')
+    if (market === 'HK' && !/^HK\.\d{5}$/.test(stockCode)) return alert('请输入港股5位代码')
+    if (market === 'US' && !/^US\.[A-Z.]+$/.test(stockCode)) return alert('请输入美股Ticker')
+    if (!form.shares || parseInt(form.shares) < meta.minShares) return alert(`持仓数量至少${meta.minShares}`)
     if (!form.cost || parseFloat(form.cost) <= 0) return alert('请输入成本价')
     setSubmitting(true)
     try {
       const res = await api.addHolding({
-        stock_code: form.code, stock_name: form.name,
+        stock_code: stockCode, stock_name: form.name,
         shares: parseInt(form.shares), cost_price: parseFloat(form.cost),
       })
       if (res.message) onDone?.()
@@ -1139,9 +1304,29 @@ function AddAShareForm({ onDone, onCancel }) {
   return (
     <div className="px-6 py-3 bg-surface-2/50 border-b border-border flex flex-wrap gap-2 items-end">
       <div className="flex flex-col gap-1">
+        <label className="text-[11px] text-text-dim">市场</label>
+        <select className={`${inp} w-24`} value={market}
+          onChange={e => {
+            const nextMarket = e.target.value
+            setMarket(nextMarket)
+            setForm({ code: '', name: '', shares: '', cost: '' })
+          }}>
+          {Object.entries(STOCK_MARKETS).map(([k, v]) => (
+            <option key={k} value={k}>{v.label}</option>
+          ))}
+        </select>
+      </div>
+      <div className="flex flex-col gap-1">
         <label className="text-[11px] text-text-dim">代码</label>
-        <input className={`${inp} w-24 font-mono`} placeholder="601212" maxLength={6} value={form.code}
-          onChange={e => { setForm({ ...form, code: e.target.value }); if (e.target.value.length === 6) lookup(e.target.value) }} />
+        <input className={`${inp} w-28 font-mono`} placeholder={STOCK_MARKETS[market].placeholder}
+          value={form.code}
+          onChange={e => {
+            const v = e.target.value.toUpperCase()
+            setForm({ ...form, code: v })
+            if ((market === 'A' && v.length === 6) || (market === 'HK' && v.length >= 4) || (market === 'US' && v.length >= 1)) {
+              lookup(v, market)
+            }
+          }} />
       </div>
       <div className="flex flex-col gap-1">
         <label className="text-[11px] text-text-dim">名称</label>
@@ -1151,7 +1336,7 @@ function AddAShareForm({ onDone, onCancel }) {
       <div className="flex flex-col gap-1">
         <label className="text-[11px] text-text-dim">数量</label>
         <input type="number" className={`${inp} w-24 font-mono`}
-          placeholder="300" min={100} step={100} value={form.shares}
+          placeholder={market === 'US' ? '10' : '300'} min={STOCK_MARKETS[market].minShares} step={STOCK_MARKETS[market].step} value={form.shares}
           onChange={e => setForm({ ...form, shares: e.target.value })} />
       </div>
       <div className="flex flex-col gap-1">
@@ -1168,6 +1353,9 @@ function AddAShareForm({ onDone, onCancel }) {
         className="px-3 py-1.5 rounded-md border border-border text-text-dim text-[13px] hover:text-text transition-colors cursor-pointer">
         取消
       </button>
+      <div className="text-[10px] text-text-muted pb-1">
+        {STOCK_MARKETS[market].hint} · 成本价按{market === 'US' ? '美元' : market === 'HK' ? '港币' : '人民币'}录入，总资产自动折人民币
+      </div>
     </div>
   )
 }
