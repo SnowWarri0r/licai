@@ -228,7 +228,10 @@ function aggregate(rows, aShareTradingDay = true) {
 // ============================================================
 // Allocation donut
 // ============================================================
-function AllocationDonut({ groups, totalMv, size = 140 }) {
+function AllocationDonut({ groups, totalMv }) {
+  // 移动端用更小的环 + 紧凑 legend, 桌面用大环
+  const isMobile = typeof window !== 'undefined' && window.innerWidth < 768
+  const size = isMobile ? 100 : 140
   const r = size / 2 - 14
   const cx = size / 2
   const circ = 2 * Math.PI * r
@@ -242,7 +245,7 @@ function AllocationDonut({ groups, totalMv, size = 140 }) {
     return arc
   })
   return (
-    <div className="flex items-center gap-5 shrink-0">
+    <div className="flex items-center gap-3 md:gap-5 flex-1 md:flex-none min-w-0">
       <svg width={size} height={size} className="shrink-0">
         <circle cx={cx} cy={cx} r={r} fill="none" stroke="var(--color-surface-3)" strokeWidth="12" />
         {arcs.map(a => (
@@ -255,25 +258,25 @@ function AllocationDonut({ groups, totalMv, size = 140 }) {
         ))}
         <text x={cx} y={cx - 4} textAnchor="middle" className="text-[10px]"
           fill="var(--color-text-dim)">总资产</text>
-        <text x={cx} y={cx + 13} textAnchor="middle" className="font-mono text-[14px] font-bold"
+        <text x={cx} y={cx + 13} textAnchor="middle" className="font-mono text-[12px] md:text-[14px] font-bold"
           fill="var(--color-text-bright)">
           ¥{fmtMoney(totalMv)}
         </text>
       </svg>
-      <div className="flex flex-col gap-1.5 min-w-[180px]">
+      <div className="flex flex-col gap-1 md:gap-1.5 flex-1 min-w-0">
         {order.map(type => {
           const g = groups[type]
           return (
-            <div key={type} className="flex items-center gap-2 text-[11px]">
+            <div key={type} className="flex items-center gap-1.5 md:gap-2 text-[10.5px] md:text-[11px]">
               <div className="w-2 h-2 rounded-sm shrink-0" style={{ background: TYPE_COLOR[type] }} />
-              <span className="text-text min-w-[32px]">{TYPE_META[type].label}</span>
-              <span className="font-mono text-text-bright tabular-nums min-w-[40px]">
+              <span className="text-text shrink-0">{TYPE_META[type].label}</span>
+              <span className="font-mono text-text-bright tabular-nums shrink-0">
                 {(g.weight * 100).toFixed(1)}%
               </span>
-              <span className="font-mono text-text-dim text-[10px] ml-auto">
+              <span className="font-mono text-text-dim text-[10px] ml-auto truncate">
                 ¥{fmtMoney(g.mv)}
               </span>
-              <span className={`font-mono text-[10px] min-w-[52px] text-right ${priceColor(g.pnl)}`}>
+              <span className={`font-mono text-[10px] text-right shrink-0 ${priceColor(g.pnl)}`}>
                 {g.pnl >= 0 ? '+' : ''}{fmtMoney(g.pnl)}
               </span>
             </div>
@@ -574,14 +577,14 @@ function SummaryStrip({ agg, aShareClosed }) {
     },
   ]
   return (
-    <div className="flex gap-7 items-baseline flex-wrap">
+    <div className="flex gap-4 md:gap-7 items-baseline flex-wrap">
       {items.map((it, i) => (
         <div key={i} className="flex flex-col gap-0.5">
           <span className="text-[10.5px] text-text-dim tracking-wide">{it.label}</span>
-          <span className="inline-flex items-baseline gap-1.5">
-            <span className={`font-mono font-bold tabular-nums ${it.color}`}
-              style={{ fontSize: it.big ? 22 : 15, letterSpacing: '-.01em' }}>{it.val}</span>
-            {it.sub && <span className={`font-mono text-[11px] opacity-80 ${it.color}`}>{it.sub}</span>}
+          <span className="inline-flex items-baseline gap-1 md:gap-1.5 flex-wrap">
+            <span className={`font-mono font-bold tabular-nums ${it.color} ${it.big ? 'text-[18px] md:text-[22px]' : 'text-[14px] md:text-[15px]'}`}
+              style={{ letterSpacing: '-.01em' }}>{it.val}</span>
+            {it.sub && <span className={`font-mono text-[10.5px] md:text-[11px] opacity-80 ${it.color}`}>{it.sub}</span>}
           </span>
         </div>
       ))}
