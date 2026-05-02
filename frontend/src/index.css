@@ -126,7 +126,7 @@ body::after {
 }
 @media (min-width: 768px) {
   .licai-row {
-    grid-template-columns: 22% 10% 9% 14% 14% 13% 5% 13%;
+    grid-template-columns: 22% 10% 9% 14% 14% 13% 18%;
   }
 }
 /* Cells visible only on desktop (cost / weight / days / type-info) */
