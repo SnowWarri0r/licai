@@ -19,12 +19,20 @@ class HoldingUpdate(BaseModel):
 class HoldingResponse(BaseModel):
     stock_code: str
     stock_name: str
+    market: str = "A"
+    currency: str = "CNY"
     shares: int
     cost_price: float
     current_price: Optional[float] = None
+    fx_rate: float = 1.0
+    fx_time: Optional[str] = None
+    fx_source: Optional[str] = None
     price_change_pct: Optional[float] = None
     unrealized_pnl: Optional[float] = None
     pnl_pct: Optional[float] = None
+    original_cost_value: Optional[float] = None
+    original_market_value: Optional[float] = None
+    cost_value: Optional[float] = None
     market_value: Optional[float] = None
     sector: Optional[str] = None  # 顶级行业, e.g. "有色金属" / "汽车" — 用于前端分组
 

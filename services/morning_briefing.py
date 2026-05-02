@@ -200,9 +200,9 @@ async def generate_briefing_for_stock(stock_code: str, stock_name: str,
 async def generate_all_briefings() -> list[dict]:
     """Generate briefings for every A-share holding. Saves each to DB."""
     from database import get_all_holdings, save_briefing
-    from services.market_data import get_realtime_quotes
+    from services.market_data import get_realtime_quotes, is_a_share
 
-    holdings = await get_all_holdings()
+    holdings = [h for h in await get_all_holdings() if is_a_share(h["stock_code"])]
     if not holdings:
         return []
     codes = [h["stock_code"] for h in holdings]

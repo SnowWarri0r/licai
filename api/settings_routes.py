@@ -1,11 +1,13 @@
 """Settings REST endpoints for notification config and custom alerts."""
 from __future__ import annotations
+import os
 from fastapi import APIRouter
 from pydantic import BaseModel
 from typing import Optional
 
 from database import get_config, set_config, get_custom_alerts, add_custom_alert, delete_custom_alert
 from services import feishu_notify
+from services import llm_client
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -75,6 +77,29 @@ async def create_alert(data: CustomAlertCreate):
 async def remove_alert(alert_id: int):
     await delete_custom_alert(alert_id)
     return {"message": "删除成功"}
+
+
+# --- LLM Proxy Config ---
+
+class LLMConfig(BaseModel):
+    proxy_url: str  # empty string = direct connection
+
+
+@router.get("/llm")
+async def get_llm_config():
+    saved = await get_config("llm_proxy_url") or ""
+    return {
+        "proxy_url": saved,
+        "active_proxy": llm_client.get_proxy(),
+        "env_override": bool(os.environ.get("LLM_PROXY")),
+    }
+
+
+@router.post("/llm")
+async def save_llm_config(data: LLMConfig):
+    await set_config("llm_proxy_url", data.proxy_url)
+    llm_client.configure_proxy(data.proxy_url)
+    return {"message": "已保存", "active_proxy": llm_client.get_proxy()}
 
 
 # --- Risk Config ---
