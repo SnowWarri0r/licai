@@ -93,6 +93,9 @@ async def _enrich_kline(rows: list[dict], top_n: int, must_include: set[str]) ->
             closes = [k["close"] for k in kline if k.get("close")]
             row["change_5d"] = _close_pct(closes, 5)
             row["change_30d"] = _close_pct(closes, 30)
+            # 最近 60 个 close 给前端画 sparkline
+            tail = kline[-min(60, len(kline)):]
+            row["kline_tail"] = [{"date": k["date"], "close": k["close"]} for k in tail]
 
     await asyncio.gather(*(fetch_one(r) for r in targets), return_exceptions=True)
 
@@ -213,6 +216,7 @@ async def scan_sectors(held_codes: list[str], force: bool = False) -> dict:
         r["etf_name"] = etf[1] if etf else None
         r.setdefault("change_5d", None)
         r.setdefault("change_30d", None)
+        r.setdefault("kline_tail", [])
 
     # Sort: 5d desc (None last), tiebreak 1d desc
     def sort_key(r: dict):
