@@ -765,9 +765,9 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
     <section className="rounded-xl border border-border bg-surface/60 overflow-hidden"
       style={{ animation: 'fade-up 0.4s ease-out' }}>
       {/* Header: summary + donut */}
-      <div className="px-6 py-5 border-b border-border flex flex-wrap justify-between items-center gap-8"
+      <div className="px-3 md:px-6 py-3 md:py-5 border-b border-border flex flex-wrap justify-between items-center gap-4 md:gap-8"
         style={{ background: 'linear-gradient(180deg, var(--color-surface-2), var(--color-surface))' }}>
-        <div className="flex flex-col gap-3 flex-1 min-w-[340px]">
+        <div className="flex flex-col gap-3 flex-1 min-w-0 md:min-w-[340px]">
           <div className="flex items-baseline gap-3">
             <h2 className="text-[14px] font-semibold text-text-bright tracking-wide m-0">持仓总览</h2>
             <span className="text-[11px] text-text-dim">A股 · 基金 · 理财 · 现金 · 加密 · 机器人</span>
@@ -782,7 +782,7 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
 
       {/* Risk insights strip */}
       {!isEmpty && insights.warnings.length > 0 && (
-        <div className="px-6 py-2.5 border-b border-border bg-surface-2/60 flex flex-col gap-1.5">
+        <div className="px-3 md:px-6 py-2.5 border-b border-border bg-surface-2/60 flex flex-col gap-1.5">
           {insights.warnings.map((w, i) => {
             const color = w.level === 'high' ? '#e58a8a' : '#d4a05c'
             return (
@@ -797,7 +797,7 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
       )}
 
       {/* Toolbar */}
-      <div className="px-6 py-2 border-b border-border flex justify-between items-center gap-3 flex-wrap"
+      <div className="px-3 md:px-6 py-2 border-b border-border flex justify-between items-center gap-3 flex-wrap"
         style={{ background: 'var(--color-surface-2)' }}>
         <div className="flex gap-1.5 flex-wrap">
           {[['ALL', '全部'], ['A', 'A股'], ['F', '基金'], ['C', '加密'], ['R', '机器人']].map(([k, l]) => {
@@ -830,7 +830,7 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
 
       {/* Add menu / form */}
       {addTarget === 'menu' && (
-        <div className="px-6 py-3 border-b border-border bg-surface-2/60 flex flex-wrap gap-2 items-center">
+        <div className="px-3 md:px-6 py-3 border-b border-border bg-surface-2/60 flex flex-wrap gap-2 items-center">
           <span className="text-[11px] text-text-dim mr-2">添加到哪一类?</span>
           {TYPE_ORDER.map(t => (
             <button key={t} onClick={() => setAddTarget(t)}
@@ -866,16 +866,15 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
 
       {/* Column headers */}
       {!isEmpty && (
-        <div className="grid px-6 py-2 text-[10.5px] text-text-dim tracking-wider font-medium border-b border-border bg-surface"
-          style={{ gridTemplateColumns: '22% 10% 9% 14% 14% 13% 5% 13%' }}>
+        <div className="licai-row px-3 md:px-6 py-2 text-[10.5px] text-text-dim tracking-wider font-medium border-b border-border bg-surface">
           <div className="text-left">名称 · 代码</div>
           <div className="text-right">市值</div>
-          <div className="text-right">成本</div>
+          <div className="text-right licai-md-only">成本</div>
           <div className="text-right">浮动盈亏</div>
           <div className="text-right">今日</div>
-          <div className="text-right">占比</div>
-          <div className="text-right">天</div>
-          <div className="text-left pl-2">类型信息 / 操作</div>
+          <div className="text-right licai-md-only">占比</div>
+          <div className="text-right licai-md-only">天</div>
+          <div className="text-left pl-2">操作</div>
         </div>
       )}
 
@@ -892,11 +891,8 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
           <div key={type}>
             {/* Group strip */}
             <div onClick={() => setCollapsed(c => ({ ...c, [type]: !c[type] }))}
-              className="grid px-6 py-2 border-b border-border cursor-pointer select-none items-center text-[11px] font-semibold text-text"
-              style={{
-                gridTemplateColumns: '22% 10% 9% 14% 14% 13% 5% 13%',
-                background: 'var(--color-surface-2)',
-              }}>
+              className="licai-row px-3 md:px-6 py-2 border-b border-border cursor-pointer select-none items-center text-[11px] font-semibold text-text"
+              style={{ background: 'var(--color-surface-2)' }}>
               <div className="flex items-center gap-2">
                 <span className="inline-block w-2 text-text-dim transition-transform"
                   style={{ transform: isCol ? 'rotate(-90deg)' : 'rotate(0)' }}>▾</span>
@@ -905,14 +901,14 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
                 <span className="text-text-dim font-normal text-[10.5px]">{items.length} 项</span>
               </div>
               <div className="text-right font-mono text-text">¥{fmtMoney(g.mv)}</div>
-              <div className="text-right font-mono text-text-dim text-[10.5px]">¥{fmtMoney(g.cost)}</div>
+              <div className="text-right font-mono text-text-dim text-[10.5px] licai-md-only">¥{fmtMoney(g.cost)}</div>
               <div className={`text-right font-mono ${priceColor(g.pnl)}`}>
                 {g.pnl >= 0 ? '+' : ''}{fmtMoney(g.pnl)}
                 <span className="text-[10px] opacity-80 ml-1.5">({fmtPct(g.pnlPct)})</span>
               </div>
               <div />
-              <div className="text-right font-mono text-text">{(g.weight * 100).toFixed(1)}%</div>
-              <div />
+              <div className="text-right font-mono text-text licai-md-only">{(g.weight * 100).toFixed(1)}%</div>
+              <div className="licai-md-only" />
               <div />
             </div>
 
@@ -922,9 +918,8 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
                 <div key={row.id}
                   onMouseEnter={() => setHoverId(row.id)}
                   onMouseLeave={() => setHoverId(null)}
-                  className="grid px-6 py-[11px] items-center transition-colors"
+                  className="licai-row px-3 md:px-6 py-[11px] items-center transition-colors"
                   style={{
-                    gridTemplateColumns: '22% 10% 9% 14% 14% 13% 5% 13%',
                     borderBottom: isLast ? '1px solid var(--color-border)' : '1px solid var(--color-border-subtle)',
                     background: hoverId === row.id ? 'var(--color-surface-2)' : 'transparent',
                   }}>
@@ -966,7 +961,7 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
                   <div className="text-right font-mono text-[12.5px] text-text-bright tabular-nums">
                     ¥{fmtMoney(row.mv)}
                   </div>
-                  <div className="text-right font-mono text-[11px] text-text-dim">
+                  <div className="text-right font-mono text-[11px] text-text-dim licai-md-only">
                     ¥{fmtMoney(row.cost)}
                   </div>
                   <div className="text-right flex flex-col items-end">
@@ -1024,10 +1019,10 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
                       <TodayPulse change={row.today} />
                     )}
                   </div>
-                  <div className="text-right">
+                  <div className="text-right licai-md-only">
                     <WeightBar weight={row.mv / (agg.totalMv || 1)} color={TYPE_COLOR[row.type]} />
                   </div>
-                  <div className="text-right font-mono text-[10.5px] text-text-dim">
+                  <div className="text-right font-mono text-[10.5px] text-text-dim licai-md-only">
                     {row.days ?? '--'}
                   </div>
                   <div className="relative pl-2">
@@ -1059,19 +1054,22 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
                     const isLastCluster = ci === ordered.length - 1
                     return (
                       <React.Fragment key={cl.id}>
-                        <div className="grid px-6 py-1.5 items-center text-[10.5px] text-text-dim border-b border-border-subtle"
-                          style={{ gridTemplateColumns: '22% 10% 9% 14% 14% 13% 5% 13%', background: 'var(--color-surface)' }}>
+                        <div className="licai-row px-3 md:px-6 py-1.5 items-center text-[10.5px] text-text-dim border-b border-border-subtle"
+                          style={{ background: 'var(--color-surface)' }}>
                           <div className="flex items-center gap-1.5 pl-4">
                             <span className="inline-block w-1 h-1 rounded-full" style={{ background: TYPE_COLOR[type] }} />
                             <span className="font-medium text-text">{cl.label}</span>
                             <span className="opacity-70">{cl.items.length} 项</span>
                           </div>
                           <div className="text-right font-mono">¥{fmtMoney(cl.mv)}</div>
-                          <div />
+                          <div className="licai-md-only" />
                           <div className={`text-right font-mono ${priceColor(cl.pnl)}`}>
                             {cl.pnl >= 0 ? '+' : ''}{fmtMoney(cl.pnl)}
                           </div>
-                          <div /><div /><div /><div />
+                          <div />
+                          <div className="licai-md-only" />
+                          <div className="licai-md-only" />
+                          <div />
                         </div>
                         {cl.items.map((row, ri) =>
                           renderRow(row, isLastCluster && ri === cl.items.length - 1))}

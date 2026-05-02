@@ -52,7 +52,7 @@ export default function SectorRadar() {
   return (
     <section className="rounded-xl border border-border bg-surface/60 overflow-hidden"
       style={{ animation: 'fade-up 0.4s ease-out' }}>
-      <div className="px-5 py-3 border-b border-border flex items-center justify-between"
+      <div className="px-3 md:px-5 py-3 border-b border-border flex items-center justify-between"
         style={{ background: 'linear-gradient(180deg, var(--color-surface-2), var(--color-surface))' }}>
         <div className="flex items-baseline gap-2">
           <h3 className="text-[13px] font-semibold text-text-bright m-0">板块雷达</h3>
@@ -64,11 +64,10 @@ export default function SectorRadar() {
         </button>
       </div>
 
-      <div className="grid px-5 py-1.5 text-[10.5px] text-text-dim tracking-wider font-medium border-b border-border-subtle"
-        style={{ gridTemplateColumns: '24% 14% 18% 18% 14% 12%' }}>
+      <div className="licai-sec-row px-3 md:px-5 py-1.5 text-[10.5px] text-text-dim tracking-wider font-medium border-b border-border-subtle">
         <div>持仓</div>
         <div className="text-right">板块</div>
-        <div className="text-right">30 日 (你 / 板块)</div>
+        <div className="text-right licai-md-only">30 日 (你 / 板块)</div>
         <div className="text-right">60 日 (你 / 板块)</div>
         <div className="text-right">
           <Tooltip content={
@@ -82,13 +81,12 @@ export default function SectorRadar() {
             <span className="cursor-help underline decoration-dotted decoration-text-muted underline-offset-2">α</span>
           </Tooltip>
         </div>
-        <div className="text-right">ETF 60d</div>
+        <div className="text-right licai-md-only">ETF 60d</div>
       </div>
 
       <div className="divide-y divide-border-subtle">
         {data.holdings.map(r => (
-          <div key={r.stock_code} className="grid px-5 py-2 items-center text-[11.5px]"
-            style={{ gridTemplateColumns: '24% 14% 18% 18% 14% 12%' }}>
+          <div key={r.stock_code} className="licai-sec-row px-3 md:px-5 py-2 items-center text-[11.5px]">
             <div className="flex flex-col min-w-0">
               <span className="text-text-bright font-semibold truncate">{r.stock_name}</span>
               <span className="font-mono text-[10px] text-text-muted">{r.stock_code}</span>
@@ -103,7 +101,7 @@ export default function SectorRadar() {
                 <span className="text-text-dim">--</span>
               )}
             </div>
-            <div className="text-right font-mono">
+            <div className="text-right font-mono licai-md-only">
               <span className={colorOf(r.stock_30d)}>{fmtPct(r.stock_30d)}</span>
               <span className="text-text-muted mx-0.5">/</span>
               <span className={colorOf(r.etf_30d)}>{fmtPct(r.etf_30d)}</span>
@@ -118,14 +116,14 @@ export default function SectorRadar() {
                 {fmtPct(r.alpha_60d)}
               </span>
             </div>
-            <div className="flex justify-end">
+            <div className="flex justify-end licai-md-only">
               <Sparkline data={r.etf_kline} />
             </div>
           </div>
         ))}
       </div>
 
-      <div className="px-5 py-2 text-[10.5px] text-text-muted bg-surface-2/40 border-t border-border-subtle">
+      <div className="px-3 md:px-5 py-2 text-[10.5px] text-text-muted bg-surface-2/40 border-t border-border-subtle">
         α &lt; -1% 表示你跑输板块（跌得比 ETF 更狠）；α &gt; +1% 表示跑赢；接近 0 = 跟板块同步。
       </div>
     </section>

@@ -87,7 +87,7 @@ export default function App() {
       <Dashboard holdings={holdings} />
       <RiskBanner holdings={holdings} />
 
-      <main className="max-w-[1440px] mx-auto px-4 py-4 space-y-4">
+      <main className="max-w-[1440px] mx-auto px-2 md:px-4 py-3 md:py-4 space-y-3 md:space-y-4">
         {showSettings && <Settings onClose={() => setShowSettings(false)} />}
 
         <UnifiedPortfolio
