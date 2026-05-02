@@ -331,11 +331,11 @@ function TodayPulse({ change, width = 44 }) {
   const color = isUp ? 'var(--color-bear-bright)' : change < 0 ? 'var(--color-bull-bright)' : 'var(--color-text-dim)'
   return (
     <div className="inline-flex items-center gap-1.5">
-      <span className="font-mono text-[11.5px] font-semibold tabular-nums min-w-[46px] text-right"
+      <span className="font-mono text-[11.5px] font-semibold tabular-nums md:min-w-[46px] text-right"
         style={{ color }}>
         {change === 0 ? '0.00%' : (change > 0 ? '+' : '') + change.toFixed(2) + '%'}
       </span>
-      <div className="relative flex items-center justify-center" style={{ width, height: 14 }}>
+      <div className="relative hidden md:flex items-center justify-center" style={{ width, height: 14 }}>
         <div className="absolute left-0 right-0 top-1/2 h-px" style={{ background: 'var(--color-border)', transform: 'translateY(-0.5px)' }} />
         {change !== 0 && (
           <div className="absolute"
@@ -412,12 +412,12 @@ function ProxyPulse({ change, label, fallbackToday, details, width = 44 }) {
   return (
     <Tooltip content={tip} maxWidth={300}>
       <div className="inline-flex items-center gap-1.5">
-        <span className="font-mono text-[11.5px] font-semibold tabular-nums min-w-[46px] text-right"
+        <span className="font-mono text-[11.5px] font-semibold tabular-nums md:min-w-[46px] text-right"
           style={{ color }}>
           {change === 0 ? '0.00%' : (change > 0 ? '+' : '') + change.toFixed(2) + '%'}
           <span className="text-[8.5px] opacity-70 ml-0.5 align-top">代</span>
         </span>
-        <div className="relative flex items-center justify-center" style={{ width, height: 14 }}>
+        <div className="relative hidden md:flex items-center justify-center" style={{ width, height: 14 }}>
           <div className="absolute left-0 right-0 top-1/2 h-px" style={{ background: 'var(--color-border)', transform: 'translateY(-0.5px)' }} />
           {change !== 0 && (
             <div className="absolute"
