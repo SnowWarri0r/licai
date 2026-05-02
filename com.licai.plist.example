@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS launchd 服务模板: 开机自启理财助手.
+
+  1. 复制本文件为 com.licai.plist
+  2. 把 __PROJECT_PATH__ 全部替换为你的绝对路径 (e.g. /Users/yourname/licai)
+  3. 执行 bash install.sh 注册到 launchd
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.licai</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PROJECT_PATH__/venv/bin/python</string>
+        <string>__PROJECT_PATH__/run.py</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>__PROJECT_PATH__</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>__PROJECT_PATH__/logs/stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>__PROJECT_PATH__/logs/stderr.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+</dict>
+</plist>
