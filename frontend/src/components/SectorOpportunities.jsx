@@ -72,7 +72,7 @@ export default function SectorOpportunities() {
   return (
     <section className="rounded-xl border border-border bg-surface/60 overflow-hidden"
       style={{ animation: 'fade-up 0.4s ease-out' }}>
-      <div className="px-5 py-3 border-b border-border flex items-center justify-between flex-wrap gap-2"
+      <div className="px-3 md:px-5 py-3 border-b border-border flex items-center justify-between flex-wrap gap-2"
         style={{ background: 'linear-gradient(180deg, var(--color-surface-2), var(--color-surface))' }}>
         <div className="flex items-baseline gap-2">
           <h3 className="text-[13px] font-semibold text-text-bright m-0">板块动量</h3>
@@ -103,13 +103,12 @@ export default function SectorOpportunities() {
         </div>
       </div>
 
-      <div className="grid px-5 py-1.5 text-[10.5px] text-text-dim tracking-wider font-medium border-b border-border-subtle"
-        style={{ gridTemplateColumns: '18% 9% 9% 9% 13% 16% 12% 14%' }}>
+      <div className="licai-opp-row px-3 md:px-5 py-1.5 text-[10.5px] text-text-dim tracking-wider font-medium border-b border-border-subtle">
         <div>板块</div>
-        <div className="text-right">1 日</div>
+        <div className="text-right licai-md-only">1 日</div>
         <div className="text-right">5 日</div>
         <div className="text-right">30 日</div>
-        <div className="text-right">
+        <div className="text-right licai-md-only">
           <Tooltip content={
             <div className="leading-relaxed">
               <div className="text-text-bright font-semibold mb-0.5">板块净流入</div>
@@ -119,21 +118,20 @@ export default function SectorOpportunities() {
             <span className="cursor-help underline decoration-dotted decoration-text-muted underline-offset-2">主力净流入</span>
           </Tooltip>
         </div>
-        <div className="text-right">领涨股</div>
-        <div className="text-right">兜底 ETF</div>
+        <div className="text-right licai-md-only">领涨股</div>
+        <div className="text-right licai-md-only">兜底 ETF</div>
         <div className="text-right">走势 60d</div>
       </div>
 
       <div className="divide-y divide-border-subtle max-h-[480px] overflow-y-auto">
         {visibleRows.length === 0 ? (
-          <div className="px-5 py-6 text-center text-text-dim text-[11.5px]">
+          <div className="px-3 md:px-5 py-6 text-center text-text-dim text-[11.5px]">
             {filter === 'unheld' ? '当前筛选下没有数据，试试切到"全部"' :
               filter === 'held' ? '没有匹配到任何持仓板块（可能是新股或映射没覆盖）' :
               '暂无数据'}
           </div>
         ) : visibleRows.map(r => (
-          <div key={r.name} className="grid px-5 py-2 items-center text-[11.5px]"
-            style={{ gridTemplateColumns: '18% 9% 9% 9% 13% 16% 12% 14%' }}>
+          <div key={r.name} className="licai-opp-row px-3 md:px-5 py-2 items-center text-[11.5px]">
             <div className="flex items-center gap-1.5 min-w-0">
               <span className="text-text-bright font-semibold truncate">{r.name}</span>
               {r.held && (
@@ -142,7 +140,7 @@ export default function SectorOpportunities() {
                 </span>
               )}
             </div>
-            <div className={`text-right font-mono ${colorOf(r.change_1d)}`}>
+            <div className={`text-right font-mono licai-md-only ${colorOf(r.change_1d)}`}>
               {fmtPct(r.change_1d)}
             </div>
             <div className={`text-right font-mono font-semibold ${colorOf(r.change_5d)}`}>
@@ -151,10 +149,10 @@ export default function SectorOpportunities() {
             <div className={`text-right font-mono ${colorOf(r.change_30d)}`}>
               {fmtPct(r.change_30d)}
             </div>
-            <div className={`text-right font-mono ${r.net_flow > 0 ? 'text-bear' : r.net_flow < 0 ? 'text-bull' : 'text-text-dim'}`}>
+            <div className={`text-right font-mono licai-md-only ${r.net_flow > 0 ? 'text-bear' : r.net_flow < 0 ? 'text-bull' : 'text-text-dim'}`}>
               {fmtFlow(r.net_flow)}
             </div>
-            <div className="text-right truncate">
+            <div className="text-right truncate licai-md-only">
               {r.leader ? (
                 <span className="text-text truncate">
                   {r.leader}
@@ -166,7 +164,7 @@ export default function SectorOpportunities() {
                 </span>
               ) : <span className="text-text-dim">--</span>}
             </div>
-            <div className="text-right">
+            <div className="text-right licai-md-only">
               {r.etf_code ? (
                 <span className="font-mono text-[10.5px] text-text">{r.etf_code}</span>
               ) : <span className="text-text-dim">--</span>}
@@ -178,7 +176,7 @@ export default function SectorOpportunities() {
         ))}
       </div>
 
-      <div className="px-5 py-2 text-[10.5px] text-text-muted bg-surface-2/40 border-t border-border-subtle">
+      <div className="px-3 md:px-5 py-2 text-[10.5px] text-text-muted bg-surface-2/40 border-t border-border-subtle">
         仅展示数据，不构成投资建议。前 30 个板块（按 1 日涨幅）有 5d/30d 数据，其余仅 1d。
       </div>
     </section>

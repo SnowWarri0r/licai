@@ -1,8 +1,8 @@
 export default function Header({ marketOpen, lastUpdate, onRefresh, onSettings }) {
   return (
     <header className="sticky top-0 z-50 border-b border-border bg-surface/80 backdrop-blur-xl">
-      <div className="max-w-[1440px] mx-auto px-4 h-12 flex items-center justify-between">
-        <div className="flex items-center gap-3">
+      <div className="max-w-[1440px] mx-auto px-3 md:px-4 h-12 flex items-center justify-between">
+        <div className="flex items-center gap-2 md:gap-3">
           <h1 className="text-[15px] font-semibold tracking-tight text-accent">
             理财助手
           </h1>

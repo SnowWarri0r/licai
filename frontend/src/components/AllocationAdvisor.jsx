@@ -91,7 +91,7 @@ export default function AllocationAdvisor() {
   return (
     <section className="rounded-xl border border-border bg-surface/60 overflow-hidden"
       style={{ animation: 'fade-up 0.4s ease-out' }}>
-      <div className="px-5 py-3 border-b border-border flex items-center justify-between flex-wrap gap-2"
+      <div className="px-3 md:px-5 py-3 border-b border-border flex items-center justify-between flex-wrap gap-2"
         style={{ background: 'linear-gradient(180deg, var(--color-surface-2), var(--color-surface))' }}>
         <div className="flex items-baseline gap-2">
           <h3 className="text-[13px] font-semibold text-text-bright m-0">配置建议</h3>
@@ -112,18 +112,17 @@ export default function AllocationAdvisor() {
         </div>
       </div>
 
-      <div className="px-5 py-2 text-[11.5px] text-text-dim border-b border-border-subtle bg-surface-2/30">
+      <div className="px-3 md:px-5 py-2 text-[11.5px] text-text-dim border-b border-border-subtle bg-surface-2/30">
         <span className="text-text">{template.label}</span>
         <span className="mx-1.5">·</span>
         {template.desc}
       </div>
 
-      <div className="grid px-5 py-1.5 text-[10.5px] text-text-dim tracking-wider font-medium border-b border-border-subtle"
-        style={{ gridTemplateColumns: '14% 14% 14% 28% 30%' }}>
+      <div className="licai-alloc-row px-3 md:px-5 py-1.5 text-[10.5px] text-text-dim tracking-wider font-medium border-b border-border-subtle">
         <div>类别</div>
-        <div className="text-right">目标</div>
-        <div className="text-right">当前</div>
-        <div className="text-center">对比</div>
+        <div className="text-right licai-md-only">目标</div>
+        <div className="text-right">当前<span className="md:hidden text-text-muted"> / 目标</span></div>
+        <div className="text-center licai-md-only">对比</div>
         <div className="text-right">建议调整</div>
       </div>
 
@@ -134,15 +133,17 @@ export default function AllocationAdvisor() {
           const tPct = Math.min(r.targetPct, 100)
           const overweight = r.currentPct > r.targetPct
           return (
-            <div key={r.key} className="grid px-5 py-2.5 items-center text-[12px]"
-              style={{ gridTemplateColumns: '14% 14% 14% 28% 30%' }}>
+            <div key={r.key} className="licai-alloc-row px-3 md:px-5 py-2.5 items-center text-[12px]">
               <div className="flex items-center gap-1.5">
                 <span className="inline-block w-2 h-2 rounded-sm" style={{ background: color }} />
                 <span className="text-text-bright font-medium">{TYPE_LABEL[r.key]}</span>
               </div>
-              <div className="text-right font-mono text-text">{r.targetPct}%</div>
-              <div className="text-right font-mono text-text">{r.currentPct.toFixed(1)}%</div>
-              <div className="px-3">
+              <div className="text-right font-mono text-text licai-md-only">{r.targetPct}%</div>
+              <div className="text-right font-mono text-text">
+                {r.currentPct.toFixed(1)}%
+                <span className="md:hidden text-text-muted"> / {r.targetPct}%</span>
+              </div>
+              <div className="px-3 licai-md-only">
                 <div className="relative h-3 rounded-sm bg-surface-3 overflow-hidden">
                   {/* current bar */}
                   <div className="absolute top-0 left-0 h-full"
@@ -170,7 +171,7 @@ export default function AllocationAdvisor() {
         })}
       </div>
 
-      <div className="px-5 py-2.5 bg-surface-2/40 border-t border-border-subtle">
+      <div className="px-3 md:px-5 py-2.5 bg-surface-2/40 border-t border-border-subtle">
         <div className="text-[10.5px] text-text-dim mb-1">📋 注意事项</div>
         <ul className="m-0 pl-4 space-y-0.5 text-[11px] text-text leading-relaxed list-disc">
           {template.notes.map((n, i) => <li key={i}>{n}</li>)}
