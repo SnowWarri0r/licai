@@ -1,4 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 192">
-  <rect width="192" height="192" rx="32" fill="#06080f"/>
-  <text x="96" y="120" font-size="100" text-anchor="middle" fill="#22d3ee" font-family="sans-serif" font-weight="bold">T</text>
+  <rect width="192" height="192" rx="32" fill="#191820"/>
+  <g transform="translate(96 96)">
+    <circle r="56" fill="none" stroke="#2d2c38" stroke-width="20"/>
+    <circle r="56" fill="none" stroke="#c8a876" stroke-width="20" stroke-dasharray="90.8 351.86" transform="rotate(-90)"/>
+    <circle r="56" fill="none" stroke="#85a0b4" stroke-width="20" stroke-dasharray="77.4 351.86" stroke-dashoffset="-90.8" transform="rotate(-90)"/>
+    <circle r="56" fill="none" stroke="#5fa86c" stroke-width="20" stroke-dasharray="63.3 351.86" stroke-dashoffset="-168.2" transform="rotate(-90)"/>
+    <circle r="56" fill="none" stroke="#7a9b8e" stroke-width="20" stroke-dasharray="80 351.86" stroke-dashoffset="-231.5" transform="rotate(-90)"/>
+    <circle r="56" fill="none" stroke="#d4a05c" stroke-width="20" stroke-dasharray="40.4 351.86" stroke-dashoffset="-311.5" transform="rotate(-90)"/>
+    <text y="22" text-anchor="middle" font-family="-apple-system,'Noto Sans SC',sans-serif" font-weight="700" font-size="62" fill="#f4efe3">¥</text>
+  </g>
 </svg>

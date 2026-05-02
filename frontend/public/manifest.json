@@ -4,8 +4,8 @@
   "description": "A股 / 基金 / 理财 / 现金 / 加密 / 机器人 全资产理财看板，含板块对比、配置建议、早盘简报",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#06080f",
-  "theme_color": "#22d3ee",
+  "background_color": "#121115",
+  "theme_color": "#c8a876",
   "orientation": "any",
   "icons": [
     {
