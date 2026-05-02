@@ -245,7 +245,7 @@ function AllocationDonut({ groups, totalMv }) {
     return arc
   })
   return (
-    <div className="flex items-center gap-3 md:gap-5 flex-1 md:flex-none min-w-0">
+    <div className="flex items-center gap-3 md:gap-5 w-full md:w-auto min-w-0">
       <svg width={size} height={size} className="shrink-0">
         <circle cx={cx} cy={cx} r={r} fill="none" stroke="var(--color-surface-3)" strokeWidth="12" />
         {arcs.map(a => (
@@ -273,10 +273,11 @@ function AllocationDonut({ groups, totalMv }) {
               <span className="font-mono text-text-bright tabular-nums shrink-0">
                 {(g.weight * 100).toFixed(1)}%
               </span>
-              <span className="font-mono text-text-dim text-[10px] ml-auto truncate">
+              {/* 金额和盈亏只在桌面显示 (移动端空间不够, 数据已在持仓表里) */}
+              <span className="hidden md:inline font-mono text-text-dim text-[10px] ml-auto truncate">
                 ¥{fmtMoney(g.mv)}
               </span>
-              <span className={`font-mono text-[10px] text-right shrink-0 ${priceColor(g.pnl)}`}>
+              <span className={`hidden md:inline font-mono text-[10px] text-right shrink-0 ${priceColor(g.pnl)}`}>
                 {g.pnl >= 0 ? '+' : ''}{fmtMoney(g.pnl)}
               </span>
             </div>
@@ -778,9 +779,9 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
     <section className="rounded-xl border border-border bg-surface/60 overflow-hidden"
       style={{ animation: 'fade-up 0.4s ease-out' }}>
       {/* Header: summary + donut */}
-      <div className="px-3 md:px-6 py-3 md:py-5 border-b border-border flex flex-wrap justify-between items-center gap-4 md:gap-8"
+      <div className="px-3 md:px-6 py-3 md:py-5 border-b border-border flex flex-col md:flex-row md:flex-wrap md:justify-between md:items-center gap-4 md:gap-8"
         style={{ background: 'linear-gradient(180deg, var(--color-surface-2), var(--color-surface))' }}>
-        <div className="flex flex-col gap-3 flex-1 min-w-0 md:min-w-[340px]">
+        <div className="flex flex-col gap-3 w-full md:flex-1 md:w-auto min-w-0 md:min-w-[340px]">
           <div className="flex items-baseline gap-3">
             <h2 className="text-[14px] font-semibold text-text-bright tracking-wide m-0">持仓总览</h2>
             <span className="text-[11px] text-text-dim">A股 · 基金 · 理财 · 现金 · 加密 · 机器人</span>
