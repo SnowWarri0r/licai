@@ -520,41 +520,51 @@ function TypeMiniInfo({ row, unwindByCode }) {
 // Hover action buttons
 // ============================================================
 function RowActions({ row, visible, onEdit, onHistory, onRemove, onAddLot }) {
-  const btnClass = 'px-2 py-[3px] rounded border border-border-med bg-surface-2 text-text-dim ' +
-    'text-[10.5px] hover:border-accent hover:text-accent transition-colors cursor-pointer whitespace-nowrap'
+  // 桌面: hover 才显示 (opacity 控制); 移动: 始终显示, 1 字按钮
+  const btnBase = 'rounded border border-border-med bg-surface-2 text-text-dim ' +
+    'hover:border-accent hover:text-accent transition-colors cursor-pointer whitespace-nowrap'
   const actions = []
   if (row.type === 'A') {
-    actions.push({ label: '历史', fn: () => onHistory?.(row._raw) })
-    actions.push({ label: '编辑', fn: () => onEdit?.(row) })
+    actions.push({ short: '史', label: '历史', fn: () => onHistory?.(row._raw) })
+    actions.push({ short: '改', label: '编辑', fn: () => onEdit?.(row) })
   } else {
-    // 加仓 only applies to FUND / CRYPTO / WEALTH (not BOT — OKX synced; not CASH — edit balance directly)
     if (row.type === 'F' || row.type === 'C' || row.type === 'W') {
-      actions.push({ label: '加仓', fn: () => onAddLot?.(row) })
+      actions.push({ short: '加', label: '加仓', fn: () => onAddLot?.(row) })
     }
-    actions.push({ label: '编辑', fn: () => onEdit?.(row) })
-    actions.push({ label: '删除', fn: () => onRemove?.(row), danger: true })
+    actions.push({ short: '改', label: '编辑', fn: () => onEdit?.(row) })
+    actions.push({ short: '删', label: '删除', fn: () => onRemove?.(row), danger: true })
   }
+  const dangerHover = (a) => a.danger ? {
+    onMouseEnter: e => { e.currentTarget.style.borderColor = 'var(--color-bear)'; e.currentTarget.style.color = 'var(--color-bear)' },
+    onMouseLeave: e => { e.currentTarget.style.borderColor = ''; e.currentTarget.style.color = '' },
+  } : {}
   return (
-    <div className="flex gap-1 justify-end items-center" style={{
-      opacity: visible ? 1 : 0,
-      transform: visible ? 'translateX(0)' : 'translateX(4px)',
-      transition: 'opacity .18s, transform .18s',
-      pointerEvents: visible ? 'auto' : 'none',
-    }}>
-      {actions.map(a => (
-        <button key={a.label} onClick={a.fn}
-          className={btnClass}
-          onMouseEnter={a.danger ? e => {
-            e.currentTarget.style.borderColor = 'var(--color-bear)'
-            e.currentTarget.style.color = 'var(--color-bear)'
-          } : undefined}
-          onMouseLeave={a.danger ? e => {
-            e.currentTarget.style.borderColor = ''
-            e.currentTarget.style.color = ''
-          } : undefined}
-        >{a.label}</button>
-      ))}
-    </div>
+    <>
+      {/* 移动端: 始终显示, 1 字按钮, 紧凑 */}
+      <div className="flex md:hidden gap-0.5 justify-end items-center">
+        {actions.map(a => (
+          <button key={a.label} onClick={a.fn}
+            className={`${btnBase} px-1.5 py-[2px] text-[11px] min-w-[20px]`}
+            {...dangerHover(a)}
+          >{a.short}</button>
+        ))}
+      </div>
+      {/* 桌面: hover 显示, 全名 */}
+      <div className="hidden md:flex gap-1 justify-end items-center"
+        style={{
+          opacity: visible ? 1 : 0,
+          transform: visible ? 'translateX(0)' : 'translateX(4px)',
+          transition: 'opacity .18s, transform .18s',
+          pointerEvents: visible ? 'auto' : 'none',
+        }}>
+        {actions.map(a => (
+          <button key={a.label} onClick={a.fn}
+            className={`${btnBase} px-2 py-[3px] text-[10.5px]`}
+            {...dangerHover(a)}
+          >{a.label}</button>
+        ))}
+      </div>
+    </>
   )
 }
 
@@ -927,8 +937,8 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
                     background: hoverId === row.id ? 'var(--color-surface-2)' : 'transparent',
                   }}>
                   <div className="flex flex-col gap-0.5 min-w-0">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-[13px] font-semibold text-text-bright whitespace-nowrap">{row.name}</span>
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="text-[13px] font-semibold text-text-bright truncate">{row.name}</span>
                       <TypeChip type={row.type} compact />
                       {row.extra?.okxSynced && (
                         <Tooltip content="OKX 自动同步中">
@@ -1028,11 +1038,12 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
                   <div className="text-right font-mono text-[10.5px] text-text-dim licai-md-only">
                     {row.days ?? '--'}
                   </div>
-                  <div className="relative pl-2">
-                    <div className="transition-opacity" style={{ opacity: hoverId === row.id ? 0 : 1 }}>
+                  <div className="relative pl-1 md:pl-2">
+                    {/* TypeMiniInfo: 桌面 hover 时被 RowActions 盖住; 移动隐藏 (空间不够) */}
+                    <div className="hidden md:block transition-opacity" style={{ opacity: hoverId === row.id ? 0 : 1 }}>
                       <TypeMiniInfo row={row} unwindByCode={unwindPlans} />
                     </div>
-                    <div className="absolute inset-0 flex items-center justify-end pr-0">
+                    <div className="md:absolute md:inset-0 flex items-center justify-end md:pr-0">
                       <RowActions row={row} visible={hoverId === row.id}
                         onEdit={handleEdit} onHistory={onHistory} onRemove={removeAsset} onAddLot={handleAddLot} />
                     </div>
