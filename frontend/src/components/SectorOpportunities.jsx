@@ -37,10 +37,18 @@ const fmtFlow = (v) => {
   return `${sign}${v.toFixed(1)}亿`
 }
 
+const SORT_KEYS = {
+  '5d':   { label: '5 日',   pick: r => r.change_5d },
+  'flow': { label: '净流入',  pick: r => r.net_flow },
+  '30d':  { label: '30 日',  pick: r => r.change_30d },
+  '1d':   { label: '1 日',   pick: r => r.change_1d },
+}
+
 export default function SectorOpportunities() {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [filter, setFilter] = useState(() => localStorage.getItem('sectorScanFilter') || 'unheld')
+  const [sortKey, setSortKey] = useState(() => localStorage.getItem('sectorScanSort') || '5d')
 
   const load = useCallback(async (force = false) => {
     setLoading(true)
@@ -52,14 +60,24 @@ export default function SectorOpportunities() {
   useEffect(() => { load() }, [load])
 
   const setFilt = (f) => { setFilter(f); localStorage.setItem('sectorScanFilter', f) }
+  const setSort = (s) => { setSortKey(s); localStorage.setItem('sectorScanSort', s) }
 
   const visibleRows = useMemo(() => {
     if (!data?.sectors) return []
-    let rows = data.sectors
+    let rows = data.sectors.slice()
     if (filter === 'unheld') rows = rows.filter(r => !r.held)
     if (filter === 'held') rows = rows.filter(r => r.held)
+    const pick = SORT_KEYS[sortKey]?.pick || SORT_KEYS['5d'].pick
+    rows.sort((a, b) => {
+      const va = pick(a); const vb = pick(b)
+      // null 放最后
+      if (va == null && vb == null) return 0
+      if (va == null) return 1
+      if (vb == null) return -1
+      return vb - va  // desc
+    })
     return rows
-  }, [data, filter])
+  }, [data, filter, sortKey])
 
   if (loading && !data) {
     return <div className="text-center py-3 text-text-dim text-[12px]">扫描板块动量...</div>
@@ -77,10 +95,10 @@ export default function SectorOpportunities() {
         <div className="flex items-baseline gap-2">
           <h3 className="text-[13px] font-semibold text-text-bright m-0">板块动量</h3>
           <span className="text-[11px] text-text-dim">
-            按 5 日涨幅 · {visibleRows.length}/{totalCount} 板块 · 持仓 {heldCount}
+            {visibleRows.length}/{totalCount} 板块 · 持仓 {heldCount}
           </span>
         </div>
-        <div className="flex gap-1.5 items-center">
+        <div className="flex gap-1.5 items-center flex-wrap">
           {[
             ['unheld', '未持仓'],
             ['all', '全部'],
@@ -94,6 +112,19 @@ export default function SectorOpportunities() {
                 color: filter === k ? 'var(--color-accent)' : 'var(--color-text-dim)',
               }}>
               {l}
+            </button>
+          ))}
+          <span className="w-px h-3.5 bg-border mx-0.5" />
+          <span className="text-[10px] text-text-muted shrink-0">排序</span>
+          {Object.entries(SORT_KEYS).map(([k, { label }]) => (
+            <button key={k} onClick={() => setSort(k)}
+              className="px-2.5 py-[3px] rounded-md text-[11px] border transition-colors cursor-pointer"
+              style={{
+                borderColor: sortKey === k ? 'var(--color-info)' : 'var(--color-border-med)',
+                background: sortKey === k ? 'var(--color-info)20' : 'transparent',
+                color: sortKey === k ? 'var(--color-info)' : 'var(--color-text-dim)',
+              }}>
+              {label}
             </button>
           ))}
           <button onClick={() => load(true)} disabled={loading}
