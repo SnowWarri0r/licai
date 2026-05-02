@@ -466,30 +466,27 @@ function TypeMiniInfo({ row, unwindByCode }) {
   if (type === 'W') {
     const yieldRate = extra.annualYield ?? extra.impliedYield
     const isImplied = extra.annualYield == null && extra.impliedYield != null
-    // 反推年化的解释 tooltip 包裹整个 "≈ X.XX% 反推" 段, hover 数字也能触发
-    // (避免被 RowActions hover 覆盖区域吃掉事件)
-    const yieldNode = yieldRate != null && (
-      isImplied ? (
-        <Tooltip content={
-          <div className="leading-relaxed">
-            <div>基于<span className="text-text-bright">当前总额 ÷ 本金 − 1</span></div>
-            <div>除以<span className="text-text-bright">持有天数</span>得隐含年化</div>
-            <div className="text-text-dim mt-1 text-[10.5px]">非产品标定年化，仅作参考</div>
-          </div>
-        }>
-          <span className="cursor-help">
-            <span className="font-mono text-bull">≈{(yieldRate * 100).toFixed(2)}%</span>
-            <span className="text-text-muted ml-0.5 underline decoration-dotted decoration-text-muted underline-offset-2">反推</span>
-          </span>
-        </Tooltip>
-      ) : (
-        <span className="font-mono text-bull">{(yieldRate * 100).toFixed(2)}%</span>
-      )
-    )
+    // 反推 tooltip 触发器放在内容最前面 (ⓘ icon), 避免被 RowActions hover 覆盖
     return (
       <span className="text-[10.5px] text-text-dim">
+        {isImplied && (
+          <Tooltip content={
+            <div className="leading-relaxed">
+              <div className="text-text-bright font-semibold mb-0.5">反推年化</div>
+              <div>基于<span className="text-text-bright">当前总额 ÷ 本金 − 1</span></div>
+              <div>除以<span className="text-text-bright">持有天数</span>得隐含年化</div>
+              <div className="text-text-dim mt-1 text-[10.5px]">非产品标定年化，仅作参考</div>
+            </div>
+          }>
+            <span className="cursor-help text-text-muted mr-0.5">ⓘ</span>
+          </Tooltip>
+        )}
         {extra.platform || '理财'}
-        {yieldNode && <> · 年化 {yieldNode}</>}
+        {yieldRate != null && (
+          <> · 年化 <span className="font-mono text-bull">
+            {isImplied && '≈'}{(yieldRate * 100).toFixed(2)}%
+          </span></>
+        )}
         {extra.daysHeld != null && <> · 持有 <span className="font-mono">{extra.daysHeld}天</span></>}
       </span>
     )
@@ -547,19 +544,19 @@ function RowActions({ row, visible, onEdit, onHistory, onRemove, onAddLot }) {
           >{a.short}</button>
         ))}
       </div>
-      {/* 桌面: hover 显示, 全名. bg-surface-2 + shadow 让按钮 chip 化, 避免和左边 TypeMiniInfo 视觉混叠 */}
-      <div className="hidden md:flex gap-1 justify-end items-center px-1.5 rounded-md"
+      {/* 桌面: hover 显示, 全名. 容器 pointer-events:none, 按钮自己 auto;
+          按钮间空隙能让 hover 事件穿透到下层 TypeMiniInfo (反推 tooltip 等). */}
+      <div className="hidden md:flex gap-1 justify-end items-center"
         style={{
           opacity: visible ? 1 : 0,
           transform: visible ? 'translateX(0)' : 'translateX(4px)',
           transition: 'opacity .18s, transform .18s',
-          pointerEvents: visible ? 'auto' : 'none',
-          background: visible ? 'var(--color-surface-2)' : 'transparent',
-          boxShadow: visible ? '0 2px 8px rgba(0,0,0,.35)' : 'none',
+          pointerEvents: 'none',
         }}>
         {actions.map(a => (
           <button key={a.label} onClick={a.fn}
             className={`${btnBase} px-2 py-[3px] text-[10.5px]`}
+            style={{ pointerEvents: visible ? 'auto' : 'none' }}
             {...dangerHover(a)}
           >{a.label}</button>
         ))}
