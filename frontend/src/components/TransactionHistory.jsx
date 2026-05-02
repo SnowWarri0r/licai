@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react'
 import { fetchJSON } from '../hooks/useApi'
 import { fmtPrice } from '../helpers'
 
+const enc = (value) => encodeURIComponent(value)
+
 const ACTION_TYPES = [
   { value: 'BUY', label: '买入' },
   { value: 'SELL', label: '卖出' },
@@ -69,7 +71,7 @@ export default function TransactionHistory({ stockCode, stockName, onClose, onCh
 
   const load = async () => {
     try {
-      const list = await fetchJSON(`/api/portfolio/${stockCode}/actions`)
+      const list = await fetchJSON(`/api/portfolio/${enc(stockCode)}/actions`)
       // Sort by trade_date ascending (oldest first)
       list.sort((a, b) => (a.trade_date || '').localeCompare(b.trade_date || ''))
       setActions(list)
@@ -81,7 +83,7 @@ export default function TransactionHistory({ stockCode, stockName, onClose, onCh
 
   const handleAdd = async () => {
     if (!newAction.price || !newAction.shares || !newAction.trade_date) return alert('请填完整')
-    await fetchJSON(`/api/portfolio/${stockCode}/actions`, {
+    await fetchJSON(`/api/portfolio/${enc(stockCode)}/actions`, {
       method: 'POST',
       body: JSON.stringify({
         ...newAction,

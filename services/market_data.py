@@ -1,4 +1,10 @@
-"""A-share market data with Sina Finance API for real-time quotes + AKShare for history."""
+"""Multi-market stock data via Sina Finance.
+
+Supported direct holdings:
+- A-share: bare 6-digit code, e.g. 600362
+- HK stock: HK.00700
+- US stock: US.AAPL
+"""
 from __future__ import annotations
 import asyncio
 import os
@@ -41,8 +47,88 @@ def _cache_set(key: str, data):
     _cache[key] = (data, time.time())
 
 
+def get_fx_info(currency: str) -> dict:
+    """Fetch CNY conversion info for a quote currency.
+
+    Sina exposes bid/ask style fields; portfolio valuation uses their midpoint
+    to avoid leaning on one side of the spread.
+    """
+    currency = (currency or "CNY").upper()
+    if currency == "CNY":
+        return {"rate": 1.0, "source": "CNY", "time": ""}
+    fallback = {"USD": 7.2, "HKD": 0.92}.get(currency, 1.0)
+    symbol = {"USD": "USDCNY", "HKD": "HKDCNY"}.get(currency)
+    if not symbol:
+        return {"rate": fallback, "source": "fallback", "time": ""}
+    cache_key = f"fx_{currency}_cny"
+    cached = _cache_get(cache_key, 300)
+    if cached is not None:
+        return cached
+    try:
+        resp = _requests.get(
+            f"https://hq.sinajs.cn/list={symbol}",
+            headers={"Referer": "https://finance.sina.com.cn"},
+            timeout=5,
+        )
+        resp.encoding = "gbk"
+        match = re.search(r'"([^"]+)"', resp.text)
+        if match:
+            fields = match.group(1).split(",")
+            bid = float(fields[1]) if len(fields) > 1 and fields[1] else 0
+            ask = float(fields[2]) if len(fields) > 2 and fields[2] else 0
+            rate = round((bid + ask) / 2, 6) if bid > 0 and ask > 0 else bid
+            if rate > 0:
+                data = {
+                    "rate": rate,
+                    "source": "sina_bid_ask_mid",
+                    "time": fields[0] if fields else "",
+                }
+                _cache_set(cache_key, data)
+                return data
+    except Exception:
+        pass
+    return {"rate": fallback, "source": "fallback", "time": ""}
+
+
+def get_fx_rate(currency: str) -> float:
+    """Fetch CNY conversion rate for a quote currency."""
+    return float(get_fx_info(currency).get("rate") or 1.0)
+
+
+def normalize_stock_code(stock_code: str) -> str:
+    """Return the canonical holding code used across DB/API/UI."""
+    raw = (stock_code or "").strip().upper()
+    if raw.startswith("HK."):
+        return f"HK.{raw[3:].zfill(5)}"
+    if raw.startswith("HK") and raw[2:].isdigit():
+        return f"HK.{raw[2:].zfill(5)}"
+    if raw.startswith("US."):
+        return f"US.{raw[3:].strip().upper()}"
+    if raw.startswith("US") and not raw.startswith("USD"):
+        rest = raw[2:].strip()
+        if rest:
+            return f"US.{rest.upper()}"
+    return raw
+
+
+def split_stock_code(stock_code: str) -> tuple[str, str]:
+    """Return (market, symbol). market is A/HK/US."""
+    code = normalize_stock_code(stock_code)
+    if code.startswith("HK."):
+        return "HK", code[3:]
+    if code.startswith("US."):
+        return "US", code[3:]
+    return "A", code
+
+
+def is_a_share(stock_code: str) -> bool:
+    market, symbol = split_stock_code(stock_code)
+    return market == "A" and len(symbol) == 6 and symbol.isdigit()
+
+
 def _sina_symbol(stock_code: str) -> str:
     """Convert stock code to Sina symbol format (sh/sz prefix)."""
+    stock_code = split_stock_code(stock_code)[1]
     # Shanghai: 6 (主板), 9 (B股), 5 (ETF/封基/可转债)
     # Shenzhen: 0/2/3 (主板/中小板/创业板), 1 (ETF/可转债, e.g. 159xxx)
     if stock_code[:1] in ("6", "9", "5"):
@@ -57,6 +143,9 @@ def _fetch_sina_quotes(stock_codes: list[str]) -> dict:
     if not stock_codes:
         return {}
 
+    stock_codes = [normalize_stock_code(c) for c in stock_codes if is_a_share(c)]
+    if not stock_codes:
+        return {}
     symbols = [_sina_symbol(c) for c in stock_codes]
     url = f"https://hq.sinajs.cn/list={','.join(symbols)}"
     headers = {"Referer": "https://finance.sina.com.cn"}
@@ -108,6 +197,9 @@ def _fetch_sina_quotes(stock_codes: list[str]) -> dict:
             result[code] = {
                 "stock_code": code,
                 "stock_name": name,
+                "market": "A",
+                "currency": "CNY",
+                "fx_rate": 1.0,
                 "price": price,
                 "open": open_price,
                 "high": high,
@@ -126,17 +218,53 @@ def _fetch_sina_quotes(stock_codes: list[str]) -> dict:
 
 
 async def get_realtime_quotes(stock_codes: list[str]) -> dict:
-    """Get real-time quotes for given stock codes via Sina Finance."""
+    """Get real-time quotes for A/HK/US stock holdings via Sina Finance."""
     if not stock_codes:
         return {}
 
-    cache_key = "sina_quotes_" + ",".join(sorted(stock_codes))
+    codes = [normalize_stock_code(c) for c in stock_codes]
+    cache_key = "sina_quotes_" + ",".join(sorted(codes))
     cached = _cache_get(cache_key, config.quote_cache_ttl)
     if cached is not None:
         return cached
 
     try:
-        result = await asyncio.to_thread(_fetch_sina_quotes, stock_codes)
+        a_codes = [c for c in codes if split_stock_code(c)[0] == "A"]
+        hk_codes = [c for c in codes if split_stock_code(c)[0] == "HK"]
+        us_codes = [c for c in codes if split_stock_code(c)[0] == "US"]
+
+        result = {}
+        if a_codes:
+            result.update(await asyncio.to_thread(_fetch_sina_quotes, a_codes))
+
+        async def fetch_one(code: str):
+            market, symbol = split_stock_code(code)
+            if market == "HK":
+                q = await asyncio.to_thread(_fetch_hk_stock_quote, symbol)
+            elif market == "US":
+                q = await asyncio.to_thread(_fetch_us_stock_quote, symbol)
+            else:
+                q = None
+            if not q:
+                return None
+            fx = get_fx_info(q.get("currency", "CNY"))
+            return code, {
+                "stock_code": code,
+                "fx_rate": fx["rate"],
+                "fx_time": fx.get("time", ""),
+                "fx_source": fx.get("source", ""),
+                **q,
+            }
+
+        overseas = await asyncio.gather(
+            *(fetch_one(c) for c in [*hk_codes, *us_codes]),
+            return_exceptions=True,
+        )
+        for item in overseas:
+            if isinstance(item, Exception) or not item:
+                continue
+            code, quote = item
+            result[code] = quote
         if result:
             _cache_set(cache_key, result)
         return result
@@ -147,6 +275,7 @@ async def get_realtime_quotes(stock_codes: list[str]) -> dict:
 
 async def get_stock_name(stock_code: str) -> str:
     """Look up stock name by code."""
+    stock_code = normalize_stock_code(stock_code)
     quotes = await get_realtime_quotes([stock_code])
     if stock_code in quotes:
         return quotes[stock_code]["stock_name"]
@@ -258,6 +387,9 @@ async def get_historical_data(stock_code: str, days: int = 60) -> pd.DataFrame:
     Layer 4: AKShare fallback
     """
     from database import get_cached_klines, get_cached_latest_date, save_klines
+    stock_code = normalize_stock_code(stock_code)
+    if not is_a_share(stock_code):
+        return pd.DataFrame()
 
     cache_key = f"hist_{stock_code}_{days}"
     df = _cache_get(cache_key, config.history_cache_ttl)
@@ -330,6 +462,9 @@ async def get_historical_data(stock_code: str, days: int = 60) -> pd.DataFrame:
 
 async def get_intraday_data(stock_code: str) -> pd.DataFrame:
     """Get intraday 5-minute bars."""
+    stock_code = normalize_stock_code(stock_code)
+    if not is_a_share(stock_code):
+        return pd.DataFrame()
     cache_key = f"intraday_{stock_code}"
     df = _cache_get(cache_key, 10)
     if df is not None:
@@ -413,6 +548,12 @@ async def get_stock_sector(stock_code: str) -> str:
     Caches for 1 day since sectors rarely change."""
     import time
     import asyncio as _asyncio
+    stock_code = normalize_stock_code(stock_code)
+    market, _ = split_stock_code(stock_code)
+    if market == "HK":
+        return "港股"
+    if market == "US":
+        return "美股"
     cached = _sector_cache.get(stock_code)
     if cached and time.time() - cached[1] < _SECTOR_TTL:
         return cached[0]
@@ -428,6 +569,8 @@ async def get_stock_sector(stock_code: str) -> str:
 def _lookup_industry(stock_code: str) -> str:
     """Look up stock industry via East Money CompanySurvey API (emweb domain, stable)."""
     try:
+        if not is_a_share(stock_code):
+            return ""
         prefix = "SH" if stock_code.startswith("6") else "SZ"
         url = f"https://emweb.eastmoney.com/PC_HSF10/CompanySurvey/PageAjax?code={prefix}{stock_code}"
         resp = _requests.get(url, timeout=10)
@@ -519,7 +662,21 @@ def _fetch_hk_stock_quote(code: str) -> dict | None:
             change_pct = float(f[8])
         except (ValueError, IndexError):
             change_pct = round((last - prev) / prev * 100, 2) if prev > 0 else 0
-        return {"price": last, "prev": prev, "change_pct": change_pct}
+        return {
+            "stock_name": f[1] or f[0] or code,
+            "price": last,
+            "open": float(f[3]) if f[3] else 0,
+            "high": float(f[4]) if f[4] else 0,
+            "low": float(f[5]) if f[5] else 0,
+            "prev_close": prev,
+            "volume": float(f[12]) if len(f) > 12 and f[12] else 0,
+            "amount": 0,
+            "change_pct": change_pct,
+            "amplitude": round((float(f[4]) - float(f[5])) / prev * 100, 2) if prev > 0 and f[4] and f[5] else 0,
+            "turnover_rate": 0,
+            "market": "HK",
+            "currency": "HKD",
+        }
     except Exception as e:
         print(f"[hk-stock] {code} failed: {e}")
         return None
@@ -545,7 +702,21 @@ def _fetch_us_stock_quote(symbol: str) -> dict | None:
         change_pct = float(f[2]) if f[2] else 0
         # prev_close = last / (1 + change_pct/100)
         prev = round(last / (1 + change_pct / 100), 4) if last > 0 and change_pct != 0 else last
-        return {"price": last, "prev": prev, "change_pct": round(change_pct, 2)}
+        return {
+            "stock_name": f[0] or symbol.upper(),
+            "price": last,
+            "open": 0,
+            "high": 0,
+            "low": 0,
+            "prev_close": prev,
+            "volume": 0,
+            "amount": 0,
+            "change_pct": round(change_pct, 2),
+            "amplitude": 0,
+            "turnover_rate": 0,
+            "market": "US",
+            "currency": "USD",
+        }
     except Exception as e:
         print(f"[us-stock] {symbol} failed: {e}")
         return None
@@ -583,6 +754,8 @@ async def _resolve_commodity_mapping(stock_code: str) -> tuple | None:
     """Resolve stock → commodity mapping.
     Priority: override > cache > industry API > stock name keywords.
     """
+    if not is_a_share(stock_code):
+        return None
     # 1. Hard-coded override
     if stock_code in _COMMODITY_OVERRIDE:
         return _COMMODITY_OVERRIDE[stock_code]

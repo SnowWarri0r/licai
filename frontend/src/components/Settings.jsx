@@ -6,6 +6,12 @@ export default function Settings({ onClose }) {
   const [status, setStatus] = useState({ text: '', ok: null })
   const [saving, setSaving] = useState(false)
 
+  // LLM proxy
+  const [proxyUrl, setProxyUrl] = useState('')
+  const [proxySaving, setProxySaving] = useState(false)
+  const [proxyStatus, setProxyStatus] = useState({ text: '', ok: null })
+  const [proxyEnvOverride, setProxyEnvOverride] = useState(false)
+
   // OKX credentials
   const [okxStatus, setOkxStatus] = useState(null)
   const [okxApiKey, setOkxApiKey] = useState('')
@@ -24,6 +30,10 @@ export default function Settings({ onClose }) {
       if (d.enabled) setStatus({ text: '已启用', ok: true })
     })
     loadOkxStatus()
+    fetchJSON('/api/settings/llm').then(d => {
+      setProxyUrl(d.proxy_url || '')
+      setProxyEnvOverride(d.env_override || false)
+    }).catch(() => {})
   }, [])
 
   const saveOkx = async () => {
@@ -61,6 +71,22 @@ export default function Settings({ onClose }) {
       setOkxStatusText({ text: '已清除', ok: true })
       await loadOkxStatus()
     } catch {}
+  }
+
+  const saveProxy = async () => {
+    setProxySaving(true)
+    setProxyStatus({ text: '', ok: null })
+    try {
+      await fetchJSON('/api/settings/llm', {
+        method: 'POST',
+        body: JSON.stringify({ proxy_url: proxyUrl.trim() }),
+      })
+      setProxyStatus({ text: proxyUrl.trim() ? '已保存并启用' : '已清除，走直连', ok: true })
+    } catch {
+      setProxyStatus({ text: '保存失败', ok: false })
+    } finally {
+      setProxySaving(false)
+    }
   }
 
   const handleSave = async () => {
@@ -121,6 +147,35 @@ export default function Settings({ onClose }) {
               {status.text}
             </span>
           )}
+        </div>
+
+        {/* LLM 代理配置 */}
+        <div className="mt-2 pt-4 border-t border-border">
+          <label className="text-[12px] text-text-dim font-semibold block mb-1">LLM 代理地址（早盘简报）</label>
+          <p className="text-[11px] text-text-muted mb-2 leading-relaxed">
+            访问 Anthropic API 的本地代理，留空则直连。常见：Shadowrocket <code className="bg-surface-3 px-1 rounded">http://127.0.0.1:1082</code>，Clash <code className="bg-surface-3 px-1 rounded">http://127.0.0.1:7890</code>
+          </p>
+          {proxyEnvOverride && (
+            <p className="text-[11px] text-warn mb-2">当前由环境变量 LLM_PROXY 覆盖，UI 配置不生效</p>
+          )}
+          <input
+            className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] text-text font-mono outline-none focus:border-accent transition-colors disabled:opacity-50"
+            placeholder="留空直连，或填入代理地址如 http://127.0.0.1:1082"
+            value={proxyUrl}
+            onChange={e => setProxyUrl(e.target.value)}
+            disabled={proxyEnvOverride}
+          />
+          <div className="flex items-center gap-3 mt-2">
+            <button onClick={saveProxy} disabled={proxySaving || proxyEnvOverride}
+              className="px-4 py-1.5 rounded-md bg-accent text-bg font-medium text-[13px] hover:opacity-90 disabled:opacity-50 cursor-pointer">
+              {proxySaving ? '保存中...' : '保存'}
+            </button>
+            {proxyStatus.text && (
+              <span className={`text-[12px] font-medium ${proxyStatus.ok ? 'text-bull' : 'text-bear'}`}>
+                {proxyStatus.text}
+              </span>
+            )}
+          </div>
         </div>
 
         {/* OKX API 凭证 */}

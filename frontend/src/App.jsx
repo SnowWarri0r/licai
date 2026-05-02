@@ -36,15 +36,24 @@ export default function App() {
         const q = msg.data[h.stock_code]
         if (!q) return h
         const currentPrice = q.price
-        const pnl = (currentPrice - h.cost_price) * h.shares
+        const fxRate = q.fx_rate || h.fx_rate || 1
+        const originalCostValue = h.cost_price * h.shares
+        const originalMarketValue = currentPrice * h.shares
+        const pnl = (originalMarketValue - originalCostValue) * fxRate
         const pnlPct = h.cost_price > 0 ? (currentPrice - h.cost_price) / h.cost_price * 100 : 0
         return {
           ...h,
           current_price: currentPrice,
+          fx_rate: fxRate,
+          fx_time: q.fx_time || h.fx_time || '',
+          fx_source: q.fx_source || h.fx_source || '',
           price_change_pct: q.change_pct,
           unrealized_pnl: Math.round(pnl * 100) / 100,
           pnl_pct: Math.round(pnlPct * 100) / 100,
-          market_value: Math.round(currentPrice * h.shares * 100) / 100,
+          original_cost_value: Math.round(originalCostValue * 100) / 100,
+          original_market_value: Math.round(originalMarketValue * 100) / 100,
+          cost_value: Math.round(originalCostValue * fxRate * 100) / 100,
+          market_value: Math.round(originalMarketValue * fxRate * 100) / 100,
         }
       }))
     } else if (msg.type === 'alert') {
