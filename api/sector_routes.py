@@ -6,6 +6,8 @@ from fastapi import APIRouter
 from database import get_all_holdings
 from services.sector_compare import get_sector_compare
 from services.sector_scanner import scan_sectors
+from services.sector_us import scan_us_sectors
+from services.sector_hk import scan_hk_sectors
 from services.market_data import is_a_share
 
 router = APIRouter(prefix="/api/sector", tags=["sector"])
@@ -37,10 +39,23 @@ async def compare_all(force: bool = False):
 
 @router.get("/scan")
 async def scan(force: bool = False):
-    """全板块扫描: 90 个 THS 板块的 1d/5d/30d 涨幅 + 持仓标记 + 兜底 ETF.
-
-    用于发现"未持仓但有动量"的板块. 5d/30d 仅 top 30 (按 1d) 拉 K 线.
-    """
+    """A 股全板块扫描: 90 个 THS 板块的 1d/5d/30d 涨幅 + 持仓标记 + 兜底 ETF."""
     holdings = await get_all_holdings()
     held_codes = [h["stock_code"] for h in holdings if is_a_share(h["stock_code"])] if holdings else []
     return await scan_sectors(held_codes, force=force)
+
+
+@router.get("/scan-us")
+async def scan_us(force: bool = False):
+    """美股板块扫描: 11 个 GICS 板块 (SPDR Sector ETFs)."""
+    holdings = await get_all_holdings()
+    held_codes = [h["stock_code"] for h in holdings if str(h.get("stock_code", "")).upper().startswith("US.")] if holdings else []
+    return await scan_us_sectors(held_codes, force=force)
+
+
+@router.get("/scan-hk")
+async def scan_hk(force: bool = False):
+    """港股板块扫描: 12 个恒生综合行业指数."""
+    holdings = await get_all_holdings()
+    held_codes = [h["stock_code"] for h in holdings if str(h.get("stock_code", "")).upper().startswith("HK.")] if holdings else []
+    return await scan_hk_sectors(held_codes, force=force)

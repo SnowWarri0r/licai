@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { fetchJSON } from '../hooks/useApi'
 import Tooltip from './Tooltip'
+import SectorKlineModal from './SectorKlineModal'
 
 function Sparkline({ data, width = 64, height = 22, stroke = '#85a0b4' }) {
   if (!data || data.length < 2) return null
@@ -32,6 +33,7 @@ const alphaColor = (v) => v == null ? 'text-text-dim' : v > 1 ? 'text-bear-brigh
 export default function SectorRadar() {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [openSector, setOpenSector] = useState(null)
 
   const load = useCallback(async (force = false) => {
     setLoading(true)
@@ -117,7 +119,22 @@ export default function SectorRadar() {
               </span>
             </div>
             <div className="flex justify-end licai-md-only">
-              <Sparkline data={r.etf_kline} />
+              {r.etf_kline && r.etf_kline.length >= 2 ? (
+                <button onClick={() => setOpenSector({
+                  name: `${r.sector_label} (${r.etf_code})`,
+                  symbol: r.etf_code,
+                  change_1d: null,
+                  change_5d: null,
+                  change_30d: r.etf_30d,
+                  kline_tail: r.etf_kline,
+                  etf_code: r.etf_code,
+                  etf_name: r.sector_label + ' ETF',
+                })}
+                  className="cursor-pointer hover:bg-surface-3 rounded p-0.5 -m-0.5 transition-colors"
+                  title="点击查看大图">
+                  <Sparkline data={r.etf_kline} />
+                </button>
+              ) : null}
             </div>
           </div>
         ))}
@@ -126,6 +143,10 @@ export default function SectorRadar() {
       <div className="px-3 md:px-5 py-2 text-[10.5px] text-text-muted bg-surface-2/40 border-t border-border-subtle">
         α &lt; -1% 表示你跑输板块（跌得比 ETF 更狠）；α &gt; +1% 表示跑赢；接近 0 = 跟板块同步。
       </div>
+
+      {openSector && (
+        <SectorKlineModal sector={openSector} market="A" onClose={() => setOpenSector(null)} />
+      )}
     </section>
   )
 }
