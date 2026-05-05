@@ -238,7 +238,100 @@ export default function Settings({ onClose }) {
             </button>
           )}
         </div>
+
+        <DataExportImport />
       </div>
     </section>
+  )
+}
+
+function DataExportImport() {
+  const [importing, setImporting] = useState(false)
+  const [importResult, setImportResult] = useState(null)
+  const [importMode, setImportMode] = useState('replace')
+
+  const handleExport = () => {
+    // 直链下载, 让浏览器原生触发 Save As
+    window.location.href = '/api/data/export'
+  }
+
+  const handleImport = async (e) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    if (!confirm(`确定从「${file.name}」${importMode === 'replace' ? '覆盖导入' : '合并导入'}？\n当前 DB 会先自动备份到 backups/。`)) {
+      e.target.value = ''
+      return
+    }
+    setImporting(true)
+    setImportResult(null)
+    try {
+      const fd = new FormData()
+      fd.append('file', file)
+      const res = await fetch(`/api/data/import?mode=${importMode}`, {
+        method: 'POST',
+        body: fd,
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || '导入失败')
+      setImportResult({ ok: true, ...data })
+      setTimeout(() => window.location.reload(), 1500)
+    } catch (err) {
+      setImportResult({ ok: false, message: err.message })
+    } finally {
+      setImporting(false)
+      e.target.value = ''
+    }
+  }
+
+  return (
+    <div className="mt-2 pt-4 border-t border-border">
+      <label className="text-[12px] text-text-dim font-semibold block mb-1">数据导出 / 导入</label>
+      <p className="text-[11px] text-text-muted mb-2 leading-relaxed">
+        导出为单个 JSON 文件，包含持仓、资产、交易记录、解套计划、提醒、月度现金流和应用设置。换设备时上传此文件还原。
+      </p>
+      <div className="flex flex-wrap gap-2 items-center mb-2">
+        <button onClick={handleExport}
+          className="px-3 py-1.5 rounded-md text-[12px] border border-accent text-accent hover:bg-accent/10 cursor-pointer">
+          导出全部数据
+        </button>
+        <span className="w-px h-4 bg-border mx-1" />
+        <span className="text-[11px] text-text-muted">导入模式</span>
+        {[
+          ['replace', '覆盖（清空再导入）'],
+          ['merge', '合并（仅新增/更新）'],
+        ].map(([k, l]) => (
+          <label key={k} className="text-[11px] text-text-dim flex items-center gap-1 cursor-pointer">
+            <input type="radio" name="importMode" value={k}
+              checked={importMode === k} onChange={() => setImportMode(k)} />
+            {l}
+          </label>
+        ))}
+      </div>
+      <label className="inline-block">
+        <input type="file" accept="application/json,.json" onChange={handleImport}
+          disabled={importing} className="hidden" />
+        <span className={`px-3 py-1.5 rounded-md text-[12px] border border-border-med text-text-dim hover:text-text hover:border-text-muted cursor-pointer inline-block ${importing ? 'opacity-50 pointer-events-none' : ''}`}>
+          {importing ? '导入中...' : '选择 JSON 导入'}
+        </span>
+      </label>
+      {importResult && (
+        <div className={`mt-2 text-[11.5px] p-2 rounded ${importResult.ok ? 'bg-bull/10 text-bull' : 'bg-bear/10 text-bear'}`}>
+          {importResult.ok ? (
+            <>
+              <div className="font-semibold mb-1">✓ {importResult.message}</div>
+              <div className="text-text-dim font-mono text-[10.5px]">
+                pre-import 备份: {importResult.pre_import_backup}
+              </div>
+              <div className="text-text-dim text-[10.5px] mt-1">
+                {Object.entries(importResult.imported).map(([t, n]) => `${t}: ${n}`).join(' · ')}
+              </div>
+              <div className="text-[11px] mt-1.5 text-text">页面将自动刷新...</div>
+            </>
+          ) : (
+            <div className="font-semibold">✗ {importResult.message}</div>
+          )}
+        </div>
+      )}
+    </div>
   )
 }
