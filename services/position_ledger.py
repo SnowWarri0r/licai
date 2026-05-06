@@ -78,7 +78,35 @@ def compute_position_state(
 
     sorted_actions = sorted(actions, key=sort_key)
 
+    # Pass 1: 累计金额 / 份数 / 手续费 (用于综合成本法 + 实现盈亏的费用摊销)
+    total_buy_amt = 0.0
+    total_sell_amt = 0.0
+    total_fees = 0.0
+    total_buy_shares = 0
+    total_buy_fees = 0.0
+    total_sell_fees = 0.0
+    for a in sorted_actions:
+        t = a.get("action_type", "")
+        price = float(a.get("price", 0))
+        shares = int(a.get("shares", 0))
+        if t in ACQUIRE and shares > 0:
+            total_buy_amt += price * shares
+            total_buy_shares += shares
+            if stock_code:
+                fee = estimate_trade_fee(t, price, shares, stock_code)
+                total_fees += fee
+                total_buy_fees += fee
+        elif t in RELEASE and shares > 0:
+            total_sell_amt += price * shares
+            if stock_code:
+                fee = estimate_trade_fee(t, price, shares, stock_code)
+                total_fees += fee
+                total_sell_fees += fee
+
+    # Pass 2: FIFO 配对 lots, 顺便累计 realized_pnl_excl_fees + matched_buy_shares
     lots: list[dict] = []  # each: {shares, price, trade_date}
+    realized_pnl_excl_fees = 0.0
+    matched_buy_shares = 0
     for a in sorted_actions:
         t = a.get("action_type", "")
         price = float(a.get("price", 0))
@@ -91,13 +119,19 @@ def compute_position_state(
             remaining = shares
             while remaining > 0 and lots:
                 lot = lots[0]
-                if lot["shares"] <= remaining:
-                    remaining -= lot["shares"]
+                consumed = min(lot["shares"], remaining)
+                realized_pnl_excl_fees += (price - lot["price"]) * consumed
+                matched_buy_shares += consumed
+                lot["shares"] -= consumed
+                remaining -= consumed
+                if lot["shares"] == 0:
                     lots.pop(0)
-                else:
-                    lot["shares"] -= remaining
-                    remaining = 0
-            # If remaining > 0 and no lots, we've "oversold" — ignored for now
+
+    # 已实现盈亏 = FIFO 配对结果 - 卖出手续费 - 买入手续费按 matched / 总买 比例摊销
+    realized_fees = total_sell_fees
+    if total_buy_shares > 0:
+        realized_fees += total_buy_fees * (matched_buy_shares / total_buy_shares)
+    realized_pnl = round(realized_pnl_excl_fees - realized_fees, 2)
 
     total_shares = sum(l["shares"] for l in lots)
     if total_shares <= 0:
@@ -107,28 +141,13 @@ def compute_position_state(
             "fifo_cost_price": 0.0,
             "weighted_days": 0,
             "lots": [],
+            "realized_pnl": realized_pnl,
         }
 
     # FIFO cost — avg of remaining lots only
     fifo_total = sum(l["shares"] * l["price"] for l in lots)
     fifo_cost = fifo_total / total_shares
 
-    # 综合成本法 (broker display) — (总买 - 总卖 + 所有手续费) / 当前持股
-    total_buy_amt = 0.0
-    total_sell_amt = 0.0
-    total_fees = 0.0
-    for a in sorted_actions:
-        t = a.get("action_type", "")
-        price = float(a.get("price", 0))
-        shares = int(a.get("shares", 0))
-        if t in ACQUIRE and shares > 0:
-            total_buy_amt += price * shares
-            if stock_code:
-                total_fees += estimate_trade_fee(t, price, shares, stock_code)
-        elif t in RELEASE and shares > 0:
-            total_sell_amt += price * shares
-            if stock_code:
-                total_fees += estimate_trade_fee(t, price, shares, stock_code)
     net_invested = total_buy_amt - total_sell_amt + total_fees
     net_cost = net_invested / total_shares if total_shares > 0 else 0.0
     # If user sold at extreme profit and net_invested becomes negative, fall back to fifo
@@ -148,6 +167,7 @@ def compute_position_state(
         "fifo_cost_price": round(fifo_cost, 4), # for reference
         "total_fees": round(total_fees, 2),
         "weighted_days": int(round(weighted_days)),
+        "realized_pnl": realized_pnl,
         "lots": [
             {"shares": l["shares"], "price": l["price"], "trade_date": l["trade_date"].isoformat()}
             for l in lots
