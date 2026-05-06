@@ -783,6 +783,7 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
       setRealized({
         stock: s.total_realized_pnl || 0,
         asset: a.total_realized_pnl || 0,
+        stockItems: s.items || [],
       })
     } catch (e) { console.error('realized load failed', e) }
   }, [])
@@ -822,8 +823,10 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
   }, [holdings.length])
 
   const rows = useMemo(() => {
-    const a = (holdings || []).map(normalizeHolding)
-    const e = (assets || []).map(normalizeAsset)
+    // 0 持仓的股票/基金 不在主列表显示, 走 "已清仓" 区块
+    const a = (holdings || []).filter(h => (h.shares || 0) > 0).map(normalizeHolding)
+    const e = (assets || []).filter(x => x.asset_type === 'BOT' || x.asset_type === 'WEALTH' || x.asset_type === 'CASH'
+      || (x.shares || 0) > 0 || (x.cost_amount || 0) > 0).map(normalizeAsset)
     return [...a, ...e]
   }, [holdings, assets])
 
@@ -1327,7 +1330,56 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
           当前筛选下没有持仓
         </div>
       )}
+
+      <ClosedPositionsBlock items={(realized?.stockItems || []).filter(i => !i.still_holding)}
+        onHistory={onHistory} />
     </section>
+  )
+}
+
+// 已清仓股票区块 — 列出持仓已删但还有交易历史的标的, 看到累计已实现盈亏 + 翻历史
+function ClosedPositionsBlock({ items, onHistory }) {
+  const [open, setOpen] = useState(false)
+  if (!items || items.length === 0) return null
+  const total = items.reduce((s, it) => s + (it.realized_pnl || 0), 0)
+  return (
+    <div className="px-3 md:px-6 py-2 border-t border-border-subtle bg-surface/40">
+      <button onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between text-[11.5px] text-text-dim hover:text-text cursor-pointer transition-colors">
+        <span className="flex items-baseline gap-2">
+          <span>已清仓 {items.length} 笔</span>
+          <span className="text-text-muted text-[10.5px]">流水保留, 不在主列表显示</span>
+        </span>
+        <span className="flex items-baseline gap-2">
+          <span className={priceColor(total)}>
+            累计 {total >= 0 ? '+' : ''}¥{fmtMoney(total)}
+          </span>
+          <span className="text-text-muted text-[10px]">{open ? '▾' : '▸'}</span>
+        </span>
+      </button>
+      {open && (
+        <div className="mt-2 pt-2 border-t border-border-subtle space-y-1">
+          {items.map(it => (
+            <div key={it.stock_code}
+              className="flex items-baseline justify-between text-[11.5px] py-1 px-1 rounded hover:bg-surface-2 transition-colors">
+              <span className="flex items-baseline gap-2 min-w-0">
+                <span className="text-text-bright truncate">{it.stock_name || '--'}</span>
+                <span className="font-mono text-[10px] text-text-muted">{it.stock_code}</span>
+              </span>
+              <span className="flex items-baseline gap-3 shrink-0">
+                <span className={`font-mono ${priceColor(it.realized_pnl)}`}>
+                  {it.realized_pnl >= 0 ? '+' : ''}¥{fmtMoney(it.realized_pnl)}
+                </span>
+                <button onClick={() => onHistory?.({ stock_code: it.stock_code, stock_name: it.stock_name })}
+                  className="text-[10.5px] text-text-dim hover:text-accent cursor-pointer">
+                  流水
+                </button>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 
