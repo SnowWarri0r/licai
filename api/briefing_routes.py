@@ -35,8 +35,14 @@ async def get_today_briefings():
             rows = await get_briefings_for_date(latest)
             used_date = latest
 
+    # 用户清仓后, 历史日期的简报记录还在; 按当前 holdings 过滤掉已清仓的
+    from database import get_all_holdings
+    active_codes = {h["stock_code"] for h in await get_all_holdings() if (h.get("shares") or 0) > 0}
+
     briefings = []
     for r in rows:
+        if r["stock_code"] not in active_codes:
+            continue
         try:
             payload = json.loads(r["payload_json"])
         except Exception:
