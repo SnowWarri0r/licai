@@ -395,3 +395,42 @@ async def briefing_loop():
         except Exception as e:
             print(f"[briefing] Loop error: {e}")
             await asyncio.sleep(120)
+
+
+_dca_done_date: str = ""
+
+async def dca_loop():
+    """每天最多跑一次定投扫描.
+
+    策略: 当天还没跑过 (today != _dca_done_date) 就立即跑, 不再卡时间窗口
+    避免漏触发 (server 中午才开机也能补)。fire_due_dcas 自身扫所有 next_due<=today
+    所以多日漏跑也能一次补齐."""
+    global _dca_done_date
+    from datetime import datetime, timezone, timedelta
+    from services.dca import fire_due_dcas
+
+    while True:
+        try:
+            cst_now = datetime.now(timezone.utc) + timedelta(hours=8)
+            today = cst_now.strftime("%Y-%m-%d")
+
+            if today != _dca_done_date:
+                try:
+                    fired = await fire_due_dcas()
+                    _dca_done_date = today
+                    if fired:
+                        print(f"[dca] Fired {len(fired)} schedules on {today}")
+                        if feishu_notify.is_enabled():
+                            lines = [f"💸 {today} 定投触发 {len(fired)} 笔"]
+                            for f in fired:
+                                v = f["value"]
+                                unit = "¥" if f["mode"] == "amount" else "份"
+                                lines.append(f"  asset#{f['asset_id']} {unit}{v} → action #{f['action_id']} (pending)")
+                            await feishu_notify.send_text("\n".join(lines))
+                except Exception as e:
+                    print(f"[dca] fire_due_dcas failed: {e}")
+
+            await asyncio.sleep(60)
+        except Exception as e:
+            print(f"[dca] Loop error: {e}")
+            await asyncio.sleep(120)
