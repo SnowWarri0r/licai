@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { fetchJSON } from '../hooks/useApi'
 import UnwindCard from './UnwindCard'
-import BudgetAllocator from './BudgetAllocator'
 import MorningBriefing from './MorningBriefing'
 import SectorRadar from './SectorRadar'
 import SectorOpportunities from './SectorOpportunities'
@@ -42,7 +41,6 @@ export default function UnwindView() {
       <SectorOpportunities />
       <Cashflow />
       <AllocationAdvisor />
-      <BudgetAllocator onAllocated={loadPlans} />
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {plans.filter(p => (p.shares || 0) > 0).map(p => (
           <UnwindCard key={p.stock_code} plan={p} onChange={loadPlans} />
