@@ -6,6 +6,7 @@ import MorningBriefing from './MorningBriefing'
 import SectorRadar from './SectorRadar'
 import SectorOpportunities from './SectorOpportunities'
 import AllocationAdvisor from './AllocationAdvisor'
+import Cashflow from './Cashflow'
 
 export default function UnwindView() {
   const [plans, setPlans] = useState([])
@@ -39,6 +40,7 @@ export default function UnwindView() {
       <MorningBriefing />
       <SectorRadar />
       <SectorOpportunities />
+      <Cashflow />
       <AllocationAdvisor />
       <BudgetAllocator onAllocated={loadPlans} />
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

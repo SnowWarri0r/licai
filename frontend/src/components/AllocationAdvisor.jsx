@@ -91,11 +91,13 @@ const ROW_ORDER = ['M', 'W', 'A', 'H', 'U', 'F', 'C']
 export default function AllocationAdvisor() {
   const [holdings, setHoldings] = useState([])
   const [assets, setAssets] = useState([])
+  const [cashflow, setCashflow] = useState(null)
   const [tpl, setTpl] = useState(() => localStorage.getItem('allocTemplate') || 'balanced')
 
   useEffect(() => {
     fetchJSON('/api/portfolio').then(setHoldings).catch(() => {})
     fetchJSON('/api/assets').then(d => setAssets(d.assets || [])).catch(() => {})
+    fetchJSON('/api/cashflow/summary').then(setCashflow).catch(() => {})
   }, [])
 
   const pickTpl = (k) => { setTpl(k); localStorage.setItem('allocTemplate', k) }
@@ -173,6 +175,27 @@ export default function AllocationAdvisor() {
         <span className="mx-1.5">·</span>
         <span className="text-info">{tier.desc}</span>
       </div>
+
+      {cashflow && cashflow.avg_net > 0 && (
+        <div className="px-3 md:px-5 py-2.5 border-b border-border-subtle bg-info/5">
+          <div className="flex items-baseline justify-between flex-wrap gap-2 mb-1.5">
+            <span className="text-[11.5px] text-text-dim">
+              月均可投 (近 {cashflow.window} 月净储蓄)
+            </span>
+            <span className="font-mono font-semibold text-[14px] text-info">
+              ¥{fmtMoney(cashflow.avg_net)}
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10.5px] text-text-dim">
+            {ROW_ORDER.filter(k => targets[k] > 0).map(k => (
+              <span key={k}>
+                <span className="inline-block w-1.5 h-1.5 rounded-sm mr-1 align-middle" style={{ background: TYPE_COLOR[k] }} />
+                {TYPE_LABEL[k]} <span className="text-text font-mono">¥{fmtMoney(cashflow.avg_net * targets[k] / 100)}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="licai-alloc-row px-3 md:px-5 py-1.5 text-[10.5px] text-text-dim tracking-wider font-medium border-b border-border-subtle">
         <div>类别</div>

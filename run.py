@@ -30,6 +30,8 @@ from api.unwind_routes import router as unwind_router
 from api.assets_routes import router as assets_router
 from api.briefing_routes import router as briefing_router
 from api.sector_routes import router as sector_router
+from api.cashflow_routes import router as cashflow_router
+from api.export_routes import router as export_router
 from api.ws import router as ws_router, price_monitor_loop, premarket_push_loop, backup_loop, briefing_loop
 from services import feishu_notify
 
@@ -76,6 +78,8 @@ app.include_router(unwind_router)
 app.include_router(assets_router)
 app.include_router(briefing_router)
 app.include_router(sector_router)
+app.include_router(cashflow_router)
+app.include_router(export_router)
 app.include_router(ws_router)
 
 
