@@ -9,9 +9,11 @@ function TrancheRow({ tranche, currentPrice, onChange }) {
   } = tranche
   const [busy, setBusy] = useState(false)
 
-  // 减仓档位: trigger >= current 才触发
+  // 减仓档位: 现价 >= 触发价才算到位 (无容差, 否则会在差几分时误报"可执行")
   const distance = ((trigger_price - currentPrice) / currentPrice) * 100
-  const reached = currentPrice >= trigger_price * 0.998
+  const reached = currentPrice >= trigger_price
+  // 接近但未到位: 距离 < 0.5%, 显示"接近"但不开放成交按钮
+  const nearReached = !reached && distance > 0 && distance < 0.5
   const isExecuted = status === 'executed'
 
   const handleExecute = async () => {
@@ -42,11 +44,13 @@ function TrancheRow({ tranche, currentPrice, onChange }) {
 
   const rowBg = isExecuted
     ? 'bg-bull/10'
-    : reached ? 'bg-bear/10' : 'bg-transparent'
+    : reached ? 'bg-bear/10' : nearReached ? 'bg-[var(--color-signal-moderate)]/10' : 'bg-transparent'
 
   const badgeClass = isExecuted
     ? 'bg-bull text-bg'
-    : reached ? 'bg-bear text-bg' : 'bg-surface-3 text-text-dim'
+    : reached ? 'bg-bear text-bg'
+    : nearReached ? 'bg-[var(--color-signal-moderate)] text-bg'
+    : 'bg-surface-3 text-text-dim'
 
   let actionEl
   if (isExecuted) {
@@ -73,6 +77,8 @@ function TrancheRow({ tranche, currentPrice, onChange }) {
     statusText = <span className="text-bull">已卖 ¥{proceeds.toFixed(0)}</span>
   } else if (reached) {
     statusText = <span className="text-bear-bright font-semibold">触发中</span>
+  } else if (nearReached) {
+    statusText = <span className="text-[var(--color-signal-moderate)]">接近 +{distance.toFixed(2)}%</span>
   } else {
     statusText = <span className="text-text-muted">距 +{distance.toFixed(1)}%</span>
   }
