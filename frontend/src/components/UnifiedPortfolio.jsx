@@ -617,7 +617,7 @@ function TypeMiniInfo({ row, unwindByCode }) {
 // ============================================================
 // Hover action buttons
 // ============================================================
-function RowActions({ row, visible, onEdit, onHistory, onRemove, onAddLot }) {
+function RowActions({ row, visible, onEdit, onHistory, onRemove, onAddLot, onReduceLot, onShowActions }) {
   // 桌面: hover 才显示 (opacity 控制); 移动: 始终显示, 1 字按钮
   const btnBase = 'rounded border border-border-med bg-surface-2 text-text-dim ' +
     'hover:border-accent hover:text-accent transition-colors cursor-pointer whitespace-nowrap'
@@ -626,8 +626,13 @@ function RowActions({ row, visible, onEdit, onHistory, onRemove, onAddLot }) {
     actions.push({ short: '史', label: '历史', fn: () => onHistory?.(row._raw) })
     actions.push({ short: '改', label: '编辑', fn: () => onEdit?.(row) })
   } else {
-    if (row.type === 'F' || row.type === 'C' || row.type === 'W') {
+    if (row.type === 'F' || row.type === 'C' || row.type === 'W' || row.type === 'M') {
       actions.push({ short: '加', label: '加仓', fn: () => onAddLot?.(row) })
+      actions.push({ short: '减', label: '减仓', fn: () => onReduceLot?.(row) })
+      const pendingN = row._raw?.pending_actions_count || 0
+      const histLabel = pendingN > 0 ? `流水 (${pendingN}!)` : '流水'
+      actions.push({ short: pendingN > 0 ? `史${pendingN}` : '史', label: histLabel,
+        fn: () => onShowActions?.(row), highlight: pendingN > 0 })
     }
     actions.push({ short: '改', label: '编辑', fn: () => onEdit?.(row) })
     actions.push({ short: '删', label: '删除', fn: () => onRemove?.(row), danger: true })
@@ -642,7 +647,7 @@ function RowActions({ row, visible, onEdit, onHistory, onRemove, onAddLot }) {
       <div className="flex md:hidden gap-0.5 justify-end items-center">
         {actions.map(a => (
           <button key={a.label} onClick={a.fn}
-            className={`${btnBase} px-1.5 py-[2px] text-[11px] min-w-[20px]`}
+            className={`${btnBase} px-1.5 py-[2px] text-[11px] min-w-[20px] ${a.highlight ? 'border-warn/60 text-warn' : ''}`}
             {...dangerHover(a)}
           >{a.short}</button>
         ))}
@@ -658,7 +663,7 @@ function RowActions({ row, visible, onEdit, onHistory, onRemove, onAddLot }) {
         }}>
         {actions.map(a => (
           <button key={a.label} onClick={a.fn}
-            className={`${btnBase} px-2 py-[3px] text-[10.5px]`}
+            className={`${btnBase} px-2 py-[3px] text-[10.5px] ${a.highlight ? 'border-warn/60 text-warn' : ''}`}
             style={{ pointerEvents: visible ? 'auto' : 'none' }}
             {...dangerHover(a)}
           >{a.label}</button>
@@ -671,8 +676,10 @@ function RowActions({ row, visible, onEdit, onHistory, onRemove, onAddLot }) {
 // ============================================================
 // Summary strip
 // ============================================================
-function SummaryStrip({ agg, aShareClosed }) {
+function SummaryStrip({ agg, aShareClosed, realized }) {
   const fxExposure = agg.fxExposure || []
+  const realizedTotal = (realized?.stock || 0) + (realized?.asset || 0)
+  const grandPnl = (agg.totalPnl || 0) + realizedTotal
   const items = [
     {
       label: '总资产',
@@ -683,9 +690,24 @@ function SummaryStrip({ agg, aShareClosed }) {
     },
     {
       label: '总盈亏',
-      val: `${agg.totalPnl >= 0 ? '+' : ''}${fmtMoney(agg.totalPnl)}`,
-      color: priceColor(agg.totalPnl),
-      sub: `(${agg.totalCost > 0 ? fmtPct(agg.totalPnl / agg.totalCost * 100) : '--'})`,
+      val: `${grandPnl >= 0 ? '+' : ''}${fmtMoney(grandPnl)}`,
+      color: priceColor(grandPnl),
+      sub: agg.totalCost > 0 ? `(${fmtPct(grandPnl / agg.totalCost * 100)})` : '',
+      tooltip: realizedTotal !== 0 ? (
+        <div className="leading-relaxed">
+          <div className="text-text-bright font-semibold mb-1">总盈亏拆分</div>
+          <div className="font-mono text-[11px] space-y-0.5">
+            <div>浮动盈亏 <span className={priceColor(agg.totalPnl)}>{agg.totalPnl >= 0 ? '+' : ''}¥{fmtMoney(agg.totalPnl)}</span></div>
+            <div>已实现盈亏 <span className={priceColor(realizedTotal)}>{realizedTotal >= 0 ? '+' : ''}¥{fmtMoney(realizedTotal)}</span></div>
+            {realized?.stock !== 0 && (
+              <div className="text-text-dim pl-2">  · 股票 <span className={priceColor(realized.stock)}>{realized.stock >= 0 ? '+' : ''}¥{fmtMoney(realized.stock)}</span></div>
+            )}
+            {realized?.asset !== 0 && (
+              <div className="text-text-dim pl-2">  · 基金/理财/加密 <span className={priceColor(realized.asset)}>{realized.asset >= 0 ? '+' : ''}¥{fmtMoney(realized.asset)}</span></div>
+            )}
+          </div>
+        </div>
+      ) : null,
     },
     {
       label: aShareClosed ? '今日浮动 (A股闭市)' : '今日浮动',
@@ -695,14 +717,18 @@ function SummaryStrip({ agg, aShareClosed }) {
   ]
   return (
     <div className="flex gap-4 md:gap-7 items-baseline flex-wrap">
-      {items.map((it, i) => (
-        <div key={i} className="flex flex-col gap-0.5">
-          <span className="text-[10.5px] text-text-dim tracking-wide">{it.label}</span>
+      {items.map((it, i) => {
+        const valueSpan = (
           <span className="inline-flex items-baseline gap-1 md:gap-1.5 flex-wrap">
-            <span className={`font-mono font-bold tabular-nums ${it.color} ${it.big ? 'text-[18px] md:text-[22px]' : 'text-[14px] md:text-[15px]'}`}
+            <span className={`font-mono font-bold tabular-nums ${it.color} ${it.big ? 'text-[18px] md:text-[22px]' : 'text-[14px] md:text-[15px]'} ${it.tooltip ? 'cursor-help underline decoration-dotted decoration-text-muted/60 underline-offset-4' : ''}`}
               style={{ letterSpacing: '-.01em' }}>{it.val}</span>
             {it.sub && <span className={`font-mono text-[10.5px] md:text-[11px] opacity-80 ${it.color}`}>{it.sub}</span>}
           </span>
+        )
+        return (
+        <div key={i} className="flex flex-col gap-0.5">
+          <span className="text-[10.5px] text-text-dim tracking-wide">{it.label}</span>
+          {it.tooltip ? <Tooltip content={it.tooltip}>{valueSpan}</Tooltip> : valueSpan}
           {it.note && <span className="text-[9.5px] text-text-muted">{it.note}</span>}
           {i === 0 && fxExposure.length > 0 && (
             <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
@@ -716,7 +742,8 @@ function SummaryStrip({ agg, aShareClosed }) {
             </div>
           )}
         </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
@@ -736,6 +763,9 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
   const [addTarget, setAddTarget] = useState(null) // null | 'A' | 'F' | 'C' | 'R'
   const [editAsset, setEditAsset] = useState(null)
   const [addLotAsset, setAddLotAsset] = useState(null)
+  const [reduceAsset, setReduceAsset] = useState(null)
+  const [actionsAsset, setActionsAsset] = useState(null)
+  const [realized, setRealized] = useState({ stock: 0, asset: 0 })
 
   const loadAssets = useCallback(async () => {
     try {
@@ -744,13 +774,27 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
     } catch {} finally { setAssetsLoaded(true) }
   }, [])
 
+  const loadRealized = useCallback(async () => {
+    try {
+      const [s, a] = await Promise.all([
+        fetchJSON('/api/portfolio/realized'),
+        fetchJSON('/api/assets/realized'),
+      ])
+      setRealized({
+        stock: s.total_realized_pnl || 0,
+        asset: a.total_realized_pnl || 0,
+      })
+    } catch (e) { console.error('realized load failed', e) }
+  }, [])
+
   useEffect(() => {
     loadAssets()
+    loadRealized()
     // Crypto & OKX bots are 24/7 markets; use shorter interval. Server-side
     // caches handle upstream rate limits (crypto 30s, fund 120s).
-    const t = setInterval(loadAssets, 20000)
+    const t = setInterval(() => { loadAssets(); loadRealized() }, 20000)
     return () => clearInterval(t)
-  }, [loadAssets])
+  }, [loadAssets, loadRealized])
 
   useEffect(() => {
     fetchJSON('/api/market/trading-day').then(setTradingDay).catch(() => {})
@@ -887,6 +931,14 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
     if (row.type === 'A') return  // A股 走 TransactionHistory
     setAddLotAsset(row._raw)
   }
+  const handleReduceLot = (row) => {
+    if (row.type === 'A') return
+    setReduceAsset(row._raw)
+  }
+  const handleShowActions = (row) => {
+    if (row.type === 'A') return
+    setActionsAsset(row._raw)
+  }
 
   const isEmpty = rows.length === 0
   if (isEmpty && !assetsLoaded) {
@@ -909,7 +961,7 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
           </div>
           {isEmpty
             ? <div className="text-text-dim text-[12px] py-2">还没有持仓,点击下方「+ 添加」开始</div>
-            : <SummaryStrip agg={agg} aShareClosed={!aShareTradingDay} />
+            : <SummaryStrip agg={agg} aShareClosed={!aShareTradingDay} realized={realized} />
           }
         </div>
         {!isEmpty && <AllocationDonut groups={agg.groups} totalMv={agg.totalMv} />}
@@ -1001,8 +1053,20 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
 
       {addLotAsset && (
         <AddLotRow asset={addLotAsset}
-          onDone={() => { setAddLotAsset(null); loadAssets() }}
+          onDone={() => { setAddLotAsset(null); loadAssets(); loadRealized() }}
           onCancel={() => setAddLotAsset(null)} />
+      )}
+
+      {reduceAsset && (
+        <ReduceLotRow asset={reduceAsset}
+          onDone={() => { setReduceAsset(null); loadAssets(); loadRealized() }}
+          onCancel={() => setReduceAsset(null)} />
+      )}
+
+      {actionsAsset && (
+        <AssetActionsModal asset={actionsAsset}
+          onClose={() => setActionsAsset(null)}
+          onChanged={() => { loadAssets(); loadRealized() }} />
       )}
 
       {/* Column headers */}
@@ -1195,10 +1259,18 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
                     </div>
                     {/* RowActions: 桌面 hover 显示, 绝对覆盖右半. 容器 pointer-events-none 让事件
                         穿透到 TypeMiniInfo (反推 tooltip 之类), 子元素重置 auto 接收点击.
-                        bg-surface-2 强遮挡, 与 row hover 背景色一致, 视觉自然. */}
-                    <div className="md:absolute md:inset-y-0 md:right-0 flex items-center md:pr-0 md:pointer-events-none [&>div]:pointer-events-auto">
+                        hover 时给个 surface-2 渐变遮罩, 与 row hover 背景色一致, 视觉自然. */}
+                    <div className="md:absolute md:inset-y-0 md:right-0 flex items-center md:pr-3 md:pointer-events-none [&>div]:pointer-events-auto transition-opacity"
+                      style={{
+                        background: hoverId === row.id
+                          ? 'linear-gradient(to right, transparent 0%, var(--color-surface-2) 18%, var(--color-surface-2) 100%)'
+                          : 'transparent',
+                        transition: 'background .18s',
+                      }}>
                       <RowActions row={row} visible={hoverId === row.id}
-                        onEdit={handleEdit} onHistory={onHistory} onRemove={removeAsset} onAddLot={handleAddLot} />
+                        onEdit={handleEdit} onHistory={onHistory} onRemove={removeAsset}
+                        onAddLot={handleAddLot} onReduceLot={handleReduceLot}
+                        onShowActions={handleShowActions} />
                     </div>
                   </div>
                 </div>
@@ -1263,7 +1335,10 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
 // Add stock form — compact, inline
 // ============================================================
 function AddAShareForm({ initialMarket = 'A', onDone, onCancel }) {
-  const [form, setForm] = useState({ code: '', name: '', shares: '', cost: '' })
+  const [form, setForm] = useState({
+    code: '', name: '', shares: '', cost: '',
+    tradeDate: new Date().toISOString().slice(0, 10),
+  })
   const [market, setMarket] = useState(initialMarket)
   const [submitting, setSubmitting] = useState(false)
   const [nameLooking, setNameLooking] = useState(false)
@@ -1293,6 +1368,7 @@ function AddAShareForm({ initialMarket = 'A', onDone, onCancel }) {
       const res = await api.addHolding({
         stock_code: stockCode, stock_name: form.name,
         shares: parseInt(form.shares), cost_price: parseFloat(form.cost),
+        trade_date: form.tradeDate || undefined,
       })
       if (res.message) onDone?.()
       else alert(res.detail || '添加失败')
@@ -1344,6 +1420,12 @@ function AddAShareForm({ initialMarket = 'A', onDone, onCancel }) {
         <input type="number" className={`${inp} w-28 font-mono`}
           placeholder="12.7401" step={0.0001} value={form.cost}
           onChange={e => setForm({ ...form, cost: e.target.value })} />
+      </div>
+      <div className="flex flex-col gap-1">
+        <label className="text-[11px] text-text-dim">买入日期</label>
+        <input type="date" className={`${inp} w-36 font-mono`}
+          value={form.tradeDate}
+          onChange={e => setForm({ ...form, tradeDate: e.target.value })} />
       </div>
       <button onClick={submit} disabled={submitting}
         className="px-4 py-1.5 rounded-md bg-accent text-bg font-medium text-[13px] hover:opacity-90 transition-opacity disabled:opacity-50 cursor-pointer">
@@ -1971,8 +2053,10 @@ function EditAssetRow({ asset, onDone, onCancel }) {
 }
 
 // ============================================================
-// AddLotRow — 加仓表单. Computes new aggregate cost/shares/start_date
-// for FUND/CRYPTO/WEALTH; shows a live preview before save.
+// AddLotRow — 加仓 modal. 与 ReduceLotRow 对称.
+// OTC 基金 (场外): 只填本金 + 日期, 写 pending 流水, T+1 净值出来后回流水"确认"补份额
+// 场内 ETF / CRYPTO: 三选二 (本金/份额/单价) + 手续费 + 日期, 立即 confirmed
+// WEALTH/CASH: 本金 + 日期 (+ WEALTH 可填本笔起投日 / 年化)
 // ============================================================
 function AddLotRow({ asset, onDone, onCancel }) {
   const [principal, setPrincipal] = useState('')
@@ -1984,15 +2068,20 @@ function AddLotRow({ asset, onDone, onCancel }) {
   const [lotYield, setLotYield] = useState('')   // WEALTH: 加投年化 %
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
-  const rootRef = React.useRef(null)
-  useEffect(() => {
-    rootRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-  }, [])
+
+  React.useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onCancel?.() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onCancel])
 
   const t = asset.asset_type
   const isFund = t === 'FUND'
   const isCrypto = t === 'CRYPTO'
   const isWealth = t === 'WEALTH'
+  const isCash = t === 'CASH'
+  const isOtcFund = isFund && !isEtfCode(asset.code)
+  const isShareBased = isFund || isCrypto
 
   // --- Live preview ---
   const oldCost = parseFloat(asset.cost_amount) || 0
@@ -2123,85 +2212,545 @@ function AddLotRow({ asset, onDone, onCancel }) {
     finally { setBusy(false) }
   }
 
-  const inp = 'bg-bg border border-border rounded px-2 py-1 text-[12px] text-text font-mono outline-none focus:border-bull'
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onCancel}>
+      <div className="bg-surface-2 border border-border rounded-xl p-5 w-[480px] max-w-[95vw] space-y-3"
+        onClick={e => e.stopPropagation()}>
+        <div className="flex items-baseline justify-between">
+          <h3 className="text-[14px] font-semibold text-text-bright m-0">⊕ 加仓 / 申购 <span className="text-text">{asset.name}</span></h3>
+          <button onClick={onCancel} className="text-text-dim hover:text-text text-[18px] leading-none px-2 cursor-pointer">×</button>
+        </div>
+        <div className="text-[11px] text-text-dim">
+          当前: cost ¥{fmtMoney(oldCost)}
+          {isShareBased && asset.shares && <> · shares {parseFloat(asset.shares).toFixed(4)}</>}
+          {isOtcFund && (
+            <span className="ml-2 px-1.5 py-[1px] rounded bg-warn/15 text-warn text-[10px] border border-warn/40">OTC 场外基金</span>
+          )}
+        </div>
+
+        {isOtcFund ? (
+          <>
+            <div>
+              <label className="text-[11.5px] text-text-dim block mb-1">申购金额 (CNY)</label>
+              <input type="number" inputMode="decimal" placeholder="例: 1000" autoFocus
+                value={principal} onChange={e => setPrincipal(e.target.value)}
+                className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono text-bull-bright outline-none focus:border-accent" />
+            </div>
+            <div className="text-[10.5px] text-text-muted leading-relaxed bg-warn/5 border border-warn/30 rounded px-2 py-1.5">
+              场外基金 T+1/T+2 才出净值。这一步只记申请，会标 <span className="text-warn font-mono">pending</span>，
+              暂不进总盈亏。等净值确认后回 <span className="text-text">流水</span> 里点 <span className="text-text">确认</span>，补份额/净值再入账。
+            </div>
+          </>
+        ) : isShareBased ? (
+          <>
+            <div>
+              <label className="text-[11.5px] text-text-dim block mb-1">本金 (CNY) <span className="text-text-muted">— 按股买可空</span></label>
+              <input type="number" inputMode="decimal" placeholder="1000" autoFocus
+                value={principal} onChange={e => setPrincipal(e.target.value)}
+                className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono text-bull-bright outline-none focus:border-accent" />
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="text-[11.5px] text-text-dim block mb-1">{isFund ? '成交净值' : '单价'}</label>
+                <input type="number" inputMode="decimal" placeholder="3.4399"
+                  value={unitPrice} onChange={e => setUnitPrice(e.target.value)}
+                  className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent" />
+              </div>
+              <div>
+                <label className="text-[11.5px] text-text-dim block mb-1">{isFund ? '成交份额' : '成交数量'}</label>
+                <input type="number" inputMode="decimal" placeholder="290.7"
+                  value={shares} onChange={e => setShares(e.target.value)}
+                  className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent" />
+              </div>
+            </div>
+            <div>
+              <label className="text-[11.5px] text-text-dim block mb-1">
+                手续费 ¥ <span className="text-text-muted text-[10px]">— 场内 ETF 默认万2.5/最低5; 场外公募填 0</span>
+              </label>
+              <input type="number" inputMode="decimal" placeholder="5.00"
+                value={fee} onChange={e => { setFee(e.target.value); setFeeTouched(true) }}
+                className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent" />
+            </div>
+          </>
+        ) : (
+          <div>
+            <label className="text-[11.5px] text-text-dim block mb-1">本金 (CNY)</label>
+            <input type="number" inputMode="decimal" placeholder="1000" autoFocus
+              value={principal} onChange={e => setPrincipal(e.target.value)}
+              className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono text-bull-bright outline-none focus:border-accent" />
+          </div>
+        )}
+
+        <div className={isWealth ? 'grid grid-cols-2 gap-2' : ''}>
+          <div>
+            <label className="text-[11.5px] text-text-dim block mb-1">{isWealth ? '本笔起投日' : '日期'}</label>
+            <input type="date" value={lotStartDate} onChange={e => setLotStartDate(e.target.value)}
+              className="bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent w-full" />
+          </div>
+          {isWealth && (
+            <div>
+              <label className="text-[11.5px] text-text-dim block mb-1">本笔年化 % <span className="text-text-muted text-[10px]">可空</span></label>
+              <input type="number" inputMode="decimal" placeholder="2.15"
+                value={lotYield} onChange={e => setLotYield(e.target.value)}
+                className="bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent w-full" />
+            </div>
+          )}
+        </div>
+
+        {preview && (
+          <div className="bg-surface-3 rounded-md px-3 py-2 space-y-0.5 text-[11px]">
+            {Object.entries(preview).map(([k, v]) => (
+              <div key={k} className="flex items-baseline justify-between gap-2">
+                <span className="text-text-muted">{k}</span>
+                <span className="font-mono text-bull-bright">{v}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {err && <div className="text-[11px] text-bear-bright">{err}</div>}
+
+        <div className="flex gap-2 pt-1">
+          <button onClick={save}
+            disabled={busy || !(isShareBased ? (p > 0 || (sNum > 0 && uNum > 0)) : p > 0)}
+            className="flex-1 px-4 py-2 rounded-lg bg-bull text-bg font-medium text-[13px] hover:opacity-90 disabled:opacity-50 cursor-pointer">
+            {busy ? '...' : '确认加仓'}
+          </button>
+          <button onClick={onCancel}
+            className="px-4 py-2 rounded-lg border border-border text-text-dim hover:text-text hover:border-border-med text-[13px] cursor-pointer">
+            取消
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// 场内 ETF: 5xxxxx (上交所) / 159xxx (深交所) / 588xxx (科创). 其他 6 位归 OTC 基金.
+function isEtfCode(code) {
+  const c = String(code || '').trim()
+  if (c.length !== 6 || !/^\d+$/.test(c)) return false
+  return c.startsWith('5') || c.startsWith('159') || c.startsWith('588')
+}
+
+// ReduceLotRow — 减仓 / 赎回 modal.
+// OTC 基金 (场外): 只填份额 + 日期, 写 pending 流水, 等 T+1 净值出来后回来"确认"
+// ETF/CRYPTO: 三选二 (amount/shares/unit_price), 直接写 confirmed
+// WEALTH/CASH: 仅 amount
+function ReduceLotRow({ asset, onDone, onCancel }) {
+  const t = asset.asset_type
+  const isShareBased = t === 'FUND' || t === 'CRYPTO'
+  const isOtcFund = t === 'FUND' && !isEtfCode(asset.code)
+  const isImmediate = !isOtcFund  // ETF/CRYPTO/WEALTH/CASH 立即结算
+
+  const [amount, setAmount] = React.useState('')
+  const [shares, setShares] = React.useState('')
+  const [unitPrice, setUnitPrice] = React.useState('')
+  const [tradeDate, setTradeDate] = React.useState(() => new Date().toISOString().slice(0, 10))
+  const [busy, setBusy] = React.useState(false)
+  const [err, setErr] = React.useState('')
+
+  const f = (v) => v === '' ? null : parseFloat(v) || 0
+  const a = f(amount), s = f(shares), u = f(unitPrice)
+
+  // 实时推算第三个字段 (ETF/CRYPTO 即时模式)
+  const inferred = React.useMemo(() => {
+    if (!isShareBased || isOtcFund) return null
+    if (a && s && (!u || u === 0)) return { unit_price: (a / s).toFixed(4) }
+    if (a && u && (!s || s === 0)) return { shares: (a / u).toFixed(4) }
+    if (s && u && (!a || a === 0)) return { amount: (s * u).toFixed(2) }
+    return null
+  }, [a, s, u, isShareBased, isOtcFund])
+
+  // 估算实现盈亏 (按比例摊销当前 cost)
+  const estRealized = React.useMemo(() => {
+    const curCost = parseFloat(asset.cost_amount || 0)
+    if (curCost <= 0) return null
+    if (isOtcFund) {
+      // OTC 阶段没有 amount, 只能算"按当前持仓平均成本算的占用成本"
+      const curShares = parseFloat(asset.shares || 0)
+      if (!s || s <= 0 || curShares <= 0) return null
+      const matchedCost = (s / curShares) * curCost
+      return { type: 'occupied_cost', val: matchedCost }
+    }
+    if (isShareBased) {
+      if (!a || a <= 0) return null
+      const curShares = parseFloat(asset.shares || 0)
+      const consumeShares = s || (u && u > 0 ? a / u : 0)
+      if (curShares <= 0 || !consumeShares) return null
+      const matchedCost = (consumeShares / curShares) * curCost
+      return { type: 'realized', val: a - matchedCost }
+    }
+    return null
+  }, [a, s, u, isShareBased, isOtcFund, asset])
+
+  const submit = async () => {
+    setErr('')
+    if (isOtcFund) {
+      if (!s || s <= 0) { setErr('请填卖出份额'); return }
+    } else {
+      if (!a || a <= 0) { setErr('赎回金额必须为正数'); return }
+      if (isShareBased && !s && !u) { setErr('ETF/CRYPTO 至少传 shares 或 unit_price'); return }
+    }
+    setBusy(true)
+    try {
+      const body = { trade_date: tradeDate }
+      if (isOtcFund) {
+        body.amount = 0
+        body.shares = s
+      } else {
+        body.amount = a
+        if (isShareBased) {
+          if (s) body.shares = s
+          if (u) body.unit_price = u
+        }
+      }
+      const res = await fetch(`/api/assets/${asset.id}/reduce-lot`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || '减仓失败')
+      onDone?.()
+    } catch (e) {
+      setErr(e.message)
+    } finally {
+      setBusy(false)
+    }
+  }
 
   return (
-    <div ref={rootRef}
-      className="px-6 py-3 border-b-2 border-bull bg-bull/5 flex flex-wrap gap-3 items-end"
-      style={{ animation: 'fade-up 0.2s ease-out' }}>
-      <span className="text-[11px] text-bull-bright font-semibold mr-2 basis-full">
-        ⊕ 加仓 <span className="text-text-bright">{asset.name}</span>
-        {(isFund || isCrypto) && (
-          <span className="ml-2 text-[10px] text-text-muted font-normal">
-            · 单价+份额 = 按股买；本金+(单价或份额) = 确认型；仅本金 = 待确认
-          </span>
-        )}
-      </span>
-      <div className="flex flex-col gap-1">
-        <label className="text-[11px] text-text-dim">本金 ¥{(isFund || isCrypto) ? ' (按股买可空)' : ' *'}</label>
-        <input type="number" step="0.01" autoFocus value={principal} onChange={e => setPrincipal(e.target.value)}
-          className={`${inp} w-28`} placeholder="1000" />
-      </div>
-      {(isFund || isCrypto) && (
-        <>
-          <div className="flex flex-col gap-1">
-            <label className="text-[11px] text-text-dim">{isFund ? '成交净值' : '单价'}</label>
-            <input type="number" step="0.0001" value={unitPrice} onChange={e => setUnitPrice(e.target.value)}
-              className={`${inp} w-28`} placeholder="3.4399" />
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-[11px] text-text-dim">{isFund ? '成交份额' : '成交数量'}</label>
-            <input type="number" step="0.0001" value={shares} onChange={e => setShares(e.target.value)}
-              className={`${inp} w-28`} placeholder="290.7" />
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-[11px] text-text-dim">
-              手续费 ¥
-              <span className="ml-1 text-[9.5px] text-text-muted">
-                (场内 ETF 默认万2.5 / 最低5；场外公募基金填 0)
-              </span>
-            </label>
-            <input type="number" step="0.01" value={fee}
-              onChange={e => { setFee(e.target.value); setFeeTouched(true) }}
-              className={`${inp} w-24`} placeholder="5.00" />
-          </div>
-        </>
-      )}
-      {isWealth && (
-        <>
-          <div className="flex flex-col gap-1">
-            <label className="text-[11px] text-text-dim">本笔起投日</label>
-            <input type="date" value={lotStartDate} onChange={e => setLotStartDate(e.target.value)}
-              className={`${inp} w-36`} />
-          </div>
-          <div className="flex flex-col gap-1">
-            <label className="text-[11px] text-text-dim">本笔年化 % (可空)</label>
-            <input type="number" step="0.001" value={lotYield} onChange={e => setLotYield(e.target.value)}
-              className={`${inp} w-24`} placeholder="2.15" />
-          </div>
-        </>
-      )}
-      <button onClick={save} disabled={busy || !((isFund || isCrypto) ? (p > 0 || (sNum > 0 && uNum > 0)) : p > 0)}
-        className="px-4 py-1.5 rounded bg-bull text-bg font-semibold text-[12px] hover:opacity-90 cursor-pointer disabled:opacity-50">
-        {busy ? '...' : '加仓'}
-      </button>
-      <button onClick={onCancel}
-        className="px-3 py-1.5 rounded border border-border text-text-dim text-[12px] hover:text-text cursor-pointer">
-        取消
-      </button>
-      {preview && (
-        <div className="basis-full text-[11px] text-text-dim flex flex-wrap gap-x-4 gap-y-1 mt-1 pt-2 border-t border-border-subtle">
-          {Object.entries(preview).map(([k, v]) => (
-            <span key={k}>
-              <span className="text-text-muted">{k}:</span>{' '}
-              <span className="font-mono text-bull-bright">{v}</span>
-            </span>
-          ))}
+    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onCancel}>
+      <div className="bg-surface-2 border border-border rounded-xl p-5 w-[440px] max-w-[95vw] space-y-3"
+        onClick={e => e.stopPropagation()}>
+        <div className="flex items-baseline justify-between">
+          <h3 className="text-[14px] font-semibold text-text-bright m-0">⊖ 减仓 / 赎回 <span className="text-text">{asset.name}</span></h3>
+          <button onClick={onCancel} className="text-text-dim hover:text-text text-[18px] leading-none px-2 cursor-pointer">×</button>
         </div>
+        <div className="text-[11px] text-text-dim">
+          当前: cost ¥{fmtMoney(parseFloat(asset.cost_amount || 0))}
+          {isShareBased && asset.shares && <> · shares {parseFloat(asset.shares).toFixed(4)}</>}
+          {isOtcFund && (
+            <span className="ml-2 px-1.5 py-[1px] rounded bg-warn/15 text-warn text-[10px] border border-warn/40">OTC 场外基金</span>
+          )}
+        </div>
+
+        {isOtcFund ? (
+          <>
+            <div>
+              <label className="text-[11.5px] text-text-dim block mb-1">卖出份额</label>
+              <input type="number" inputMode="decimal" placeholder="例: 500"
+                value={shares} onChange={e => setShares(e.target.value)}
+                className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono text-bear-bright outline-none focus:border-accent" />
+            </div>
+            <div className="text-[10.5px] text-text-muted leading-relaxed bg-warn/5 border border-warn/30 rounded px-2 py-1.5">
+              场外基金 T+1/T+2 才出净值。这一步只记申请，会标 <span className="text-warn font-mono">pending</span>，
+              暂不进总盈亏。等净值确认后回来 <span className="text-text">确认</span>，补金额/净值再入账。
+            </div>
+          </>
+        ) : (
+          <>
+            <div>
+              <label className="text-[11.5px] text-text-dim block mb-1">赎回金额 (CNY)</label>
+              <input type="number" inputMode="decimal" placeholder={inferred?.amount || '0'}
+                value={amount} onChange={e => setAmount(e.target.value)}
+                className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono text-bear-bright outline-none focus:border-accent" />
+            </div>
+            {isShareBased && (
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-[11.5px] text-text-dim block mb-1">赎回份额</label>
+                  <input type="number" inputMode="decimal" placeholder={inferred?.shares || '可选'}
+                    value={shares} onChange={e => setShares(e.target.value)}
+                    className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent" />
+                </div>
+                <div>
+                  <label className="text-[11.5px] text-text-dim block mb-1">单价 / 净值</label>
+                  <input type="number" inputMode="decimal" placeholder={inferred?.unit_price || '可选'}
+                    value={unitPrice} onChange={e => setUnitPrice(e.target.value)}
+                    className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent" />
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
+        <div>
+          <label className="text-[11.5px] text-text-dim block mb-1">日期</label>
+          <input type="date" value={tradeDate} onChange={e => setTradeDate(e.target.value)}
+            className="bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent" />
+        </div>
+
+        {estRealized && (
+          <div className="bg-surface-3 rounded-md px-3 py-2 flex items-center justify-between">
+            <span className="text-[11.5px] text-text-dim">
+              {estRealized.type === 'realized' ? '预估实现盈亏 (FIFO 比例)' : '占用成本 (赎回份额所占成本)'}
+            </span>
+            <span className={`font-mono font-semibold text-[13px] ${
+              estRealized.type === 'realized'
+                ? (estRealized.val >= 0 ? 'text-bull-bright' : 'text-bear-bright')
+                : 'text-text'
+            }`}>
+              {estRealized.type === 'realized' && (estRealized.val >= 0 ? '+' : '')}
+              ¥{fmtMoney(Math.abs(estRealized.val))}
+            </span>
+          </div>
+        )}
+
+        {err && <div className="text-[11px] text-bear-bright">{err}</div>}
+
+        <div className="flex gap-2 pt-1">
+          <button onClick={submit} disabled={busy}
+            className="flex-1 px-4 py-2 rounded-lg bg-bear text-bg font-medium text-[13px] hover:opacity-90 disabled:opacity-50 cursor-pointer">
+            {busy ? '...' : '确认减仓'}
+          </button>
+          <button onClick={onCancel}
+            className="px-4 py-2 rounded-lg border border-border text-text-dim hover:text-text hover:border-border-med text-[13px] cursor-pointer">
+            取消
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// AssetActionsModal — 流水查看 + pending 确认.
+function AssetActionsModal({ asset, onClose, onChanged }) {
+  const [actions, setActions] = React.useState([])
+  const [state, setState] = React.useState(null)
+  const [loading, setLoading] = React.useState(true)
+  const [confirmTarget, setConfirmTarget] = React.useState(null)
+
+  const reload = React.useCallback(async () => {
+    setLoading(true)
+    try {
+      const d = await fetchJSON(`/api/assets/${asset.id}/actions`)
+      setActions(d.actions || [])
+      setState(d.state || null)
+    } catch (e) { console.error(e) }
+    finally { setLoading(false) }
+  }, [asset.id])
+
+  React.useEffect(() => { reload() }, [reload])
+
+  React.useEffect(() => {
+    const onKey = e => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  const deleteAction = async (id) => {
+    if (!confirm('确定删除这条流水？后续 cost/shares 会按剩余流水重新计算')) return
+    await fetch(`/api/assets/${asset.id}/actions/${id}`, { method: 'DELETE' })
+    onChanged?.()
+    reload()
+  }
+
+  const colorByType = {
+    BUY: 'text-bull-bright', ADD: 'text-bull-bright', DEPOSIT: 'text-bull-bright',
+    REDEEM: 'text-bear-bright', WITHDRAW: 'text-bear-bright',
+    INTEREST: 'text-info', DIVIDEND: 'text-info',
+  }
+  const labelByType = {
+    BUY: '买入', ADD: '加仓', REDEEM: '赎回',
+    DEPOSIT: '存入', WITHDRAW: '取出',
+    INTEREST: '利息', DIVIDEND: '分红',
+  }
+
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-surface-2 border border-border rounded-xl p-5 w-[640px] max-w-[95vw] max-h-[85vh] overflow-y-auto"
+        onClick={e => e.stopPropagation()}>
+        <div className="flex items-baseline justify-between mb-3">
+          <h3 className="text-[14px] font-semibold text-text-bright m-0">流水 · {asset.name}</h3>
+          <button onClick={onClose} className="text-text-dim hover:text-text text-[18px] leading-none px-2 cursor-pointer">×</button>
+        </div>
+
+        {state && (
+          <div className="grid grid-cols-3 gap-2 mb-3 text-[11.5px]">
+            <div className="bg-surface-3 rounded-md px-2 py-1.5">
+              <div className="text-text-dim text-[10px] mb-0.5">当前成本</div>
+              <div className="font-mono text-text">¥{fmtMoney(state.cost_amount)}</div>
+            </div>
+            {(asset.asset_type === 'FUND' || asset.asset_type === 'CRYPTO') && (
+              <div className="bg-surface-3 rounded-md px-2 py-1.5">
+                <div className="text-text-dim text-[10px] mb-0.5">持有份额</div>
+                <div className="font-mono text-text">{state.shares?.toFixed(4)}</div>
+              </div>
+            )}
+            <div className="bg-surface-3 rounded-md px-2 py-1.5">
+              <div className="text-text-dim text-[10px] mb-0.5">累计已实现</div>
+              <div className={`font-mono ${state.realized_pnl >= 0 ? 'text-bull-bright' : 'text-bear-bright'}`}>
+                {state.realized_pnl >= 0 ? '+' : ''}¥{fmtMoney(Math.abs(state.realized_pnl))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {loading ? (
+          <div className="text-center text-text-dim text-[12px] py-4">加载中...</div>
+        ) : actions.length === 0 ? (
+          <div className="text-center text-text-dim text-[12px] py-4">暂无流水</div>
+        ) : (
+          <div className="border border-border-subtle rounded-md overflow-hidden">
+            <div className="grid grid-cols-[80px_60px_1fr_1fr_1fr_auto] gap-2 px-2 py-1.5 text-[10px] text-text-dim bg-surface-3 border-b border-border-subtle font-medium tracking-wider">
+              <div>日期</div>
+              <div>类型</div>
+              <div className="text-right">金额</div>
+              <div className="text-right">份额</div>
+              <div className="text-right">单价</div>
+              <div className="w-[100px]"></div>
+            </div>
+            {actions.map(a => {
+              const isPending = (a.status || 'confirmed') === 'pending'
+              return (
+                <div key={a.id} className={`grid grid-cols-[80px_60px_1fr_1fr_1fr_auto] gap-2 px-2 py-2 text-[11.5px] items-center border-b border-border-subtle last:border-b-0 ${isPending ? 'bg-warn/5' : ''}`}>
+                  <div className="font-mono text-[10.5px] text-text-dim">{(a.trade_date || '').slice(5) || '--'}</div>
+                  <div className={`font-medium ${colorByType[a.action_type] || 'text-text'}`}>
+                    {labelByType[a.action_type] || a.action_type}
+                  </div>
+                  <div className="text-right font-mono">
+                    {a.amount > 0 ? `¥${fmtMoney(a.amount)}` : <span className="text-text-muted">--</span>}
+                  </div>
+                  <div className="text-right font-mono text-[11px]">
+                    {a.shares != null ? parseFloat(a.shares).toFixed(4) : '--'}
+                  </div>
+                  <div className="text-right font-mono text-[11px]">
+                    {a.unit_price != null ? parseFloat(a.unit_price).toFixed(4) : '--'}
+                  </div>
+                  <div className="flex gap-1 items-center justify-end w-[100px]">
+                    {isPending && (
+                      <button onClick={() => setConfirmTarget(a)}
+                        className="px-1.5 py-[2px] rounded text-[10px] border border-warn text-warn hover:bg-warn/10 cursor-pointer">
+                        确认
+                      </button>
+                    )}
+                    {a.note !== 'initial (auto-migrated)' && (
+                      <button onClick={() => deleteAction(a.id)}
+                        className="px-1.5 py-[2px] rounded text-[10px] border border-bear/40 text-bear hover:bg-bear/10 cursor-pointer">
+                        删
+                      </button>
+                    )}
+                    {isPending && (
+                      <span className="text-[9.5px] px-1 py-[1px] rounded bg-warn/15 text-warn border border-warn/40">⏳</span>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
+      {confirmTarget && (
+        <ConfirmActionModal asset={asset} action={confirmTarget}
+          onClose={() => setConfirmTarget(null)}
+          onDone={() => { setConfirmTarget(null); reload(); onChanged?.() }} />
       )}
-      {err && (
-        <div className="basis-full text-[11px] text-bear-bright">{err}</div>
-      )}
+    </div>
+  )
+}
+
+function ConfirmActionModal({ asset, action, onClose, onDone }) {
+  // 两种 pending 形态:
+  //  REDEEM (赎回): shares 已知, 待确认 amount + unit_price
+  //  ADD/BUY (申购): amount 已知, 待确认 shares + unit_price
+  const isAdd = action.action_type === 'ADD' || action.action_type === 'BUY'
+  const knownShares = action.shares ? parseFloat(action.shares) : 0
+  const knownAmount = parseFloat(action.amount) || 0
+
+  const [amount, setAmount] = React.useState(isAdd ? String(knownAmount) : '')
+  const [shares, setShares] = React.useState(isAdd ? '' : String(knownShares))
+  const [unitPrice, setUnitPrice] = React.useState('')
+  const [busy, setBusy] = React.useState(false)
+  const [err, setErr] = React.useState('')
+
+  const a = parseFloat(amount) || 0
+  const s = parseFloat(shares) || 0
+  const u = parseFloat(unitPrice) || 0
+
+  // 反推占位 (任意两个推第三个)
+  const inferredUnit = (a > 0 && s > 0 && !u) ? (a / s).toFixed(4) : ''
+  const inferredShares = (a > 0 && u > 0 && !s) ? (a / u).toFixed(4) : ''
+  const inferredAmount = (s > 0 && u > 0 && !a) ? (s * u).toFixed(2) : ''
+
+  const submit = async () => {
+    setErr('')
+    if (!a || a <= 0) { setErr('金额必填'); return }
+    if (isAdd && !s && !u) { setErr('申购确认: 至少填份额或净值'); return }
+    setBusy(true)
+    try {
+      const body = { amount: a }
+      if (s > 0) body.shares = s
+      if (u > 0) body.unit_price = u
+      const res = await fetch(`/api/assets/${asset.id}/actions/${action.id}/confirm`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || '确认失败')
+      onDone?.()
+    } catch (e) { setErr(e.message) }
+    finally { setBusy(false) }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-surface-2 border border-border rounded-xl p-5 w-[420px] max-w-[95vw] space-y-3"
+        onClick={e => e.stopPropagation()}>
+        <div className="flex items-baseline justify-between">
+          <h3 className="text-[14px] font-semibold text-text-bright m-0">
+            确认 {isAdd ? '申购' : '赎回'}
+          </h3>
+          <button onClick={onClose} className="text-text-dim hover:text-text text-[18px] leading-none px-2 cursor-pointer">×</button>
+        </div>
+        <div className="text-[11px] text-text-dim">
+          原申请: {isAdd
+            ? <>金额 <span className="font-mono text-text">¥{fmtMoney(knownAmount)}</span></>
+            : <>份额 <span className="font-mono text-text">{knownShares.toFixed(4)}</span></>
+          } · 日期 <span className="font-mono text-text">{action.trade_date || '--'}</span>
+        </div>
+
+        <div>
+          <label className="text-[11.5px] text-text-dim block mb-1">
+            金额 (CNY) {isAdd && <span className="text-text-muted text-[10px]">— 通常等于申请额, 如有差异请改</span>}
+          </label>
+          <input type="number" inputMode="decimal" placeholder={inferredAmount || '0'}
+            value={amount} onChange={e => setAmount(e.target.value)}
+            className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent" />
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="text-[11.5px] text-text-dim block mb-1">
+              {isAdd ? '成交份额 *' : '份额'}
+            </label>
+            <input type="number" inputMode="decimal" placeholder={inferredShares || (isAdd ? '必填或填净值' : '已知')}
+              disabled={!isAdd}
+              value={shares} onChange={e => setShares(e.target.value)}
+              className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent disabled:opacity-60" />
+          </div>
+          <div>
+            <label className="text-[11.5px] text-text-dim block mb-1">净值 / 单价 <span className="text-text-muted text-[10px]">可空</span></label>
+            <input type="number" inputMode="decimal" placeholder={inferredUnit || '可选'}
+              value={unitPrice} onChange={e => setUnitPrice(e.target.value)}
+              className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent" />
+          </div>
+        </div>
+
+        {err && <div className="text-[11px] text-bear-bright">{err}</div>}
+
+        <div className="flex gap-2 pt-1">
+          <button onClick={submit} disabled={busy}
+            className="flex-1 px-4 py-2 rounded-lg bg-accent text-bg font-medium text-[13px] hover:opacity-90 disabled:opacity-50 cursor-pointer">
+            {busy ? '...' : '确认入账'}
+          </button>
+          <button onClick={onClose}
+            className="px-4 py-2 rounded-lg border border-border text-text-dim hover:text-text hover:border-border-med text-[13px] cursor-pointer">
+            取消
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

@@ -25,6 +25,22 @@ export default function Dashboard({ holdings }) {
   const [unwindStats, setUnwindStats] = useState(null)
   const [external, setExternal] = useState(null)
   const [tradingDay, setTradingDay] = useState(null)
+  const [realized, setRealized] = useState({ stock: 0, asset: 0 })
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const [s, a] = await Promise.all([
+          fetchJSON('/api/portfolio/realized'),
+          fetchJSON('/api/assets/realized'),
+        ])
+        setRealized({ stock: s.total_realized_pnl || 0, asset: a.total_realized_pnl || 0 })
+      } catch {}
+    }
+    load()
+    const t = setInterval(load, 30000)
+    return () => clearInterval(t)
+  }, [])
 
   useEffect(() => {
     const load = async () => {
@@ -144,7 +160,9 @@ export default function Dashboard({ holdings }) {
   // --- Combined ---
   const totalValue = aValue + eValue
   const totalCost = aCost + eCost
-  const totalPnl = aPnl + ePnl
+  const realizedTotal = (realized?.stock || 0) + (realized?.asset || 0)
+  const unrealizedPnl = aPnl + ePnl
+  const totalPnl = unrealizedPnl + realizedTotal
   const totalPnlPct = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0
 
   return (
@@ -190,7 +208,27 @@ export default function Dashboard({ holdings }) {
         ))}
       </div>
       <div className="flex items-center gap-1.5 shrink-0">
-        <span className="text-[11px] text-text-muted">总盈亏</span>
+        {realizedTotal !== 0 ? (
+          <Tooltip content={
+            <div className="leading-relaxed">
+              <div className="text-text-bright font-semibold mb-1">总盈亏拆分</div>
+              <div className="font-mono text-[11px] space-y-0.5">
+                <div>浮动 <span className={priceColor(unrealizedPnl)}>{unrealizedPnl >= 0 ? '+' : ''}¥{fmtMoney(unrealizedPnl)}</span></div>
+                <div>已实现 <span className={priceColor(realizedTotal)}>{realizedTotal >= 0 ? '+' : ''}¥{fmtMoney(realizedTotal)}</span></div>
+                {realized.stock !== 0 && (
+                  <div className="text-text-dim pl-2">  · 股票 <span className={priceColor(realized.stock)}>{realized.stock >= 0 ? '+' : ''}¥{fmtMoney(realized.stock)}</span></div>
+                )}
+                {realized.asset !== 0 && (
+                  <div className="text-text-dim pl-2">  · 基金/理财/加密 <span className={priceColor(realized.asset)}>{realized.asset >= 0 ? '+' : ''}¥{fmtMoney(realized.asset)}</span></div>
+                )}
+              </div>
+            </div>
+          }>
+            <span className="text-[11px] text-text-muted cursor-help underline decoration-dotted decoration-text-muted/50 underline-offset-2">总盈亏</span>
+          </Tooltip>
+        ) : (
+          <span className="text-[11px] text-text-muted">总盈亏</span>
+        )}
         <span className={`text-[13px] font-mono font-medium ${priceColor(totalPnl)}`}>
           {totalPnl >= 0 ? '+' : ''}{fmtMoney(totalPnl)}
         </span>
