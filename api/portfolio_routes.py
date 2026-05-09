@@ -127,10 +127,9 @@ async def list_holdings() -> list[HoldingResponse]:
 async def realized_pnl():
     """Per-stock 已实现盈亏 (含已清仓 + 部分减仓), 从 position_actions 计算.
 
-    返回每只股票的 realized_pnl 以及 grand total. 用于把割肉记录滚进总盈亏.
+    返回每只股票的 realized_pnl 以及 grand total. 已清仓股票 stock_name
+    从 quote 缓存补 (holdings 行可能已删).
     """
-    db_helper = get_position_actions  # noqa: F841
-    # 拿到 ALL 出现过的 stock_code (不局限于当前 holdings)
     from database import get_db
     db = await get_db()
     try:
@@ -153,9 +152,16 @@ async def realized_pnl():
         rp = float(state.get("realized_pnl") or 0)
         total += rp
         h = holdings_map.get(code) or {}
+        name = h.get("stock_name") or ""
+        # 已清仓股票 holdings 行可能已删 → 用 quote 缓存或 akshare 补名字
+        if not name:
+            try:
+                name = await get_stock_name(code) or ""
+            except Exception:
+                name = ""
         items.append({
             "stock_code": code,
-            "stock_name": h.get("stock_name") or "",
+            "stock_name": name,
             "realized_pnl": rp,
             "still_holding": (state.get("shares") or 0) > 0,
         })
@@ -312,30 +318,64 @@ async def list_actions(stock_code: str):
 _ACQUIRE = {"BUY", "ADD", "T_BUY"}
 
 
-async def _auto_match_tranche(stock_code: str, action_type: str, price: float) -> dict | None:
-    """If the action is an ACQUIRE and a pending tranche's trigger matches closely,
-    mark that tranche as executed. Returns the matched tranche dict or None."""
-    if action_type not in _ACQUIRE:
-        return None
+async def _auto_match_tranche(stock_code: str, action_type: str, price: float,
+                              shares: int | None = None) -> dict | None:
+    """自动撮合 action ↔ tranche (返回匹配的 tranche 或 None):
+
+    ACQUIRE (BUY/ADD/T_BUY): pending tranche, 价格 ±5% 内取最近, mark executed.
+    T_SELL only (RELEASE 收紧):
+      - 必须 status='executed' 且 sold_back_price 仍空
+      - shares 必须严格等于 tranche['shares'] (做T 卖出的就是这一档买的量)
+      - 价格在 executed_price × [1.005, 1.15] 区间 (高于成本但不超 +15%)
+      - 候选恰好 1 个; 多档位歧义就不自动匹配
+    Generic SELL/REDUCE 不再自动撮合 — 用户应该走 UnwindCard 的「卖出回收」按钮
+    或在 流水 里选 T_SELL action_type, 避免普通止损/调仓被误标为档位完成.
+    """
     plan = await get_unwind_plan(stock_code)
     if not plan:
         return None
     tranches = await get_tranches(stock_code)
-    pending = [t for t in tranches if t["status"] == "pending"]
-    if not pending:
-        return None
-    # Match within ±5% of trigger, pick closest
-    eligible = [
-        (abs(t["trigger_price"] - price) / t["trigger_price"], t)
-        for t in pending
-        if t["trigger_price"] > 0 and abs(t["trigger_price"] - price) / t["trigger_price"] < 0.05
-    ]
-    if not eligible:
-        return None
-    eligible.sort(key=lambda x: x[0])
-    best = eligible[0][1]
-    await mark_tranche_executed(best["id"], price)
-    return best
+
+    if action_type in _ACQUIRE:
+        pending = [t for t in tranches if t["status"] == "pending"]
+        if not pending:
+            return None
+        eligible = [
+            (abs(t["trigger_price"] - price) / t["trigger_price"], t)
+            for t in pending
+            if t["trigger_price"] > 0 and abs(t["trigger_price"] - price) / t["trigger_price"] < 0.05
+        ]
+        if not eligible:
+            return None
+        eligible.sort(key=lambda x: x[0])
+        best = eligible[0][1]
+        await mark_tranche_executed(best["id"], price)
+        return best
+
+    if action_type == "T_SELL" and shares is not None:
+        eligible = []
+        for t in tranches:
+            if t["status"] != "executed":
+                continue
+            if t.get("sold_back_price"):
+                continue
+            ep = t.get("executed_price") or 0
+            if ep <= 0:
+                continue
+            if int(t.get("shares") or 0) != int(shares):
+                continue
+            if price < ep * 1.005 or price > ep * 1.15:
+                continue
+            eligible.append(t)
+        if len(eligible) != 1:
+            # 0 个 = 没合适的; >1 个 = 歧义, 让用户走显式 sell-back 端点
+            return None
+        best = eligible[0]
+        from database import mark_tranche_sold_back
+        await mark_tranche_sold_back(best["id"], price)
+        return best
+
+    return None
 
 
 @router.post("/{stock_code}/actions")
@@ -349,6 +389,11 @@ async def create_action(stock_code: str, data: ActionCreate):
     holding = await get_holding(stock_code)
     if not holding:
         raise HTTPException(404, f"持仓 {stock_code} 不存在")
+    # 撮合在写 action 之前, 这样 tranche_id 能直接随 action 写入,
+    # 避免 action 已写但 tranche 没标 (或反之) 的不一致状态被外部观察.
+    matched = await _auto_match_tranche(
+        stock_code, data.action_type, data.price, data.shares,
+    )
     await add_position_action(
         stock_code=stock_code,
         action_type=data.action_type,
@@ -356,9 +401,9 @@ async def create_action(stock_code: str, data: ActionCreate):
         shares=data.shares,
         trade_date=data.trade_date,
         note=data.note or "",
+        tranche_id=(matched["id"] if matched else None),
     )
     await _recompute_holding(stock_code)
-    matched = await _auto_match_tranche(stock_code, data.action_type, data.price)
     return {
         "message": "记录已添加",
         "matched_tranche": {"idx": matched["idx"], "trigger_price": matched["trigger_price"]} if matched else None,
