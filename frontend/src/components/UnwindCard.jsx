@@ -31,29 +31,35 @@ export default function UnwindCard({ plan, onChange }) {
     nominal_loss_pct, real_cost, real_loss_pct,
     opportunity_cost_accumulated, daily_opportunity_cost,
     price_progress, cost_progress,
-    total_budget, used_budget, remaining_budget,
-    pending_tranche_cost, overspent, under_funded, budget_status,
     tranches, fundamental,
     unwind_exit_price, can_unwind_now,
     npv_analysis, benchmark,
   } = plan
+
+  const hasTranches = (tranches?.length || 0) > 0
+  const [showTranches, setShowTranches] = useState(hasTranches)
+  const executedCount = (tranches || []).filter(t => t.status === 'executed').length
+  const remainingTrancheShares = (tranches || [])
+    .filter(t => t.status !== 'executed')
+    .reduce((sum, t) => sum + (t.shares || 0), 0)
+  const trancheSummary = hasTranches
+    ? `${tranches.length} 档 · 已卖 ${executedCount} · 待卖 ${remainingTrancheShares}股`
+    : '未配置'
 
   const gapPct = current_price > 0
     ? ((unwind_exit_price - current_price) / current_price) * 100
     : 0
 
   const generatePlan = async () => {
-    if (!total_budget || total_budget <= 0) {
-      alert('请先在顶部"加仓子弹池"设置总预算并分配')
-      return
-    }
     setGenerating(true)
     try {
       const rec = await fetchJSON(
-        `/api/unwind/recommend/${stock_code}?total_budget=${total_budget}`,
+        `/api/unwind/recommend/${stock_code}`,
         { method: 'POST' }
       )
       setRecommendation(rec)
+    } catch (e) {
+      alert('生成失败: ' + (e?.message || ''))
     } finally {
       setGenerating(false)
     }
@@ -64,7 +70,7 @@ export default function UnwindCard({ plan, onChange }) {
     await fetchJSON(`/api/unwind/plans/${stock_code}`, {
       method: 'PUT',
       body: JSON.stringify({
-        total_budget: recommendation.recommended_budget,
+        total_budget: 0,  // 减仓模式无预算概念, 占位
         tranches: recommendation.tranches.map(t => ({
           idx: t.idx,
           trigger_price: t.trigger_price,
@@ -227,87 +233,73 @@ export default function UnwindCard({ plan, onChange }) {
         {/* NPV micro-bar */}
         <NPVPanel npv={npv_analysis} />
 
-        {/* Tranche table */}
-        <TrancheLadder
-          tranches={tranches}
-          currentPrice={current_price}
-          currentHealth={fundamental?.level}
-          onExecute={onChange}
-        />
+        {/* Collapsible tranche section — 减仓阶梯 */}
+        <div className="rounded-lg border border-border bg-surface-2/40 overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setShowTranches(v => !v)}
+            className="w-full px-3 py-2 flex items-center justify-between hover:bg-surface-2 transition-colors cursor-pointer"
+          >
+            <span className="text-[11px] uppercase tracking-wider font-semibold text-text-muted">
+              减仓阶梯
+            </span>
+            <span className="text-[10px] font-mono text-text-dim flex items-center gap-2">
+              {trancheSummary}
+              <span className="text-text-muted">{showTranches ? '▾' : '▸'}</span>
+            </span>
+          </button>
+          {showTranches && (
+            <div className="px-3 pb-3 pt-1 space-y-3">
+              <TrancheLadder
+                tranches={tranches}
+                currentPrice={current_price}
+                onExecute={onChange}
+              />
 
-        {/* Budget status warning */}
-        {budget_status === 'overspent' && (
-          <div className="rounded-lg border border-bear/40 bg-bear/10 px-3 py-2 text-[11px]">
-            <div className="flex items-center justify-between">
-              <span className="text-bear font-semibold">⚠️ 子弹超支</span>
-              <span className="font-mono text-bear">−¥{fmtMoney(overspent)}</span>
-            </div>
-            <div className="text-[10px] text-text-dim mt-1">
-              已用 ¥{fmtMoney(used_budget)} &gt; 总预算 ¥{fmtMoney(total_budget)} ·
-              建议提高总预算或停止后续档位
-            </div>
-          </div>
-        )}
-        {budget_status === 'underfunded' && (
-          <div className="rounded-lg border border-[var(--color-signal-moderate)]/40 bg-[var(--color-signal-moderate)]/10 px-3 py-2 text-[11px]">
-            <div className="flex items-center justify-between">
-              <span className="text-[var(--color-signal-moderate)] font-semibold">⚠️ 子弹不够买完计划</span>
-              <span className="font-mono text-[var(--color-signal-moderate)]">差 ¥{fmtMoney(under_funded)}</span>
-            </div>
-            <div className="text-[10px] text-text-dim mt-1">
-              剩余 ¥{fmtMoney(remaining_budget)} · 待执行档位需 ¥{fmtMoney(pending_tranche_cost)} ·
-              A 股最小 100 股/档，点"重新生成"可按可行数量重排
-            </div>
-          </div>
-        )}
-
-        {/* Footer */}
-        {!recommendation ? (
-          <div className="flex items-center justify-between pt-1">
-            <div className="text-[11px] text-text-dim">
-              子弹 <span className="font-mono text-text font-semibold">¥{fmtMoney(total_budget)}</span>
-              <span className="text-text-muted ml-1.5">
-                已用 <span className={overspent > 0 ? 'text-bear' : ''}>{fmtMoney(used_budget)}</span>
-                <span className="mx-1">·</span>
-                余 <span className={remaining_budget < 0 ? 'text-bear' : ''}>{fmtMoney(remaining_budget)}</span>
-              </span>
-            </div>
-            <button
-              onClick={generatePlan}
-              disabled={generating}
-              className="px-3 py-1.5 rounded-md text-[12px] font-semibold border border-accent/60 text-accent hover:bg-accent/10 transition-colors cursor-pointer disabled:opacity-50"
-            >
-              {generating ? '分析中...' : tranches?.length > 0 ? '重新生成档位' : '生成解套计划'}
-            </button>
-          </div>
-        ) : (
-          <div className="rounded-lg border border-accent/40 bg-accent/5 p-3 space-y-2">
-            <div className="text-[12px] text-accent font-semibold">
-              系统推荐：预算 ¥{recommendation.recommended_budget} · {recommendation.tranches.length} 档
-            </div>
-            <div className="space-y-1">
-              {recommendation.tranches.map(t => (
-                <div key={t.idx} className="flex justify-between text-[11px] text-text-dim">
-                  <span className="flex-1">档{t.idx} {t.source}</span>
-                  <span className="font-mono">{fmtPrice(t.trigger_price)} × {t.shares}股</span>
-                  <span className={`ml-2 ${t.feasibility?.feasible ? 'text-bull' : 'text-bear'}`}>
-                    {t.feasibility?.feasible ? '可行' : '不可行'}
-                  </span>
+              {/* Footer — 生成 / 重排 */}
+              {!recommendation ? (
+                <div className="flex items-center justify-between pt-1">
+                  <div className="text-[10px] text-text-muted">
+                    反弹触发后分批卖出, 直至清仓
+                  </div>
+                  <button
+                    onClick={generatePlan}
+                    disabled={generating}
+                    className="px-3 py-1.5 rounded-md text-[12px] font-semibold border border-accent/60 text-accent hover:bg-accent/10 transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    {generating ? '分析中...' : hasTranches ? '重新生成阶梯' : '生成减仓阶梯'}
+                  </button>
                 </div>
-              ))}
+              ) : (
+                <div className="rounded-lg border border-accent/40 bg-accent/5 p-3 space-y-2">
+                  <div className="text-[12px] text-accent font-semibold">
+                    系统推荐: {recommendation.tranches.length} 档 · 共 {
+                      recommendation.tranches.reduce((s, t) => s + (t.shares || 0), 0)
+                    }股
+                  </div>
+                  <div className="space-y-1">
+                    {recommendation.tranches.map(t => (
+                      <div key={t.idx} className="flex justify-between text-[11px] text-text-dim">
+                        <span className="flex-1">档{t.idx} {t.source}</span>
+                        <span className="font-mono">{fmtPrice(t.trigger_price)} × {t.shares}股</span>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={savePlan}
+                      className="flex-1 text-[12px] px-3 py-1.5 rounded-md bg-accent text-bg font-semibold hover:opacity-90 transition-opacity cursor-pointer">
+                      确认保存
+                    </button>
+                    <button onClick={() => setRecommendation(null)}
+                      className="text-[12px] px-3 py-1.5 rounded-md border border-border text-text-dim hover:text-text transition-colors cursor-pointer">
+                      取消
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
-            <div className="flex gap-2">
-              <button onClick={savePlan}
-                className="flex-1 text-[12px] px-3 py-1.5 rounded-md bg-accent text-bg font-semibold hover:opacity-90 transition-opacity cursor-pointer">
-                确认保存
-              </button>
-              <button onClick={() => setRecommendation(null)}
-                className="text-[12px] px-3 py-1.5 rounded-md border border-border text-text-dim hover:text-text transition-colors cursor-pointer">
-                取消
-              </button>
-            </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   )

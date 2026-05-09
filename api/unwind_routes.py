@@ -3,15 +3,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
 
 from config import config
 from database import (
     get_all_holdings, get_holding, update_holding,
-    get_unwind_plan, get_all_unwind_plans, save_unwind_plan, delete_unwind_plan,
+    get_unwind_plan, save_unwind_plan, delete_unwind_plan,
     update_unwind_used_budget,
     get_tranches, get_tranche, add_tranche, clear_tranches, mark_tranche_executed,
-    mark_tranche_sold_back, clear_tranche_sold_back,
     log_position_action, get_position_actions,
 )
 from services.position_ledger import compute_position_state
@@ -27,7 +25,7 @@ from services.economics import (
     estimate_recovery_probability,
 )
 from services.unwind_planner import (
-    compute_priority, allocate_budgets, generate_tranches, check_tranche_feasibility,
+    compute_priority, allocate_budgets, generate_sell_tranches,
     minimum_required_budget, FUNDAMENTAL_WEIGHTS,
 )
 from services.fundamental_score import fetch_health_snapshot
@@ -114,68 +112,24 @@ async def _build_plan_response(h: dict, q: dict) -> dict:
 
     cost_progress = 0.0  # requires historical cost tracking — MVP uses 0
 
-    # Plan & tranches
+    # Plan & tranches (减仓模式: budget 字段保留兼容旧数据, UI 不展示)
     plan = await get_unwind_plan(code)
     total_budget = plan["total_budget"] if plan else 0.0
     tranche_rows = await get_tranches(code)
 
-    # used_budget — derived from post-plan position actions (not the stored field),
-    # so manual buys entered in history also consume budget, not only tranche executions.
-    used_budget = 0.0
-    if plan and actions:
-        plan_date = str(plan.get("created_at", ""))[:10]
-        net_invested = 0.0
-        for a in actions:
-            ad = str(a.get("trade_date") or a.get("created_at", ""))[:10]
-            if plan_date and ad < plan_date:
-                continue
-            amount = float(a.get("price", 0)) * int(a.get("shares", 0))
-            t = a.get("action_type", "")
-            if t in {"BUY", "ADD", "T_BUY"}:
-                net_invested += amount
-            elif t in {"SELL", "REDUCE", "T_SELL"}:
-                net_invested -= amount
-        used_budget = round(max(0.0, net_invested), 2)
-
     # Fundamental health
     fundamental = await fetch_health_snapshot(code, h.get("stock_name", ""))
 
-    # Budget feasibility breakdown — so UI can flag overspend or underfunding
-    pending_cost = sum(
-        t["trigger_price"] * t["shares"]
-        for t in tranche_rows if t["status"] == "pending"
-    )
-    full_plan_cost = sum(t["trigger_price"] * t["shares"] for t in tranche_rows)
-    remaining_budget = round(total_budget - used_budget, 2)
-    overspent = max(0.0, used_budget - total_budget)
-    under_funded = max(0.0, pending_cost - remaining_budget)
-    budget_status = "ok"
-    if overspent > 0:
-        budget_status = "overspent"
-    elif under_funded > 0.01:
-        budget_status = "underfunded"
-
-    # Sell targets per tranche — 做T 回收 (recycle capital after adding)
-    # Multiplier grows with depth: 档1=+1 ATR, 档2=+1.5, 档3=+2, 档4=+3
-    sell_multipliers = [1.0, 1.5, 2.0, 3.0]
     tranches_payload = []
     for t in tranche_rows:
-        idx = t["idx"]
-        k = sell_multipliers[min(idx - 1, len(sell_multipliers) - 1)]
-        base = t.get("executed_price") or t["trigger_price"]
-        sell_target = round(base + k * atr, 2) if atr > 0 else None
         tranches_payload.append({
             "id": t["id"],
-            "idx": idx,
+            "idx": t["idx"],
             "trigger_price": t["trigger_price"],
             "shares": t["shares"],
-            "requires_health": t["requires_health"],
+            "requires_health": t.get("requires_health", "any"),
             "status": t["status"],
             "executed_price": t.get("executed_price"),
-            "sold_back_price": t.get("sold_back_price"),
-            "sold_back_at": t.get("sold_back_at"),
-            "sell_target": sell_target,
-            "sell_reason": f"+{k}×ATR 回收做T",
         })
 
     # Unwind exit price — the TVM-adjusted break-even. Selling at/above this clears the loss.
@@ -248,13 +202,6 @@ async def _build_plan_response(h: dict, q: dict) -> dict:
         "price_progress": round(price_progress, 3),
         "cost_progress": round(cost_progress, 3),
         "total_budget": total_budget,
-        "used_budget": used_budget,
-        "remaining_budget": remaining_budget,
-        "pending_tranche_cost": round(pending_cost, 2),
-        "full_plan_cost": round(full_plan_cost, 2),
-        "overspent": round(overspent, 2),
-        "under_funded": round(under_funded, 2),
-        "budget_status": budget_status,
         "unwind_exit_price": unwind_exit_price,
         "can_unwind_now": can_unwind_now,
         "tranches": tranches_payload,
@@ -291,8 +238,10 @@ async def list_plans():
 
 @router.post("/recommend/{stock_code}")
 async def recommend(stock_code: str, total_budget: Optional[float] = None):
-    """System-generated budget + tranche recommendation for one stock.
-    Does NOT save. User must explicitly PUT to save.
+    """生成反弹减仓阶梯 (浅反弹/阻力位/名义成本/真实成本 4 档).
+
+    不持久化, 用户调 PUT /plans/{code} 才保存.
+    total_budget 入参保留兼容前端但减仓模式下不再使用.
     """
     stock_code = normalize_stock_code(stock_code)
     if not is_a_share(stock_code):
@@ -300,6 +249,8 @@ async def recommend(stock_code: str, total_budget: Optional[float] = None):
     h = await get_holding(stock_code)
     if not h:
         raise HTTPException(404, "Holding not found")
+    if not h.get("shares") or h["shares"] <= 0:
+        raise HTTPException(400, "持仓为 0, 无需减仓阶梯")
 
     quotes = await get_realtime_quotes([stock_code])
     q = quotes.get(stock_code)
@@ -311,67 +262,39 @@ async def recommend(stock_code: str, total_budget: Optional[float] = None):
         raise HTTPException(400, "No historical data")
 
     analysis = get_full_analysis(hist)
-    atr = analysis.get("atr", 0)
-    bb = analysis.get("bollinger", {})
+    atr = float(analysis.get("atr", 0) or 0)
     sr = analysis.get("support_resistance", {})
-    ma = analysis.get("ma", {})
 
-    # Priority for this single stock
-    cost_gap = max(0, (h["cost_price"] - q["price"]) / h["cost_price"])
     fundamental = await fetch_health_snapshot(stock_code, h.get("stock_name", ""))
-    fund_weight = FUNDAMENTAL_WEIGHTS[fundamental["level"]]
-    volatility = atr / q["price"] if q["price"] > 0 else 0
-    trend = 0.0
-    ma5, ma20 = ma.get(5), ma.get(20)
-    if ma5 and ma20 and ma5 > q["price"] and ma20 > q["price"]:
-        trend = 0.5
 
-    priority = compute_priority(cost_gap, fund_weight, volatility, trend)
+    # 用 FIFO 加权持有天数算 TVM 真实成本 (与 _build_plan_response 保持一致)
+    actions = await get_position_actions(stock_code, limit=500)
+    if actions:
+        state = compute_position_state(actions, stock_code=stock_code)
+        cost = state["cost_price"] if state["shares"] > 0 else h["cost_price"]
+        held_shares = state["shares"] if state["shares"] > 0 else h["shares"]
+        holding_days = state["weighted_days"] or 1
+    else:
+        cost = h["cost_price"]
+        held_shares = h["shares"]
+        holding_days = _days_held(h.get("created_at", ""))
+    real_c = calc_real_cost(cost, holding_days, config.risk_free_rate)
 
-    # Default per-stock budget — if user didn't pass total_budget, use config default
-    budget_for_this = total_budget if total_budget else config.default_unwind_budget / 3
-
-    # Historical extremes
-    try:
-        hist_low = float(hist["最低"].astype(float).min())
-    except Exception:
-        hist_low = q["price"] * 0.7
-    try:
-        hist_high = float(hist["最高"].astype(float).max())
-    except Exception:
-        hist_high = q["price"] * 1.5
-
-    tranches = generate_tranches(
+    tranches = generate_sell_tranches(
         current_price=q["price"],
         atr=atr,
-        supports=sr.get("support", []),
-        lower_bb=bb.get("lower"),
-        historical_low=hist_low,
-        budget=budget_for_this,
+        resistances=sr.get("resistance", []),
+        cost_price=cost,
+        real_cost=real_c,
+        held_shares=held_shares,
     )
-
-    # Annotate each tranche with feasibility — cumulative after prior tranches
-    cumulative_shares = h["shares"]
-    cumulative_cost = h["cost_price"]
-    for t in tranches:
-        feas = check_tranche_feasibility(
-            old_shares=cumulative_shares,
-            old_cost=cumulative_cost,
-            add_shares=t["shares"],
-            add_price=t["trigger_price"],
-            historical_high_3y=hist_high,
-            patience_years=config.patience_years,
-            risk_free_rate=config.risk_free_rate,
-        )
-        t["feasibility"] = feas
-        if feas["feasible"]:
-            cumulative_cost = feas["new_cost"]
-            cumulative_shares += t["shares"]
 
     return {
         "stock_code": stock_code,
-        "priority": round(priority, 4),
-        "recommended_budget": round(budget_for_this, 2),
+        "current_price": q["price"],
+        "cost_price": cost,
+        "real_cost": round(real_c, 4),
+        "held_shares": held_shares,
         "tranches": tranches,
         "fundamental": fundamental,
     }
@@ -415,10 +338,12 @@ async def fundamental(stock_code: str):
 
 @router.post("/tranches/{tranche_id}/execute")
 async def execute_tranche(tranche_id: int, data: TrancheExecute):
-    """Mark a tranche as executed. Also updates holding cost and logs action."""
+    """记录减仓档位成交: 写 REDUCE 流水, FIFO ledger 重算持仓."""
     tranche = await get_tranche(tranche_id)
     if not tranche:
         raise HTTPException(404, "Tranche not found")
+    if tranche["status"] == "executed":
+        raise HTTPException(400, "档位已执行过")
 
     executed_shares = data.executed_shares or tranche["shares"]
     executed_price = data.executed_price
@@ -426,114 +351,88 @@ async def execute_tranche(tranche_id: int, data: TrancheExecute):
     h = await get_holding(tranche["stock_code"])
     if not h:
         raise HTTPException(404, "Holding not found")
-
-    new_shares = h["shares"] + executed_shares
-    new_cost = (h["shares"] * h["cost_price"] + executed_shares * executed_price) / new_shares
-    await update_holding(tranche["stock_code"], shares=new_shares, cost_price=round(new_cost, 4))
+    if h["shares"] < executed_shares:
+        raise HTTPException(400, f"持仓不足: 持有 {h['shares']} 股, 档位需 {executed_shares}")
 
     await mark_tranche_executed(tranche_id, executed_price)
     await log_position_action(
         tranche["stock_code"],
-        action_type="ADD",
+        action_type="REDUCE",
         price=executed_price,
         shares=executed_shares,
         tranche_id=tranche_id,
-        note=f"Executed tranche #{tranche['idx']}",
+        note=f"减仓档位 #{tranche['idx']}",
     )
 
-    # Bump used_budget
-    plan = await get_unwind_plan(tranche["stock_code"])
-    if plan:
-        new_used = plan["used_budget"] + executed_shares * executed_price
-        await update_unwind_used_budget(tranche["stock_code"], new_used)
+    # FIFO ledger 重算
+    actions = await get_position_actions(tranche["stock_code"], limit=500)
+    state = compute_position_state(actions, stock_code=tranche["stock_code"])
+    await update_holding(
+        tranche["stock_code"],
+        shares=state["shares"],
+        cost_price=state["cost_price"] if state["shares"] > 0 else 0,
+    )
 
-    return {"message": "executed", "new_cost": round(new_cost, 4), "new_shares": new_shares}
+    return {
+        "message": "executed",
+        "new_shares": state["shares"],
+        "new_cost": state["cost_price"] if state["shares"] > 0 else 0,
+        "realized_pnl": state.get("realized_pnl", 0),
+    }
 
 
-class TrancheSellBack(BaseModel):
-    sold_price: float
-
-
-@router.post("/tranches/{tranche_id}/sell-back")
-async def sell_back_tranche(tranche_id: int, data: TrancheSellBack):
-    """Record the T-sell (做T 回收) for an executed tranche.
-
-    This:
-    - Logs a T_SELL position action at the provided price
-    - Stamps sold_back_price/sold_back_at on the tranche (not a state change,
-      the tranche stays 'executed' for the buy leg)
-    - Reduces holding shares by the tranche's share count
-    - FIFO ledger + derived used_budget handle the accounting
-    """
+@router.delete("/tranches/{tranche_id}/execute")
+async def undo_execute(tranche_id: int):
+    """撤销减仓档位成交: 删除关联的 REDUCE 流水, 档位回 pending."""
     tranche = await get_tranche(tranche_id)
     if not tranche:
         raise HTTPException(404, "Tranche not found")
     if tranche["status"] != "executed":
-        raise HTTPException(400, "Tranche buy leg not executed yet")
-    if tranche.get("sold_back_price"):
-        raise HTTPException(400, "Tranche already marked as sold-back")
+        raise HTTPException(400, "档位未执行, 无需撤销")
 
-    shares = tranche["shares"]
-    sold_price = data.sold_price
-
-    h = await get_holding(tranche["stock_code"])
-    if not h:
-        raise HTTPException(404, "Holding not found")
-
-    # Record the T_SELL in position_actions — FIFO ledger will reconcile holding state
-    from datetime import datetime as _dt
-    await log_position_action(
-        tranche["stock_code"],
-        action_type="T_SELL",
-        price=sold_price,
-        shares=shares,
-        tranche_id=tranche_id,
-        note=f"Sell-back tranche #{tranche['idx']} @ {sold_price}",
-    )
-    await mark_tranche_sold_back(tranche_id, sold_price)
-
-    # Recompute holding aggregate from FIFO ledger (primary source of truth)
-    from services.position_ledger import compute_position_state
-    actions = await get_position_actions(tranche["stock_code"], limit=500)
-    state = compute_position_state(actions, stock_code=tranche["stock_code"])
-    if state["shares"] >= 0:
-        await update_holding(
-            tranche["stock_code"],
-            shares=state["shares"],
-            cost_price=state["cost_price"] if state["shares"] > 0 else 0,
-        )
-
-    return {"message": "sold back", "new_shares": state["shares"], "new_cost": state["cost_price"]}
-
-
-@router.delete("/tranches/{tranche_id}/sell-back")
-async def undo_sell_back(tranche_id: int):
-    """Undo the sell-back: removes the T_SELL action and clears sold_back."""
-    tranche = await get_tranche(tranche_id)
-    if not tranche:
-        raise HTTPException(404, "Tranche not found")
-    # Find and remove the T_SELL action linked to this tranche
     from database import get_db
     db = await get_db()
     try:
         await db.execute(
-            "DELETE FROM position_actions WHERE tranche_id = ? AND action_type = 'T_SELL'",
+            "DELETE FROM position_actions WHERE tranche_id = ? AND action_type IN ('REDUCE', 'T_SELL', 'ADD')",
+            (tranche_id,),
+        )
+        await db.execute(
+            "UPDATE unwind_tranches SET status='pending', executed_at=NULL, executed_price=NULL, "
+            "sold_back_price=NULL, sold_back_at=NULL WHERE id=?",
             (tranche_id,),
         )
         await db.commit()
     finally:
         await db.close()
-    await clear_tranche_sold_back(tranche_id)
-    from services.position_ledger import compute_position_state
+
     actions = await get_position_actions(tranche["stock_code"], limit=500)
     state = compute_position_state(actions, stock_code=tranche["stock_code"])
-    if state["shares"] > 0:
-        await update_holding(
-            tranche["stock_code"],
-            shares=state["shares"],
-            cost_price=state["cost_price"],
-        )
-    return {"message": "sell-back undone"}
+    await update_holding(
+        tranche["stock_code"],
+        shares=state["shares"],
+        cost_price=state["cost_price"] if state["shares"] > 0 else 0,
+    )
+    return {"message": "undone", "new_shares": state["shares"]}
+
+
+@router.post("/migrate-to-sell")
+async def migrate_to_sell():
+    """一键清掉旧买入档位 (语义变了, 反正买入档位用户也没在用).
+
+    保留: 已 executed 且有关联 position_actions 的流水 (历史交易事实)。
+    清除: 整张 unwind_tranches 表 (脱钩 tranche_id 不影响 actions)。
+    """
+    from database import get_db
+    db = await get_db()
+    try:
+        cursor = await db.execute("SELECT COUNT(*) FROM unwind_tranches")
+        before = (await cursor.fetchone())[0]
+        await db.execute("DELETE FROM unwind_tranches")
+        await db.commit()
+    finally:
+        await db.close()
+    return {"message": "migrated", "removed_tranches": before}
 
 
 @router.get("/total-budget")
