@@ -869,21 +869,34 @@ def _cst_now():
     return datetime.now(timezone.utc) + timedelta(hours=8)
 
 
+def _is_a_share_trading_day(d) -> bool:
+    """A 股交易日: 工作日 + 排除中国法定节假日 + 调休补班也算.
+    chinese_calendar.is_workday() 已经把 节假日 / 周末 / 调休 都算进去了.
+    库不可用时退回到周末判断 (节假日仍误报为交易日, 但至少不全错)."""
+    if d.weekday() >= 5:
+        return False
+    try:
+        import chinese_calendar as cc
+        return cc.is_workday(d)
+    except Exception:
+        return True
+
+
 def is_market_hours() -> bool:
     """Strict: during active trading sessions (9:30-11:30, 13:00-15:00).
     Used for price refresh frequency control."""
     cst = _cst_now()
-    if cst.weekday() >= 5:
+    if not _is_a_share_trading_day(cst.date()):
         return False
     t = cst.hour * 60 + cst.minute
     return (570 <= t <= 690) or (780 <= t <= 900)
 
 
 def is_trading_day_active() -> bool:
-    """Broad: from 9:15 to 15:00 on weekdays, including lunch break.
+    """Broad: from 9:15 to 15:00 on weekdays (excl. holidays), including lunch break.
     Used for signal display — during lunch, signals are still valid for the afternoon."""
     cst = _cst_now()
-    if cst.weekday() >= 5:
+    if not _is_a_share_trading_day(cst.date()):
         return False
     t = cst.hour * 60 + cst.minute
     return 555 <= t <= 900  # 9:15 ~ 15:00
