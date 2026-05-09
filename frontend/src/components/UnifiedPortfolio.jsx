@@ -2438,23 +2438,33 @@ function ReduceLotRow({ asset, onDone, onCancel }) {
 
   const submit = async () => {
     setErr('')
+    // ETF/CRYPTO 三选二: 缺哪个就用另两个反推
+    let finalAmount = a, finalShares = s, finalUnit = u
+    if (!isOtcFund && isShareBased) {
+      if (!finalAmount && finalShares > 0 && finalUnit > 0) finalAmount = finalShares * finalUnit
+      if (!finalShares && finalAmount > 0 && finalUnit > 0) finalShares = finalAmount / finalUnit
+      if (!finalUnit && finalAmount > 0 && finalShares > 0) finalUnit = finalAmount / finalShares
+    }
+
     if (isOtcFund) {
-      if (!s || s <= 0) { setErr('请填卖出份额'); return }
+      if (!finalShares || finalShares <= 0) { setErr('请填卖出份额'); return }
+    } else if (isShareBased) {
+      if (!finalAmount || finalAmount <= 0) { setErr('金额 / 份额 / 单价 至少填两个'); return }
     } else {
-      if (!a || a <= 0) { setErr('赎回金额必须为正数'); return }
-      if (isShareBased && !s && !u) { setErr('ETF/CRYPTO 至少传 shares 或 unit_price'); return }
+      // WEALTH / CASH 仅金额
+      if (!finalAmount || finalAmount <= 0) { setErr('赎回金额必须为正数'); return }
     }
     setBusy(true)
     try {
       const body = { trade_date: tradeDate }
       if (isOtcFund) {
         body.amount = 0
-        body.shares = s
+        body.shares = finalShares
       } else {
-        body.amount = a
+        body.amount = Number(finalAmount.toFixed(4))
         if (isShareBased) {
-          if (s) body.shares = s
-          if (u) body.unit_price = u
+          if (finalShares) body.shares = Number(finalShares.toFixed(6))
+          if (finalUnit) body.unit_price = Number(finalUnit.toFixed(6))
         }
       }
       const res = await fetch(`/api/assets/${asset.id}/reduce-lot`, {
