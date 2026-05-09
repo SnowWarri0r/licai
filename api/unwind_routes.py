@@ -9,8 +9,8 @@ from database import (
     get_all_holdings, get_holding, update_holding,
     get_unwind_plan, save_unwind_plan, delete_unwind_plan,
     update_unwind_used_budget,
-    get_tranches, get_tranche, add_tranche, clear_tranches, mark_tranche_executed,
-    log_position_action, get_position_actions,
+    get_tranches, get_tranche, add_tranche, clear_tranches,
+    get_position_actions,
 )
 from services.position_ledger import compute_position_state
 from services.market_data import (
@@ -338,7 +338,11 @@ async def fundamental(stock_code: str):
 
 @router.post("/tranches/{tranche_id}/execute")
 async def execute_tranche(tranche_id: int, data: TrancheExecute):
-    """记录减仓档位成交: 写 REDUCE 流水, FIFO ledger 重算持仓."""
+    """记录减仓档位成交: 写 REDUCE 流水, FIFO ledger 重算持仓.
+
+    幂等保护: 用 conditional UPDATE 抢锁 (status='pending' → 'executed'),
+    若 rowcount=0 说明并发或重复点击, 整笔回滚不再写流水.
+    """
     tranche = await get_tranche(tranche_id)
     if not tranche:
         raise HTTPException(404, "Tranche not found")
@@ -354,15 +358,28 @@ async def execute_tranche(tranche_id: int, data: TrancheExecute):
     if h["shares"] < executed_shares:
         raise HTTPException(400, f"持仓不足: 持有 {h['shares']} 股, 档位需 {executed_shares}")
 
-    await mark_tranche_executed(tranche_id, executed_price)
-    await log_position_action(
-        tranche["stock_code"],
-        action_type="REDUCE",
-        price=executed_price,
-        shares=executed_shares,
-        tranche_id=tranche_id,
-        note=f"减仓档位 #{tranche['idx']}",
-    )
+    # Conditional UPDATE 抢锁: 只有 status='pending' 才能改 executed.
+    # 并发 / 重复点击场景下第二次 rowcount=0, 整笔放弃.
+    from database import get_db
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "UPDATE unwind_tranches SET status='executed', executed_at=CURRENT_TIMESTAMP, executed_price=? "
+            "WHERE id=? AND status='pending'",
+            (executed_price, tranche_id),
+        )
+        if cursor.rowcount == 0:
+            await db.commit()
+            raise HTTPException(409, "档位状态已变 (并发或重复点击), 已忽略")
+        await db.execute(
+            "INSERT INTO position_actions (stock_code, action_type, price, shares, tranche_id, note, created_at) "
+            "VALUES (?, 'REDUCE', ?, ?, ?, ?, CURRENT_TIMESTAMP)",
+            (tranche["stock_code"], executed_price, executed_shares, tranche_id,
+             f"减仓档位 #{tranche['idx']}"),
+        )
+        await db.commit()
+    finally:
+        await db.close()
 
     # FIFO ledger 重算
     actions = await get_position_actions(tranche["stock_code"], limit=500)
@@ -383,7 +400,11 @@ async def execute_tranche(tranche_id: int, data: TrancheExecute):
 
 @router.delete("/tranches/{tranche_id}/execute")
 async def undo_execute(tranche_id: int):
-    """撤销减仓档位成交: 删除关联的 REDUCE 流水, 档位回 pending."""
+    """撤销减仓档位成交: 仅删本档关联的 REDUCE 流水, 档位回 pending.
+
+    安全约束: 只动 action_type='REDUCE' (新模式产生的); 旧 ADD/T_SELL 历史
+    流水不在此端点的删除范围内, 避免误删 pre-migration 的真实成交记录.
+    """
     tranche = await get_tranche(tranche_id)
     if not tranche:
         raise HTTPException(404, "Tranche not found")
@@ -394,12 +415,12 @@ async def undo_execute(tranche_id: int):
     db = await get_db()
     try:
         await db.execute(
-            "DELETE FROM position_actions WHERE tranche_id = ? AND action_type IN ('REDUCE', 'T_SELL', 'ADD')",
+            "DELETE FROM position_actions WHERE tranche_id = ? AND action_type = 'REDUCE'",
             (tranche_id,),
         )
         await db.execute(
-            "UPDATE unwind_tranches SET status='pending', executed_at=NULL, executed_price=NULL, "
-            "sold_back_price=NULL, sold_back_at=NULL WHERE id=?",
+            "UPDATE unwind_tranches SET status='pending', executed_at=NULL, executed_price=NULL "
+            "WHERE id=?",
             (tranche_id,),
         )
         await db.commit()
@@ -414,25 +435,6 @@ async def undo_execute(tranche_id: int):
         cost_price=state["cost_price"] if state["shares"] > 0 else 0,
     )
     return {"message": "undone", "new_shares": state["shares"]}
-
-
-@router.post("/migrate-to-sell")
-async def migrate_to_sell():
-    """一键清掉旧买入档位 (语义变了, 反正买入档位用户也没在用).
-
-    保留: 已 executed 且有关联 position_actions 的流水 (历史交易事实)。
-    清除: 整张 unwind_tranches 表 (脱钩 tranche_id 不影响 actions)。
-    """
-    from database import get_db
-    db = await get_db()
-    try:
-        cursor = await db.execute("SELECT COUNT(*) FROM unwind_tranches")
-        before = (await cursor.fetchone())[0]
-        await db.execute("DELETE FROM unwind_tranches")
-        await db.commit()
-    finally:
-        await db.close()
-    return {"message": "migrated", "removed_tranches": before}
 
 
 @router.get("/total-budget")
