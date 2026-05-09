@@ -84,19 +84,23 @@ def initial_next_due(frequency: str,
                      day_of_month: int | None = None,
                      day_of_week: int | None = None,
                      today: date | None = None) -> str:
-    """新建计划时的首次触发日 (>= today)."""
+    """新建计划时的首次触发日.
+
+    设计选择: 严格 > today (不在创建当天扣款), 避免跟用户当天手动录入冲突.
+    用户想立即扣可以手动调用 /api/dca/fire-due, 或把 next_due 改成今天.
+    """
     today = today or date.today()
     freq = (frequency or "monthly").lower()
     if freq == "daily_trading":
-        if _is_a_share_trading_day(today):
-            return today.isoformat()
+        # 跳今天, 找下个交易日
         return _next_a_share_trading_day(today).isoformat()
     if freq == "weekly":
         if day_of_week is None:
             day_of_week = today.isoweekday()
-        # 当周该星期 (>=今天) 否则下周
         target = ((int(day_of_week) - 1) % 7) + 1
         diff = (target - today.isoweekday()) % 7
+        if diff == 0:
+            diff = 7  # 同星期算下周
         return (today + timedelta(days=diff)).isoformat()
     # monthly
     if day_of_month is None:
@@ -104,7 +108,7 @@ def initial_next_due(frequency: str,
     last_day = calendar.monthrange(today.year, today.month)[1]
     target_day = min(int(day_of_month), last_day)
     candidate = date(today.year, today.month, target_day)
-    if candidate < today:
+    if candidate <= today:
         return _next_monthly(candidate, day_of_month).isoformat()
     return candidate.isoformat()
 
