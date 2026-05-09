@@ -123,6 +123,50 @@ async def list_holdings() -> list[HoldingResponse]:
     return result
 
 
+@router.get("/realized")
+async def realized_pnl():
+    """Per-stock 已实现盈亏 (含已清仓 + 部分减仓), 从 position_actions 计算.
+
+    返回每只股票的 realized_pnl 以及 grand total. 用于把割肉记录滚进总盈亏.
+    """
+    db_helper = get_position_actions  # noqa: F841
+    # 拿到 ALL 出现过的 stock_code (不局限于当前 holdings)
+    from database import get_db
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT DISTINCT stock_code FROM position_actions ORDER BY stock_code"
+        )
+        rows = await cursor.fetchall()
+        codes = [r[0] for r in rows]
+    finally:
+        await db.close()
+
+    holdings_map = {h["stock_code"]: h for h in await get_all_holdings()}
+    items: list[dict] = []
+    total = 0.0
+    for code in codes:
+        actions = await get_position_actions(code, limit=500)
+        if not actions:
+            continue
+        state = compute_position_state(actions, stock_code=code)
+        rp = float(state.get("realized_pnl") or 0)
+        total += rp
+        h = holdings_map.get(code) or {}
+        items.append({
+            "stock_code": code,
+            "stock_name": h.get("stock_name") or "",
+            "realized_pnl": rp,
+            "still_holding": (state.get("shares") or 0) > 0,
+        })
+    items.sort(key=lambda x: x["realized_pnl"])
+    return {
+        "items": items,
+        "total_realized_pnl": round(total, 2),
+        "count": len(items),
+    }
+
+
 @router.get("/concentration")
 async def sector_concentration():
     """Compute per-sector market value concentration.
@@ -220,6 +264,7 @@ async def create_holding(data: HoldingCreate):
     await add_position_action(
         stock_code, "BUY", data.cost_price, data.shares,
         note="initial (auto)",
+        trade_date=data.trade_date,
     )
     await _recompute_holding(stock_code)
     return {"message": "添加成功", "stock_code": stock_code, "stock_name": name}

@@ -129,6 +129,22 @@ CREATE TABLE IF NOT EXISTS cashflow_monthly (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- 外部资产 (基金/加密/理财/现金) 的交易流水, 用于 FIFO 算实现盈亏.
+-- BOT 不走这张表 (走 OKX 同步).
+CREATE TABLE IF NOT EXISTS external_asset_actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    asset_id INTEGER NOT NULL,           -- FK external_assets.id
+    action_type TEXT NOT NULL,           -- BUY | ADD | REDEEM | DEPOSIT | WITHDRAW | INTEREST | DIVIDEND
+    amount REAL NOT NULL DEFAULT 0,      -- CNY 本金/赎回金额(总额); INTEREST/DIVIDEND 时为派息金额
+    shares REAL,                         -- FUND/CRYPTO 用; +加仓 / -赎回; WEALTH/CASH 留空
+    unit_price REAL,                     -- FUND/CRYPTO 当时净值/价
+    trade_date TEXT,                     -- YYYY-MM-DD (申请日)
+    status TEXT DEFAULT 'confirmed',     -- confirmed: 进 ledger; pending: T+1 待确认 (OTC 基金 申购/赎回)
+    note TEXT DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_eaa_asset_date ON external_asset_actions (asset_id, trade_date);
 """
 
 
@@ -174,6 +190,12 @@ async def init_db():
         # 基金/加密 待确认份额：买了但份额还没结算
         if "pending_amount" not in cols:
             await db.execute("ALTER TABLE external_assets ADD COLUMN pending_amount REAL DEFAULT 0")
+
+        # external_asset_actions: status 字段 (旧库迁移)
+        cursor = await db.execute("PRAGMA table_info(external_asset_actions)")
+        cols = {row[1] for row in await cursor.fetchall()}
+        if cols and "status" not in cols:
+            await db.execute("ALTER TABLE external_asset_actions ADD COLUMN status TEXT DEFAULT 'confirmed'")
         await db.commit()
 
         # Seed: any holding without a position_action → create initial BUY action
@@ -197,6 +219,34 @@ async def init_db():
                 (code, cost, shares, created),
             )
             print(f"[migration] Seeded initial BUY for {code}: {shares}股 @ {cost} on {created}")
+        await db.commit()
+
+        # Seed external_asset_actions: 给已有 external_assets 还没 actions 的, 按当前 cost_amount 补一条 BUY/DEPOSIT
+        cursor = await db.execute("""
+            SELECT a.id, a.asset_type, a.cost_amount, a.shares, a.start_date, a.created_at
+            FROM external_assets a
+            WHERE NOT EXISTS (
+                SELECT 1 FROM external_asset_actions ea WHERE ea.asset_id = a.id
+            )
+        """)
+        rows = await cursor.fetchall()
+        for r in rows:
+            asset_id = r["id"]
+            atype = r["asset_type"] or ""
+            cost = float(r["cost_amount"] or 0)
+            shares = r["shares"]
+            unit_price = None
+            if atype in ("FUND", "CRYPTO") and shares and float(shares) > 0:
+                unit_price = round(cost / float(shares), 6) if cost > 0 else None
+            action_type = "BUY" if atype in ("FUND", "CRYPTO", "BOT") else "DEPOSIT"
+            seed_date = (r["start_date"] or str(r["created_at"] or "")[:10]) or None
+            await db.execute(
+                """INSERT INTO external_asset_actions
+                   (asset_id, action_type, amount, shares, unit_price, trade_date, note)
+                   VALUES (?, ?, ?, ?, ?, ?, 'initial (auto-migrated)')""",
+                (asset_id, action_type, cost, float(shares) if shares else None, unit_price, seed_date),
+            )
+            print(f"[migration] Seeded {action_type} for asset#{asset_id} ({atype}): ¥{cost} on {seed_date}")
         await db.commit()
     finally:
         await db.close()
@@ -784,3 +834,63 @@ async def delete_cashflow(month: str):
     finally:
         await db.close()
 
+
+
+# --- External Asset Actions ---
+
+async def list_external_actions(asset_id: int) -> list[dict]:
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT * FROM external_asset_actions WHERE asset_id = ? ORDER BY trade_date, id",
+            (asset_id,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        await db.close()
+
+
+async def add_external_action(asset_id: int, action_type: str, amount: float = 0,
+                              shares: float | None = None, unit_price: float | None = None,
+                              trade_date: str | None = None, note: str = "",
+                              status: str = "confirmed") -> int:
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            """INSERT INTO external_asset_actions
+               (asset_id, action_type, amount, shares, unit_price, trade_date, status, note)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (asset_id, action_type, float(amount or 0),
+             float(shares) if shares is not None else None,
+             float(unit_price) if unit_price is not None else None,
+             trade_date, status, note or ""),
+        )
+        await db.commit()
+        return cursor.lastrowid
+    finally:
+        await db.close()
+
+
+async def update_external_action(action_id: int, **kwargs):
+    if not kwargs:
+        return
+    cols = ", ".join(f"{k} = ?" for k in kwargs.keys())
+    db = await get_db()
+    try:
+        await db.execute(
+            f"UPDATE external_asset_actions SET {cols} WHERE id = ?",
+            (*kwargs.values(), action_id),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def delete_external_action(action_id: int):
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM external_asset_actions WHERE id = ?", (action_id,))
+        await db.commit()
+    finally:
+        await db.close()
