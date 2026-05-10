@@ -580,6 +580,9 @@ async def allocate(total_budget: float):
     stocks = []
     for h in holdings:
         code = h["stock_code"]
+        # 0 持仓行 (清仓后 holdings 行还在但 shares=0/cost=0) 不参与解套预算分配
+        if not h.get("cost_price") or h["cost_price"] <= 0 or not h.get("shares") or h["shares"] <= 0:
+            continue
         q = quotes.get(code)
         if not q or q["price"] <= 0:
             continue
