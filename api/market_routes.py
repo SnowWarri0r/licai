@@ -32,16 +32,18 @@ async def trading_day_status():
         }
 
     cst_today = (datetime.now(timezone.utc) + timedelta(hours=8)).date()
-    is_workday = cc.is_workday(cst_today)
     is_holiday = cc.is_holiday(cst_today)
     is_weekend = cst_today.weekday() >= 5
+    # A 股交易日: 必须工作日且非周末. chinese_calendar 的 is_workday 在 调休补班的
+    # 周六/日 也返 True, 但 A 股交易所节假日调休时不开市, 周末永远不交易.
+    is_a_share_trading_day = cc.is_workday(cst_today) and not is_weekend
 
-    # Find next trading day (cap search at 14 days for safety)
+    # Find next A-share trading day (skip weekends + holidays + 调休 weekends)
     next_td = None
-    if not is_workday:
+    if not is_a_share_trading_day:
         d = cst_today + timedelta(days=1)
         for _ in range(14):
-            if cc.is_workday(d):
+            if cc.is_workday(d) and d.weekday() < 5:
                 next_td = str(d)
                 break
             d += timedelta(days=1)
@@ -57,16 +59,19 @@ async def trading_day_status():
         "Anti-Fascist 70th Day": "抗战胜利纪念",
     }
     holiday_name = ""
-    if is_holiday and not is_weekend:
-        try:
-            _, name = cc.get_holiday_detail(cst_today)
-            holiday_name = HOLIDAY_CN.get(name, name or "")
-        except Exception:
-            pass
+    # 法定节假日 (含调休关联) 都尝试取名字, 包括"调休补班但 A 股不开市"的周末
+    try:
+        _, name = cc.get_holiday_detail(cst_today)
+        if name:
+            holiday_name = HOLIDAY_CN.get(name, name)
+            if is_weekend and cc.is_workday(cst_today):
+                holiday_name = f"{holiday_name}调休补班"
+    except Exception:
+        pass
 
     return {
         "date": str(cst_today),
-        "is_trading_day": is_workday,
+        "is_trading_day": is_a_share_trading_day,
         "is_weekend": is_weekend,
         "is_holiday": is_holiday and not is_weekend,
         "holiday_name": holiday_name,
