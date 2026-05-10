@@ -119,6 +119,16 @@ CREATE TABLE IF NOT EXISTS morning_briefings (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(stock_code, briefing_date)
 );
+
+CREATE TABLE IF NOT EXISTS cashflow_monthly (
+    month TEXT PRIMARY KEY,             -- YYYY-MM
+    income REAL DEFAULT 0,              -- 月收入(税后)
+    fixed_cost REAL DEFAULT 0,          -- 固定开销 (房租/餐饮/账单/还贷)
+    discretionary REAL DEFAULT 0,       -- 实际可自由支配开销 (购物/娱乐/旅行)
+    notes TEXT DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -720,3 +730,57 @@ async def get_latest_briefing(stock_code: str) -> dict | None:
         return dict(row) if row else None
     finally:
         await db.close()
+
+
+# --- Cashflow Monthly ---
+
+async def upsert_cashflow(month: str, income: float, fixed_cost: float, discretionary: float, notes: str = ""):
+    db = await get_db()
+    try:
+        await db.execute(
+            """INSERT INTO cashflow_monthly (month, income, fixed_cost, discretionary, notes)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(month) DO UPDATE SET
+                 income = excluded.income,
+                 fixed_cost = excluded.fixed_cost,
+                 discretionary = excluded.discretionary,
+                 notes = excluded.notes,
+                 updated_at = CURRENT_TIMESTAMP""",
+            (month, float(income or 0), float(fixed_cost or 0), float(discretionary or 0), notes or ""),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def get_cashflow(month: str) -> dict | None:
+    db = await get_db()
+    try:
+        cursor = await db.execute("SELECT * FROM cashflow_monthly WHERE month = ?", (month,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+    finally:
+        await db.close()
+
+
+async def list_cashflow(months: int = 12) -> list[dict]:
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT * FROM cashflow_monthly ORDER BY month DESC LIMIT ?",
+            (max(1, int(months)),),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        await db.close()
+
+
+async def delete_cashflow(month: str):
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM cashflow_monthly WHERE month = ?", (month,))
+        await db.commit()
+    finally:
+        await db.close()
+
