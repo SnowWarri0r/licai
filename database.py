@@ -145,6 +145,24 @@ CREATE TABLE IF NOT EXISTS external_asset_actions (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_eaa_asset_date ON external_asset_actions (asset_id, trade_date);
+
+-- 定投计划: 按 frequency 触发, 每次写一条 pending ADD action.
+CREATE TABLE IF NOT EXISTS dca_schedules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    asset_id INTEGER NOT NULL,
+    mode TEXT NOT NULL DEFAULT 'amount',     -- 'amount' (固定金额) | 'shares' (固定份额)
+    value REAL NOT NULL,                     -- amount=CNY; shares=份数
+    frequency TEXT NOT NULL DEFAULT 'monthly', -- 'daily_trading' | 'weekly' | 'monthly'
+    day_of_month INTEGER,                    -- 1-31 (frequency=monthly), 月末 clamp
+    day_of_week INTEGER,                     -- 1=Mon..7=Sun (frequency=weekly)
+    status TEXT NOT NULL DEFAULT 'active',   -- 'active' | 'paused'
+    next_due TEXT,                           -- YYYY-MM-DD
+    last_fired_at TEXT,                      -- YYYY-MM-DD
+    note TEXT DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_dca_status_due ON dca_schedules (status, next_due);
 """
 
 
@@ -196,6 +214,15 @@ async def init_db():
         cols = {row[1] for row in await cursor.fetchall()}
         if cols and "status" not in cols:
             await db.execute("ALTER TABLE external_asset_actions ADD COLUMN status TEXT DEFAULT 'confirmed'")
+
+        # dca_schedules: 旧库迁移 frequency / day_of_week / day_of_month nullable
+        cursor = await db.execute("PRAGMA table_info(dca_schedules)")
+        cols = {row[1] for row in await cursor.fetchall()}
+        if cols:
+            if "frequency" not in cols:
+                await db.execute("ALTER TABLE dca_schedules ADD COLUMN frequency TEXT NOT NULL DEFAULT 'monthly'")
+            if "day_of_week" not in cols:
+                await db.execute("ALTER TABLE dca_schedules ADD COLUMN day_of_week INTEGER")
         await db.commit()
 
         # Seed: any holding without a position_action → create initial BUY action
@@ -892,5 +919,94 @@ async def delete_external_action(action_id: int):
     try:
         await db.execute("DELETE FROM external_asset_actions WHERE id = ?", (action_id,))
         await db.commit()
+    finally:
+        await db.close()
+
+
+# --- DCA Schedules ---
+
+async def list_dca_schedules(asset_id: int | None = None) -> list[dict]:
+    db = await get_db()
+    try:
+        if asset_id is None:
+            cursor = await db.execute("SELECT * FROM dca_schedules ORDER BY id")
+        else:
+            cursor = await db.execute(
+                "SELECT * FROM dca_schedules WHERE asset_id = ? ORDER BY id",
+                (asset_id,),
+            )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        await db.close()
+
+
+async def get_dca_schedule(dca_id: int) -> dict | None:
+    db = await get_db()
+    try:
+        cursor = await db.execute("SELECT * FROM dca_schedules WHERE id = ?", (dca_id,))
+        row = await cursor.fetchone()
+        return dict(row) if row else None
+    finally:
+        await db.close()
+
+
+async def add_dca_schedule(asset_id: int, mode: str, value: float,
+                           frequency: str = "monthly",
+                           day_of_month: int | None = None,
+                           day_of_week: int | None = None,
+                           next_due: str | None = None, note: str = "") -> int:
+    # 旧 schema day_of_month 是 NOT NULL, 给 daily/weekly 模式时塞个占位 (1), fire 逻辑会按 frequency 忽略
+    dom = int(day_of_month) if day_of_month is not None else 1
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            """INSERT INTO dca_schedules
+               (asset_id, mode, value, frequency, day_of_month, day_of_week, next_due, note)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (asset_id, mode, float(value), frequency, dom,
+             int(day_of_week) if day_of_week is not None else None,
+             next_due, note or ""),
+        )
+        await db.commit()
+        return cursor.lastrowid
+    finally:
+        await db.close()
+
+
+async def update_dca_schedule(dca_id: int, **kwargs):
+    if not kwargs:
+        return
+    cols = ", ".join(f"{k} = ?" for k in kwargs.keys())
+    db = await get_db()
+    try:
+        await db.execute(
+            f"UPDATE dca_schedules SET {cols}, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (*kwargs.values(), dca_id),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def delete_dca_schedule(dca_id: int):
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM dca_schedules WHERE id = ?", (dca_id,))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def list_due_dca_schedules(today_str: str) -> list[dict]:
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            """SELECT * FROM dca_schedules
+               WHERE status = 'active' AND next_due IS NOT NULL AND next_due <= ?""",
+            (today_str,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
     finally:
         await db.close()
