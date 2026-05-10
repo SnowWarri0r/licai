@@ -174,14 +174,20 @@ async def _enrich(asset: dict) -> dict:
             rate = (btc_q or {}).get("usdcny", 7.2)
             usdt_value = details["current_value_usdt"]
             current_value = round(usdt_value * rate, 2)
+            # OKX investmentAmt 反映累计投入 (含追加投资), 用它覆盖本地 cost,
+            # 避免追加投资后 PnL 算错. 原 cost_amount 保留在 DB 不动, 作兜底.
+            live_cost_cny = round(details["investment_usdt"] * rate, 2) if details.get("investment_usdt") else None
+            if live_cost_cny and live_cost_cny > 0:
+                out["cost_amount"] = live_cost_cny
             quote = {
                 **details,
                 "usdcny": rate,
+                "live_cost_cny": live_cost_cny,
                 "auto_synced": True,
             }
     # else BOT: uses manual_value
 
-    cost = float(asset.get("cost_amount") or 0)
+    cost = float(out.get("cost_amount") or 0)
     pnl = (current_value or 0) - cost if current_value is not None else None
     pnl_pct = (pnl / cost * 100) if pnl is not None and cost > 0 else None
 
