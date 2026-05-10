@@ -1,6 +1,6 @@
 // Service Worker for PWA offline support
 // IMPORTANT: bump CACHE_NAME on each release to force activate→clear-old-cache
-const CACHE_NAME = 'licai-v46';
+const CACHE_NAME = 'licai-v53';
 const STATIC_ASSETS = ['/manifest.json', '/icon-192.svg'];
 
 self.addEventListener('install', (e) => {
