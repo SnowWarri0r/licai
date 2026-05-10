@@ -32,7 +32,8 @@ from api.briefing_routes import router as briefing_router
 from api.sector_routes import router as sector_router
 from api.cashflow_routes import router as cashflow_router
 from api.export_routes import router as export_router
-from api.ws import router as ws_router, price_monitor_loop, premarket_push_loop, backup_loop, briefing_loop
+from api.dca_routes import router as dca_router
+from api.ws import router as ws_router, price_monitor_loop, premarket_push_loop, backup_loop, briefing_loop, dca_loop
 from services import feishu_notify
 
 
@@ -57,12 +58,14 @@ async def lifespan(app: FastAPI):
     task2 = asyncio.create_task(premarket_push_loop())
     task3 = asyncio.create_task(backup_loop())
     task4 = asyncio.create_task(briefing_loop())
+    task5 = asyncio.create_task(dca_loop())
     print(f"理财助手已启动: http://localhost:{config.port}")
     yield
     task1.cancel()
     task2.cancel()
     task3.cancel()
     task4.cancel()
+    task5.cancel()
 
 
 app = FastAPI(title="理财助手", lifespan=lifespan)
@@ -80,6 +83,7 @@ app.include_router(briefing_router)
 app.include_router(sector_router)
 app.include_router(cashflow_router)
 app.include_router(export_router)
+app.include_router(dca_router)
 app.include_router(ws_router)
 
 

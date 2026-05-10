@@ -114,6 +114,8 @@ async def _enrich(asset: dict) -> dict:
 
     if t == "FUND":
         quote = await get_fund_quote(asset["code"])
+        # current_value 含 pending (资产总额视角: 钱已经投进去了),
+        # 但下面算 pnl 时会减去 pending (浮动只看已确认 lot vs 确认成本).
         pending = float(asset.get("pending_amount") or 0)
         if asset.get("manual_value") is not None:
             current_value = float(asset["manual_value"])  # 锁定的总市值（已含 pending）
@@ -222,7 +224,10 @@ async def _enrich(asset: dict) -> dict:
     # else BOT: uses manual_value
 
     cost = float(out.get("cost_amount") or 0)
-    pnl = (current_value or 0) - cost if current_value is not None else None
+    # PnL 只看已确认 lot vs 已确认成本: 从 current_value 里把 pending 剔出去再减 cost.
+    # current_value 仍含 pending (资产总额视角); pnl 用 (mv - pending) - cost 算.
+    pending_for_pnl = float(out.get("pending_amount") or 0) if t in ("FUND", "CRYPTO") else 0
+    pnl = ((current_value or 0) - pending_for_pnl) - cost if current_value is not None else None
     pnl_pct = (pnl / cost * 100) if pnl is not None and cost > 0 else None
 
     out["quote"] = quote
@@ -343,6 +348,60 @@ async def modify_asset(asset_id: int, data: AssetUpdate):
     # null (e.g. unlock manual_value, drop pending_amount). Fields the client
     # didn't include stay untouched.
     payload = data.model_dump(exclude_unset=True)
+
+    # FUND/CRYPTO 的 shares/cost_amount 由 ledger 推算 → 直接改 row 不会生效
+    # (会被 _enrich 的 ledger overlay 覆盖). 把变更转成一条 ADD / REDEEM 调整 action
+    # 写进流水, 让 ledger 跟用户的编辑保持一致.
+    asset = await get_external_asset(asset_id)
+    if asset and asset.get("asset_type") in ("FUND", "CRYPTO") and (
+        "shares" in payload or "cost_amount" in payload
+    ):
+        actions = await list_external_actions(asset_id)
+        state = compute_external_state(actions, asset["asset_type"])
+        old_shares = float(state.get("shares") or 0)
+        old_cost = float(state.get("cost_amount") or 0)
+        new_shares = payload.get("shares")
+        new_cost = payload.get("cost_amount")
+        new_shares = float(new_shares) if new_shares is not None else old_shares
+        new_cost = float(new_cost) if new_cost is not None else old_cost
+        d_shares = new_shares - old_shares
+        d_cost = new_cost - old_cost
+        from datetime import date as _date
+        today = _date.today().isoformat()
+        if d_shares > 1e-6:
+            unit = (max(d_cost, 0) / d_shares) if d_shares > 0 else None
+            await add_external_action(
+                asset_id, "ADD",
+                amount=max(d_cost, 0), shares=d_shares, unit_price=unit,
+                trade_date=today, note="adjust (from edit)",
+            )
+        elif d_shares < -1e-6:
+            amt = max(abs(d_cost), 0)
+            unit = (amt / abs(d_shares)) if d_shares != 0 else None
+            await add_external_action(
+                asset_id, "REDEEM",
+                amount=amt, shares=abs(d_shares), unit_price=unit,
+                trade_date=today, note="adjust (from edit)",
+            )
+        elif abs(d_cost) > 0.01:
+            # 份额没变只动了成本: 用 INTEREST(+) 或 一个 0 share 的成本调整 (-)
+            if d_cost > 0:
+                await add_external_action(
+                    asset_id, "INTEREST",
+                    amount=d_cost, trade_date=today, note="adjust (cost up)",
+                )
+            else:
+                # 成本减少不太常见, 记一笔同名调整避免污染 INTEREST
+                await add_external_action(
+                    asset_id, "DIVIDEND",
+                    amount=d_cost, trade_date=today, note="adjust (cost down)",
+                )
+        # 重新算 ledger 状态, 同步到 row 缓存
+        actions = await list_external_actions(asset_id)
+        state = compute_external_state(actions, asset["asset_type"])
+        payload["shares"] = state["shares"]
+        payload["cost_amount"] = state["cost_amount"]
+
     if payload:
         await update_external_asset(asset_id, **payload)
     return {"message": "updated"}
