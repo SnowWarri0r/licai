@@ -221,6 +221,111 @@ def minimum_required_budget(
     }
 
 
+def generate_sell_tranches(
+    current_price: float,
+    atr: float,
+    resistances: list[float],
+    cost_price: float,
+    real_cost: float,
+    held_shares: int,
+) -> list[dict]:
+    """反弹减仓阶梯: 现价之上 4 档，触发即卖出，最终全部清仓。
+
+    档位设计 (从浅到深):
+        档1 (浅反弹):   current + 1×ATR     反弹回血一点
+        档2 (阻力位):   现价之上最近的 verified resistance
+        档3 (名义回本): cost_price          不亏本金 (但还亏 TVM)
+        档4 (TVM 解套): real_cost           完全解套
+
+    股数分配反金字塔 1:2:3:5 — 越靠 deeper 档位卖越多, 让真实解套档拿走最大比例。
+    Round to A 股 100 lot, 总和等于 held_shares。
+    """
+    if held_shares < 100 or current_price <= 0:
+        return []
+
+    cands: list[dict] = []
+    if atr > 0:
+        cands.append({
+            "trigger_price": round(current_price + atr, 2),
+            "tag": "+1×ATR 浅反弹",
+        })
+    res_above = sorted([r for r in resistances if r > current_price * 1.005])
+    if res_above:
+        cands.append({
+            "trigger_price": round(res_above[0], 2),
+            "tag": "阻力位",
+        })
+    if cost_price > current_price * 1.005:
+        cands.append({
+            "trigger_price": round(cost_price, 2),
+            "tag": "名义成本",
+        })
+    if real_cost > current_price * 1.005 and real_cost > cost_price * 1.005:
+        cands.append({
+            "trigger_price": round(real_cost, 2),
+            "tag": "TVM 解套线",
+        })
+
+    seen = set()
+    uniq = []
+    for c in cands:
+        k = round(c["trigger_price"], 1)
+        if k not in seen:
+            seen.add(k)
+            uniq.append(c)
+    cands = sorted(uniq, key=lambda x: x["trigger_price"])
+    if not cands:
+        return []
+
+    n = len(cands)
+    if n == 1:
+        ratios = [1]
+    elif n == 2:
+        ratios = [2, 3]
+    elif n == 3:
+        ratios = [1, 2, 3]
+    else:
+        ratios = [1, 2, 3, 5]
+    total_ratio = sum(ratios)
+
+    total_lots = held_shares // SHARE_LOT_SIZE
+    if total_lots <= 0:
+        return []
+
+    raw = [total_lots * r / total_ratio for r in ratios]
+    lots = [int(x) for x in raw]
+    remainder = total_lots - sum(lots)
+    fracs = sorted(
+        [(raw[i] - lots[i], i) for i in range(n)],
+        key=lambda x: -x[0],
+    )
+    for _, i in fracs[:max(0, remainder)]:
+        lots[i] += 1
+
+    # Try to give each tranche at least 1 lot by stealing from biggest, only if biggest >= 2
+    for i in range(n):
+        if lots[i] == 0:
+            biggest = max(range(n), key=lambda j: lots[j])
+            if lots[biggest] >= 2:
+                lots[biggest] -= 1
+                lots[i] += 1
+
+    result = []
+    idx_counter = 1
+    for c, lot in zip(cands, lots):
+        if lot <= 0:
+            continue
+        result.append({
+            "idx": idx_counter,
+            "trigger_price": c["trigger_price"],
+            "shares": lot * SHARE_LOT_SIZE,
+            "requires_health": "any",
+            "source": c["tag"],
+        })
+        idx_counter += 1
+    return result
+
+
 def check_tranche_feasibility(
     old_shares: int,
     old_cost: float,
