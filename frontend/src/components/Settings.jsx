@@ -153,7 +153,7 @@ export default function Settings({ onClose }) {
         <div className="mt-2 pt-4 border-t border-border">
           <label className="text-[12px] text-text-dim font-semibold block mb-1">LLM 代理地址（早盘简报）</label>
           <p className="text-[11px] text-text-muted mb-2 leading-relaxed">
-            访问 Anthropic API 的本地代理，留空则直连。常见：Shadowrocket <code className="bg-surface-3 px-1 rounded">http://127.0.0.1:1082</code>，Clash <code className="bg-surface-3 px-1 rounded">http://127.0.0.1:7890</code>
+            访问 Anthropic API 的本地代理，留空则直连。
           </p>
           {proxyEnvOverride && (
             <p className="text-[11px] text-warn mb-2">当前由环境变量 LLM_PROXY 覆盖，UI 配置不生效</p>
