@@ -244,21 +244,25 @@ async def list_assets():
     enriched = await asyncio.gather(*[_enrich(r) for r in rows])
 
     # Summary
+    # NOTE: total_pnl 必须等于 Σ a["pnl"] (= 每个资产 (current_value - pending) - cost).
+    # 不能简单 total_value - total_cost — current_value 含 pending 但 cost 不含,
+    # 会让顶部 SummaryStrip 比持仓表多算 Σ pending_amount.
     total_cost = sum(float(a.get("cost_amount") or 0) for a in enriched)
     total_value = sum((a.get("current_value") or 0) for a in enriched)
-    total_pnl = total_value - total_cost
+    total_pnl = sum((a.get("pnl") or 0) for a in enriched)
 
     # By type
     by_type: dict[str, dict] = {}
     for a in enriched:
         t = a["asset_type"]
         if t not in by_type:
-            by_type[t] = {"cost": 0.0, "value": 0.0, "count": 0}
+            by_type[t] = {"cost": 0.0, "value": 0.0, "pnl": 0.0, "count": 0}
         by_type[t]["cost"] += float(a.get("cost_amount") or 0)
         by_type[t]["value"] += a.get("current_value") or 0
+        by_type[t]["pnl"] += a.get("pnl") or 0
         by_type[t]["count"] += 1
     for v in by_type.values():
-        v["pnl"] = round(v["value"] - v["cost"], 2)
+        v["pnl"] = round(v["pnl"], 2)
         v["cost"] = round(v["cost"], 2)
         v["value"] = round(v["value"], 2)
 
@@ -647,6 +651,31 @@ async def confirm_action(asset_id: int, action_id: int, data: ConfirmAction):
         sync["shares"] = state["shares"]
     await update_external_asset(asset_id, **sync)
     return {"message": "confirmed", "state": state}
+
+
+class PendingActionPatch(BaseModel):
+    amount: float
+
+
+@router.patch("/{asset_id}/actions/{action_id}")
+async def patch_pending_action(asset_id: int, action_id: int, data: PendingActionPatch):
+    """只改 pending 流水的 amount, 状态保持 pending.
+    用于定投触发后基金限额变化等导致实际成交金额 ≠ 申请金额的场景."""
+    asset = await get_external_asset(asset_id)
+    if not asset:
+        raise HTTPException(404, "asset not found")
+    if data.amount is None or data.amount <= 0:
+        raise HTTPException(400, "amount 必须为正数")
+    actions = await list_external_actions(asset_id)
+    target = next((a for a in actions if a["id"] == action_id), None)
+    if not target:
+        raise HTTPException(404, "action not found")
+    if (target.get("status") or "confirmed") != "pending":
+        raise HTTPException(400, "只能修改 pending 流水")
+
+    from database import update_external_action
+    await update_external_action(action_id, amount=float(data.amount))
+    return {"message": "updated", "amount": float(data.amount)}
 
 
 @router.get("/{asset_id}/actions")
