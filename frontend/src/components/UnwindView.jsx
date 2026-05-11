@@ -5,6 +5,7 @@ import MorningBriefing from './MorningBriefing'
 import SectorRadar from './SectorRadar'
 import SectorOpportunities from './SectorOpportunities'
 import AllocationAdvisor from './AllocationAdvisor'
+import AShareSectorGap from './AShareSectorGap'
 import Cashflow from './Cashflow'
 
 export default function UnwindView() {
@@ -38,9 +39,10 @@ export default function UnwindView() {
     <div className="space-y-4">
       <MorningBriefing />
       <SectorRadar />
-      <SectorOpportunities />
       <Cashflow />
       <AllocationAdvisor />
+      <AShareSectorGap />
+      <SectorOpportunities />
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {plans.filter(p => (p.shares || 0) > 0).map(p => (
           <UnwindCard key={p.stock_code} plan={p} onChange={loadPlans} />
