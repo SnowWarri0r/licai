@@ -286,6 +286,30 @@ def _normalize_dca(raw: dict, active: bool) -> dict:
     ord_type = raw.get("algoOrdType", "")
     label_map = {"spot_dca": "现货马丁", "contract_dca": "合约马丁"}
     kind = label_map.get(ord_type, "马丁格尔")
+
+    # 总预算反推: OKX 马丁是"首单 + N 档安全单"模式, 没有直接的"总预算"字段,
+    # 但策略参数齐全: initOrdAmt + safetyOrdAmt × Σ volMult^k (k=0..maxSafetyOrds-1)
+    init_amt = f("initOrdAmt")
+    safety_amt = f("safetyOrdAmt")
+    try:
+        max_safety = int(float(raw.get("maxSafetyOrds") or 0))
+    except Exception:
+        max_safety = 0
+    vol_mult = f("volMult") or 1.0
+    total_budget = 0.0
+    if max_safety > 0 and safety_amt > 0:
+        if abs(vol_mult - 1.0) < 1e-6:
+            safety_total = safety_amt * max_safety
+        else:
+            safety_total = safety_amt * (vol_mult ** max_safety - 1) / (vol_mult - 1)
+        total_budget = init_amt + safety_total
+    elif init_amt > 0:
+        total_budget = init_amt
+    # 兜底: 至少不能低于已投入
+    if total_budget < investment:
+        total_budget = investment
+    available = max(0.0, total_budget - investment)
+
     return {
         "algo_id": raw.get("algoId", ""),
         "inst_id": raw.get("instId", ""),
@@ -294,11 +318,19 @@ def _normalize_dca(raw: dict, active: bool) -> dict:
         "state": raw.get("state", ""),
         "active": active,
         "investment_usdt": round(investment, 2),
+        "total_budget_usdt": round(total_budget, 2),
+        "available_usdt": round(available, 2),
         "total_pnl_usdt": round(pnl, 2),
         "current_value_usdt": round(investment + pnl, 2),
         "pnl_pct": round(f("pnlRatio") * 100, 2) if raw.get("pnlRatio") else (
             round(pnl / investment * 100, 2) if investment > 0 else 0
         ),
+        "init_order_amt": round(init_amt, 4),
+        "safety_order_amt": round(safety_amt, 4),
+        "max_safety_orders": max_safety,
+        "vol_mult": round(vol_mult, 3),
+        "px_steps": round(f("pxSteps"), 4),
+        "px_steps_mult": round(f("pxStepsMult") or 1.0, 3),
         "created_at_ms": int(raw.get("cTime", 0) or 0),
         "created_at": "",
     }

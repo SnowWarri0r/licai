@@ -236,6 +236,16 @@ function normalizeAsset(a) {
       lockUntil: null,
       okxSynced: q?.auto_synced,
       okxPnlPct: q?.pnl_pct,
+      // OKX 马丁: 总预算 / 已投入 / 未投入 (反推自策略参数 initOrdAmt + safetyOrdAmt × volMult^k)
+      okxInvestmentUsdt: q?.investment_usdt,
+      okxTotalBudgetUsdt: q?.total_budget_usdt,
+      okxAvailableUsdt: q?.available_usdt,
+      okxBudgetSource: q?.budget_source,    // 'manual' | 'estimated'
+      okxMaxSafetyOrders: q?.max_safety_orders,
+      okxSafetyOrderAmt: q?.safety_order_amt,
+      okxInitOrderAmt: q?.init_order_amt,
+      okxVolMult: q?.vol_mult,
+      assetIdRaw: a.id,
       annualYield: q?.annual_yield_rate ?? a.annual_yield_rate,
       impliedYield: q?.implied_yield_rate,  // 用 manual_value 反推的隐含年化
       daysHeld: q?.days_held,
@@ -1183,6 +1193,57 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
                           {formatCurrencyMoney(row.extra.currency, row.extra.originalMarketValue)}
                         </span>
                       </FxHint>
+                    )}
+                    {row.type === 'R' && row.extra?.okxTotalBudgetUsdt > 0 && row.extra?.okxAvailableUsdt != null && (
+                      <Tooltip content={
+                        <div className="leading-relaxed">
+                          <div className="text-text-bright font-semibold mb-1">
+                            马丁策略预算 {row.extra.okxBudgetSource === 'manual' ? '(手填)' : '(算法估算)'}
+                          </div>
+                          <div>首单 {row.extra.okxInitOrderAmt}U · 安全单基础 {row.extra.okxSafetyOrderAmt}U × {row.extra.okxMaxSafetyOrders} 档 · 量倍数 {row.extra.okxVolMult}</div>
+                          <div className="mt-1 text-[10.5px]">
+                            已投 <span className="text-text font-mono">{row.extra.okxInvestmentUsdt}U</span>
+                            <span className="mx-1">/</span>
+                            预算 <span className="text-text font-mono">{row.extra.okxTotalBudgetUsdt}U</span>
+                            <span className="mx-1">·</span>
+                            待投 <span className="text-bull-bright font-mono">{row.extra.okxAvailableUsdt}U</span>
+                          </div>
+                          {row.extra.okxBudgetSource !== 'manual' && (
+                            <div className="mt-1 text-[10px] text-warn">
+                              OKX raw 没"总预算"字段, 算法反推可能不准. 点击下面"改预算"用 OKX 客户端实际值覆盖.
+                            </div>
+                          )}
+                        </div>
+                      }>
+                        <span
+                          onClick={async (e) => {
+                            e.stopPropagation()
+                            const cur = row.extra.okxTotalBudgetUsdt
+                            const next = prompt(
+                              `「${row.name}」马丁实际总预算 (USDT)\n填 OKX 客户端策略详情看到的"总投资额", 留空恢复算法估算`,
+                              cur ? String(cur) : ''
+                            )
+                            if (next === null) return
+                            const v = next.trim() === '' ? null : parseFloat(next)
+                            if (next.trim() !== '' && (!v || v <= 0)) { alert('总预算必须为正数'); return }
+                            try {
+                              await fetchJSON(`/api/assets/${row.extra.assetIdRaw}`, {
+                                method: 'PUT',
+                                body: JSON.stringify({ bot_budget_override_usdt: v }),
+                              })
+                              const d = await fetchJSON('/api/assets')
+                              setAssets(d.assets || [])
+                            } catch (err) { alert('保存失败: ' + (err?.message || '')) }
+                          }}
+                          className="font-mono text-[10px] text-text-muted tabular-nums cursor-pointer hover:text-accent mt-0.5"
+                          title="点击改总预算">
+                          投 {row.extra.okxInvestmentUsdt}U / {row.extra.okxTotalBudgetUsdt}U
+                          <span className="text-bull-bright ml-1">余 {row.extra.okxAvailableUsdt}U</span>
+                          {row.extra.okxBudgetSource !== 'manual' && (
+                            <span className="text-warn ml-1" title="算法估算, 可能不准">~</span>
+                          )}
+                        </span>
+                      </Tooltip>
                     )}
                   </div>
                   <div className="text-right flex flex-col items-end licai-md-only">
@@ -2775,23 +2836,26 @@ function ConfirmActionModal({ asset, action, onClose, onDone }) {
     isSharesMode ? String(knownShares) : (isAdd ? '' : String(knownShares))
   )
   const [unitPrice, setUnitPrice] = React.useState('')
+  const [fee, setFee] = React.useState('')
   const [busy, setBusy] = React.useState(false)
   const [err, setErr] = React.useState('')
 
   const a = parseFloat(amount) || 0
   const s = parseFloat(shares) || 0
   const u = parseFloat(unitPrice) || 0
+  const fNum = parseFloat(fee) || 0
+  // 净额: 用户填的"金额"是含费的总付出, 实际买到份额的净额 = amount - fee
+  const netForShares = Math.max(0, a - fNum)
 
-  // 反推占位 (任意两个推第三个)
-  const inferredUnit = (a > 0 && s > 0 && !u) ? (a / s).toFixed(4) : ''
-  const inferredShares = (a > 0 && u > 0 && !s) ? (a / u).toFixed(4) : ''
-  const inferredAmount = (s > 0 && u > 0 && !a) ? (s * u).toFixed(2) : ''
+  // 反推占位 (用净额, 不用 amount)
+  const inferredUnit = (netForShares > 0 && s > 0 && !u) ? (netForShares / s).toFixed(4) : ''
+  const inferredShares = (netForShares > 0 && u > 0 && !s) ? (netForShares / u).toFixed(4) : ''
+  const inferredAmount = (s > 0 && u > 0 && !a) ? (s * u + fNum).toFixed(2) : ''
 
   const submit = async () => {
     setErr('')
-    // 金额没填但够算 → auto fill (shares 模式只填单价就是这条路径)
     let finalAmount = a
-    if (!finalAmount && s > 0 && u > 0) finalAmount = s * u
+    if (!finalAmount && s > 0 && u > 0) finalAmount = s * u + fNum
     if (!finalAmount || finalAmount <= 0) { setErr('金额必填'); return }
     if (isAdd && !s && !u) { setErr('申购确认: 至少填份额或净值'); return }
     setBusy(true)
@@ -2799,6 +2863,7 @@ function ConfirmActionModal({ asset, action, onClose, onDone }) {
       const body = { amount: finalAmount }
       if (s > 0) body.shares = s
       if (u > 0) body.unit_price = u
+      if (fNum > 0) body.fee = fNum
       const res = await fetch(`/api/assets/${asset.id}/actions/${action.id}/confirm`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -2831,10 +2896,10 @@ function ConfirmActionModal({ asset, action, onClose, onDone }) {
 
         <div>
           <label className="text-[11.5px] text-text-dim block mb-1">
-            金额 (CNY)
+            金额 (CNY, 含手续费)
             {isSharesMode
-              ? <span className="text-text-muted text-[10px]"> — 留空将自动 = 份额 × 单价</span>
-              : isAdd && <span className="text-text-muted text-[10px]"> — 通常等于申请额, 如有差异请改</span>}
+              ? <span className="text-text-muted text-[10px]"> — 留空将自动 = 份额 × 单价 + 手续费</span>
+              : isAdd && <span className="text-text-muted text-[10px]"> — 你实际付出的总额, 含手续费</span>}
           </label>
           <input type="number" inputMode="decimal" placeholder={inferredAmount || '0'}
             value={amount} onChange={e => setAmount(e.target.value)}
@@ -2863,6 +2928,36 @@ function ConfirmActionModal({ asset, action, onClose, onDone }) {
               autoFocus={isSharesMode}
               className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent" />
           </div>
+        </div>
+
+        <div>
+          <label className="text-[11.5px] text-text-dim block mb-1">
+            手续费 (CNY) <span className="text-text-muted text-[10px]">— 含在上方金额里, 单填方便看净额</span>
+          </label>
+          <div className="flex gap-2 items-stretch">
+            <input type="number" inputMode="decimal" placeholder="0 (默认无费)"
+              value={fee} onChange={e => setFee(e.target.value)}
+              className="flex-1 bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent" />
+            <button type="button"
+              onClick={() => {
+                // 招商证券万1.854 5元起 (跟 stock 端用同一档, 用户已存的费率)
+                const calc = Math.max(5, a * 0.0001854)
+                setFee(calc.toFixed(2))
+              }}
+              disabled={!a}
+              className="px-2.5 py-1 rounded-lg border border-border text-text-dim hover:text-text hover:border-border-med text-[10.5px] cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+              title="按招商证券 万1.854 / 最低 5 元 算一下">
+              券商费率
+            </button>
+          </div>
+          {fNum > 0 && a > 0 && (
+            <div className="text-[10.5px] text-text-muted mt-1">
+              净额 ¥{netForShares.toFixed(2)} (= 金额 ¥{a.toFixed(2)} − 费 ¥{fNum.toFixed(2)})
+              {s > 0 && netForShares > 0 && (
+                <span className="ml-1.5">· 实际净值 ≈ <span className="font-mono">{(netForShares / s).toFixed(4)}</span></span>
+              )}
+            </div>
+          )}
         </div>
 
         {err && <div className="text-[11px] text-bear-bright">{err}</div>}
