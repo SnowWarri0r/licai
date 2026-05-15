@@ -22,12 +22,18 @@ function ActionRow({ action, editing, onSave, onCancel, onEdit, onDelete }) {
   if (!editing) {
     const isAcquire = ACQUIRE_TYPES.has(action.action_type)
     const typeLabel = ACTION_TYPES.find(t => t.value === action.action_type)?.label || action.action_type
+    const feeOverride = action.fee != null   // 用户手填了 override
     return (
       <tr className="border-t border-border-subtle hover:bg-surface-2/30">
         <td className="py-1.5 px-2 text-text-muted">{action.trade_date || '--'}</td>
         <td className={`py-1.5 px-2 text-[11px] ${isAcquire ? 'text-bull' : 'text-bear'}`}>{typeLabel}</td>
         <td className="py-1.5 px-2 text-right font-mono">{fmtPrice(action.price)}</td>
         <td className="py-1.5 px-2 text-right font-mono">{action.shares}</td>
+        <td className="py-1.5 px-2 text-right font-mono text-[11px]"
+          title={feeOverride ? '已手填覆盖' : '按券商费率自动估算 (万1.854 / 5元起)'}>
+          {action.fee_effective != null ? `¥${action.fee_effective.toFixed(2)}` : '--'}
+          {feeOverride && <span className="text-accent ml-0.5">·</span>}
+        </td>
         <td className="py-1.5 px-2 text-[11px] text-text-muted">{action.note || '--'}</td>
         <td className="py-1.5 px-2 text-center">
           <button onClick={() => onEdit()} className="text-[11px] text-accent hover:underline cursor-pointer mr-2">编辑</button>
@@ -36,6 +42,10 @@ function ActionRow({ action, editing, onSave, onCancel, onEdit, onDelete }) {
       </tr>
     )
   }
+
+  // draft.fee: null/undefined = 自动估; '' = 显式清空; 数字 = override
+  const feeInput = draft.fee == null ? '' : String(draft.fee)
+  const onFeeChange = (v) => setDraft({ ...draft, fee: v === '' ? null : (parseFloat(v) || 0), fee_set: true })
 
   return (
     <tr className="border-t border-border-subtle bg-surface-3/40">
@@ -47,6 +57,13 @@ function ActionRow({ action, editing, onSave, onCancel, onEdit, onDelete }) {
       </td>
       <td className="py-1.5 px-2"><input type="number" step="0.0001" className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-20 text-right font-mono" value={draft.price} onChange={e => setDraft({ ...draft, price: parseFloat(e.target.value) || 0 })} /></td>
       <td className="py-1.5 px-2"><input type="number" step="100" min="100" className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-20 text-right font-mono" value={draft.shares} onChange={e => setDraft({ ...draft, shares: parseInt(e.target.value) || 0 })} /></td>
+      <td className="py-1.5 px-2">
+        <input type="number" step="0.01" min="0"
+          placeholder={action.fee_auto != null ? `估 ${action.fee_auto.toFixed(2)}` : '0'}
+          className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-20 text-right font-mono"
+          value={feeInput} onChange={e => onFeeChange(e.target.value)}
+          title="留空 = 用券商费率自动估算; 填值 = 覆盖" />
+      </td>
       <td className="py-1.5 px-2"><input type="text" className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-full" placeholder="备注" value={draft.note || ''} onChange={e => setDraft({ ...draft, note: e.target.value })} /></td>
       <td className="py-1.5 px-2 text-center">
         <button onClick={() => onSave(draft)} className="text-[11px] text-bull hover:underline cursor-pointer mr-2">保存</button>
@@ -65,6 +82,7 @@ export default function TransactionHistory({ stockCode, stockName, onClose, onCh
     action_type: 'BUY',
     price: '',
     shares: '',
+    fee: '',
     trade_date: new Date().toISOString().slice(0, 10),
     note: '',
   })
@@ -83,30 +101,42 @@ export default function TransactionHistory({ stockCode, stockName, onClose, onCh
 
   const handleAdd = async () => {
     if (!newAction.price || !newAction.shares || !newAction.trade_date) return alert('请填完整')
+    const body = {
+      ...newAction,
+      price: parseFloat(newAction.price),
+      shares: parseInt(newAction.shares),
+    }
+    if (newAction.fee != null && newAction.fee !== '') {
+      body.fee = parseFloat(newAction.fee)
+    } else {
+      delete body.fee
+    }
     await fetchJSON(`/api/portfolio/${enc(stockCode)}/actions`, {
       method: 'POST',
-      body: JSON.stringify({
-        ...newAction,
-        price: parseFloat(newAction.price),
-        shares: parseInt(newAction.shares),
-      }),
+      body: JSON.stringify(body),
     })
     setAdding(false)
-    setNewAction({ action_type: 'BUY', price: '', shares: '', trade_date: new Date().toISOString().slice(0, 10), note: '' })
+    setNewAction({ action_type: 'BUY', price: '', shares: '', trade_date: new Date().toISOString().slice(0, 10), note: '', fee: '' })
     await load()
     onChange?.()
   }
 
   const handleSave = async (draft) => {
+    const body = {
+      action_type: draft.action_type,
+      price: parseFloat(draft.price),
+      shares: parseInt(draft.shares),
+      trade_date: draft.trade_date,
+      note: draft.note || '',
+    }
+    // 用户改了 fee (fee_set 标记): 显式传 fee (null=清空回退自动估)
+    if (draft.fee_set) {
+      body.fee = draft.fee
+      body.fee_set = true
+    }
     await fetchJSON(`/api/portfolio/actions/${draft.id}`, {
       method: 'PUT',
-      body: JSON.stringify({
-        action_type: draft.action_type,
-        price: parseFloat(draft.price),
-        shares: parseInt(draft.shares),
-        trade_date: draft.trade_date,
-        note: draft.note || '',
-      }),
+      body: JSON.stringify(body),
     })
     setEditingId(null)
     await load()
@@ -144,6 +174,7 @@ export default function TransactionHistory({ stockCode, stockName, onClose, onCh
                   <th className="py-2 px-2 text-left font-normal">类型</th>
                   <th className="py-2 px-2 text-right font-normal">价格</th>
                   <th className="py-2 px-2 text-right font-normal">数量</th>
+                  <th className="py-2 px-2 text-right font-normal" title="手续费 (自动按券商费率估; 编辑可填实际值覆盖)">手续费</th>
                   <th className="py-2 px-2 text-left font-normal">备注</th>
                   <th className="py-2 px-2 text-center font-normal w-24">操作</th>
                 </tr>
@@ -171,6 +202,7 @@ export default function TransactionHistory({ stockCode, stockName, onClose, onCh
                     </td>
                     <td className="py-1.5 px-2"><input type="number" step="0.0001" className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-20 text-right font-mono" placeholder="价格" value={newAction.price} onChange={e => setNewAction({ ...newAction, price: e.target.value })} /></td>
                     <td className="py-1.5 px-2"><input type="number" step="100" min="100" className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-20 text-right font-mono" placeholder="数量" value={newAction.shares} onChange={e => setNewAction({ ...newAction, shares: e.target.value })} /></td>
+                    <td className="py-1.5 px-2"><input type="number" step="0.01" min="0" className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-20 text-right font-mono" placeholder="自动估" value={newAction.fee ?? ''} onChange={e => setNewAction({ ...newAction, fee: e.target.value })} title="留空 = 按券商费率自动估; 填值 = 实际手续费" /></td>
                     <td className="py-1.5 px-2"><input type="text" className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-full" placeholder="备注" value={newAction.note} onChange={e => setNewAction({ ...newAction, note: e.target.value })} /></td>
                     <td className="py-1.5 px-2 text-center">
                       <button onClick={handleAdd} className="text-[11px] text-bull hover:underline cursor-pointer mr-2">确认</button>
