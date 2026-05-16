@@ -2614,6 +2614,25 @@ function AssetActionsModal({ asset, onClose, onChanged }) {
     reload()
   }
 
+  const editPendingAmount = async (a) => {
+    const cur = parseFloat(a.amount) || 0
+    const next = prompt(`改这条 pending 流水的金额 (CNY)\n常用于基金限额变化, 状态仍保持 pending`, cur.toFixed(2))
+    if (next == null) return
+    const v = parseFloat(next)
+    if (!v || v <= 0) { alert('金额必须为正数'); return }
+    if (Math.abs(v - cur) < 0.005) return
+    try {
+      const res = await fetch(`/api/assets/${asset.id}/actions/${a.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ amount: v }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || '改金额失败')
+      onChanged?.()
+      reload()
+    } catch (e) { alert(e.message) }
+  }
+
   const colorByType = {
     BUY: 'text-bull-bright', ADD: 'text-bull-bright', DEPOSIT: 'text-bull-bright',
     REDEEM: 'text-bear-bright', WITHDRAW: 'text-bear-bright',
@@ -2667,9 +2686,17 @@ function AssetActionsModal({ asset, onClose, onChanged }) {
               <div className="text-right">金额</div>
               <div className="text-right">份额</div>
               <div className="text-right">单价</div>
-              <div className="w-[100px]"></div>
+              <div className="w-[140px]"></div>
             </div>
-            {actions.map(a => {
+            {[...actions]
+              .sort((x, y) => {
+                // 展示倒序: 新流水在前. 后端按 trade_date ASC + id ASC 给 ledger 算账, 这里翻过来
+                const dx = x.trade_date || (x.created_at || '').slice(0, 10) || ''
+                const dy = y.trade_date || (y.created_at || '').slice(0, 10) || ''
+                if (dy !== dx) return dy.localeCompare(dx)
+                return (y.id || 0) - (x.id || 0)
+              })
+              .map(a => {
               const isPending = (a.status || 'confirmed') === 'pending'
               return (
                 <div key={a.id} className={`grid grid-cols-[80px_60px_1fr_1fr_1fr_auto] gap-2 px-2 py-2 text-[11.5px] items-center border-b border-border-subtle last:border-b-0 ${isPending ? 'bg-warn/5' : ''}`}>
@@ -2688,12 +2715,19 @@ function AssetActionsModal({ asset, onClose, onChanged }) {
                   <div className="text-right font-mono text-[11px]">
                     {a.unit_price != null ? parseFloat(a.unit_price).toFixed(4) : '--'}
                   </div>
-                  <div className="flex gap-1 items-center justify-end w-[100px]">
+                  <div className="flex gap-1 items-center justify-end w-[140px]">
                     {isPending && (
-                      <button onClick={() => setConfirmTarget(a)}
-                        className="px-1.5 py-[2px] rounded text-[10px] border border-warn text-warn hover:bg-warn/10 cursor-pointer">
-                        确认
-                      </button>
+                      <>
+                        <button onClick={() => editPendingAmount(a)}
+                          title="改金额 (限额变化等), 状态保持 pending"
+                          className="px-1.5 py-[2px] rounded text-[10px] border border-accent/60 text-accent hover:bg-accent/10 cursor-pointer">
+                          改额
+                        </button>
+                        <button onClick={() => setConfirmTarget(a)}
+                          className="px-1.5 py-[2px] rounded text-[10px] border border-warn text-warn hover:bg-warn/10 cursor-pointer">
+                          确认
+                        </button>
+                      </>
                     )}
                     {a.note !== 'initial (auto-migrated)' && (
                       <button onClick={() => deleteAction(a.id)}
@@ -2722,15 +2756,24 @@ function AssetActionsModal({ asset, onClose, onChanged }) {
 }
 
 function ConfirmActionModal({ asset, action, onClose, onDone }) {
-  // 两种 pending 形态:
+  // 三种 pending 形态:
   //  REDEEM (赎回): shares 已知, 待确认 amount + unit_price
-  //  ADD/BUY (申购): amount 已知, 待确认 shares + unit_price
+  //  ADD/BUY · amount 模式: amount 已知, 待确认 shares + unit_price
+  //  ADD/BUY · shares 模式: shares 已知 (按份额定投), 只需补 unit_price, amount 自算
   const isAdd = action.action_type === 'ADD' || action.action_type === 'BUY'
   const knownShares = action.shares ? parseFloat(action.shares) : 0
   const knownAmount = parseFloat(action.amount) || 0
+  const isSharesMode = isAdd && knownShares > 0 && knownAmount === 0
 
-  const [amount, setAmount] = React.useState(isAdd ? String(knownAmount) : '')
-  const [shares, setShares] = React.useState(isAdd ? '' : String(knownShares))
+  // shares 模式: 份额 disabled+预填, 金额留空让它从 shares*unit_price 自算
+  // amount 模式: 金额预填, 份额留空
+  // REDEEM: 份额已知 disabled
+  const [amount, setAmount] = React.useState(
+    isSharesMode ? '' : (isAdd ? String(knownAmount) : '')
+  )
+  const [shares, setShares] = React.useState(
+    isSharesMode ? String(knownShares) : (isAdd ? '' : String(knownShares))
+  )
   const [unitPrice, setUnitPrice] = React.useState('')
   const [busy, setBusy] = React.useState(false)
   const [err, setErr] = React.useState('')
@@ -2746,11 +2789,14 @@ function ConfirmActionModal({ asset, action, onClose, onDone }) {
 
   const submit = async () => {
     setErr('')
-    if (!a || a <= 0) { setErr('金额必填'); return }
+    // 金额没填但够算 → auto fill (shares 模式只填单价就是这条路径)
+    let finalAmount = a
+    if (!finalAmount && s > 0 && u > 0) finalAmount = s * u
+    if (!finalAmount || finalAmount <= 0) { setErr('金额必填'); return }
     if (isAdd && !s && !u) { setErr('申购确认: 至少填份额或净值'); return }
     setBusy(true)
     try {
-      const body = { amount: a }
+      const body = { amount: finalAmount }
       if (s > 0) body.shares = s
       if (u > 0) body.unit_price = u
       const res = await fetch(`/api/assets/${asset.id}/actions/${action.id}/confirm`, {
@@ -2775,15 +2821,20 @@ function ConfirmActionModal({ asset, action, onClose, onDone }) {
           <button onClick={onClose} className="text-text-dim hover:text-text text-[18px] leading-none px-2 cursor-pointer">×</button>
         </div>
         <div className="text-[11px] text-text-dim">
-          原申请: {isAdd
-            ? <>金额 <span className="font-mono text-text">¥{fmtMoney(knownAmount)}</span></>
-            : <>份额 <span className="font-mono text-text">{knownShares.toFixed(4)}</span></>
+          原申请: {isSharesMode
+            ? <>份额 <span className="font-mono text-text">{knownShares.toFixed(4)}</span> <span className="text-text-muted">(按份额定投, 只需补单价)</span></>
+            : isAdd
+              ? <>金额 <span className="font-mono text-text">¥{fmtMoney(knownAmount)}</span></>
+              : <>份额 <span className="font-mono text-text">{knownShares.toFixed(4)}</span></>
           } · 日期 <span className="font-mono text-text">{action.trade_date || '--'}</span>
         </div>
 
         <div>
           <label className="text-[11.5px] text-text-dim block mb-1">
-            金额 (CNY) {isAdd && <span className="text-text-muted text-[10px]">— 通常等于申请额, 如有差异请改</span>}
+            金额 (CNY)
+            {isSharesMode
+              ? <span className="text-text-muted text-[10px]"> — 留空将自动 = 份额 × 单价</span>
+              : isAdd && <span className="text-text-muted text-[10px]"> — 通常等于申请额, 如有差异请改</span>}
           </label>
           <input type="number" inputMode="decimal" placeholder={inferredAmount || '0'}
             value={amount} onChange={e => setAmount(e.target.value)}
@@ -2793,17 +2844,23 @@ function ConfirmActionModal({ asset, action, onClose, onDone }) {
         <div className="grid grid-cols-2 gap-2">
           <div>
             <label className="text-[11.5px] text-text-dim block mb-1">
-              {isAdd ? '成交份额 *' : '份额'}
+              {isSharesMode ? '成交份额' : isAdd ? '成交份额 *' : '份额'}
             </label>
-            <input type="number" inputMode="decimal" placeholder={inferredShares || (isAdd ? '必填或填净值' : '已知')}
-              disabled={!isAdd}
+            <input type="number" inputMode="decimal"
+              placeholder={inferredShares || (isAdd && !isSharesMode ? '必填或填净值' : '已知')}
+              disabled={!isAdd || isSharesMode}
               value={shares} onChange={e => setShares(e.target.value)}
               className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent disabled:opacity-60" />
           </div>
           <div>
-            <label className="text-[11.5px] text-text-dim block mb-1">净值 / 单价 <span className="text-text-muted text-[10px]">可空</span></label>
-            <input type="number" inputMode="decimal" placeholder={inferredUnit || '可选'}
+            <label className="text-[11.5px] text-text-dim block mb-1">
+              净值 / 单价 {isSharesMode
+                ? <span className="text-warn text-[10px]">*</span>
+                : <span className="text-text-muted text-[10px]">可空</span>}
+            </label>
+            <input type="number" inputMode="decimal" placeholder={inferredUnit || (isSharesMode ? '必填' : '可选')}
               value={unitPrice} onChange={e => setUnitPrice(e.target.value)}
+              autoFocus={isSharesMode}
               className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent" />
           </div>
         </div>
@@ -2830,10 +2887,12 @@ function DcaPanel({ assetId }) {
   const [schedules, setSchedules] = React.useState([])
   const [loading, setLoading] = React.useState(false)
   const [adding, setAdding] = React.useState(false)
-  const [form, setForm] = React.useState({
+  const [editingId, setEditingId] = React.useState(null)
+  const EMPTY_FORM = {
     mode: 'amount', value: '', frequency: 'daily_trading',
     day_of_month: '15', day_of_week: '1', note: '',
-  })
+  }
+  const [form, setForm] = React.useState(EMPTY_FORM)
 
   const reload = React.useCallback(async () => {
     setLoading(true)
@@ -2846,11 +2905,30 @@ function DcaPanel({ assetId }) {
 
   React.useEffect(() => { reload() }, [reload])
 
-  const create = async () => {
+  const closeForm = () => {
+    setAdding(false)
+    setEditingId(null)
+    setForm(EMPTY_FORM)
+  }
+
+  const startEdit = (s) => {
+    setEditingId(s.id)
+    setAdding(false)
+    setForm({
+      mode: s.mode || 'amount',
+      value: String(s.value ?? ''),
+      frequency: s.frequency || 'daily_trading',
+      day_of_month: String(s.day_of_month ?? '15'),
+      day_of_week: String(s.day_of_week ?? '1'),
+      note: s.note || '',
+    })
+  }
+
+  const save = async () => {
     const v = parseFloat(form.value)
     if (!v || v <= 0) return alert('请输入金额或份数')
     const body = {
-      asset_id: assetId, mode: form.mode, value: v,
+      mode: form.mode, value: v,
       frequency: form.frequency, note: form.note || '',
     }
     if (form.frequency === 'monthly') {
@@ -2862,12 +2940,17 @@ function DcaPanel({ assetId }) {
       if (!d || d < 1 || d > 7) return alert('星期几: 1-7 (Mon=1)')
       body.day_of_week = d
     }
-    await fetchJSON('/api/dca', { method: 'POST', body: JSON.stringify(body) })
-    setAdding(false)
-    setForm({
-      mode: 'amount', value: '', frequency: 'daily_trading',
-      day_of_month: '15', day_of_week: '1', note: '',
-    })
+    if (editingId) {
+      await fetchJSON(`/api/dca/${editingId}`, {
+        method: 'PUT', body: JSON.stringify(body),
+      })
+    } else {
+      await fetchJSON('/api/dca', {
+        method: 'POST',
+        body: JSON.stringify({ asset_id: assetId, ...body }),
+      })
+    }
+    closeForm()
     reload()
   }
 
@@ -2905,15 +2988,15 @@ function DcaPanel({ assetId }) {
           <span className="text-[11.5px] text-text-bright font-semibold">定投计划</span>
           <span className="text-[10.5px] text-text-muted">每个交易日 / 每周 / 每月 自动写一条 pending ADD，T+1 净值出来后在流水里确认</span>
         </div>
-        {!adding && (
-          <button onClick={() => setAdding(true)}
+        {!adding && !editingId && (
+          <button onClick={() => { setAdding(true); setEditingId(null) }}
             className="px-2 py-[3px] rounded text-[11px] border border-accent text-accent hover:bg-accent/10 cursor-pointer">
             + 新建
           </button>
         )}
       </div>
 
-      {adding && (
+      {(adding || editingId) && (
         <div className="bg-surface-3 rounded-md p-2 mb-2 flex flex-wrap gap-2 items-end">
           <div className="flex flex-col gap-0.5">
             <label className="text-[10.5px] text-text-dim">频率</label>
@@ -2969,11 +3052,11 @@ function DcaPanel({ assetId }) {
               className="bg-bg border border-border rounded px-2 py-1 text-[12px] outline-none focus:border-accent"
               placeholder="支付宝月定投" />
           </div>
-          <button onClick={create}
+          <button onClick={save}
             className="px-3 py-1 rounded bg-accent text-bg text-[11.5px] font-medium hover:opacity-90 cursor-pointer">
-            添加
+            {editingId ? '保存' : '添加'}
           </button>
-          <button onClick={() => setAdding(false)}
+          <button onClick={closeForm}
             className="px-3 py-1 rounded border border-border text-text-dim text-[11.5px] hover:text-text cursor-pointer">
             取消
           </button>
@@ -3000,8 +3083,12 @@ function DcaPanel({ assetId }) {
                 {s.last_fired_at && <span className="text-text-muted text-[10.5px]">上次 {s.last_fired_at}</span>}
                 {s.note && <span className="text-text-dim text-[10.5px]">· {s.note}</span>}
                 {paused && <span className="text-warn text-[10px] px-1 border border-warn/40 rounded">已暂停</span>}
-                <button onClick={() => togglePause(s)}
+                <button onClick={() => startEdit(s)}
                   className="ml-auto text-[10.5px] text-text-dim hover:text-accent cursor-pointer">
+                  改
+                </button>
+                <button onClick={() => togglePause(s)}
+                  className="text-[10.5px] text-text-dim hover:text-accent cursor-pointer">
                   {paused ? '激活' : '暂停'}
                 </button>
                 <button onClick={() => remove(s)}
