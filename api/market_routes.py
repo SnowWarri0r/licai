@@ -5,7 +5,8 @@ from fastapi import APIRouter
 
 from services.market_data import (
     get_realtime_quotes, get_historical_data, get_intraday_data,
-    get_market_indices, normalize_stock_code,
+    get_market_indices, normalize_stock_code, get_macro_quotes,
+    get_macro_klines,
 )
 
 router = APIRouter(prefix="/api/market", tags=["market"])
@@ -125,3 +126,33 @@ async def get_intraday(stock_code: str):
 @router.get("/indices")
 async def get_indices():
     return await get_market_indices()
+
+
+@router.get("/macro")
+async def get_macro(with_kline: bool = False):
+    """宏观仪表盘: 全球指数 / 汇率 / 商品. 30s 缓存.
+
+    返回 { group: [{symbol, name, price, prev_close, change_pct, kline?}, ...] }
+    group ∈ {a_index, hk_index, us_index, fx, commodity_intl, commodity_cn}
+    """
+    quotes = await get_macro_quotes()
+    if not with_kline or not quotes:
+        return quotes
+    syms = [it["symbol"] for items in quotes.values() for it in items]
+    klines = await get_macro_klines(syms)
+    out = {}
+    for grp, items in quotes.items():
+        out[grp] = [
+            {**it, "kline": klines.get(it["symbol"], [])}
+            for it in items
+        ]
+    return out
+
+
+@router.get("/macro/kline/{symbol}")
+async def get_macro_kline(symbol: str, days: int = 60):
+    """单个 symbol 的 K 线 (展开详情图用, 默认 60 日)."""
+    from services.market_data import _kline_for_symbol
+    import asyncio as _asyncio
+    data = await _asyncio.to_thread(_kline_for_symbol, symbol, days)
+    return {"symbol": symbol, "kline": data}
