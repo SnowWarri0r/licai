@@ -108,6 +108,7 @@ CREATE TABLE IF NOT EXISTS position_actions (
     tranche_id INTEGER,
     note TEXT DEFAULT '',
     trade_date TEXT,
+    fee REAL,                            -- 手续费 (CNY) 覆盖; NULL = 用 estimate_trade_fee 自动算
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -182,6 +183,9 @@ async def init_db():
         cols = {row[1] for row in await cursor.fetchall()}
         if "trade_date" not in cols:
             await db.execute("ALTER TABLE position_actions ADD COLUMN trade_date TEXT")
+        if "fee" not in cols:
+            # NULL = 用 estimate_trade_fee 自动算; 非 NULL = 用户手填覆盖
+            await db.execute("ALTER TABLE position_actions ADD COLUMN fee REAL")
         # Migration: add purchase_date to holdings if missing (reserved for future)
         cursor = await db.execute("PRAGMA table_info(holdings)")
         cols = {row[1] for row in await cursor.fetchall()}
@@ -726,15 +730,16 @@ async def get_position_actions(stock_code: str = None, limit: int = 200) -> list
 # --- Position Action CRUD (full, not just append) ---
 
 async def add_position_action(stock_code: str, action_type: str, price: float, shares: int,
-                               trade_date: str = None, note: str = "", tranche_id: int = None) -> int:
+                               trade_date: str = None, note: str = "", tranche_id: int = None,
+                               fee: float | None = None) -> int:
     """Insert a new action. Returns the new action id."""
     db = await get_db()
     try:
         cursor = await db.execute(
             """INSERT INTO position_actions
-               (stock_code, action_type, price, shares, trade_date, note, tranche_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (stock_code, action_type, price, shares, trade_date, note, tranche_id),
+               (stock_code, action_type, price, shares, trade_date, note, tranche_id, fee)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (stock_code, action_type, price, shares, trade_date, note, tranche_id, fee),
         )
         await db.commit()
         return cursor.lastrowid
@@ -743,7 +748,10 @@ async def add_position_action(stock_code: str, action_type: str, price: float, s
 
 
 async def update_position_action(action_id: int, action_type: str = None, price: float = None,
-                                  shares: int = None, trade_date: str = None, note: str = None):
+                                  shares: int = None, trade_date: str = None, note: str = None,
+                                  fee: float | None = None, fee_explicit: bool = False):
+    """Update fields. fee_explicit=True 表示明确想改 fee (即使传 None 也写入 NULL).
+    fee 默认 None + fee_explicit=False 不动 fee 列."""
     db = await get_db()
     try:
         sets, vals = [], []
@@ -752,6 +760,9 @@ async def update_position_action(action_id: int, action_type: str = None, price:
             if v is not None:
                 sets.append(f"{k} = ?")
                 vals.append(v)
+        if fee_explicit:
+            sets.append("fee = ?")
+            vals.append(fee)
         if not sets:
             return
         vals.append(action_id)
