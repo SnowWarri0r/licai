@@ -25,6 +25,7 @@ class ActionCreate(BaseModel):
     shares: int
     trade_date: Optional[str] = None  # YYYY-MM-DD
     note: Optional[str] = ""
+    fee: Optional[float] = None    # CNY override; None 让后端按券商费率自动算
 
 
 class ActionUpdate(BaseModel):
@@ -33,6 +34,8 @@ class ActionUpdate(BaseModel):
     shares: Optional[int] = None
     trade_date: Optional[str] = None
     note: Optional[str] = None
+    fee: Optional[float] = None
+    fee_set: bool = False           # 显式标记"我要改 fee" (用于区分 fee=None=清空 还是 不动)
 
 
 async def _recompute_holding(stock_code: str):
@@ -310,9 +313,23 @@ async def remove_holding(stock_code: str):
 
 @router.get("/{stock_code}/actions")
 async def list_actions(stock_code: str):
-    """List all buy/sell actions for a stock, chronologically."""
+    """List all buy/sell actions for a stock, chronologically.
+    每条附加 fee_effective (override 或估算的实际值) 和 fee_auto (估算值, 用作 UI placeholder).
+    """
     stock_code = normalize_stock_code(stock_code)
-    return await get_position_actions(stock_code, limit=500)
+    from services.position_ledger import estimate_trade_fee
+    actions = await get_position_actions(stock_code, limit=500)
+    is_a = stock_code and not stock_code.upper().startswith(("HK.", "US."))
+    for a in actions:
+        if is_a:
+            est = estimate_trade_fee(a.get("action_type", ""), float(a.get("price") or 0),
+                                     int(a.get("shares") or 0), stock_code)
+            a["fee_auto"] = round(est, 2)
+            a["fee_effective"] = round(float(a["fee"]) if a.get("fee") is not None else est, 2)
+        else:
+            a["fee_auto"] = 0.0
+            a["fee_effective"] = round(float(a["fee"]) if a.get("fee") is not None else 0, 2)
+    return actions
 
 
 _ACQUIRE = {"BUY", "ADD", "T_BUY"}
@@ -402,6 +419,7 @@ async def create_action(stock_code: str, data: ActionCreate):
         trade_date=data.trade_date,
         note=data.note or "",
         tranche_id=(matched["id"] if matched else None),
+        fee=data.fee,
     )
     await _recompute_holding(stock_code)
     return {
@@ -412,7 +430,8 @@ async def create_action(stock_code: str, data: ActionCreate):
 
 @router.put("/actions/{action_id}")
 async def modify_action(action_id: int, data: ActionUpdate):
-    """Edit an existing action. Recomputes holding aggregate."""
+    """Edit an existing action. Recomputes holding aggregate.
+    fee_set=true 时显式写 fee (None 表示清空覆盖, 回退自动估算)."""
     await update_position_action(
         action_id,
         action_type=data.action_type,
@@ -420,6 +439,8 @@ async def modify_action(action_id: int, data: ActionUpdate):
         shares=data.shares,
         trade_date=data.trade_date,
         note=data.note,
+        fee=data.fee,
+        fee_explicit=data.fee_set,
     )
     # Find the stock_code for recomputation
     from database import get_db
