@@ -89,17 +89,19 @@ def compute_position_state(
         t = a.get("action_type", "")
         price = float(a.get("price", 0))
         shares = int(a.get("shares", 0))
+        # action.fee 非 NULL = 用户手填覆盖, 否则按券商费率自动估
+        override = a.get("fee")
         if t in ACQUIRE and shares > 0:
             total_buy_amt += price * shares
             total_buy_shares += shares
             if stock_code:
-                fee = estimate_trade_fee(t, price, shares, stock_code)
+                fee = float(override) if override is not None else estimate_trade_fee(t, price, shares, stock_code)
                 total_fees += fee
                 total_buy_fees += fee
         elif t in RELEASE and shares > 0:
             total_sell_amt += price * shares
             if stock_code:
-                fee = estimate_trade_fee(t, price, shares, stock_code)
+                fee = float(override) if override is not None else estimate_trade_fee(t, price, shares, stock_code)
                 total_fees += fee
                 total_sell_fees += fee
 
