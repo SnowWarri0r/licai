@@ -139,6 +139,7 @@ CREATE TABLE IF NOT EXISTS external_asset_actions (
     amount REAL NOT NULL DEFAULT 0,      -- CNY 本金/赎回金额(总额); INTEREST/DIVIDEND 时为派息金额
     shares REAL,                         -- FUND/CRYPTO 用; +加仓 / -赎回; WEALTH/CASH 留空
     unit_price REAL,                     -- FUND/CRYPTO 当时净值/价
+    fee REAL DEFAULT 0,                  -- 手续费 (CNY), 含在 amount 里 (amount = 总付出含费)
     trade_date TEXT,                     -- YYYY-MM-DD (申请日)
     status TEXT DEFAULT 'confirmed',     -- confirmed: 进 ledger; pending: T+1 待确认 (OTC 基金 申购/赎回)
     note TEXT DEFAULT '',
@@ -208,12 +209,18 @@ async def init_db():
         # 基金/加密 待确认份额：买了但份额还没结算
         if "pending_amount" not in cols:
             await db.execute("ALTER TABLE external_assets ADD COLUMN pending_amount REAL DEFAULT 0")
+        # OKX 马丁实际总预算 (USDT). raw 字段没"总预算", 算法反推不准, 让用户手填覆盖.
+        if "bot_budget_override_usdt" not in cols:
+            await db.execute("ALTER TABLE external_assets ADD COLUMN bot_budget_override_usdt REAL")
 
-        # external_asset_actions: status 字段 (旧库迁移)
+        # external_asset_actions: status 字段 + fee 字段 (旧库迁移)
         cursor = await db.execute("PRAGMA table_info(external_asset_actions)")
         cols = {row[1] for row in await cursor.fetchall()}
         if cols and "status" not in cols:
             await db.execute("ALTER TABLE external_asset_actions ADD COLUMN status TEXT DEFAULT 'confirmed'")
+        if cols and "fee" not in cols:
+            # 手续费 (CNY), 包含在 amount 里 (amount = 总付出含费), 单存方便看净额
+            await db.execute("ALTER TABLE external_asset_actions ADD COLUMN fee REAL DEFAULT 0")
 
         # dca_schedules: 旧库迁移 frequency / day_of_week / day_of_month nullable
         cursor = await db.execute("PRAGMA table_info(dca_schedules)")

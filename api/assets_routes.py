@@ -42,6 +42,7 @@ class AssetCreate(BaseModel):
     annual_yield_rate: Optional[float] = None  # WEALTH 年化收益率, e.g. 0.025 = 2.5%
     start_date: Optional[str] = None           # 起投日 YYYY-MM-DD
     pending_amount: Optional[float] = None     # FUND/CRYPTO 待确认金额 (份额未结算)
+    bot_budget_override_usdt: Optional[float] = None   # OKX 马丁实际总预算 (USDT), 覆盖算法反推
 
 
 class AssetUpdate(BaseModel):
@@ -56,6 +57,7 @@ class AssetUpdate(BaseModel):
     annual_yield_rate: Optional[float] = None
     start_date: Optional[str] = None
     pending_amount: Optional[float] = None
+    bot_budget_override_usdt: Optional[float] = None
 
 
 class OkxCredentials(BaseModel):
@@ -221,6 +223,14 @@ async def _enrich(asset: dict) -> dict:
                 "live_cost_cny": live_cost_cny,
                 "auto_synced": True,
             }
+            # 用户手填的总预算覆盖算法反推 (OKX raw 没"总预算"字段, 我们的等比和算法不准)
+            override = asset.get("bot_budget_override_usdt")
+            if override and override > 0:
+                quote["total_budget_usdt"] = round(float(override), 2)
+                quote["available_usdt"] = round(max(0.0, float(override) - details.get("investment_usdt", 0)), 2)
+                quote["budget_source"] = "manual"
+            else:
+                quote["budget_source"] = "estimated"
     # else BOT: uses manual_value
 
     cost = float(out.get("cost_amount") or 0)
@@ -609,6 +619,7 @@ class ConfirmAction(BaseModel):
     amount: float
     shares: Optional[float] = None
     unit_price: Optional[float] = None
+    fee: Optional[float] = None     # 手续费 (CNY), 含在 amount 里
 
 
 @router.put("/{asset_id}/actions/{action_id}/confirm")
@@ -629,10 +640,13 @@ async def confirm_action(asset_id: int, action_id: int, data: ConfirmAction):
 
     shares = data.shares if data.shares is not None else target.get("shares")
     unit_price = data.unit_price
+    fee = float(data.fee or 0)
+    # 净额 = amount - fee (实际买到份额对应的钱), 反推 unit_price 用净额
+    net_for_shares = float(data.amount) - fee
     if shares and shares > 0 and (unit_price is None or unit_price <= 0):
-        unit_price = round(float(data.amount) / float(shares), 6)
+        unit_price = round(net_for_shares / float(shares), 6) if net_for_shares > 0 else 0
     elif unit_price and unit_price > 0 and (shares is None or shares <= 0):
-        shares = round(float(data.amount) / float(unit_price), 6)
+        shares = round(net_for_shares / float(unit_price), 6) if net_for_shares > 0 else 0
 
     from database import update_external_action
     await update_external_action(
@@ -640,6 +654,7 @@ async def confirm_action(asset_id: int, action_id: int, data: ConfirmAction):
         amount=float(data.amount),
         shares=float(shares) if shares is not None else None,
         unit_price=float(unit_price) if unit_price is not None else None,
+        fee=fee,
         status="confirmed",
     )
 
@@ -765,6 +780,41 @@ async def set_okx_credentials(data: OkxCredentials):
 async def remove_okx_credentials():
     ok = okx_client.clear_credentials()
     return {"message": "cleared" if ok else "nothing to clear"}
+
+
+@router.get("/okx/debug/dca-raw")
+async def okx_debug_dca_raw():
+    """Debug: 返回 OKX DCA 多个 endpoint 的 raw 字段, 用来找"总预算"键名."""
+    if not okx_client.has_credentials():
+        raise HTTPException(400, "OKX 凭证未配置")
+    import asyncio as _asyncio
+    out = {}
+    for ord_type in okx_client.DCA_ORD_TYPES:
+        r = await _asyncio.to_thread(
+            okx_client._authed_get, "/api/v5/tradingBot/dca/ongoing-list",
+            {"algoOrdType": ord_type},
+        )
+        out[f"ongoing/{ord_type}"] = r
+        # 拿到 algoId 后, 再试 sub-orders / details 看看
+        if r and not r.get("error") and r.get("data"):
+            for item in r["data"]:
+                algo_id = item.get("algoId")
+                if not algo_id: continue
+                # 子订单 history
+                sub = await _asyncio.to_thread(
+                    okx_client._authed_get,
+                    "/api/v5/tradingBot/dca/sub-orders",
+                    {"algoOrdType": ord_type, "algoId": algo_id, "type": "live"},
+                )
+                out[f"sub-orders/{algo_id}"] = sub
+                # stop-order-detail 看看
+                det = await _asyncio.to_thread(
+                    okx_client._authed_get,
+                    "/api/v5/tradingBot/dca/stop-order-detail",
+                    {"algoOrdType": ord_type, "algoId": algo_id},
+                )
+                out[f"stop-detail/{algo_id}"] = det
+    return out
 
 
 @router.get("/okx/bots")

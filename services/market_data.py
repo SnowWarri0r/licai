@@ -864,6 +864,373 @@ async def get_market_indices() -> list[dict]:
         return []
 
 
+# ============================================================
+# 宏观仪表盘: 全球指数 / 汇率 / 商品.
+# Sina 不同 prefix 解析字段不同, 用 (group, symbol, label) 表驱动.
+# ============================================================
+MACRO_SYMBOLS = [
+    # A 股大盘
+    ("a_index", "sh000001", "上证指数"),
+    ("a_index", "sz399001", "深证成指"),
+    ("a_index", "sh000300", "沪深300"),
+    ("a_index", "sz399006", "创业板指"),
+    ("a_index", "sh000688", "科创50"),
+    # 港股
+    ("hk_index", "hkHSI", "恒生指数"),
+    ("hk_index", "hkHSTECH", "恒生科技"),
+    ("hk_index", "hkHSCEI", "恒生国企"),
+    # 美股
+    ("us_index", "gb_dji", "道琼斯"),
+    ("us_index", "gb_ixic", "纳斯达克"),
+    # 汇率 (USD 计价对其他)
+    ("fx", "fx_susdcnh", "USD/CNH 离岸"),
+    ("fx", "fx_susdcny", "USD/CNY 在岸"),
+    ("fx", "fx_seurusd", "EUR/USD"),
+    ("fx", "fx_susdjpy", "USD/JPY"),
+    # 商品 (国际)
+    ("commodity_intl", "hf_GC", "COMEX 黄金"),
+    ("commodity_intl", "hf_SI", "COMEX 白银"),
+    ("commodity_intl", "hf_CL", "WTI 原油"),
+    ("commodity_intl", "hf_HG", "COMEX 铜"),
+    # 商品 (国内连续合约)
+    ("commodity_cn", "nf_CU0", "沪铜"),
+    ("commodity_cn", "nf_AL0", "沪铝"),
+    ("commodity_cn", "nf_RB0", "螺纹钢"),
+    ("commodity_cn", "nf_I0", "铁矿石"),
+    ("commodity_cn", "nf_SC0", "原油 SC"),
+]
+
+
+def _parse_macro_line(sym: str, body: str) -> dict | None:
+    """各 prefix 字段不同: 提取统一的 {price, prev_close, change_pct}.
+    返回 None 表示空值或字段异常.
+    """
+    if not body:
+        return None
+    fields = body.split(",")
+    try:
+        # A 股 sh/sz: 名,昨,开,当前,最高,最低,...
+        if sym.startswith("sh") or sym.startswith("sz"):
+            if len(fields) < 4:
+                return None
+            prev = float(fields[2]) if fields[2] else 0
+            price = float(fields[3]) if fields[3] else 0
+        # 港股 hk: 代号,名,昨,开,高,低,当前,涨跌,涨跌%,...
+        elif sym.startswith("hk"):
+            if len(fields) < 9:
+                return None
+            prev = float(fields[2]) if fields[2] else 0
+            price = float(fields[6]) if fields[6] else 0
+        # 美股 gb_: 名,当前,涨跌%,时间,涨跌,昨收,开,高,...
+        elif sym.startswith("gb_"):
+            if len(fields) < 6:
+                return None
+            price = float(fields[1]) if fields[1] else 0
+            prev = float(fields[5]) if fields[5] else 0
+        # 国际商品 hf_: 当前,买,卖,高,低,时间,昨收,开,涨,跌...
+        # 实际格式: 当前,(空),买,卖,高,低,时间,昨收,开... 但有的源是 高,低,...
+        elif sym.startswith("hf_"):
+            if len(fields) < 8:
+                return None
+            price = float(fields[0]) if fields[0] else 0
+            # hf_ 的昨收在 index 7
+            prev = float(fields[7]) if fields[7] else 0
+        # 国内期货 nf_: 名,固定,昨,开,高,低,当前(或买),... 高=4 低=5 当前=8
+        # 实测: 铜连续,150000,104500,104840,103690,104620,104620,104630,104620,...
+        # → 字段1=昨收 字段7或8=当前. 用最近收盘价: fields[8]
+        elif sym.startswith("nf_"):
+            if len(fields) < 9:
+                return None
+            prev = float(fields[2]) if fields[2] else 0
+            price = float(fields[8]) if fields[8] else 0
+        # 汇率 fx_: 时间,买,卖,价3,价4,昨买,昨卖,昨当前 → 用 fields[1] 当前, fields[5] 昨收
+        elif sym.startswith("fx_"):
+            if len(fields) < 8:
+                return None
+            price = float(fields[1]) if fields[1] else 0
+            prev = float(fields[5]) if fields[5] else 0
+        else:
+            return None
+        if price <= 0:
+            return None
+        change_pct = round((price - prev) / prev * 100, 3) if prev > 0 else 0
+        return {
+            "price": round(price, 4),
+            "prev_close": round(prev, 4),
+            "change_pct": change_pct,
+        }
+    except (ValueError, IndexError):
+        return None
+
+
+def _fetch_macro_sina() -> dict:
+    """一次批量拉所有宏观符号, 按 group 分桶返回."""
+    syms = [s for _, s, _ in MACRO_SYMBOLS]
+    url = f"https://hq.sinajs.cn/list={','.join(syms)}"
+    resp = _requests.get(url, headers={"Referer": "https://finance.sina.com.cn"}, timeout=8)
+    resp.encoding = "gbk"
+    parsed: dict[str, dict] = {}
+    for line in resp.text.strip().split("\n"):
+        m = re.match(r'var hq_str_(\w+)="(.*)";', line.strip())
+        if not m:
+            continue
+        sym, body = m.group(1), m.group(2)
+        parsed[sym] = _parse_macro_line(sym, body)
+    groups: dict[str, list[dict]] = {}
+    for grp, sym, label in MACRO_SYMBOLS:
+        p = parsed.get(sym)
+        if not p:
+            continue
+        groups.setdefault(grp, []).append({
+            "symbol": sym,
+            "name": label,
+            **p,
+        })
+    return groups
+
+
+async def get_macro_quotes() -> dict:
+    cache_key = "macro_quotes"
+    cached = _cache_get(cache_key, 30)
+    if cached is not None:
+        return cached
+    try:
+        result = await asyncio.to_thread(_fetch_macro_sina)
+        if result:
+            _cache_set(cache_key, result)
+        return result
+    except Exception:
+        return {}
+
+
+# ============================================================
+# K 线数据源 (sparkline 用)
+# 不同符号家族走不同接口, 单 symbol 拉 30 日 close 序列.
+# 返回值统一: [{date, close}, ...] 按时间升序.
+# ============================================================
+def _kline_sina_ashare(sym: str, datalen: int = 30) -> list[dict]:
+    """sh*/sz* A 股 / A 股板块指数."""
+    url = (f"http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+           f"CN_MarketData.getKLineData?symbol={sym}&scale=240&ma=5&datalen={datalen}")
+    r = _requests.get(url, timeout=6)
+    arr = r.json()
+    if not isinstance(arr, list):
+        return []
+    return [{"date": d.get("day", ""), "close": float(d.get("close") or 0)} for d in arr if d.get("close")]
+
+
+def _kline_tencent_hk(sym: str, datalen: int = 30) -> list[dict]:
+    """hkHSI / hkHSTECH 等港股指数 - 腾讯 gtimg."""
+    url = (f"http://web.ifzq.gtimg.cn/appstock/app/hkfqkline/get"
+           f"?_var=kline_dayqfq&param={sym},day,,,{datalen},qfq")
+    r = _requests.get(url, timeout=6)
+    txt = r.text.strip()
+    eq = txt.find("=")
+    if eq < 0:
+        return []
+    try:
+        import json as _json
+        payload = _json.loads(txt[eq + 1:])
+    except Exception:
+        return []
+    data = payload.get("data") or {}
+    sym_data = data.get(sym) or {}
+    rows = sym_data.get("day") or sym_data.get("qfqday") or []
+    out = []
+    for r in rows[-datalen:]:
+        if len(r) < 3:
+            continue
+        try:
+            out.append({"date": r[0], "close": float(r[2])})
+        except Exception:
+            continue
+    return out
+
+
+def _kline_sina_us(sym: str, datalen: int = 30) -> list[dict]:
+    """gb_dji / gb_ixic 等美股指数 - sina usstock.
+    腾讯 fqkline 对美股指数只给当天, sina 这个接口能给完整历史."""
+    # gb_dji → .DJI, gb_ixic → .IXIC
+    inner = sym[3:].upper() if sym.startswith("gb_") else sym.upper()
+    sina_sym = "." + inner
+    url = (f"http://stock.finance.sina.com.cn/usstock/api/jsonp.php/"
+           f"var%20_{inner}=/US_MinKService.getDailyK?symbol={sina_sym}&num={max(datalen, 60)}")
+    r = _requests.get(url, headers={"Referer": "https://finance.sina.com.cn/stock/usstock/"}, timeout=6)
+    txt = r.text
+    eq = txt.find("=(")
+    if eq < 0:
+        return []
+    try:
+        import json as _json
+        end = txt.rfind(");")
+        if end < 0:
+            return []
+        arr = _json.loads(txt[eq + 2:end])
+    except Exception:
+        return []
+    if not isinstance(arr, list):
+        return []
+    out = []
+    for d in arr[-datalen:]:
+        c = d.get("c") or d.get("close")
+        date = d.get("d") or d.get("date") or ""
+        if c:
+            try:
+                out.append({"date": date, "close": float(c)})
+            except Exception:
+                continue
+    return out
+
+
+def _kline_sina_futures_cn(sym: str, datalen: int = 30) -> list[dict]:
+    """nf_CU0 → CU0 国内期货连续合约."""
+    # 去掉 nf_ 前缀
+    inner = sym[3:] if sym.startswith("nf_") else sym
+    url = (f"https://stock2.finance.sina.com.cn/futures/api/jsonp.php/"
+           f"var%20_{inner}_30=/InnerFuturesNewService.getDailyKLine"
+           f"?symbol={inner}&datalen={datalen}")
+    r = _requests.get(url, headers={"Referer": "https://finance.sina.com.cn/futures/quotes/"}, timeout=6)
+    txt = r.text
+    eq = txt.find("=(")
+    if eq < 0:
+        return []
+    try:
+        import json as _json
+        # 取 =(  到  ); 之间
+        end = txt.rfind(");")
+        if end < 0:
+            return []
+        arr = _json.loads(txt[eq + 2:end])
+    except Exception:
+        return []
+    if not isinstance(arr, list):
+        return []
+    out = []
+    for d in arr[-datalen:]:
+        c = d.get("c") or d.get("close")
+        date = d.get("d") or d.get("date") or ""
+        if c:
+            try:
+                out.append({"date": date, "close": float(c)})
+            except Exception:
+                continue
+    return out
+
+
+def _kline_eastmoney_fx(sym: str, datalen: int = 30) -> list[dict]:
+    """fx_susdcnh / fx_susdcny / fx_seurusd / fx_susdjpy → EastMoney qt kline.
+    EastMoney secid 编码: 133.XXX 是港币/在岸/离岸人民币, 119.XXX 是国际汇率.
+    """
+    # 简化映射: 我们用到的 4 个固定关系
+    fx_map = {
+        "fx_susdcnh": "133.USDCNH",
+        "fx_susdcny": "133.USDCNYC",
+        "fx_seurusd": "119.EURUSD",
+        "fx_susdjpy": "119.USDJPY",
+    }
+    secid = fx_map.get(sym)
+    if not secid:
+        return []
+    url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+    params = {
+        "secid": secid,
+        "klt": 101, "fqt": 1, "lmt": max(datalen, 60),
+        "end": "20500000",
+        "fields1": "f1,f2,f3,f4,f5,f6,f7,f8",
+        "fields2": "f51,f52,f53,f54,f55,f56,f57,f58",
+        "ut": "f057cbcbce2a86e2866ab8877db1d059",
+        "forcect": 1,
+    }
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Referer": "https://quote.eastmoney.com/",
+    }
+    r = _requests.get(url, params=params, headers=headers, timeout=8)
+    j = r.json()
+    klines = (j.get("data") or {}).get("klines") or []
+    out = []
+    for line in klines[-datalen:]:
+        # 格式: "2026-05-11,open,close,high,low,volume,amount,amplitude%"
+        parts = line.split(",")
+        if len(parts) < 3:
+            continue
+        try:
+            out.append({"date": parts[0], "close": float(parts[2])})
+        except Exception:
+            continue
+    return out
+
+
+def _kline_sina_futures_intl(sym: str, datalen: int = 30) -> list[dict]:
+    """hf_GC → GC COMEX 国际期货."""
+    inner = sym[3:] if sym.startswith("hf_") else sym
+    url = (f"https://stock2.finance.sina.com.cn/futures/api/jsonp.php/"
+           f"var%20_{inner}_30=/GlobalFuturesService.getGlobalFuturesDailyKLine"
+           f"?symbol={inner}&datalen={datalen}")
+    r = _requests.get(url, headers={"Referer": "https://finance.sina.com.cn/futures/quotes/"}, timeout=6)
+    txt = r.text
+    eq = txt.find("=(")
+    if eq < 0:
+        return []
+    try:
+        import json as _json
+        end = txt.rfind(");")
+        if end < 0:
+            return []
+        arr = _json.loads(txt[eq + 2:end])
+    except Exception:
+        return []
+    if not isinstance(arr, list):
+        return []
+    out = []
+    for d in arr[-datalen:]:
+        c = d.get("close")
+        date = d.get("date") or ""
+        if c:
+            try:
+                out.append({"date": date, "close": float(c)})
+            except Exception:
+                continue
+    return out
+
+
+def _kline_for_symbol(sym: str, datalen: int = 30) -> list[dict]:
+    """根据 symbol 前缀分发到对应接口. 失败返回 []."""
+    try:
+        if sym.startswith("sh") or sym.startswith("sz"):
+            return _kline_sina_ashare(sym, datalen)
+        if sym.startswith("hk"):
+            return _kline_tencent_hk(sym, datalen)
+        if sym.startswith("gb_") or sym.startswith("us"):
+            return _kline_sina_us(sym, datalen)
+        if sym.startswith("nf_"):
+            return _kline_sina_futures_cn(sym, datalen)
+        if sym.startswith("hf_"):
+            return _kline_sina_futures_intl(sym, datalen)
+        if sym.startswith("fx_"):
+            return _kline_eastmoney_fx(sym, datalen)
+        return []
+    except Exception:
+        return []
+
+
+async def get_macro_klines(symbols: list[str]) -> dict[str, list[dict]]:
+    """批量拉 K 线, 5 分钟缓存. 返回 {symbol: [{date, close}, ...]}"""
+    cache_key = "macro_klines_" + ",".join(sorted(symbols))
+    cached = _cache_get(cache_key, 300)
+    if cached is not None:
+        return cached
+    # 并发拉
+    tasks = [asyncio.to_thread(_kline_for_symbol, s) for s in symbols]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    out: dict[str, list[dict]] = {}
+    for sym, res in zip(symbols, results):
+        if isinstance(res, list):
+            out[sym] = res
+    _cache_set(cache_key, out)
+    return out
+
+
 def _cst_now():
     from datetime import timezone
     return datetime.now(timezone.utc) + timedelta(hours=8)
