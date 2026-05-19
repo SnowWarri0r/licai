@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { api, fetchJSON } from '../hooks/useApi'
 import { fmtMoney, fmtPct, fmtPrice, priceColor } from '../helpers'
 import Tooltip from './Tooltip'
+import StockKlineModal from './StockKlineModal'
 
 // ============================================================
 // UnifiedPortfolio — replaces Portfolio + ExternalAssets
@@ -627,12 +628,13 @@ function TypeMiniInfo({ row, unwindByCode }) {
 // ============================================================
 // Hover action buttons
 // ============================================================
-function RowActions({ row, visible, onEdit, onHistory, onRemove, onAddLot, onReduceLot, onShowActions }) {
+function RowActions({ row, visible, onEdit, onHistory, onRemove, onAddLot, onReduceLot, onShowActions, onKline }) {
   // 桌面: hover 才显示 (opacity 控制); 移动: 始终显示, 1 字按钮
   const btnBase = 'rounded border border-border-med bg-surface-2 text-text-dim ' +
     'hover:border-accent hover:text-accent transition-colors cursor-pointer whitespace-nowrap'
   const actions = []
   if (row.type === 'A') {
+    actions.push({ short: '线', label: 'K 线', fn: () => onKline?.(row._raw) })
     actions.push({ short: '史', label: '历史', fn: () => onHistory?.(row._raw) })
     actions.push({ short: '改', label: '编辑', fn: () => onEdit?.(row) })
   } else {
@@ -775,6 +777,7 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
   const [addLotAsset, setAddLotAsset] = useState(null)
   const [reduceAsset, setReduceAsset] = useState(null)
   const [actionsAsset, setActionsAsset] = useState(null)
+  const [klineHolding, setKlineHolding] = useState(null)
   const [realized, setRealized] = useState({ stock: 0, asset: 0 })
 
   const loadAssets = useCallback(async () => {
@@ -1082,6 +1085,10 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
           onChanged={() => { loadAssets(); loadRealized() }} />
       )}
 
+      {klineHolding && (
+        <StockKlineModal holding={klineHolding} onClose={() => setKlineHolding(null)} />
+      )}
+
       {/* Column headers */}
       {!isEmpty && (
         <div className="licai-row px-3 md:px-6 py-2 text-[10.5px] text-text-dim tracking-wider font-medium border-b border-border bg-surface">
@@ -1334,7 +1341,8 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
                       <RowActions row={row} visible={hoverId === row.id}
                         onEdit={handleEdit} onHistory={onHistory} onRemove={removeAsset}
                         onAddLot={handleAddLot} onReduceLot={handleReduceLot}
-                        onShowActions={handleShowActions} />
+                        onShowActions={handleShowActions}
+                        onKline={setKlineHolding} />
                     </div>
                   </div>
                 </div>
@@ -2649,6 +2657,7 @@ function AssetActionsModal({ asset, onClose, onChanged }) {
   const [state, setState] = React.useState(null)
   const [loading, setLoading] = React.useState(true)
   const [confirmTarget, setConfirmTarget] = React.useState(null)
+  const [editTarget, setEditTarget] = React.useState(null)
 
   const reload = React.useCallback(async () => {
     setLoading(true)
@@ -2776,8 +2785,8 @@ function AssetActionsModal({ asset, onClose, onChanged }) {
                   <div className="text-right font-mono text-[11px]">
                     {a.unit_price != null ? parseFloat(a.unit_price).toFixed(4) : '--'}
                   </div>
-                  <div className="flex gap-1 items-center justify-end w-[140px]">
-                    {isPending && (
+                  <div className="flex gap-1 items-center justify-end w-[160px]">
+                    {isPending ? (
                       <>
                         <button onClick={() => editPendingAmount(a)}
                           title="改金额 (限额变化等), 状态保持 pending"
@@ -2789,6 +2798,12 @@ function AssetActionsModal({ asset, onClose, onChanged }) {
                           确认
                         </button>
                       </>
+                    ) : (
+                      <button onClick={() => setEditTarget(a)}
+                        title="改金额 / 份额 / 单价 / 手续费"
+                        className="px-1.5 py-[2px] rounded text-[10px] border border-accent/60 text-accent hover:bg-accent/10 cursor-pointer">
+                        编辑
+                      </button>
                     )}
                     {a.note !== 'initial (auto-migrated)' && (
                       <button onClick={() => deleteAction(a.id)}
@@ -2812,6 +2827,160 @@ function AssetActionsModal({ asset, onClose, onChanged }) {
           onClose={() => setConfirmTarget(null)}
           onDone={() => { setConfirmTarget(null); reload(); onChanged?.() }} />
       )}
+      {editTarget && (
+        <EditActionModal asset={asset} action={editTarget}
+          onClose={() => setEditTarget(null)}
+          onDone={() => { setEditTarget(null); reload(); onChanged?.() }} />
+      )}
+    </div>
+  )
+}
+
+function EditActionModal({ asset, action, onClose, onDone }) {
+  // 已 confirmed 流水的"改"弹窗: 改 amount / shares / unit_price / fee
+  // 改完后端会同步 asset cost_amount/shares
+  // 联动: 用 lastEdit 追踪用户上次手动改的字段, 另外两个被反推. 改 fee 时 amount 跟着 s*u+fee 走.
+  const [amount, setAmount] = React.useState(action.amount != null ? String(action.amount) : '')
+  const [shares, setShares] = React.useState(action.shares != null ? String(action.shares) : '')
+  const [unitPrice, setUnitPrice] = React.useState(action.unit_price != null ? String(action.unit_price) : '')
+  const [fee, setFee] = React.useState(action.fee != null ? String(action.fee) : '')
+  const [lastEdit, setLastEdit] = React.useState(null)  // 'amount' | 'shares' | 'unitPrice'
+  const [busy, setBusy] = React.useState(false)
+  const [err, setErr] = React.useState('')
+
+  const hasShares = asset.asset_type === 'FUND' || asset.asset_type === 'CRYPTO'
+
+  // 反推: amount = shares × unit_price + fee (净额逻辑)
+  // 用户上次改了哪个字段, 就反推另一个 (优先反推 amount, 让 ledger 跟手算一致)
+  React.useEffect(() => {
+    if (!hasShares) return
+    const a = parseFloat(amount), s = parseFloat(shares), u = parseFloat(unitPrice), f = parseFloat(fee) || 0
+    // 改 shares: amount = s × u + fee
+    if (lastEdit === 'shares' && s > 0 && u > 0) {
+      const next = (s * u + f).toFixed(2)
+      if (next !== amount) setAmount(next)
+    }
+    // 改 unitPrice: amount = s × u + fee
+    else if (lastEdit === 'unitPrice' && s > 0 && u > 0) {
+      const next = (s * u + f).toFixed(2)
+      if (next !== amount) setAmount(next)
+    }
+    // 改 amount: 单价 = (amount − fee) / shares
+    else if (lastEdit === 'amount' && a > 0 && s > 0) {
+      const net = Math.max(0, a - f)
+      const next = (net / s).toFixed(4)
+      if (next !== unitPrice) setUnitPrice(next)
+    }
+  }, [amount, shares, unitPrice, fee, lastEdit, hasShares])
+
+  // fee 单独 effect: 改 fee 时, 如果 shares × unit_price 都有, 自动让 amount 跟上 (净额不变 + 新 fee)
+  React.useEffect(() => {
+    if (!hasShares || lastEdit === 'amount') return
+    const s = parseFloat(shares), u = parseFloat(unitPrice), f = parseFloat(fee) || 0
+    if (s > 0 && u > 0) {
+      const next = (s * u + f).toFixed(2)
+      if (next !== amount) setAmount(next)
+    }
+  }, [fee])
+
+  React.useEffect(() => {
+    const onKey = e => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  const submit = async () => {
+    setErr('')
+    const body = {}
+    const a = parseFloat(amount), s = parseFloat(shares), u = parseFloat(unitPrice), f = parseFloat(fee)
+    // 只把"用户改过的"字段传给后端 — 简单判定: 跟 action 原值不同就算改了
+    if (!isNaN(a) && a !== (action.amount ?? 0)) body.amount = a
+    if (hasShares && !isNaN(s) && s !== (action.shares ?? 0)) body.shares = s
+    if (!isNaN(u) && u !== (action.unit_price ?? 0)) body.unit_price = u
+    if (!isNaN(f) && f !== (action.fee ?? 0)) body.fee = f
+    if (Object.keys(body).length === 0) { onClose(); return }
+    setBusy(true)
+    try {
+      const res = await fetch(`/api/assets/${asset.id}/actions/${action.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || '保存失败')
+      onDone?.()
+    } catch (e) { setErr(e.message) }
+    finally { setBusy(false) }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[210] flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-surface-2 border border-border rounded-xl p-5 w-[420px] max-w-[95vw] space-y-3"
+        onClick={e => e.stopPropagation()}>
+        <div className="flex items-baseline justify-between">
+          <h3 className="text-[14px] font-semibold text-text-bright m-0">编辑流水</h3>
+          <button onClick={onClose} className="text-text-dim hover:text-text text-[18px] leading-none px-2 cursor-pointer">×</button>
+        </div>
+        <div className="text-[11px] text-text-dim">
+          类型 <span className="font-mono text-text">{action.action_type}</span>
+          <span className="mx-1.5">·</span>
+          日期 <span className="font-mono text-text">{action.trade_date || '--'}</span>
+          <span className="mx-1.5">·</span>
+          改完后端会按新值重算资产 cost / shares
+        </div>
+
+        <div>
+          <label className="text-[11.5px] text-text-dim block mb-1">
+            金额 (CNY, 含手续费)
+            {hasShares && lastEdit && lastEdit !== 'amount' && (
+              <span className="text-text-muted text-[10px] ml-1">— 自动 = 份额×单价 + 手续费</span>
+            )}
+          </label>
+          <input type="number" inputMode="decimal" value={amount}
+            onChange={e => { setAmount(e.target.value); setLastEdit('amount') }}
+            className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent" />
+        </div>
+
+        {hasShares && (
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-[11.5px] text-text-dim block mb-1">份额</label>
+              <input type="number" inputMode="decimal" value={shares}
+                onChange={e => { setShares(e.target.value); setLastEdit('shares') }}
+                className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent" />
+            </div>
+            <div>
+              <label className="text-[11.5px] text-text-dim block mb-1">
+                净值 / 单价
+                {lastEdit === 'amount' && (
+                  <span className="text-text-muted text-[10px] ml-1">— 自动 = (金额−费)/份额</span>
+                )}
+              </label>
+              <input type="number" inputMode="decimal" value={unitPrice}
+                onChange={e => { setUnitPrice(e.target.value); setLastEdit('unitPrice') }}
+                className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent" />
+            </div>
+          </div>
+        )}
+
+        <div>
+          <label className="text-[11.5px] text-text-dim block mb-1">手续费 (CNY)</label>
+          <input type="number" inputMode="decimal" value={fee} onChange={e => setFee(e.target.value)}
+            className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent" />
+        </div>
+
+        {err && <div className="text-[11px] text-bear-bright">{err}</div>}
+
+        <div className="flex gap-2 pt-1">
+          <button onClick={submit} disabled={busy}
+            className="flex-1 px-4 py-2 rounded-lg bg-accent text-bg font-medium text-[13px] hover:opacity-90 disabled:opacity-50 cursor-pointer">
+            {busy ? '...' : '保存'}
+          </button>
+          <button onClick={onClose}
+            className="px-4 py-2 rounded-lg border border-border text-text-dim hover:text-text hover:border-border-med text-[13px] cursor-pointer">
+            取消
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
