@@ -25,6 +25,9 @@ _COMMISSION_RATE = 0.0001854  # 万1.854 (user's broker rate)
 _COMMISSION_MIN = 5.0         # ¥5 per trade minimum
 _STAMP_RATE = 0.0005         # 0.05% sell side only (since 2023-08)
 _TRANSFER_RATE = 0.00001     # 0.001% both sides, Shanghai stocks only (6xxxxx)
+# 规费 (双向收, 沪深都有)
+_EXCHANGE_HANDLE_RATE = 0.0000341  # 经手费 万0.341 (2025-07-01 起下调)
+_REGULATORY_FEE_RATE  = 0.00002    # 证管费 万0.2 (证监会)
 
 
 def _is_shanghai(stock_code: str) -> bool:
@@ -32,7 +35,7 @@ def _is_shanghai(stock_code: str) -> bool:
 
 
 def estimate_trade_fee(action_type: str, price: float, shares: int, stock_code: str = "") -> float:
-    """Estimate A-share trading fees (commission + stamp + transfer).
+    """Estimate A-share trading fees (commission + stamp + transfer + regulatory).
 
     Returns total fee in yuan. Used to adjust cost basis to match broker display.
     """
@@ -44,7 +47,8 @@ def estimate_trade_fee(action_type: str, price: float, shares: int, stock_code: 
     commission = max(amount * _COMMISSION_RATE, _COMMISSION_MIN)
     stamp = amount * _STAMP_RATE if action_type in RELEASE else 0.0
     transfer = amount * _TRANSFER_RATE if _is_shanghai(stock_code) else 0.0
-    return commission + stamp + transfer
+    regulatory = amount * (_EXCHANGE_HANDLE_RATE + _REGULATORY_FEE_RATE)
+    return commission + stamp + transfer + regulatory
 
 
 def _parse_date(s: str | None) -> date:
