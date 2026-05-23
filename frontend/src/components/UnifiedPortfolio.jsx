@@ -839,7 +839,8 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
     // 0 持仓的股票/基金 不在主列表显示, 走 "已清仓" 区块
     const a = (holdings || []).filter(h => (h.shares || 0) > 0).map(normalizeHolding)
     const e = (assets || []).filter(x => x.asset_type === 'BOT' || x.asset_type === 'WEALTH' || x.asset_type === 'CASH'
-      || (x.shares || 0) > 0 || (x.cost_amount || 0) > 0).map(normalizeAsset)
+      || (x.shares || 0) > 0 || (x.cost_amount || 0) > 0
+      || (x.pending_amount || 0) > 0).map(normalizeAsset)
     return [...a, ...e]
   }, [holdings, assets])
 
@@ -1589,6 +1590,12 @@ function AddAssetForm({ typeKey, onDone, onCancel }) {
   // WEALTH (理财)
   const [annualYield, setAnnualYield] = useState('')
   const [startDate, setStartDate] = useState(new Date().toISOString().slice(0, 10))
+  // DCA 定投 (FUND/CRYPTO only, 可选)
+  const [dcaEnabled, setDcaEnabled] = useState(false)
+  const [dcaValue, setDcaValue] = useState('')
+  const [dcaFrequency, setDcaFrequency] = useState('monthly')
+  const [dcaDayOfMonth, setDcaDayOfMonth] = useState(15)
+  const [dcaDayOfWeek, setDcaDayOfWeek] = useState(1)
 
   useEffect(() => {
     if (assetType !== 'BOT') return
@@ -1655,6 +1662,22 @@ function AddAssetForm({ typeKey, onDone, onCancel }) {
     if (!cost) return alert(costLabel)
     if (!code || !name) return alert('代码/名称必填')
     if (assetType === 'BOT' && !manualValue && !okxAlgoId) return alert('当前资产必填（或绑定 OKX 自动同步）')
+
+    // 内联 DCA 校验 (仅 FUND/CRYPTO)
+    let dcaPayload = null
+    if (dcaEnabled && (assetType === 'FUND' || assetType === 'CRYPTO')) {
+      const v = parseFloat(dcaValue)
+      if (!(v > 0)) return alert('定投金额必填且 > 0')
+      dcaPayload = {
+        mode: 'amount',
+        value: v,
+        frequency: dcaFrequency,
+        day_of_month: dcaFrequency === 'monthly' ? parseInt(dcaDayOfMonth, 10) : null,
+        day_of_week: dcaFrequency === 'weekly' ? parseInt(dcaDayOfWeek, 10) : null,
+        note: '',
+      }
+    }
+
     await fetchJSON('/api/assets', {
       method: 'POST',
       body: JSON.stringify({
@@ -1669,6 +1692,7 @@ function AddAssetForm({ typeKey, onDone, onCancel }) {
           ? parseFloat(annualYield) / 100  // user inputs %, store as decimal
           : null,
         start_date: isYieldType ? (startDate || null) : null,
+        dca: dcaPayload,
       }),
     })
     onDone?.()
@@ -1744,6 +1768,14 @@ function AddAssetForm({ typeKey, onDone, onCancel }) {
       </div>
 
       {hint && <div className={`text-[10px] font-mono ${hint.startsWith('✓') ? 'text-bull' : 'text-bear'}`}>{hint}</div>}
+
+      {/* Pending hint: FUND/CRYPTO 只填了金额没填份额 → T+1 待确认 */}
+      {(assetType === 'FUND' || assetType === 'CRYPTO') && parseFloat(cost) > 0 && !shares && (
+        <div className="text-[10.5px] font-mono text-accent">
+          💡 没填{assetType === 'FUND' ? '份额' : '数量'} → 当作 T+1 待确认，¥{parseFloat(cost).toFixed(2)} 先记到 pending。
+          {assetType === 'FUND' ? '基金' : '币'} 到账后回来编辑补份额自动结算。
+        </div>
+      )}
 
       {/* WEALTH 双向估算预览 (CASH 不需要这种估算 — 只录余额) */}
       {assetType === 'WEALTH' && cost && startDate && (() => {
@@ -1879,13 +1911,67 @@ function AddAssetForm({ typeKey, onDone, onCancel }) {
         </div>
         <button onClick={submit}
           className="px-4 py-1.5 rounded bg-accent text-bg font-semibold text-[12px] hover:opacity-90 cursor-pointer">
-          保存
+          保存{dcaEnabled && (assetType === 'FUND' || assetType === 'CRYPTO') ? ' + 建定投' : ''}
         </button>
         <button onClick={onCancel}
           className="px-3 py-1.5 rounded border border-border text-text-dim text-[12px] hover:text-text cursor-pointer">
           取消
         </button>
       </div>
+
+      {/* 内联定投 — FUND/CRYPTO 可勾选, 资产创建后顺手建一条 DCA */}
+      {(assetType === 'FUND' || assetType === 'CRYPTO') && (
+        <div className="rounded border border-border-subtle bg-surface-3/30 px-2.5 py-2 space-y-2">
+          <label className="flex items-center gap-2 text-[11.5px] text-text cursor-pointer">
+            <input type="checkbox" checked={dcaEnabled}
+              onChange={e => setDcaEnabled(e.target.checked)} />
+            <span>同时建定投计划 ({assetType === 'FUND' ? '基金' : '币'} DCA)</span>
+          </label>
+          {dcaEnabled && (
+            <div className="flex flex-wrap gap-2 items-end pl-5">
+              <div className="flex flex-col gap-1">
+                <label className="text-[10.5px] text-text-dim">每期金额 ¥</label>
+                <input type="number" step="0.01" value={dcaValue}
+                  onChange={e => setDcaValue(e.target.value)}
+                  className={`${inp} w-28 font-mono`} placeholder="500" />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10.5px] text-text-dim">频率</label>
+                <select value={dcaFrequency} onChange={e => setDcaFrequency(e.target.value)}
+                  className={`${inp} w-32`}>
+                  <option value="monthly">每月</option>
+                  <option value="weekly">每周</option>
+                  <option value="daily_trading">每个交易日</option>
+                </select>
+              </div>
+              {dcaFrequency === 'monthly' && (
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10.5px] text-text-dim">每月几号</label>
+                  <input type="number" min="1" max="31" value={dcaDayOfMonth}
+                    onChange={e => setDcaDayOfMonth(e.target.value)}
+                    className={`${inp} w-20 font-mono`} />
+                </div>
+              )}
+              {dcaFrequency === 'weekly' && (
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10.5px] text-text-dim">每周几</label>
+                  <select value={dcaDayOfWeek} onChange={e => setDcaDayOfWeek(e.target.value)}
+                    className={`${inp} w-24`}>
+                    <option value={1}>周一</option>
+                    <option value={2}>周二</option>
+                    <option value={3}>周三</option>
+                    <option value={4}>周四</option>
+                    <option value={5}>周五</option>
+                    <option value={6}>周六</option>
+                    <option value={7}>周日</option>
+                  </select>
+                </div>
+              )}
+              <div className="text-[10.5px] text-text-muted">触发后写一条 pending ADD，等你回来补份额结算。</div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 按股买预览 (FUND/CRYPTO 同时填了份额 + 单价) */}
       {(assetType === 'FUND' || assetType === 'CRYPTO') && parseFloat(shares) > 0 && parseFloat(unitPrice) > 0 && (() => {
@@ -2115,8 +2201,8 @@ function EditAssetRow({ asset, onDone, onCancel }) {
             <input type="number" step="0.001" value={annualYield} onChange={e => setAnnualYield(e.target.value)} className={`${inp} w-24`} placeholder="2.15" />
           </div>
           <div className="flex flex-col gap-1">
-            <label className="text-[11px] text-text-dim">当前总额 ¥ (二选一)</label>
-            <input type="number" step="0.01" value={manualValue} onChange={e => setManualValue(e.target.value)} className={`${inp} w-32`} placeholder="本金+利息" />
+            <label className="text-[11px] text-text-dim">当前余额 ¥ (App 显示数)</label>
+            <input type="number" step="0.01" value={manualValue} onChange={e => setManualValue(e.target.value)} className={`${inp} w-36`} placeholder="去 App 抄数" />
           </div>
         </>
       )}
@@ -2474,6 +2560,7 @@ function ReduceLotRow({ asset, onDone, onCancel }) {
   const [shares, setShares] = React.useState('')
   const [unitPrice, setUnitPrice] = React.useState('')
   const [tradeDate, setTradeDate] = React.useState(() => new Date().toISOString().slice(0, 10))
+  const [interestPart, setInterestPart] = React.useState('')   // WEALTH/CASH: 其中利息部分
   const [busy, setBusy] = React.useState(false)
   const [err, setErr] = React.useState('')
 
@@ -2542,6 +2629,11 @@ function ReduceLotRow({ asset, onDone, onCancel }) {
           if (finalUnit) body.unit_price = Number(finalUnit.toFixed(6))
         }
       }
+      // WEALTH/CASH 拆出利息部分 (可选), 写入 realized_pnl
+      if ((t === 'WEALTH' || t === 'CASH') && interestPart !== '') {
+        const ip = parseFloat(interestPart) || 0
+        if (ip > 0) body.interest_part = Number(ip.toFixed(2))
+      }
       const res = await fetch(`/api/assets/${asset.id}/reduce-lot`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -2593,6 +2685,22 @@ function ReduceLotRow({ asset, onDone, onCancel }) {
                 value={amount} onChange={e => setAmount(e.target.value)}
                 className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono text-bear-bright outline-none focus:border-accent" />
             </div>
+            {(t === 'WEALTH' || t === 'CASH') && (
+              <div>
+                <label className="text-[11.5px] text-text-dim block mb-1">
+                  其中利息 ¥ (可选)
+                  <span className="ml-1 text-text-muted text-[10.5px]">— 留空则全当本金返还</span>
+                </label>
+                <input type="number" step="0.01" inputMode="decimal" placeholder="0.00"
+                  value={interestPart} onChange={e => setInterestPart(e.target.value)}
+                  className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono text-bull outline-none focus:border-accent" />
+                {parseFloat(amount) > 0 && parseFloat(interestPart) > 0 && (
+                  <div className="text-[10.5px] font-mono text-text-muted mt-1">
+                    → 本金消耗 ¥{(parseFloat(amount) - parseFloat(interestPart)).toFixed(2)} · 利息计入已实现 +¥{parseFloat(interestPart).toFixed(2)}
+                  </div>
+                )}
+              </div>
+            )}
             {isShareBased && (
               <div className="grid grid-cols-2 gap-2">
                 <div>

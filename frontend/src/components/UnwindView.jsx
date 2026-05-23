@@ -6,13 +6,16 @@ import SectorRadar from './SectorRadar'
 import SectorOpportunities from './SectorOpportunities'
 import AllocationAdvisor from './AllocationAdvisor'
 import AShareSectorGap from './AShareSectorGap'
+import BenchmarkCompare from './BenchmarkCompare'
 import Cashflow from './Cashflow'
 import MacroDashboard from './MacroDashboard'
+import PortfolioNews from './PortfolioNews'
 
 const TABS = [
   { key: 'sector',   label: '板块',   desc: '动量 / 资金流 / 早盘速览' },
   { key: 'macro',    label: '宏观',   desc: '指数 / 汇率 / 商品' },
-  { key: 'config',   label: '配置',   desc: '现金流 / 大类 / A 股缺口' },
+  { key: 'news',     label: '资讯',   desc: '持仓股新闻 / 公告' },
+  { key: 'config',   label: '配置',   desc: '现金流 / 大类 / 跑赢基准' },
   { key: 'holdings', label: '持仓',   desc: '减仓阶梯 / 解套档位' },
 ]
 
@@ -67,8 +70,13 @@ export default function UnwindView() {
         <MacroDashboard />
       )}
 
+      {tab === 'news' && (
+        <PortfolioNews />
+      )}
+
       {tab === 'config' && (
         <>
+          <BenchmarkCompare />
           <Cashflow />
           <AllocationAdvisor />
           <AShareSectorGap />

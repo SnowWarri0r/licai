@@ -128,7 +128,12 @@ def compute_external_state(
                 # principal-based: 按 CNY 配对
                 if proceeds <= 0:
                     continue
-                remaining = proceeds
+                # WEALTH/CASH: 用户填了 interest_part → 这部分进 realized_pnl,
+                # 只用 (proceeds - interest_part) 去消耗本金 lot. 没填则全当本金 (FIFO 兜底).
+                interest_part_raw = a.get("interest_part")
+                interest_part = float(interest_part_raw) if interest_part_raw is not None else 0.0
+                principal_consume = max(0.0, proceeds - interest_part)
+                remaining = principal_consume
                 consumed_cost = 0.0
                 while remaining > 1e-9 and lots:
                     lot = lots[0]
@@ -140,8 +145,9 @@ def compute_external_state(
                         consumed_cost += remaining
                         lot["amount"] -= remaining
                         remaining = 0
-                # 注意: principal-based 下 proceeds 可能 > 配对成本 (利息收益)
-                realized_pnl += proceeds - consumed_cost
+                # realized = (本金消耗回款 - 配对成本) + 利息部分
+                # FIFO 配对正常时 principal_consume == consumed_cost, 差额来自利息或超额赎回
+                realized_pnl += (principal_consume - consumed_cost) + interest_part
                 total_release_proceeds += proceeds
 
         elif t in INCOME_TYPES:
