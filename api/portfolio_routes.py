@@ -176,6 +176,155 @@ async def realized_pnl():
     }
 
 
+@router.get("/benchmark")
+async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
+    """跑赢基准对照: 假设你 A 股的每次买卖, 同金额同日期都买在基准上 (默认沪深300).
+
+    模型: dollar-matched 等额对比 (避免 IRR 复杂度).
+      - 你每次 BUY/ADD/T_BUY (含手续费): bench_shares += amount/bench_close_当日
+      - 你每次 SELL/REDUCE/T_SELL:       bench_shares -= amount/bench_close_当日
+      - 你当前 mv  = Σ shares × current_price
+      - 你的总收益 = current_mv + sell_total - buy_total
+      - 基准总收益 = bench_shares × today_close + sell_total - buy_total
+      - α = 你的总收益 - 基准总收益
+    手续费已含 (cost_price 是 broker-style 综合成本, 但 action.price 是裸价 — 这里
+    用 price × shares + estimate_fee 累入 buy_total, 跟综合成本口径一致).
+
+    days=0 全部历史; 否则只看最近 N 天的 action.
+    支持 symbol: sh000300 / sh000001 / sz399006 / sh000688 等.
+    """
+    import asyncio as _asyncio
+    from datetime import date, timedelta
+    from services.market_data import _fetch_benchmark_history
+    from services.position_ledger import estimate_trade_fee, ACQUIRE, RELEASE
+
+    # 1) 拿基准价格序列 (近 1200 个交易日, ~5 年)
+    df = await _asyncio.to_thread(_fetch_benchmark_history, symbol, 1200)
+    if df is None or df.empty:
+        raise HTTPException(503, f"基准 {symbol} 数据加载失败")
+    bench_by_date = {row["date"]: float(row["close"]) for _, row in df.iterrows()}
+    bench_dates_sorted = sorted(bench_by_date.keys())
+    bench_today = float(df.iloc[-1]["close"])
+    bench_last_date = str(df.iloc[-1]["date"])
+
+    def bench_close_on_or_after(d: str) -> float | None:
+        if d in bench_by_date:
+            return bench_by_date[d]
+        for bd in bench_dates_sorted:
+            if bd >= d:
+                return bench_by_date[bd]
+        return None
+
+    # 2) 收集所有 A 股 actions (跳过 HK./US.)
+    from database import get_db
+    db = await get_db()
+    try:
+        cursor = await db.execute("SELECT DISTINCT stock_code FROM position_actions")
+        codes = [r[0] for r in await cursor.fetchall()]
+    finally:
+        await db.close()
+    a_codes = [c for c in codes if c and not c.upper().startswith(("HK.", "US."))]
+
+    all_actions: list[dict] = []
+    for code in a_codes:
+        all_actions.extend(await get_position_actions(code, limit=500))
+    all_actions.sort(key=lambda a: (a.get("trade_date") or "", a.get("id") or 0))
+
+    cutoff = None
+    if days > 0:
+        cutoff = (date.today() - timedelta(days=days)).isoformat()
+        all_actions = [a for a in all_actions if (a.get("trade_date") or "") >= cutoff]
+
+    # 3) 累计现金流 + 基准等额份额
+    buy_total = 0.0
+    sell_total = 0.0
+    bench_shares_total = 0.0
+    skipped = 0
+    first_action_date = None
+    for a in all_actions:
+        td = (a.get("trade_date") or "")[:10]
+        if not td:
+            skipped += 1; continue
+        if first_action_date is None:
+            first_action_date = td
+        t = a.get("action_type", "")
+        price = float(a.get("price") or 0)
+        shares_i = int(a.get("shares") or 0)
+        amount = price * shares_i
+        if amount <= 0:
+            continue
+        # 手续费 (override or estimate, 跟综合成本口径对齐)
+        fee_override = a.get("fee")
+        code = a.get("stock_code") or ""
+        fee = float(fee_override) if fee_override is not None else estimate_trade_fee(t, price, shares_i, code)
+        close = bench_close_on_or_after(td)
+        if close is None or close <= 0:
+            skipped += 1; continue
+        if t in ACQUIRE:
+            cash_out = amount + fee   # 买入实际付出
+            buy_total += cash_out
+            bench_shares_total += cash_out / close
+        elif t in RELEASE:
+            cash_in = amount - fee    # 卖出实际收回
+            sell_total += cash_in
+            bench_shares_total -= cash_in / close
+        # 其他类型 (DIVIDEND etc) 暂忽略
+
+    # 4) 用户当前 A 股市值
+    holdings = await get_all_holdings()
+    a_holdings = [h for h in holdings
+                  if not str(h.get("stock_code", "")).upper().startswith(("HK.", "US."))]
+    user_cur_mv = 0.0
+    if a_holdings:
+        codes_now = [h["stock_code"] for h in a_holdings]
+        try:
+            quotes = await get_realtime_quotes(codes_now)
+        except Exception:
+            quotes = {}
+        for h in a_holdings:
+            q = quotes.get(h["stock_code"])
+            price = float(q["price"]) if q and q.get("price") else 0.0
+            if price > 0:
+                user_cur_mv += price * int(h.get("shares") or 0)
+
+    # 5) 计算
+    user_pnl = user_cur_mv + sell_total - buy_total
+    bench_cur_mv = max(0.0, bench_shares_total) * bench_today
+    bench_pnl = bench_cur_mv + sell_total - buy_total
+    alpha_pnl = user_pnl - bench_pnl
+
+    user_ret_pct = (user_pnl / buy_total * 100) if buy_total > 0 else 0.0
+    bench_ret_pct = (bench_pnl / buy_total * 100) if buy_total > 0 else 0.0
+
+    return {
+        "symbol": symbol,
+        "window_days": days,
+        "cutoff_date": cutoff,
+        "first_action_date": first_action_date,
+        "last_bench_date": bench_last_date,
+        "action_count": len(all_actions),
+        "skipped": skipped,
+        "user": {
+            "buy_total": round(buy_total, 2),
+            "sell_total": round(sell_total, 2),
+            "current_mv": round(user_cur_mv, 2),
+            "pnl": round(user_pnl, 2),
+            "return_pct": round(user_ret_pct, 2),
+        },
+        "benchmark": {
+            "shares": round(bench_shares_total, 4),
+            "today_close": round(bench_today, 2),
+            "current_mv": round(bench_cur_mv, 2),
+            "pnl": round(bench_pnl, 2),
+            "return_pct": round(bench_ret_pct, 2),
+        },
+        "alpha": {
+            "pnl_diff": round(alpha_pnl, 2),
+            "pct_diff": round(user_ret_pct - bench_ret_pct, 2),
+        },
+    }
+
+
 @router.get("/concentration")
 async def sector_concentration():
     """Compute per-sector market value concentration.

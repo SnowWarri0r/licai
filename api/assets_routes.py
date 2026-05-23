@@ -28,6 +28,16 @@ def _is_etf_code(code: str) -> bool:
     return c.startswith("5") or c.startswith("159") or c.startswith("588")
 
 
+class DcaInlineCreate(BaseModel):
+    """随资产一并创建的定投计划 (可选). 字段语义对齐 DCACreate."""
+    mode: str = "amount"
+    value: float
+    frequency: str = "monthly"
+    day_of_month: Optional[int] = None
+    day_of_week: Optional[int] = None
+    note: Optional[str] = ""
+
+
 class AssetCreate(BaseModel):
     asset_type: str            # FUND / CRYPTO / BOT / WEALTH
     code: str
@@ -43,6 +53,7 @@ class AssetCreate(BaseModel):
     start_date: Optional[str] = None           # 起投日 YYYY-MM-DD
     pending_amount: Optional[float] = None     # FUND/CRYPTO 待确认金额 (份额未结算)
     bot_budget_override_usdt: Optional[float] = None   # OKX 马丁实际总预算 (USDT), 覆盖算法反推
+    dca: Optional[DcaInlineCreate] = None       # FUND/CRYPTO 同时建定投计划 (可选)
 
 
 class AssetUpdate(BaseModel):
@@ -98,6 +109,7 @@ async def _enrich(asset: dict) -> dict:
     # Ledger overlay (BOT 不走 ledger)
     realized_pnl = 0.0
     pending_count = 0
+    total_released = 0.0
     if t != "BOT":
         try:
             actions = await list_external_actions(asset["id"])
@@ -109,6 +121,7 @@ async def _enrich(asset: dict) -> dict:
                 if t in ("FUND", "CRYPTO"):
                     out["shares"] = ledger_state["shares"]
                 realized_pnl = ledger_state["realized_pnl"]
+                total_released = float(ledger_state.get("total_release_proceeds") or 0)
         except Exception as e:
             print(f"[assets] ledger enrich failed for asset#{asset.get('id')}: {e}")
     out["realized_pnl"] = round(realized_pnl, 2)
@@ -179,6 +192,9 @@ async def _enrich(asset: dict) -> dict:
         source = None
 
         if manual is not None:
+            # manual_value 语义: App 上显示的"当前账户余额"(剩余本金 + 当下浮动利息).
+            # 卖出/赎回不修改它的语义, 因为 WITHDRAW 已经把本金部分从 lot 扣掉了.
+            # 用户每次去 App 看完都直接同步这个数即可.
             current_value = round(float(manual), 2)
             source = "manual"
             # 反推年化只在样本足够（≥7 天）时才靠谱；短期内利息小数点会被放大
@@ -200,6 +216,7 @@ async def _enrich(asset: dict) -> dict:
             "accrued_interest": round(current_value - principal, 2),
             "value_source": source,  # 'manual' | 'yield' | None
             "auto_yield": True,
+            "released_total": round(total_released, 2),
         }
     elif t == "BOT" and asset.get("okx_algo_id") and okx_client.has_credentials():
         # Auto-sync from OKX
@@ -232,6 +249,17 @@ async def _enrich(asset: dict) -> dict:
             else:
                 quote["budget_source"] = "estimated"
     # else BOT: uses manual_value
+
+    if t == "CASH":
+        # 现金：消费/挪入挪出 不是投资盈亏。pnl 只反映 realized_pnl (INTEREST/DIVIDEND)；
+        # cost_amount 同步为当前余额，避免 mv-cost 的账面差额被当成浮亏/浮盈。
+        balance = float(current_value or 0)
+        out["cost_amount"] = round(balance, 2)
+        out["quote"] = quote
+        out["current_value"] = round(balance, 2)
+        out["pnl"] = round(realized_pnl, 2)
+        out["pnl_pct"] = None
+        return out
 
     cost = float(out.get("cost_amount") or 0)
     # PnL 只看已确认 lot vs 已确认成本: 从 current_value 里把 pending 剔出去再减 cost.
@@ -324,12 +352,27 @@ async def assets_realized():
 async def create_asset(data: AssetCreate):
     if data.asset_type not in {"FUND", "CRYPTO", "BOT", "WEALTH", "CASH"}:
         raise HTTPException(400, "asset_type must be FUND / CRYPTO / BOT / WEALTH / CASH")
+
+    # FUND/CRYPTO 且只填了金额没填份额 → 走 pending 模式 (T+1 未确认).
+    # cost_amount 暂记 0, 实际金额放 pending_amount; seed action 写 status=pending.
+    has_shares = data.shares is not None and float(data.shares) > 0
+    is_pending_fund = (
+        data.asset_type in ("FUND", "CRYPTO")
+        and data.cost_amount is not None and data.cost_amount > 0
+        and not has_shares
+    )
+    effective_cost = 0.0 if is_pending_fund else data.cost_amount
+    effective_pending = (
+        float(data.cost_amount) if is_pending_fund
+        else (data.pending_amount if data.pending_amount is not None else None)
+    )
+
     aid = await add_external_asset(
         asset_type=data.asset_type,
         code=data.code,
         name=data.name,
         platform=data.platform or "",
-        cost_amount=data.cost_amount,
+        cost_amount=effective_cost,
         shares=data.shares,
         manual_value=data.manual_value,
         note=data.note or "",
@@ -337,23 +380,53 @@ async def create_asset(data: AssetCreate):
         okx_bot_type=data.okx_bot_type,
         annual_yield_rate=data.annual_yield_rate,
         start_date=data.start_date,
-        pending_amount=data.pending_amount,
+        pending_amount=effective_pending,
     )
     # 写一条初始 action 进 ledger (BOT 不入账, 走 OKX 同步)
     if data.asset_type != "BOT" and data.cost_amount and data.cost_amount > 0:
         seed_type = "BUY" if data.asset_type in ("FUND", "CRYPTO") else "DEPOSIT"
         unit_price = None
-        if data.asset_type in ("FUND", "CRYPTO") and data.shares and float(data.shares) > 0:
+        if has_shares and data.asset_type in ("FUND", "CRYPTO"):
             unit_price = round(float(data.cost_amount) / float(data.shares), 6)
         await add_external_action(
             aid, seed_type,
             amount=float(data.cost_amount),
-            shares=float(data.shares) if data.shares else None,
+            shares=float(data.shares) if has_shares else None,
             unit_price=unit_price,
             trade_date=data.start_date,
-            note="initial",
+            note="initial (pending: 份额待确认)" if is_pending_fund else "initial",
+            status="pending" if is_pending_fund else "confirmed",
         )
-    return {"message": "added", "id": aid}
+
+    # 顺便创建定投计划 (FUND/CRYPTO only)
+    dca_created_id = None
+    if data.dca and data.asset_type in ("FUND", "CRYPTO"):
+        from services.dca import initial_next_due
+        from database import add_dca_schedule
+        d = data.dca
+        if d.mode not in ("amount", "shares"):
+            raise HTTPException(400, "dca.mode 必须是 amount 或 shares")
+        if d.frequency not in ("daily_trading", "weekly", "monthly"):
+            raise HTTPException(400, "dca.frequency 必须是 daily_trading / weekly / monthly")
+        if d.value <= 0:
+            raise HTTPException(400, "dca.value 必须 > 0")
+        if d.frequency == "monthly":
+            if d.day_of_month is None or not (1 <= int(d.day_of_month) <= 31):
+                raise HTTPException(400, "monthly 频率必须 day_of_month (1-31)")
+        elif d.frequency == "weekly":
+            if d.day_of_week is None or not (1 <= int(d.day_of_week) <= 7):
+                raise HTTPException(400, "weekly 频率必须 day_of_week (1-7)")
+        next_due = initial_next_due(d.frequency, d.day_of_month, d.day_of_week)
+        dca_created_id = await add_dca_schedule(
+            asset_id=aid, mode=d.mode, value=d.value, frequency=d.frequency,
+            day_of_month=d.day_of_month, day_of_week=d.day_of_week,
+            next_due=next_due, note=d.note or "",
+        )
+    return {
+        "message": "added", "id": aid,
+        "pending": is_pending_fund,
+        "dca_id": dca_created_id,
+    }
 
 
 @router.put("/{asset_id}")
@@ -531,13 +604,14 @@ class LotReduce(BaseModel):
 
     OTC 基金 (T+1): 仅 shares 必填, amount 可省 (会进 pending).
     ETF/CRYPTO 即时: amount 必填 + shares 或 unit_price 二选一.
-    WEALTH/CASH: amount 必填.
+    WEALTH/CASH: amount 必填; interest_part 可选 (拆出利息部分进 realized_pnl).
     """
     amount: Optional[float] = 0                # 赎回金额 CNY; 0/省略 + 是 OTC 基金 时进 pending
     shares: Optional[float] = None             # FUND/CRYPTO 赎回份额
     unit_price: Optional[float] = None         # FUND/CRYPTO 当时净值
     trade_date: Optional[str] = None           # YYYY-MM-DD
     note: Optional[str] = ""
+    interest_part: Optional[float] = None      # WEALTH/CASH: 本笔到账中的利息部分 (CNY)
 
 
 @router.post("/{asset_id}/reduce-lot")
@@ -595,6 +669,11 @@ async def reduce_lot(asset_id: int, data: LotReduce):
         trade_date=data.trade_date,
         note=data.note or "",
         status=status,
+        interest_part=(
+            float(data.interest_part)
+            if (t in ("WEALTH", "CASH") and data.interest_part is not None)
+            else None
+        ),
     )
 
     # 只有 confirmed 才同步缓存

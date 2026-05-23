@@ -225,6 +225,9 @@ async def init_db():
         if cols and "fee" not in cols:
             # 手续费 (CNY), 包含在 amount 里 (amount = 总付出含费), 单存方便看净额
             await db.execute("ALTER TABLE external_asset_actions ADD COLUMN fee REAL DEFAULT 0")
+        if cols and "interest_part" not in cols:
+            # WEALTH/CASH 赎回时拆分: amount 里有多少是利息. NULL=不区分(走 FIFO 兜底)
+            await db.execute("ALTER TABLE external_asset_actions ADD COLUMN interest_part REAL")
 
         # dca_schedules: 旧库迁移 frequency / day_of_week / day_of_month nullable
         cursor = await db.execute("PRAGMA table_info(dca_schedules)")
@@ -899,17 +902,19 @@ async def list_external_actions(asset_id: int) -> list[dict]:
 async def add_external_action(asset_id: int, action_type: str, amount: float = 0,
                               shares: float | None = None, unit_price: float | None = None,
                               trade_date: str | None = None, note: str = "",
-                              status: str = "confirmed") -> int:
+                              status: str = "confirmed",
+                              interest_part: float | None = None) -> int:
     db = await get_db()
     try:
         cursor = await db.execute(
             """INSERT INTO external_asset_actions
-               (asset_id, action_type, amount, shares, unit_price, trade_date, status, note)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               (asset_id, action_type, amount, shares, unit_price, trade_date, status, note, interest_part)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (asset_id, action_type, float(amount or 0),
              float(shares) if shares is not None else None,
              float(unit_price) if unit_price is not None else None,
-             trade_date, status, note or ""),
+             trade_date, status, note or "",
+             float(interest_part) if interest_part is not None else None),
         )
         await db.commit()
         return cursor.lastrowid
