@@ -668,29 +668,65 @@ async def confirm_action(asset_id: int, action_id: int, data: ConfirmAction):
     return {"message": "confirmed", "state": state}
 
 
-class PendingActionPatch(BaseModel):
-    amount: float
+class ActionPatch(BaseModel):
+    amount: Optional[float] = None
+    shares: Optional[float] = None
+    unit_price: Optional[float] = None
+    fee: Optional[float] = None
 
 
 @router.patch("/{asset_id}/actions/{action_id}")
-async def patch_pending_action(asset_id: int, action_id: int, data: PendingActionPatch):
-    """只改 pending 流水的 amount, 状态保持 pending.
-    用于定投触发后基金限额变化等导致实际成交金额 ≠ 申请金额的场景."""
+async def patch_action(asset_id: int, action_id: int, data: ActionPatch):
+    """修改流水字段 (amount/shares/unit_price/fee).
+    - pending 状态: 只接受 amount (兼容老行为, 状态保持 pending)
+    - confirmed 状态: 接受全部字段, 改后重算资产 cost_amount/shares 同步
+    """
     asset = await get_external_asset(asset_id)
     if not asset:
         raise HTTPException(404, "asset not found")
-    if data.amount is None or data.amount <= 0:
-        raise HTTPException(400, "amount 必须为正数")
     actions = await list_external_actions(asset_id)
     target = next((a for a in actions if a["id"] == action_id), None)
     if not target:
         raise HTTPException(404, "action not found")
-    if (target.get("status") or "confirmed") != "pending":
-        raise HTTPException(400, "只能修改 pending 流水")
+    status = target.get("status") or "confirmed"
+
+    payload: dict = {}
+    if data.amount is not None:
+        if data.amount <= 0:
+            raise HTTPException(400, "amount 必须为正数")
+        payload["amount"] = float(data.amount)
+    if data.shares is not None:
+        if data.shares < 0:
+            raise HTTPException(400, "shares 不能为负")
+        payload["shares"] = float(data.shares)
+    if data.unit_price is not None:
+        if data.unit_price < 0:
+            raise HTTPException(400, "unit_price 不能为负")
+        payload["unit_price"] = float(data.unit_price)
+    if data.fee is not None:
+        if data.fee < 0:
+            raise HTTPException(400, "fee 不能为负")
+        payload["fee"] = float(data.fee)
+    if not payload:
+        raise HTTPException(400, "没有可修改的字段")
+
+    if status == "pending":
+        # 兼容: pending 只允许改 amount, 防 ledger 状态混乱
+        if set(payload.keys()) - {"amount"}:
+            raise HTTPException(400, "pending 流水只能改 amount, 其他字段请先点 '确认' 入账")
 
     from database import update_external_action
-    await update_external_action(action_id, amount=float(data.amount))
-    return {"message": "updated", "amount": float(data.amount)}
+    await update_external_action(action_id, **payload)
+
+    # confirmed 改后同步资产缓存
+    if status == "confirmed":
+        actions = await list_external_actions(asset_id)
+        state = compute_external_state(actions, asset["asset_type"])
+        sync: dict = {"cost_amount": state["cost_amount"]}
+        if asset["asset_type"] in ("FUND", "CRYPTO"):
+            sync["shares"] = state["shares"]
+        await update_external_asset(asset_id, **sync)
+    return {"message": "updated", **payload}
 
 
 @router.get("/{asset_id}/actions")
