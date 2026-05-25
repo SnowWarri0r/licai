@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { fetchJSON } from '../hooks/useApi'
-import { fmtMoney } from '../helpers'
+import { fmtMoney, fundPassthroughBucketDetailed } from '../helpers'
 
 // 按总资产分档 — 海外配置随资金量上行 (开户 / 汇兑 / 单笔门槛对小资金不划算).
 const TIERS = [
@@ -103,25 +103,40 @@ export default function AllocationAdvisor() {
   const pickTpl = (k) => { setTpl(k); localStorage.setItem('allocTemplate', k) }
 
   // 当前各类市值. 股票按 stock_code 前缀拆 A/H/U; BOT 归入 C.
+  // FUND 按 fundPassthroughBucketDetailed 穿透到对应大类 (海外/港股/商品/债/货币 都分流),
+  // 兜底归 F. 给两个数: passthrough (穿透后, 用于警告判断) + raw (展示用, 看实际是基金还是直接持有).
   const current = useMemo(() => {
     const buckets = { A: 0, H: 0, U: 0, F: 0, W: 0, M: 0, C: 0 }
+    const passthrough = { A: 0, H: 0, U: 0, F: 0, W: 0, M: 0, C: 0 }
+    const fundOrigin = {}  // bucket → ¥ from FUND passthrough (for "通过基金" 标签)
     for (const h of holdings) {
       const v = h.market_value != null ? h.market_value : (h.current_price || 0) * h.shares
       const code = String(h.stock_code || '').toUpperCase()
-      if (code.startsWith('HK.')) buckets.H += v
-      else if (code.startsWith('US.')) buckets.U += v
-      else buckets.A += v
+      let k
+      if (code.startsWith('HK.')) k = 'H'
+      else if (code.startsWith('US.')) k = 'U'
+      else k = 'A'
+      buckets[k] += v
+      passthrough[k] += v
     }
     for (const a of assets) {
       const t = a.asset_type
       const v = a.current_value || 0
-      if (t === 'FUND') buckets.F += v
-      else if (t === 'CRYPTO' || t === 'BOT') buckets.C += v
-      else if (t === 'WEALTH') buckets.W += v
-      else if (t === 'CASH') buckets.M += v
+      if (t === 'FUND') {
+        buckets.F += v
+        const target = fundPassthroughBucketDetailed(a.name || '')
+        passthrough[target] += v
+        fundOrigin[target] = (fundOrigin[target] || 0) + v
+      } else if (t === 'CRYPTO' || t === 'BOT') {
+        buckets.C += v; passthrough.C += v
+      } else if (t === 'WEALTH') {
+        buckets.W += v; passthrough.W += v
+      } else if (t === 'CASH') {
+        buckets.M += v; passthrough.M += v
+      }
     }
     const total = Object.values(buckets).reduce((s, v) => s + v, 0)
-    return { buckets, total }
+    return { buckets, passthrough, fundOrigin, total }
   }, [holdings, assets])
 
   if (current.total === 0) return null
@@ -132,11 +147,12 @@ export default function AllocationAdvisor() {
 
   const rows = ROW_ORDER.map(k => {
     const targetPct = targets[k]
-    const currentVal = current.buckets[k]
+    const currentVal = current.passthrough[k]   // 穿透后 (海外/商品/债 ETF 各归大类)
     const currentPct = (currentVal / current.total) * 100
     const targetVal = (targetPct / 100) * current.total
     const delta = targetVal - currentVal
-    return { key: k, targetPct, currentPct, currentVal, targetVal, delta }
+    const viaFundMv = current.fundOrigin[k] || 0  // 含多少是通过 FUND 穿透来的
+    return { key: k, targetPct, currentPct, currentVal, targetVal, delta, viaFundMv }
   })
 
   return (
@@ -216,9 +232,15 @@ export default function AllocationAdvisor() {
           return (
             <div key={r.key}
               className={`licai-alloc-row px-3 md:px-5 py-2.5 items-center text-[12px] ${skip ? 'opacity-50' : ''}`}>
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-1.5 flex-wrap">
                 <span className="inline-block w-2 h-2 rounded-sm" style={{ background: color }} />
                 <span className="text-text-bright font-medium">{TYPE_LABEL[r.key]}</span>
+                {r.viaFundMv > 0 && (
+                  <span className="text-[9.5px] text-info bg-info/10 border border-info/30 rounded px-1 py-[1px] font-mono"
+                    title={`含 ¥${fmtMoney(r.viaFundMv)} 通过基金穿透得到`}>
+                    含基金 ¥{fmtMoney(r.viaFundMv)}
+                  </span>
+                )}
               </div>
               <div className="text-right font-mono text-text licai-md-only">{r.targetPct}%</div>
               <div className="text-right font-mono text-text">
