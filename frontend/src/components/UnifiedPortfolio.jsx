@@ -1255,11 +1255,9 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
                               setAssets(d.assets || [])
                             } catch (err) { alert('保存失败: ' + (err?.message || '')) }
                           }}
-                          className="font-mono text-[10px] text-text-muted tabular-nums cursor-pointer hover:text-accent mt-0.5"
+                          className="font-mono text-[10px] text-text-muted tabular-nums cursor-pointer hover:text-accent mt-0.5 whitespace-nowrap"
                           title="点击改总预算">
-                          投 {row.extra.okxInvestmentUsdt}U / {row.extra.okxTotalBudgetUsdt}U
-                          <span className="text-bull-bright ml-1">余 {row.extra.okxAvailableUsdt}U</span>
-                          {row.extra.okxBudgetSource !== 'manual' && (
+                          投 {row.extra.okxInvestmentUsdt}U / {row.extra.okxTotalBudgetUsdt}U <span className="text-bull-bright">余 {row.extra.okxAvailableUsdt}U</span>{row.extra.okxBudgetSource !== 'manual' && (
                             <span className="text-warn ml-1" title="算法估算, 可能不准">~</span>
                           )}
                         </span>

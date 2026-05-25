@@ -12,7 +12,7 @@ from database import (
     list_dca_schedules, get_dca_schedule, add_dca_schedule,
     update_dca_schedule, delete_dca_schedule, get_external_asset,
 )
-from services.dca import fire_due_dcas, initial_next_due
+from services.dca import fire_due_dcas, initial_next_due, _market_of_asset_name
 
 router = APIRouter(prefix="/api/dca", tags=["dca"])
 
@@ -91,7 +91,8 @@ async def create(data: DCACreate):
         _validate_day_of_week(data.day_of_week)
     if data.value <= 0:
         raise HTTPException(400, "value 必须 > 0")
-    next_due = initial_next_due(data.frequency, data.day_of_month, data.day_of_week)
+    market = _market_of_asset_name(asset.get("name") or "")
+    next_due = initial_next_due(data.frequency, data.day_of_month, data.day_of_week, market=market)
     new_id = await add_dca_schedule(
         asset_id=data.asset_id, mode=data.mode, value=data.value,
         frequency=data.frequency,
@@ -122,10 +123,13 @@ async def update(dca_id: int, data: DCAUpdate):
     # 改了 frequency / day → 自动重算 next_due (除非用户也手动指定)
     if ("frequency" in payload or "day_of_month" in payload or "day_of_week" in payload) and "next_due" not in payload:
         merged = {**existing, **payload}
+        asset = await get_external_asset(existing["asset_id"])
+        market = _market_of_asset_name((asset or {}).get("name") or "")
         payload["next_due"] = initial_next_due(
             merged.get("frequency") or "monthly",
             merged.get("day_of_month"),
             merged.get("day_of_week"),
+            market=market,
         )
     if payload:
         await update_dca_schedule(dca_id, **payload)
