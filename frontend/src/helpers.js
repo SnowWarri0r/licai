@@ -92,15 +92,19 @@ export function fundPassthroughType(name = '') {
   return 'F'
 }
 
-// AllocationAdvisor 专用: 区分 H 港股 / U 美股 / A 国内 / 其他大类.
-// 比 fundPassthroughType 更细 (该函数 H/U 都返回 'A').
+// AllocationAdvisor 专用: 10 桶按实质穿透.
+// 返回值:
+//   M=现金/货基 / W=银证理财 / BND=债基 / A=A股(直接+ETF穿透)
+//   H=港股 / U=美股 / OS=其它海外(日/欧/越/印) / CMD=商品(贵金属/原油)
+//   CRY=加密(直接+BOT) / F=基金兜底(识别不出底层)
 export function fundPassthroughBucketDetailed(name = '') {
   const n = String(name)
   if (/货币|余额宝|活期|零钱通|现金管理/.test(n)) return 'M'
-  if (/债券|国债|短债|城投|信用债|稳健增利|纯债|利率债/.test(n)) return 'W'
-  if (/黄金|白银|金\s*ETF|银\s*ETF|原油|石油\s*ETF|商品/.test(n)) return 'C'
+  if (/债券|国债|短债|城投|信用债|稳健增利|纯债|利率债/.test(n)) return 'BND'
+  if (/黄金|白银|金\s*ETF|银\s*ETF|原油|石油\s*ETF|商品/.test(n)) return 'CMD'
   if (/港股|恒生|H\s*股|中概/.test(n)) return 'H'
-  if (/QDII|纳斯达克|纳指|标普|美股|海外|全球|日经|越南|印度|欧洲/.test(n)) return 'U'
+  if (/QDII|纳斯达克|纳指|标普|美股|全球(?!财)/.test(n)) return 'U'
+  if (/日经|TOPIX|东证|越南|印度|欧洲|德国DAX|法国|英国|海外(?!债)/.test(n)) return 'OS'
   // 默认 A (国内股票型基金 / A 股宽基 / 行业 / 主题)
   if (/沪深|中证|上证|创业|科创|A\s*股|国证|AIDC|数据中心|股票|混合|主题|行业|精选|成长|价值|蓝筹|医药|消费|科技|新能源|半导体|芯片|信息|算力|电力|金融|银行|证券|地产|材料|机械|军工|汽车|有色|钢铁|煤炭/.test(n)) return 'A'
   return 'F'
