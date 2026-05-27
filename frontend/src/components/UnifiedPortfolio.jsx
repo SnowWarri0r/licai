@@ -110,17 +110,17 @@ function fundCategoryOf(name = '') {
 // A-share industry: keyword-driven. 优先匹配后端拉的真实行业字符串
 // (e.g. "电气设备-电源设备")，否则回退到股票名兜底。
 const A_SECTORS = [
-  { id: 'metals',    label: '有色金属', match: /有色|铜|铝|锌|镍|铅|稀土|钼|黄金|白银/ },
+  { id: 'metals',    label: '有色金属', match: /有色|铜|铝|锌|镍|铅|稀土|钼|黄金|白银|钢铁/ },
   { id: 'newenergy', label: '电气新能源', match: /电气设备|电源设备|储能|光伏|锂电|动力电池|电池|风电设备|新能源(?!车)/ },
-  { id: 'energy',    label: '能源',     match: /石油|煤|燃气|电力|核电|风电/ },
-  { id: 'finance',   label: '金融',     match: /银行|证券|保险|期货|信托/ },
+  { id: 'energy',    label: '能源',     match: /石油|煤|燃气|电力|核电|风电|公用事业|采掘/ },
+  { id: 'finance',   label: '金融',     match: /银行|证券|保险|期货|信托|非银金融/ },
   { id: 'realestate',label: '地产',     match: /地产|置业|建设|建筑/ },
-  { id: 'tech',      label: '科技',     match: /科技|半导体|芯片|软件|信息|电子|通信|计算/ },
-  { id: 'consumer',  label: '消费',     match: /消费|食品|酒|乳业|家电|零售|百货|医美/ },
+  { id: 'tech',      label: '科技',     match: /科技|半导体|芯片|软件|信息|电子|通信|计算|传媒/ },
+  { id: 'consumer',  label: '消费',     match: /消费|食品|酒|乳业|家电|家用电器|零售|百货|医美|纺织|休闲服务/ },
   { id: 'medical',   label: '医药',     match: /医药|生物|医疗|制药|疫苗/ },
   { id: 'auto',      label: '汽车',     match: /汽车|新能源车|整车/ },
-  { id: 'materials', label: '材料',     match: /钢|水泥|玻璃|化工|塑料|纤维/ },
-  { id: 'machinery', label: '机械',     match: /机械|装备|工程|重工/ },
+  { id: 'materials', label: '材料',     match: /钢|水泥|玻璃|化工|塑料|纤维|建筑材料|建筑装饰|轻工制造/ },
+  { id: 'machinery', label: '机械',     match: /机械|装备|工程|重工|军工|国防/ },
 ]
 function aShareCategoryOf(name = '', sector = '') {
   // 优先用后端从东方财富拉的真实行业（如 "有色金属-二次资源利用-钴"），
