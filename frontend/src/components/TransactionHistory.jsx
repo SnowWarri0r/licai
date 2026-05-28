@@ -9,11 +9,11 @@ const ACTION_TYPES = [
   { value: 'SELL', label: '卖出' },
   { value: 'ADD', label: '补仓(加仓)' },
   { value: 'REDUCE', label: '减仓' },
-  { value: 'T_BUY', label: 'T买' },
-  { value: 'T_SELL', label: 'T卖' },
+  { value: 'DIVIDEND', label: '现金分红' },
+  { value: 'BONUS', label: '送股/转增' },
 ]
 
-const ACQUIRE_TYPES = new Set(['BUY', 'ADD', 'T_BUY'])
+const ACQUIRE_TYPES = new Set(['BUY', 'ADD', 'BONUS'])
 
 function ActionRow({ action, editing, onSave, onCancel, onEdit, onDelete }) {
   const [draft, setDraft] = useState(action)

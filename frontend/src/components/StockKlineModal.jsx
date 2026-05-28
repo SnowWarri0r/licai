@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { fetchJSON } from '../hooks/useApi'
 
-const ACQUIRE = new Set(['BUY', 'ADD', 'T_BUY'])
+const ACQUIRE = new Set(['BUY', 'ADD', 'BONUS'])
 
 // A 股 K 线大图 (真蜡烛 + 持仓成本线 + 自己历史 BS 标记).
 // holding: { stock_code, stock_name, current_price, price_change_pct, cost_price }
