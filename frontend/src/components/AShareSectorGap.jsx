@@ -28,7 +28,9 @@ const SECTOR_LABEL = {
 
 // 跟 UnifiedPortfolio.aShareCategoryOf 同步. 保持一份独立的好处: 这组件可以独立 import.
 const SECTOR_REGEX = [
-  ['metals',    /有色|铜|铝|锌|镍|铅|稀土|钼|黄金|白银|金ETF|银ETF/],
+  // 注: 贵金属 (黄金/白银) 不在 metals 里 — 跟铜/铝/锌等工业金属走势不一样,
+  // 黄金 ETF 在 fundToSector 已经被拦截到 null (归大类 C 商品桶).
+  ['metals',    /有色|铜(?!陵)?|铝|锌|镍|铅|稀土|钼|铜陵/],
   ['newenergy', /电气设备|电源设备|储能|光伏|锂电|动力电池|电池|风电设备|新能源(?!车)/],
   ['energy',    /石油|煤|燃气|电力|核电|风电/],
   ['finance',   /银行|证券|保险|期货|信托/],
@@ -51,9 +53,11 @@ function sectorIdOf(name, sector) {
 // 宽基 (沪深300/中证500/上证50/创业板/科创50): 视作"已分散", 不归入任何单一行业, 返回 'broad'
 // 调用方拿到 'broad' 后按各行业目标比例等比加权(粗略代表广覆盖).
 function fundToSector(name = '') {
-  if (/QDII|纳斯达克|纳指|标普|美股|港股|恒生|中概|海外/.test(name)) return null
+  if (/QDII|纳斯达克|纳指|标普|美股|港股|恒生|中概|海外|日经|越南|印度|欧洲/.test(name)) return null
   if (/债|利率|稳健增利/.test(name)) return null
   if (/货币|活期|余额宝|现金/.test(name)) return null
+  // 贵金属 / 商品: 不归 A 股板块 (跟工业金属走势不同), 由大类 C 桶承接
+  if (/黄金|白银|金\s*ETF|银\s*ETF|原油|石油\s*ETF|商品/.test(name)) return null
   if (/沪深300|中证500|中证1000|上证50|创业板(?!AI)|科创50|A股宽基/.test(name)) return 'broad'
   return sectorIdOf(name, '')
 }

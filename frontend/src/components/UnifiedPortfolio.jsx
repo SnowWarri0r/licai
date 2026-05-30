@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { api, fetchJSON } from '../hooks/useApi'
-import { fmtMoney, fmtPct, fmtPrice, priceColor } from '../helpers'
+import { fmtMoney, fmtPct, fmtPrice, priceColor, fundPassthroughType } from '../helpers'
 import Tooltip from './Tooltip'
 import StockKlineModal from './StockKlineModal'
 
@@ -864,11 +864,23 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
     const allAgg = aggregate(rows, true)
     const total = allAgg.totalMv || 0
     const warnings = []
-    // 1. Major class concentration
+    // 1. Major class concentration — 穿透后口径
+    //    FUND 按 fundPassthroughType 拆到 A/F/W/M/C 再算各桶占比.
+    //    避免"我买了海外/黄金 ETF 但被堆在基金桶, 然后说股票集中"的误判.
+    const passthroughBuckets = { A: 0, F: 0, W: 0, M: 0, C: 0, R: 0 }
+    for (const r of rows) {
+      const v = r.mv || 0
+      if (r.type === 'F') {
+        const target = fundPassthroughType(r.name || '')
+        passthroughBuckets[target] = (passthroughBuckets[target] || 0) + v
+      } else {
+        passthroughBuckets[r.type] = (passthroughBuckets[r.type] || 0) + v
+      }
+    }
     for (const t of TYPE_ORDER) {
-      const g = allAgg.groups[t]
-      if (!g || total === 0) continue
-      const pct = g.weight * 100
+      const mv = passthroughBuckets[t] || 0
+      if (mv === 0 || total === 0) continue
+      const pct = (mv / total) * 100
       if (pct >= 50) {
         warnings.push({
           level: pct >= 70 ? 'high' : 'med',
