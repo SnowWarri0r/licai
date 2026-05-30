@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 
 
 class ActionCreate(BaseModel):
-    action_type: str  # BUY / SELL / ADD / REDUCE / T_BUY / T_SELL
+    action_type: str  # BUY / SELL / ADD / REDUCE / DIVIDEND / BONUS
     price: float
     shares: int
     trade_date: Optional[str] = None  # YYYY-MM-DD
@@ -181,8 +181,8 @@ async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
     """跑赢基准对照: 假设你 A 股的每次买卖, 同金额同日期都买在基准上 (默认沪深300).
 
     模型: dollar-matched 等额对比 (避免 IRR 复杂度).
-      - 你每次 BUY/ADD/T_BUY (含手续费): bench_shares += amount/bench_close_当日
-      - 你每次 SELL/REDUCE/T_SELL:       bench_shares -= amount/bench_close_当日
+      - 你每次 BUY/ADD (含手续费):  bench_shares += amount/bench_close_当日
+      - 你每次 SELL/REDUCE:         bench_shares -= amount/bench_close_当日
       - 你当前 mv  = Σ shares × current_price
       - 你的总收益 = current_mv + sell_total - buy_total
       - 基准总收益 = bench_shares × today_close + sell_total - buy_total
@@ -481,21 +481,16 @@ async def list_actions(stock_code: str):
     return actions
 
 
-_ACQUIRE = {"BUY", "ADD", "T_BUY"}
+_ACQUIRE = {"BUY", "ADD"}
 
 
 async def _auto_match_tranche(stock_code: str, action_type: str, price: float,
                               shares: int | None = None) -> dict | None:
     """自动撮合 action ↔ tranche (返回匹配的 tranche 或 None):
 
-    ACQUIRE (BUY/ADD/T_BUY): pending tranche, 价格 ±5% 内取最近, mark executed.
-    T_SELL only (RELEASE 收紧):
-      - 必须 status='executed' 且 sold_back_price 仍空
-      - shares 必须严格等于 tranche['shares'] (做T 卖出的就是这一档买的量)
-      - 价格在 executed_price × [1.005, 1.15] 区间 (高于成本但不超 +15%)
-      - 候选恰好 1 个; 多档位歧义就不自动匹配
-    Generic SELL/REDUCE 不再自动撮合 — 用户应该走 UnwindCard 的「卖出回收」按钮
-    或在 流水 里选 T_SELL action_type, 避免普通止损/调仓被误标为档位完成.
+    ACQUIRE (BUY/ADD): pending tranche, 价格 ±5% 内取最近, mark executed.
+    SELL/REDUCE 不自动撮合 — 用户应该走 UnwindCard 的「卖出回收」按钮,
+    避免普通止损/调仓被误标为档位完成.
     """
     plan = await get_unwind_plan(stock_code)
     if not plan:
@@ -518,29 +513,6 @@ async def _auto_match_tranche(stock_code: str, action_type: str, price: float,
         await mark_tranche_executed(best["id"], price)
         return best
 
-    if action_type == "T_SELL" and shares is not None:
-        eligible = []
-        for t in tranches:
-            if t["status"] != "executed":
-                continue
-            if t.get("sold_back_price"):
-                continue
-            ep = t.get("executed_price") or 0
-            if ep <= 0:
-                continue
-            if int(t.get("shares") or 0) != int(shares):
-                continue
-            if price < ep * 1.005 or price > ep * 1.15:
-                continue
-            eligible.append(t)
-        if len(eligible) != 1:
-            # 0 个 = 没合适的; >1 个 = 歧义, 让用户走显式 sell-back 端点
-            return None
-        best = eligible[0]
-        from database import mark_tranche_sold_back
-        await mark_tranche_sold_back(best["id"], price)
-        return best
-
     return None
 
 
@@ -548,7 +520,7 @@ async def _auto_match_tranche(stock_code: str, action_type: str, price: float,
 async def create_action(stock_code: str, data: ActionCreate):
     """Add a new buy/sell action. Recomputes holding aggregate.
 
-    If this is a BUY/ADD/T_BUY that matches a pending tranche's trigger price
+    If this is a BUY/ADD that matches a pending tranche's trigger price
     (within ±5%), auto-mark that tranche as executed so the plan view stays in sync.
     """
     stock_code = normalize_stock_code(stock_code)

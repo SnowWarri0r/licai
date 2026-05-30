@@ -1,8 +1,9 @@
 """Compute current position state from chronological buy/sell actions.
 
 FIFO cost basis:
-- BUY / ADD / T_BUY → append a lot
-- SELL / REDUCE / T_SELL → consume from oldest lots first
+- BUY / ADD / BONUS → append a lot (BONUS = 送股, price=0 amount=0 只加 shares)
+- SELL / REDUCE → consume from oldest lots first
+- DIVIDEND → 现金分红, 直接进 realized_pnl (不动 lot 不动 cost_price)
 
 Derived quantities:
 - shares        : current total shares
@@ -17,8 +18,9 @@ from typing import Iterable
 
 from services.market_data import is_a_share
 
-ACQUIRE = {"BUY", "ADD", "T_BUY"}
-RELEASE = {"SELL", "REDUCE", "T_SELL"}
+ACQUIRE = {"BUY", "ADD", "BONUS"}     # 买入 / 加仓 / 送股转增 (BONUS price=0 amount=0 只加 shares)
+RELEASE = {"SELL", "REDUCE"}          # 卖出 / 减仓
+INCOME  = {"DIVIDEND"}                # 现金分红 → realized_pnl (不动 lot, 不动 cost_price)
 
 # A-share standard transaction fees
 _COMMISSION_RATE = 0.0001854  # 万1.854 (user's broker rate)
@@ -40,6 +42,9 @@ def estimate_trade_fee(action_type: str, price: float, shares: int, stock_code: 
     Returns total fee in yuan. Used to adjust cost basis to match broker display.
     """
     if stock_code and not is_a_share(stock_code):
+        return 0.0
+    # 非买入/卖出 (DIVIDEND 分红 / BONUS 送股 等) 不收费
+    if action_type not in ACQUIRE and action_type not in RELEASE:
         return 0.0
     amount = price * shares
     if amount <= 0:
@@ -112,6 +117,7 @@ def compute_position_state(
     # Pass 2: FIFO 配对 lots, 顺便累计 realized_pnl_excl_fees + matched_buy_shares
     lots: list[dict] = []  # each: {shares, price, trade_date}
     realized_pnl_excl_fees = 0.0
+    income_realized = 0.0    # 现金分红累计 (DIVIDEND), 不进 FIFO 配对
     matched_buy_shares = 0
     for a in sorted_actions:
         t = a.get("action_type", "")
@@ -120,6 +126,8 @@ def compute_position_state(
         ad = _parse_date(a.get("trade_date") or a.get("created_at"))
 
         if t in ACQUIRE and shares > 0:
+            # BONUS 是送股: price=0 → lot 的 shares 累加但 fifo_total 不变,
+            # cost_price 被动摊薄 (除数变大). estimate_trade_fee 在 amount<=0 时返回 0.
             lots.append({"shares": shares, "price": price, "trade_date": ad})
         elif t in RELEASE and shares > 0:
             remaining = shares
@@ -132,12 +140,20 @@ def compute_position_state(
                 remaining -= consumed
                 if lot["shares"] == 0:
                     lots.pop(0)
+        elif t in INCOME:
+            # 现金分红: 写法兼容两种
+            #   显式 amount (前端有 amount 字段时)
+            #   或 price × shares (price=每股股息, shares=持股数, 跟"10 派 2 元 × 100 股 = 20 元"对齐)
+            amt = float(a.get("amount") or 0)
+            if amt <= 0:
+                amt = float(a.get("price") or 0) * int(a.get("shares") or 0)
+            income_realized += amt
 
-    # 已实现盈亏 = FIFO 配对结果 - 卖出手续费 - 买入手续费按 matched / 总买 比例摊销
+    # 已实现盈亏 = FIFO 配对结果 - 卖出手续费 - 买入手续费按 matched / 总买 比例摊销 + 现金分红
     realized_fees = total_sell_fees
     if total_buy_shares > 0:
         realized_fees += total_buy_fees * (matched_buy_shares / total_buy_shares)
-    realized_pnl = round(realized_pnl_excl_fees - realized_fees, 2)
+    realized_pnl = round(realized_pnl_excl_fees - realized_fees + income_realized, 2)
 
     total_shares = sum(l["shares"] for l in lots)
     if total_shares <= 0:
@@ -148,6 +164,7 @@ def compute_position_state(
             "weighted_days": 0,
             "lots": [],
             "realized_pnl": realized_pnl,
+            "income_realized": round(income_realized, 2),
         }
 
     # FIFO cost — avg of remaining lots only
@@ -174,6 +191,7 @@ def compute_position_state(
         "total_fees": round(total_fees, 2),
         "weighted_days": int(round(weighted_days)),
         "realized_pnl": realized_pnl,
+        "income_realized": round(income_realized, 2),   # 累计现金分红 (DIVIDEND)
         "lots": [
             {"shares": l["shares"], "price": l["price"], "trade_date": l["trade_date"].isoformat()}
             for l in lots
