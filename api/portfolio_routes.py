@@ -409,19 +409,24 @@ async def sector_concentration():
 async def create_holding(data: HoldingCreate):
     stock_code = normalize_stock_code(data.stock_code)
     existing = await get_holding(stock_code)
-    if existing:
-        raise HTTPException(400, f"持仓 {stock_code} 已存在")
+    # 还有持仓 → 真重复, 让用户走「加仓」。shares=0 的已清仓标的允许从这里重新建仓,
+    # 复用原有交易历史 (FIFO 续上, 之前的已实现盈亏保留)。
+    if existing and (existing.get("shares") or 0) > 0:
+        raise HTTPException(400, f"持仓 {stock_code} 已存在，请用「加仓」补仓")
 
-    name = data.stock_name
+    name = data.stock_name or (existing.get("stock_name") if existing else None)
     if not name:
         name = await get_stock_name(stock_code)
 
-    # 1) 用裸成交价建持仓 (data.cost_price)
-    await add_holding(stock_code, name, data.shares, data.cost_price)
-    # 2) 同时写一笔 BUY action,然后重算综合成本 (会自动加佣金/印花税/过户费)
+    # 1) 建持仓行 (已清仓标的的行还在, 不重复 INSERT, 顺手更新名字)
+    if existing:
+        await update_holding(stock_code, stock_name=name)
+    else:
+        await add_holding(stock_code, name, data.shares, data.cost_price)
+    # 2) 写一笔 BUY action,然后重算综合成本 (会自动加佣金/印花税/过户费)
     await add_position_action(
         stock_code, "BUY", data.cost_price, data.shares,
-        note="initial (auto)",
+        note="re-entry (auto)" if existing else "initial (auto)",
         trade_date=data.trade_date,
     )
     await _recompute_holding(stock_code)
