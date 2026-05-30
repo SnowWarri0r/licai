@@ -63,10 +63,11 @@ function fundToSector(name = '') {
 }
 
 // AllocationAdvisor 大类模板, 决定"A 股大类应占总仓位多少 %". 跟 AllocationAdvisor.TEMPLATE_MATRIX 同步.
+// 跟 AllocationAdvisor.TEMPLATE_MATRIX 的 A 行同步.
 const A_TARGET_PCT = {
   defensive:  { small: 12, mid: 10, large: 10, xl: 10 },
-  balanced:   { small: 28, mid: 25, large: 22, xl: 18 },
-  aggressive: { small: 38, mid: 32, large: 28, xl: 22 },
+  balanced:   { small: 22, mid: 20, large: 18, xl: 15 },
+  aggressive: { small: 32, mid: 28, large: 24, xl: 20 },
 }
 
 function tierKey(total) {
