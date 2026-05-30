@@ -161,6 +161,20 @@ async def _enrich(asset: dict) -> dict:
                 quote["proxy_details"] = proxy["proxies"]
         except Exception as e:
             print(f"[fund-proxy] {asset['code']} failed: {e}")
+        # 今日涨跌口径: 场外基金净值是 T+1, change_pct 常是 1-2 天前的旧净值,
+        # 拿来当"今日"会把昨天的涨幅冒充成今天。折算规则:
+        #   - nav_date 为空 (场内 ETF 实时市价) 或 == 今天 → change_pct 就是今天
+        #   - 净值滞后 + 有底层 proxy → 用 proxy (底层标的实时估今天)
+        #   - 净值滞后 + 无 proxy → None (不计入今日浮动, 不冒充)
+        if quote is not None:
+            from datetime import date as _d
+            nav_date = quote.get("nav_date") or ""
+            if not nav_date or nav_date == _d.today().isoformat():
+                quote["today_change_pct"] = quote.get("change_pct")
+            elif quote.get("proxy_change_pct") is not None:
+                quote["today_change_pct"] = quote.get("proxy_change_pct")
+            else:
+                quote["today_change_pct"] = None
     elif t == "CRYPTO":
         quote = await get_crypto_quote(asset["code"])
         pending = float(out.get("pending_amount") or 0)

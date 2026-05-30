@@ -211,6 +211,9 @@ function normalizeAsset(a) {
     // 反推等价 pct: float / (mv - float)
     const baseValue = mv - float_cny
     today = baseValue > 0 ? (float_cny / baseValue) * 100 : 0
+  } else if (a.asset_type === 'FUND') {
+    // 净值 T+1: 后端已折算"今日"口径 (净值当天 → change_pct; 滞后 → 底层 proxy; 都没有 → null 不计入)
+    today = q?.today_change_pct ?? null
   } else if (q?.change_pct != null) {
     today = q.change_pct
   }
