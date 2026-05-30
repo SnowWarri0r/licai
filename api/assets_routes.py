@@ -115,6 +115,15 @@ async def _enrich(asset: dict) -> dict:
             actions = await list_external_actions(asset["id"])
             if actions:
                 pending_count = sum(1 for a in actions if (a.get("status") or "confirmed") == "pending")
+                # 派生 pending_amount: 实时从 pending 状态的申购流水累加, 避免 DB 字段 stale.
+                # (DCA fire / confirm / delete 各处不必再维护一致, 这是 single source of truth.)
+                if t in ("FUND", "CRYPTO"):
+                    pending_total = sum(
+                        float(a.get("amount") or 0) for a in actions
+                        if (a.get("status") or "confirmed") == "pending"
+                        and (a.get("action_type") or "").upper() in ("BUY", "ADD")
+                    )
+                    out["pending_amount"] = round(pending_total, 4)
                 ledger_state = compute_external_state(actions, t)
                 if ledger_state["cost_amount"] >= 0:
                     out["cost_amount"] = ledger_state["cost_amount"]
@@ -131,7 +140,7 @@ async def _enrich(asset: dict) -> dict:
         quote = await get_fund_quote(asset["code"])
         # current_value 含 pending (资产总额视角: 钱已经投进去了),
         # 但下面算 pnl 时会减去 pending (浮动只看已确认 lot vs 确认成本).
-        pending = float(asset.get("pending_amount") or 0)
+        pending = float(out.get("pending_amount") or 0)
         if asset.get("manual_value") is not None:
             current_value = float(asset["manual_value"])  # 锁定的总市值（已含 pending）
         elif quote and asset.get("shares"):
@@ -154,7 +163,7 @@ async def _enrich(asset: dict) -> dict:
             print(f"[fund-proxy] {asset['code']} failed: {e}")
     elif t == "CRYPTO":
         quote = await get_crypto_quote(asset["code"])
-        pending = float(asset.get("pending_amount") or 0)
+        pending = float(out.get("pending_amount") or 0)
         if asset.get("manual_value") is not None:
             current_value = float(asset["manual_value"])
         elif quote and asset.get("shares"):
