@@ -23,70 +23,76 @@ function tierOf(total) {
 //   - 保守: 现金 + 理财 ≥ 60%, 海外占权益不超过 1/3
 //   - 平衡: 权益与稳健 50:50, 海外随分档拉升
 //   - 激进: 权益 + 加密 ≥ 70%, 海外可达 28%
+// 10 桶按"实质"穿透模板. ETF/QDII 已按底层归到对应桶, 不再有粗糙的"F 基金"桶.
+// 桶: M=现金 W=银证理财 BND=债基 A=A股 H=港股 U=美股 OS=其它海外 CMD=商品 CRY=加密 F=兜底
 const TEMPLATE_MATRIX = {
   defensive: {
-    small: { M: 15, W: 50, A: 12, H: 0, U: 0,  F: 23, C: 0 },
-    mid:   { M: 12, W: 48, A: 10, H: 1, U: 4,  F: 25, C: 0 },
-    large: { M: 10, W: 45, A: 10, H: 3, U: 7,  F: 25, C: 0 },
-    xl:    { M: 10, W: 42, A: 10, H: 5, U: 10, F: 23, C: 0 },
+    small: { M: 20, W: 45, BND: 16, A: 12, H: 0, U: 3,  OS: 0, CMD: 4, CRY: 0,  F: 0 },
+    mid:   { M: 21, W: 42, BND: 16, A: 10, H: 1, U: 5,  OS: 0, CMD: 5, CRY: 0,  F: 0 },
+    large: { M: 20, W: 38, BND: 16, A: 10, H: 2, U: 8,  OS: 1, CMD: 5, CRY: 0,  F: 0 },
+    xl:    { M: 20, W: 35, BND: 15, A: 10, H: 3, U: 10, OS: 2, CMD: 5, CRY: 0,  F: 0 },
   },
   balanced: {
-    small: { M: 10, W: 32, A: 28, H: 0, U: 0,  F: 25, C: 5 },
-    mid:   { M: 8,  W: 28, A: 25, H: 3, U: 6,  F: 25, C: 5 },
-    large: { M: 8,  W: 25, A: 22, H: 6, U: 12, F: 22, C: 5 },
-    xl:    { M: 7,  W: 22, A: 18, H: 8, U: 18, F: 22, C: 5 },
+    small: { M: 23, W: 32, BND: 8,  A: 22, H: 0, U: 6,  OS: 0, CMD: 6, CRY: 3,  F: 0 },
+    mid:   { M: 22, W: 25, BND: 8,  A: 20, H: 3, U: 10, OS: 2, CMD: 6, CRY: 4,  F: 0 },
+    large: { M: 21, W: 22, BND: 7,  A: 18, H: 5, U: 14, OS: 2, CMD: 6, CRY: 5,  F: 0 },
+    xl:    { M: 20, W: 20, BND: 6,  A: 15, H: 7, U: 18, OS: 3, CMD: 6, CRY: 5,  F: 0 },
   },
   aggressive: {
-    small: { M: 5, W: 12, A: 38, H: 0, U: 0,  F: 35, C: 10 },
-    mid:   { M: 5, W: 12, A: 32, H: 2, U: 6,  F: 33, C: 10 },
-    large: { M: 5, W: 10, A: 28, H: 5, U: 12, F: 30, C: 10 },
-    xl:    { M: 5, W: 10, A: 22, H: 8, U: 20, F: 25, C: 10 },
+    small: { M: 27, W: 10, BND: 5,  A: 32, H: 0, U: 10, OS: 0, CMD: 6, CRY: 10, F: 0 },
+    mid:   { M: 22, W: 8,  BND: 5,  A: 28, H: 4, U: 14, OS: 2, CMD: 7, CRY: 10, F: 0 },
+    large: { M: 20, W: 7,  BND: 4,  A: 24, H: 6, U: 18, OS: 3, CMD: 8, CRY: 10, F: 0 },
+    xl:    { M: 18, W: 6,  BND: 4,  A: 20, H: 8, U: 22, OS: 4, CMD: 8, CRY: 10, F: 0 },
   },
 }
 
 const TEMPLATE_META = {
   defensive: {
     label: '保守型',
-    desc: '稳收益、低回撤。理财/现金占大头，权益少配',
+    desc: '稳收益、低回撤。理财/债基/现金 占大头, 权益少配',
     notes: [
-      '现金应急 + 短债理财占 ~60%，覆盖 1-2 年开支',
-      '权益单板块 ≤ 25%，加密不参与',
-      '海外随资金量上行做地域分散，不做激进押注',
+      '现金 + 理财 + 债基 占 ~75%, 覆盖 1-2 年开支',
+      '权益单板块 ≤ 15%; 加密不参与',
+      '美股小资金也建议保留 3-10% 做地域分散',
     ],
   },
   balanced: {
     label: '平衡型',
-    desc: '收益/风险均衡。权益与稳健资产五五开',
+    desc: '收益/风险均衡。权益(含海外)+ 商品 + 加密 占 40-55%',
     notes: [
-      '基金建议黄金 ~10% + 海外 ~10% + A股宽基 ~10%',
-      'A股单板块 ≤ 30%；同源族（A股+基金）合计 ≤ 35%',
-      '加密 5% 卫星仓，BTC/ETH 大盘币为主',
+      '小资金 (<¥30 万) 也保留美股 6%、商品 6%、加密 3%',
+      'A股单板块 ≤ 30%; 同源族 (A股+基金穿透) 合计 ≤ 35%',
+      '加密 3-5% 卫星仓, BTC/ETH 大盘币为主',
     ],
   },
   aggressive: {
     label: '激进型',
-    desc: '搏收益。权益 + 加密占大头，现金/理财仅留流动性',
+    desc: '搏收益。权益 + 加密占大头, 现金/理财仅留流动性',
     notes: [
       '需要承受 -30% 以上回撤的心理准备',
-      '现金 + 理财 ≤ 17%，主要用作机会子弹',
+      '理财 + 债基 ≤ 15%, 主要用作机会子弹',
       'A股可单押 1-2 行业但单板块 ≤ 35%',
     ],
   },
 }
 
 const TYPE_LABEL = {
-  M: '现金', W: '理财', A: 'A 股', H: '港股', U: '美股', F: '基金', C: '加密',
+  M: '现金', W: '理财', BND: '债基', A: 'A 股', H: '港股',
+  U: '美股', OS: '其它海外', CMD: '商品', CRY: '加密', F: '基金兜底',
 }
 const TYPE_COLOR = {
-  M: '#7a9b8e', // sage 现金
-  W: '#5fa86c', // green 理财
-  A: '#c8a876', // gold A股
-  H: '#b87a8a', // rose 港股
-  U: '#6b8eb3', // steel blue 美股
-  F: '#85a0b4', // info 基金
-  C: '#d4a05c', // amber 加密
+  M:   '#7a9b8e', // sage 现金
+  W:   '#5fa86c', // green 理财
+  BND: '#7fb085', // 浅 green 债基
+  A:   '#c8a876', // gold A股
+  H:   '#b87a8a', // rose 港股
+  U:   '#6b8eb3', // steel blue 美股
+  OS:  '#8aa0b8', // 浅 steel 其它海外
+  CMD: '#d4b85c', // amber gold 商品
+  CRY: '#d47a5c', // burnt orange 加密
+  F:   '#85a0b4', // info 基金兜底
 }
-const ROW_ORDER = ['M', 'W', 'A', 'H', 'U', 'F', 'C']
+const ROW_ORDER = ['M', 'W', 'BND', 'A', 'H', 'U', 'OS', 'CMD', 'CRY', 'F']
 
 export default function AllocationAdvisor() {
   const [holdings, setHoldings] = useState([])
@@ -106,9 +112,10 @@ export default function AllocationAdvisor() {
   // FUND 按 fundPassthroughBucketDetailed 穿透到对应大类 (海外/港股/商品/债/货币 都分流),
   // 兜底归 F. 给两个数: passthrough (穿透后, 用于警告判断) + raw (展示用, 看实际是基金还是直接持有).
   const current = useMemo(() => {
-    const buckets = { A: 0, H: 0, U: 0, F: 0, W: 0, M: 0, C: 0 }
-    const passthrough = { A: 0, H: 0, U: 0, F: 0, W: 0, M: 0, C: 0 }
-    const fundOrigin = {}  // bucket → ¥ from FUND passthrough (for "通过基金" 标签)
+    const zero = () => ({ M: 0, W: 0, BND: 0, A: 0, H: 0, U: 0, OS: 0, CMD: 0, CRY: 0, F: 0 })
+    const buckets = zero()        // 载体视图: FUND 全归 F, 不穿透 (此处不再展示, 但保留汇总)
+    const passthrough = zero()    // 穿透视图: 主展示
+    const fundOrigin = {}         // bucket → ¥ from FUND passthrough (用于"含基金 ¥X" 标签)
     for (const h of holdings) {
       const v = h.market_value != null ? h.market_value : (h.current_price || 0) * h.shares
       const code = String(h.stock_code || '').toUpperCase()
@@ -125,10 +132,10 @@ export default function AllocationAdvisor() {
       if (t === 'FUND') {
         buckets.F += v
         const target = fundPassthroughBucketDetailed(a.name || '')
-        passthrough[target] += v
+        passthrough[target] = (passthrough[target] || 0) + v
         fundOrigin[target] = (fundOrigin[target] || 0) + v
       } else if (t === 'CRYPTO' || t === 'BOT') {
-        buckets.C += v; passthrough.C += v
+        buckets.CRY += v; passthrough.CRY += v
       } else if (t === 'WEALTH') {
         buckets.W += v; passthrough.W += v
       } else if (t === 'CASH') {
