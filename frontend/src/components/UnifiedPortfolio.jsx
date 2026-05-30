@@ -796,9 +796,19 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
         fetchJSON('/api/portfolio/realized'),
         fetchJSON('/api/assets/realized'),
       ])
+      // 总盈亏 = 浮动(行内 pnl) + 已实现. 但有两处会重复算, 必须从已实现里剔掉:
+      //  1) 持仓股的 realized 已被「综合成本法」摊进剩余成本 → 行内浮动盈亏已含, 只补已清仓股。
+      //  2) CASH 的 realized(利息) 已作为现金行的 pnl 计入浮动 → 资产已实现里排除 CASH。
+      // FUND/CRYPTO/WEALTH 的成本只算剩余 lot, 浮动不含 realized, 所以全额计入。
+      const stockCleared = (s.items || [])
+        .filter(it => !it.still_holding)
+        .reduce((sum, it) => sum + (it.realized_pnl || 0), 0)
+      const assetExclCash = (a.items || [])
+        .filter(it => it.asset_type !== 'CASH')
+        .reduce((sum, it) => sum + (it.realized_pnl || 0), 0)
       setRealized({
-        stock: s.total_realized_pnl || 0,
-        asset: a.total_realized_pnl || 0,
+        stock: Math.round(stockCleared * 100) / 100,
+        asset: Math.round(assetExclCash * 100) / 100,
         stockItems: s.items || [],
       })
     } catch (e) { console.error('realized load failed', e) }
