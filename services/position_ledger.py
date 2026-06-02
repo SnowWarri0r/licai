@@ -87,38 +87,31 @@ def compute_position_state(
 
     sorted_actions = sorted(actions, key=sort_key)
 
-    # Pass 1: 累计金额 / 份数 / 手续费 (用于综合成本法 + 实现盈亏的费用摊销)
-    total_buy_amt = 0.0
-    total_sell_amt = 0.0
-    total_fees = 0.0
-    total_buy_shares = 0
-    total_buy_fees = 0.0
-    total_sell_fees = 0.0
-    for a in sorted_actions:
-        t = a.get("action_type", "")
-        price = float(a.get("price", 0))
-        shares = int(a.get("shares", 0))
-        # action.fee 非 NULL = 用户手填覆盖, 否则按券商费率自动估
+    def _fee_of(a, t, price, shares):
+        # action.fee 非 NULL = 用户手填覆盖, 否则按券商费率自动估。无 stock_code 不计费。
+        if not stock_code:
+            return 0.0
         override = a.get("fee")
-        if t in ACQUIRE and shares > 0:
-            total_buy_amt += price * shares
-            total_buy_shares += shares
-            if stock_code:
-                fee = float(override) if override is not None else estimate_trade_fee(t, price, shares, stock_code)
-                total_fees += fee
-                total_buy_fees += fee
-        elif t in RELEASE and shares > 0:
-            total_sell_amt += price * shares
-            if stock_code:
-                fee = float(override) if override is not None else estimate_trade_fee(t, price, shares, stock_code)
-                total_fees += fee
-                total_sell_fees += fee
+        return float(override) if override is not None else estimate_trade_fee(t, price, shares, stock_code)
 
-    # Pass 2: FIFO 配对 lots, 顺便累计 realized_pnl_excl_fees + matched_buy_shares
-    lots: list[dict] = []  # each: {shares, price, trade_date}
-    realized_pnl_excl_fees = 0.0
-    income_realized = 0.0    # 现金分红累计 (DIVIDEND), 不进 FIFO 配对
-    matched_buy_shares = 0
+    # 单次按时间顺序遍历: 同时跑 FIFO + 按"持仓段"算综合成本。
+    # 一段持仓 = 从份数 0→正 到再次归 0。完全清仓后再买入会开启全新一段,
+    # 旧段的已实现盈亏沉淀进 realized_carry, 不再摊进新段成本 (对齐券商 App)。
+    lots: list[dict] = []          # 当前段的 FIFO lots (清仓时自然清空)
+    income_realized = 0.0          # 现金分红累计 (DIVIDEND), 不进 FIFO 配对
+    realized_carry = 0.0           # 已平仓段的已实现 (不在当前浮动里)
+    total_fees = 0.0               # 全周期手续费 (展示用)
+    # 当前段累计 (清仓时重置)
+    ep_buy_amt = ep_sell_amt = ep_fees = 0.0
+    ep_buy_shares = ep_matched = 0
+    ep_buy_fees = ep_sell_fees = 0.0
+    ep_realized_excl_fees = 0.0
+    running_shares = 0
+
+    def _episode_realized():
+        rf = ep_sell_fees + (ep_buy_fees * (ep_matched / ep_buy_shares) if ep_buy_shares > 0 else 0.0)
+        return ep_realized_excl_fees - rf
+
     for a in sorted_actions:
         t = a.get("action_type", "")
         price = float(a.get("price", 0))
@@ -126,34 +119,52 @@ def compute_position_state(
         ad = _parse_date(a.get("trade_date") or a.get("created_at"))
 
         if t in ACQUIRE and shares > 0:
-            # BONUS 是送股: price=0 → lot 的 shares 累加但 fifo_total 不变,
-            # cost_price 被动摊薄 (除数变大). estimate_trade_fee 在 amount<=0 时返回 0.
+            # BONUS 是送股: price=0 → lot 的 shares 累加但 fifo_total 不变, cost_price 被动摊薄。
             lots.append({"shares": shares, "price": price, "trade_date": ad})
+            f = _fee_of(a, t, price, shares)
+            ep_buy_amt += price * shares
+            ep_buy_shares += shares
+            ep_buy_fees += f
+            ep_fees += f
+            total_fees += f
+            running_shares += shares
         elif t in RELEASE and shares > 0:
             remaining = shares
             while remaining > 0 and lots:
                 lot = lots[0]
                 consumed = min(lot["shares"], remaining)
-                realized_pnl_excl_fees += (price - lot["price"]) * consumed
-                matched_buy_shares += consumed
+                ep_realized_excl_fees += (price - lot["price"]) * consumed
+                ep_matched += consumed
                 lot["shares"] -= consumed
                 remaining -= consumed
                 if lot["shares"] == 0:
                     lots.pop(0)
+            f = _fee_of(a, t, price, shares)
+            ep_sell_amt += price * shares
+            ep_sell_fees += f
+            ep_fees += f
+            total_fees += f
+            running_shares -= shares
+            if running_shares <= 0:
+                # 本段平仓: 沉淀已实现到 carry, 清空本段累计 (开启新段)
+                realized_carry += _episode_realized()
+                running_shares = 0
+                lots = []
+                ep_buy_amt = ep_sell_amt = ep_fees = 0.0
+                ep_buy_shares = ep_matched = 0
+                ep_buy_fees = ep_sell_fees = 0.0
+                ep_realized_excl_fees = 0.0
         elif t in INCOME:
-            # 现金分红: 写法兼容两种
-            #   显式 amount (前端有 amount 字段时)
-            #   或 price × shares (price=每股股息, shares=持股数, 跟"10 派 2 元 × 100 股 = 20 元"对齐)
+            # 现金分红: 显式 amount, 或 price(每股股息) × shares(持股数)
             amt = float(a.get("amount") or 0)
             if amt <= 0:
                 amt = float(a.get("price") or 0) * int(a.get("shares") or 0)
             income_realized += amt
 
-    # 已实现盈亏 = FIFO 配对结果 - 卖出手续费 - 买入手续费按 matched / 总买 比例摊销 + 现金分红
-    realized_fees = total_sell_fees
-    if total_buy_shares > 0:
-        realized_fees += total_buy_fees * (matched_buy_shares / total_buy_shares)
-    realized_pnl = round(realized_pnl_excl_fees - realized_fees + income_realized, 2)
+    # 总已实现 = 已平仓段 + 当前段已实现 + 现金分红
+    realized_pnl = round(realized_carry + _episode_realized() + income_realized, 2)
+    # carry = 不在当前浮动里的已实现 (已平仓段 + 分红) → 顶部总盈亏用它补, 避免和浮动重复
+    realized_carry_out = round(realized_carry + income_realized, 2)
 
     total_shares = sum(l["shares"] for l in lots)
     if total_shares <= 0:
@@ -164,16 +175,18 @@ def compute_position_state(
             "weighted_days": 0,
             "lots": [],
             "realized_pnl": realized_pnl,
+            "realized_carry": realized_carry_out,
             "income_realized": round(income_realized, 2),
         }
 
-    # FIFO cost — avg of remaining lots only
+    # FIFO cost — avg of remaining lots only (当前段)
     fifo_total = sum(l["shares"] * l["price"] for l in lots)
     fifo_cost = fifo_total / total_shares
 
-    net_invested = total_buy_amt - total_sell_amt + total_fees
+    # 综合成本法只算当前段 (清仓后重置), 不把旧段已实现摊进新成本
+    net_invested = ep_buy_amt - ep_sell_amt + ep_fees
     net_cost = net_invested / total_shares if total_shares > 0 else 0.0
-    # If user sold at extreme profit and net_invested becomes negative, fall back to fifo
+    # 当前段内卖在极高位导致 net_invested 变负时回退到 fifo
     if net_cost <= 0:
         net_cost = fifo_cost
 
@@ -191,6 +204,7 @@ def compute_position_state(
         "total_fees": round(total_fees, 2),
         "weighted_days": int(round(weighted_days)),
         "realized_pnl": realized_pnl,
+        "realized_carry": realized_carry_out,            # 已平仓段+分红 (不在浮动里, 供顶部总盈亏补)
         "income_realized": round(income_realized, 2),   # 累计现金分红 (DIVIDEND)
         "lots": [
             {"shares": l["shares"], "price": l["price"], "trade_date": l["trade_date"].isoformat()}

@@ -65,16 +65,60 @@ def test_complete_selloff_returns_zero():
     assert s["lots"] == []
 
 
-def test_add_and_t_buy_treated_as_acquisition():
+def test_add_treated_as_acquisition():
     actions = [
         {"action_type": "BUY", "price": 10.0, "shares": 100, "trade_date": "2025-01-01"},
         {"action_type": "ADD", "price": 9.0, "shares": 100, "trade_date": "2025-06-01"},
-        {"action_type": "T_BUY", "price": 8.0, "shares": 100, "trade_date": "2026-01-01"},
+        {"action_type": "ADD", "price": 8.0, "shares": 100, "trade_date": "2026-01-01"},
     ]
     s = compute_position_state(actions, today=date(2026, 4, 22))
     assert s["shares"] == 300
     # avg = (10+9+8)/3 = 9.0
     assert s["cost_price"] == 9.0
+
+
+def test_clear_then_rebuy_resets_cost_basis():
+    # 全部卖出归零后再买入 = 全新一段持仓, 旧的那轮已实现不再摊进新成本。
+    actions = [
+        {"action_type": "BUY", "price": 10.0, "shares": 100, "trade_date": "2025-01-01"},
+        {"action_type": "SELL", "price": 12.0, "shares": 100, "trade_date": "2025-06-01"},  # 清仓, 赚 +200
+        {"action_type": "BUY", "price": 8.0, "shares": 100, "trade_date": "2026-01-01"},   # 重新建仓 @8
+    ]
+    s = compute_position_state(actions, today=date(2026, 4, 22))
+    assert s["shares"] == 100
+    # 重新建仓后成本就是 8.0, 不被上一轮 +200 盈利摊低 (旧实现会算成 6.0)
+    assert s["cost_price"] == 8.0
+    # 总已实现仍含上一轮 +200
+    assert s["realized_pnl"] == 200.0
+    # realized_carry = 已清仓那轮的已实现 (没被算进当前浮动里), 应=200
+    assert s["realized_carry"] == 200.0
+
+
+def test_clear_then_rebuy_at_loss_carry():
+    # 格林美场景: 9.41 买 → 9.11 卖清仓(亏) → 7.88 重新买。无手续费 (stock_code="")
+    actions = [
+        {"action_type": "BUY", "price": 9.41, "shares": 100, "trade_date": "2026-04-29"},
+        {"action_type": "SELL", "price": 9.11, "shares": 100, "trade_date": "2026-05-07"},
+        {"action_type": "BUY", "price": 7.88, "shares": 100, "trade_date": "2026-05-29"},
+    ]
+    s = compute_position_state(actions, today=date(2026, 6, 2))
+    assert s["shares"] == 100
+    assert abs(s["cost_price"] - 7.88) < 1e-6        # 新成本就是 7.88, 不含旧亏损
+    assert abs(s["realized_pnl"] - (-30.0)) < 1e-6   # (9.11-9.41)*100
+    assert abs(s["realized_carry"] - (-30.0)) < 1e-6
+
+
+def test_partial_sell_within_episode_still_folds():
+    # 同一段持仓内部分卖出(做T) 仍走综合成本法摊薄, 不重置。
+    actions = [
+        {"action_type": "BUY", "price": 12.0, "shares": 100, "trade_date": "2025-01-01"},
+        {"action_type": "BUY", "price": 8.0, "shares": 100, "trade_date": "2026-01-01"},
+        {"action_type": "SELL", "price": 11.0, "shares": 50, "trade_date": "2026-04-01"},
+    ]
+    s = compute_position_state(actions, today=date(2026, 4, 22))
+    assert s["shares"] == 150
+    assert 9.65 < s["cost_price"] < 9.68   # 综合成本法摊薄 (一段内不重置)
+    assert s["realized_carry"] == 0.0      # 没清过仓 → carry=0, 当前浮动已含这部分
 
 
 def test_out_of_order_input_sorted_by_trade_date():
