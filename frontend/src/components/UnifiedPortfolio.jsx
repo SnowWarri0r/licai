@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { api, fetchJSON } from '../hooks/useApi'
-import { fmtMoney, fmtPct, fmtPrice, priceColor, fundPassthroughType } from '../helpers'
+import { fmtMoney, fmtPct, fmtPrice, priceColor, fundPassthroughType, isOnchainEtf } from '../helpers'
 import Tooltip from './Tooltip'
 import StockKlineModal from './StockKlineModal'
 
@@ -1780,7 +1780,7 @@ function AddAssetForm({ typeKey, onDone, onCancel }) {
           ? parseFloat(annualYield) / 100  // user inputs %, store as decimal
           : null,
         start_date: isYieldType ? (startDate || null) : null,
-        purchase_fee_rate: assetType === 'FUND' && feeRatePct !== '' ? parseFloat(feeRatePct) / 100 : null,
+        purchase_fee_rate: assetType === 'FUND' && !isOnchainEtf(code) && feeRatePct !== '' ? parseFloat(feeRatePct) / 100 : null,
         dca: dcaPayload,
       }),
     })
@@ -1858,8 +1858,8 @@ function AddAssetForm({ typeKey, onDone, onCancel }) {
 
       {hint && <div className={`text-[10px] font-mono ${hint.startsWith('✓') ? 'text-bull' : 'text-bear'}`}>{hint}</div>}
 
-      {/* Pending hint: FUND/CRYPTO 只填了金额没填份额 → T+1 待确认 */}
-      {(assetType === 'FUND' || assetType === 'CRYPTO') && parseFloat(cost) > 0 && !shares && (
+      {/* Pending hint: 场外基金/CRYPTO 只填了金额没填份额 → T+1 待确认 (场内 ETF 按市价即时成交, 不适用) */}
+      {((assetType === 'FUND' && !isOnchainEtf(code)) || assetType === 'CRYPTO') && parseFloat(cost) > 0 && !shares && (
         <div className="text-[10.5px] font-mono text-accent">
           💡 没填{assetType === 'FUND' ? '份额' : '数量'} → 当作 T+1 待确认，¥{parseFloat(cost).toFixed(2)} 先记到 pending。
           {assetType === 'FUND' ? '基金' : '币'} 到账后回来编辑补份额自动结算。
@@ -1960,7 +1960,7 @@ function AddAssetForm({ typeKey, onDone, onCancel }) {
               className={`${inp} w-24 font-mono`} placeholder="5.00" />
           </div>
         )}
-        {assetType === 'FUND' && (
+        {assetType === 'FUND' && !isOnchainEtf(code) && (
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-text-dim">申购费率 %</label>
             <input type="number" step="0.01" value={feeRatePct} onChange={e => setFeeRatePct(e.target.value)}
@@ -2199,8 +2199,8 @@ function EditAssetRow({ asset, onDone, onCancel }) {
         }
         payload.manual_value = lockMv && mv !== '' ? parseFloat(mv) : null
         payload.pending_amount = pending !== '' ? parseFloat(pending) : 0
-        // 申购费率: 百分比 → 小数. 留空写 null (= 无申购费, 等同 C 类)
-        if (isFund) payload.purchase_fee_rate = feeRatePct !== '' ? parseFloat(feeRatePct) / 100 : null
+        // 申购费率: 百分比 → 小数. 留空写 null. 场内 ETF 走佣金无申购费, 不传。
+        if (isFund && !isOnchainEtf(asset.code)) payload.purchase_fee_rate = feeRatePct !== '' ? parseFloat(feeRatePct) / 100 : null
       } else if (isWealth) {
         payload.cost_amount = cost !== '' ? parseFloat(cost) : null
         payload.shares = null
@@ -2285,7 +2285,7 @@ function EditAssetRow({ asset, onDone, onCancel }) {
             <label className="text-[11px] text-text-dim">待确认金额 ¥</label>
             <input type="number" step="0.01" value={pending} onChange={e => update('pending', e.target.value)} className={`${inp} w-28`} placeholder="0" />
           </div>
-          {isFund && (
+          {isFund && !isOnchainEtf(asset.code) && (
             <div className="flex flex-col gap-1">
               <label className="text-[11px] text-text-dim">申购费率 %</label>
               <input type="number" step="0.01" value={feeRatePct} onChange={e => setFeeRatePct(e.target.value)}
@@ -2659,12 +2659,9 @@ function AddLotRow({ asset, onDone, onCancel }) {
   )
 }
 
-// 场内 ETF: 5xxxxx (上交所) / 159xxx (深交所) / 588xxx (科创). 其他 6 位归 OTC 基金.
-function isEtfCode(code) {
-  const c = String(code || '').trim()
-  if (c.length !== 6 || !/^\d+$/.test(c)) return false
-  return c.startsWith('5') || c.startsWith('159') || c.startsWith('588')
-}
+// 场内 ETF/LOF 判定 — 统一走 isOnchainEtf (深 1xxxxx / 沪 5xxxxx)。
+// 旧规则只认 5xxxxx/159xxx 会把 16xxxx 的 LOF (如互联网QD 160644) 误判成场外。
+const isEtfCode = isOnchainEtf
 
 // ReduceLotRow — 减仓 / 赎回 modal.
 // OTC 基金 (场外): 只填份额 + 日期, 写 pending 流水, 等 T+1 净值出来后回来"确认"
