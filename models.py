@@ -15,6 +15,7 @@ class HoldingUpdate(BaseModel):
     stock_name: Optional[str] = None
     shares: Optional[int] = None
     cost_price: Optional[float] = None
+    broker: Optional[str] = None
 
 
 class HoldingResponse(BaseModel):
@@ -36,6 +37,7 @@ class HoldingResponse(BaseModel):
     cost_value: Optional[float] = None
     market_value: Optional[float] = None
     sector: Optional[str] = None  # 顶级行业, e.g. "有色金属" / "汽车" — 用于前端分组
+    broker: Optional[str] = None
 
 
 class QuoteData(BaseModel):

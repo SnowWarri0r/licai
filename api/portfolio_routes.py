@@ -8,7 +8,7 @@ from models import HoldingCreate, HoldingUpdate, HoldingResponse
 from database import (
     get_all_holdings, get_holding, add_holding, update_holding, delete_holding,
     get_position_actions, add_position_action, update_position_action, delete_position_action,
-    get_unwind_plan, get_tranches, mark_tranche_executed,
+    get_unwind_plan, get_tranches, mark_tranche_executed, list_brokers,
 )
 from services.market_data import (
     get_realtime_quotes, get_stock_name, get_stock_sector,
@@ -17,6 +17,17 @@ from services.market_data import (
 from services.position_ledger import compute_position_state
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
+
+
+async def _broker_stock_fee(broker_name):
+    """按券商 name 返回 (股票佣金费率, 最低). 找不到→默认券商. 都没有→(None,None) 用模块默认。"""
+    brokers = await list_brokers()
+    b = next((x for x in brokers if x["name"] == broker_name), None) if broker_name else None
+    if b is None:
+        b = next((x for x in brokers if x["is_default"]), None) or (brokers[0] if brokers else None)
+    if b is None:
+        return (None, None)
+    return (b["stock_rate"], b["stock_min"])
 
 
 class ActionCreate(BaseModel):
@@ -41,7 +52,10 @@ class ActionUpdate(BaseModel):
 async def _recompute_holding(stock_code: str):
     """Rebuild holding shares/cost_price from FIFO ledger."""
     actions = await get_position_actions(stock_code, limit=500)
-    state = compute_position_state(actions, stock_code=stock_code)
+    h = await get_holding(stock_code)
+    c_rate, c_min = await _broker_stock_fee((h or {}).get("broker"))
+    state = compute_position_state(actions, stock_code=stock_code,
+                                   commission_rate=c_rate, commission_min=c_min)
     if state["shares"] > 0:
         await update_holding(stock_code, shares=state["shares"], cost_price=state["cost_price"])
     else:
@@ -75,7 +89,9 @@ async def list_holdings() -> list[HoldingResponse]:
         try:
             _acts = await get_position_actions(code, limit=500)
             if _acts:
-                _st = compute_position_state(_acts, stock_code=code)
+                c_rate, c_min = await _broker_stock_fee(h.get("broker"))
+                _st = compute_position_state(_acts, stock_code=code,
+                                             commission_rate=c_rate, commission_min=c_min)
                 h["shares"] = _st["shares"]
                 h["cost_price"] = _st["cost_price"]
         except Exception:
@@ -131,6 +147,7 @@ async def list_holdings() -> list[HoldingResponse]:
             cost_value=cost_value,
             market_value=market_value,
             sector=sector_map.get(code),
+            broker=h.get("broker"),
         ))
 
     return result
@@ -162,7 +179,9 @@ async def realized_pnl():
         actions = await get_position_actions(code, limit=500)
         if not actions:
             continue
-        state = compute_position_state(actions, stock_code=code)
+        c_rate, c_min = await _broker_stock_fee((holdings_map.get(code) or {}).get("broker"))
+        state = compute_position_state(actions, stock_code=code,
+                                       commission_rate=c_rate, commission_min=c_min)
         rp = float(state.get("realized_pnl") or 0)
         # carry = 不在当前浮动里的已实现 (已平仓段 + 分红). 当前持仓段的已实现已被
         # 综合成本法摊进浮动盈亏, 顶部总盈亏只能加 carry, 否则重复算。
@@ -464,6 +483,8 @@ async def modify_holding(stock_code: str, data: HoldingUpdate):
         kwargs["shares"] = data.shares
     if data.cost_price is not None:
         kwargs["cost_price"] = data.cost_price
+    if data.broker is not None:
+        kwargs["broker"] = data.broker
 
     await update_holding(stock_code, **kwargs)
     return {"message": "更新成功"}
