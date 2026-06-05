@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { api, fetchJSON } from '../hooks/useApi'
-import { fmtMoney, fmtPct, fmtPrice, priceColor, fundPassthroughType, isOnchainEtf } from '../helpers'
+import { fmtMoney, fmtPct, fmtPrice, priceColor, fundPassthroughType, isOnchainEtf, loadBrokers, estimateFee } from '../helpers'
 import Tooltip from './Tooltip'
 import StockKlineModal from './StockKlineModal'
 
@@ -768,6 +768,8 @@ function SummaryStrip({ agg, aShareClosed, realized }) {
 // ============================================================
 export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd }) {
   const [assets, setAssets] = useState([])
+  const [brokers, setBrokers] = useState([])
+  useEffect(() => { loadBrokers().then(setBrokers) }, [])
   const [assetsLoaded, setAssetsLoaded] = useState(false)
   const [unwindPlans, setUnwindPlans] = useState({})
   const [tradingDay, setTradingDay] = useState(null)
@@ -1143,22 +1145,26 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
 
       {String(addTarget || '').startsWith('A:') && (
         <AddAShareForm initialMarket={addTarget.split(':')[1]}
+          brokers={brokers}
           onDone={() => { setAddTarget(null); onAdd?.() }} onCancel={() => setAddTarget(null)} />
       )}
       {(addTarget === 'F' || addTarget === 'C' || addTarget === 'R' || addTarget === 'W' || addTarget === 'M') && (
         <AddAssetForm typeKey={addTarget}
+          brokers={brokers}
           onDone={() => { setAddTarget(null); loadAssets() }}
           onCancel={() => setAddTarget(null)} />
       )}
 
       {editAsset && (
         <EditAssetRow asset={editAsset}
+          brokers={brokers}
           onDone={() => { setEditAsset(null); loadAssets() }}
           onCancel={() => setEditAsset(null)} />
       )}
 
       {addLotAsset && (
         <AddLotRow asset={addLotAsset}
+          brokers={brokers}
           onDone={() => { setAddLotAsset(null); loadAssets(); loadRealized() }}
           onCancel={() => setAddLotAsset(null)} />
       )}
@@ -1543,7 +1549,7 @@ function ClosedPositionsBlock({ items, onHistory }) {
 // ============================================================
 // Add stock form — compact, inline
 // ============================================================
-function AddAShareForm({ initialMarket = 'A', onDone, onCancel }) {
+function AddAShareForm({ initialMarket = 'A', onDone, onCancel, brokers = [] }) {
   const [form, setForm] = useState({
     code: '', name: '', shares: '', cost: '',
     tradeDate: new Date().toISOString().slice(0, 10),
@@ -1551,6 +1557,7 @@ function AddAShareForm({ initialMarket = 'A', onDone, onCancel }) {
   const [market, setMarket] = useState(initialMarket)
   const [submitting, setSubmitting] = useState(false)
   const [nameLooking, setNameLooking] = useState(false)
+  const [broker, setBroker] = useState('')
 
   const lookup = useCallback(async (nextCode, nextMarket = market) => {
     const fullCode = stockCodeForMarket(nextMarket, nextCode)
@@ -1578,6 +1585,7 @@ function AddAShareForm({ initialMarket = 'A', onDone, onCancel }) {
         stock_code: stockCode, stock_name: form.name,
         shares: parseInt(form.shares), cost_price: parseFloat(form.cost),
         trade_date: form.tradeDate || undefined,
+        broker: broker || null,
       })
       if (res.message) onDone?.()
       else alert(res.detail || '添加失败')
@@ -1636,6 +1644,13 @@ function AddAShareForm({ initialMarket = 'A', onDone, onCancel }) {
           value={form.tradeDate}
           onChange={e => setForm({ ...form, tradeDate: e.target.value })} />
       </div>
+      <div className="flex flex-col gap-1">
+        <label className="text-[11px] text-text-dim">券商</label>
+        <select className={`${inp} w-28`} value={broker} onChange={e => setBroker(e.target.value)}>
+          <option value="">默认</option>
+          {brokers.map(b => <option key={b.id} value={b.name}>{b.name}</option>)}
+        </select>
+      </div>
       <button onClick={submit} disabled={submitting}
         className="px-4 py-1.5 rounded-md bg-accent text-bg font-medium text-[13px] hover:opacity-90 transition-opacity disabled:opacity-50 cursor-pointer">
         {submitting ? '...' : '确认'}
@@ -1655,7 +1670,7 @@ function AddAShareForm({ initialMarket = 'A', onDone, onCancel }) {
 // Add asset form — covers F/C/R with type-specific fields
 // (trimmed version of the original ExternalAssets AddAssetForm)
 // ============================================================
-function AddAssetForm({ typeKey, onDone, onCancel }) {
+function AddAssetForm({ typeKey, onDone, onCancel, brokers = [] }) {
   const assetType = KEY_TO_ASSET_TYPE[typeKey]
   const [code, setCode] = useState('')
   const [name, setName] = useState('')
@@ -1663,6 +1678,7 @@ function AddAssetForm({ typeKey, onDone, onCancel }) {
   const [shares, setShares] = useState('')
   const [cost, setCost] = useState('')
   const [costTouched, setCostTouched] = useState(false)
+  const [selectedBroker, setSelectedBroker] = useState('')
   const [manualValue, setManualValue] = useState('')
   const [unitPrice, setUnitPrice] = useState('')
   const [fee, setFee] = useState('')
@@ -1699,10 +1715,11 @@ function AddAssetForm({ typeKey, onDone, onCancel }) {
     const s = parseFloat(shares); const u = parseFloat(unitPrice)
     if (s > 0 && u > 0) {
       const amount = s * u
-      const est = Math.max(amount * BROKER_COMMISSION_RATE, BROKER_COMMISSION_MIN)
+      const kind = isOnchainEtf(code) ? 'etf' : 'stock'
+      const est = estimateFee(amount, brokers, selectedBroker, kind)
       setFee(est.toFixed(2))
     }
-  }, [shares, unitPrice, feeTouched, assetType])
+  }, [shares, unitPrice, feeTouched, assetType, code, brokers, selectedBroker])
 
   // 按股买: 累计投入 = 单价 × 份额 + 手续费 (用户没手填本金时自动)
   useEffect(() => {
@@ -1781,6 +1798,7 @@ function AddAssetForm({ typeKey, onDone, onCancel }) {
           : null,
         start_date: isYieldType ? (startDate || null) : null,
         purchase_fee_rate: assetType === 'FUND' && !isOnchainEtf(code) && feeRatePct !== '' ? parseFloat(feeRatePct) / 100 : null,
+        broker: assetType === 'FUND' && isOnchainEtf(code) && selectedBroker ? selectedBroker : null,
         // 手续费单独透传 (cost 已含它), 后端单存到初始流水的 fee 字段, 避免在流水里"消失"
         fee: (assetType === 'FUND' || assetType === 'CRYPTO') && parseFloat(fee) > 0 ? parseFloat(fee) : null,
         dca: dcaPayload,
@@ -1970,6 +1988,15 @@ function AddAssetForm({ typeKey, onDone, onCancel }) {
               title="定投批量确认按此费率内扣算份额。A类填折后实际费率(如0.15), C类/无申购费填0或留空" />
           </div>
         )}
+        {assetType === 'FUND' && isOnchainEtf(code) && (
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] text-text-dim">券商</label>
+            <select className={`${inp} w-28 font-mono`} value={selectedBroker} onChange={e => setSelectedBroker(e.target.value)}>
+              <option value="">默认</option>
+              {brokers.map(b => <option key={b.id} value={b.name}>{b.name}</option>)}
+            </select>
+          </div>
+        )}
         {assetType !== 'WEALTH' && assetType !== 'CASH' && (
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-text-dim">
@@ -2091,7 +2118,7 @@ function AddAssetForm({ typeKey, onDone, onCancel }) {
 }
 
 // Inline edit row for external asset
-function EditAssetRow({ asset, onDone, onCancel }) {
+function EditAssetRow({ asset, onDone, onCancel, brokers = [] }) {
   const isBot = asset.asset_type === 'BOT'
   const isFund = asset.asset_type === 'FUND'
   const isCrypto = asset.asset_type === 'CRYPTO'
@@ -2134,6 +2161,7 @@ function EditAssetRow({ asset, onDone, onCancel }) {
   const [feeRatePct, setFeeRatePct] = useState(
     asset.purchase_fee_rate != null ? String(+(asset.purchase_fee_rate * 100).toFixed(4)) : ''
   )
+  const [broker, setBroker] = useState(asset.broker || '')
 
   // WEALTH-only fields
   const [cost, setCost] = useState(String(initTotalCost ?? ''))  // also reused by BOT
@@ -2203,6 +2231,7 @@ function EditAssetRow({ asset, onDone, onCancel }) {
         payload.pending_amount = pending !== '' ? parseFloat(pending) : 0
         // 申购费率: 百分比 → 小数. 留空写 null. 场内 ETF 走佣金无申购费, 不传。
         if (isFund && !isOnchainEtf(asset.code)) payload.purchase_fee_rate = feeRatePct !== '' ? parseFloat(feeRatePct) / 100 : null
+        if (isFund && isOnchainEtf(asset.code)) payload.broker = broker || null
       } else if (isWealth) {
         payload.cost_amount = cost !== '' ? parseFloat(cost) : null
         payload.shares = null
@@ -2292,6 +2321,15 @@ function EditAssetRow({ asset, onDone, onCancel }) {
               <label className="text-[11px] text-text-dim">申购费率 %</label>
               <input type="number" step="0.01" value={feeRatePct} onChange={e => setFeeRatePct(e.target.value)}
                 className={`${inp} w-24`} placeholder="C类填0" title="定投批量确认按此费率内扣算份额。A类填折后实际费率(如0.15), C类/无申购费填0或留空" />
+            </div>
+          )}
+          {isFund && isOnchainEtf(asset.code) && (
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] text-text-dim">券商</label>
+              <select className={`${inp} w-28`} value={broker} onChange={e => setBroker(e.target.value)}>
+                <option value="">默认</option>
+                {brokers.map(b => <option key={b.id} value={b.name}>{b.name}</option>)}
+              </select>
             </div>
           )}
           <label className="flex items-center gap-1.5 text-[11px] text-text-dim cursor-pointer select-none ml-1">
@@ -2391,7 +2429,7 @@ function EditAssetRow({ asset, onDone, onCancel }) {
 // 场内 ETF / CRYPTO: 三选二 (本金/份额/单价) + 手续费 + 日期, 立即 confirmed
 // WEALTH/CASH: 本金 + 日期 (+ WEALTH 可填本笔起投日 / 年化)
 // ============================================================
-function AddLotRow({ asset, onDone, onCancel }) {
+function AddLotRow({ asset, onDone, onCancel, brokers = [] }) {
   const [principal, setPrincipal] = useState('')
   const [shares, setShares] = useState('')        // FUND/CRYPTO: 新增份额
   const [unitPrice, setUnitPrice] = useState('')  // FUND/CRYPTO: 单价 (净值 / 币价)
@@ -2430,10 +2468,11 @@ function AddLotRow({ asset, onDone, onCancel }) {
     if (!(isFund || isCrypto) || feeTouched) return
     if (sNum > 0 && uNum > 0) {
       const amount = sNum * uNum
-      const est = Math.max(amount * BROKER_COMMISSION_RATE, BROKER_COMMISSION_MIN)
+      const kind = isOnchainEtf(asset.code) ? 'etf' : 'stock'
+      const est = estimateFee(amount, brokers, asset.broker, kind)
       setFee(est.toFixed(2))
     }
-  }, [shares, unitPrice, feeTouched, isFund, isCrypto])
+  }, [shares, unitPrice, feeTouched, isFund, isCrypto, brokers, asset.broker, asset.code])
 
   let preview = null
   if (isFund || isCrypto) {
