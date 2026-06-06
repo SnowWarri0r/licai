@@ -220,6 +220,35 @@ async def init_db():
         if "purchase_fee_rate" not in cols:
             await db.execute("ALTER TABLE external_assets ADD COLUMN purchase_fee_rate REAL")
 
+        # 券商费率档案
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS brokers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                stock_rate REAL NOT NULL,
+                stock_min REAL NOT NULL,
+                etf_rate REAL NOT NULL,
+                etf_min REAL NOT NULL,
+                is_default INTEGER NOT NULL DEFAULT 0
+            )
+        """)
+        cur = await db.execute("SELECT COUNT(*) FROM brokers")
+        if (await cur.fetchone())[0] == 0:
+            await db.execute(
+                "INSERT INTO brokers (name, stock_rate, stock_min, etf_rate, etf_min, is_default) VALUES (?,?,?,?,?,?)",
+                ("招商证券", 0.0001854, 5.0, 0.0001854, 5.0, 1))
+            await db.execute(
+                "INSERT INTO brokers (name, stock_rate, stock_min, etf_rate, etf_min, is_default) VALUES (?,?,?,?,?,?)",
+                ("银河证券", 0.000086, 5.0, 0.00005, 0.1, 0))
+        cur = await db.execute("PRAGMA table_info(holdings)")
+        hcols = {r[1] for r in await cur.fetchall()}
+        if "broker" not in hcols:
+            await db.execute("ALTER TABLE holdings ADD COLUMN broker TEXT")
+        cur = await db.execute("PRAGMA table_info(external_assets)")
+        ecols = {r[1] for r in await cur.fetchall()}
+        if "broker" not in ecols:
+            await db.execute("ALTER TABLE external_assets ADD COLUMN broker TEXT")
+
         # external_asset_actions: status 字段 + fee 字段 (旧库迁移)
         cursor = await db.execute("PRAGMA table_info(external_asset_actions)")
         cols = {row[1] for row in await cursor.fetchall()}
@@ -1037,5 +1066,64 @@ async def list_due_dca_schedules(today_str: str) -> list[dict]:
         )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
+    finally:
+        await db.close()
+
+
+# --- Brokers ---
+
+async def list_brokers() -> list[dict]:
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT * FROM brokers ORDER BY is_default DESC, id ASC")
+        return [dict(r) for r in await cur.fetchall()]
+    finally:
+        await db.close()
+
+
+async def get_default_broker() -> dict | None:
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT * FROM brokers WHERE is_default=1 LIMIT 1")
+        r = await cur.fetchone()
+        if r is None:
+            cur = await db.execute("SELECT * FROM brokers ORDER BY id ASC LIMIT 1")
+            r = await cur.fetchone()
+        return dict(r) if r else None
+    finally:
+        await db.close()
+
+
+async def add_broker(name, stock_rate, stock_min, etf_rate, etf_min) -> int:
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "INSERT INTO brokers (name, stock_rate, stock_min, etf_rate, etf_min, is_default) VALUES (?,?,?,?,?,0)",
+            (name, stock_rate, stock_min, etf_rate, etf_min))
+        await db.commit()
+        return cur.lastrowid
+    finally:
+        await db.close()
+
+
+async def update_broker(broker_id: int, **kwargs):
+    if not kwargs:
+        return
+    db = await get_db()
+    try:
+        if kwargs.get("is_default"):
+            await db.execute("UPDATE brokers SET is_default=0")
+        cols = ", ".join(f"{k}=?" for k in kwargs)
+        await db.execute(f"UPDATE brokers SET {cols} WHERE id=?", (*kwargs.values(), broker_id))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def delete_broker(broker_id: int):
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM brokers WHERE id=? AND is_default=0", (broker_id,))
+        await db.commit()
     finally:
         await db.close()
