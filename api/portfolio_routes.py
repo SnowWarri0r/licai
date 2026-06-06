@@ -459,6 +459,9 @@ async def create_holding(data: HoldingCreate):
         await update_holding(stock_code, stock_name=name)
     else:
         await add_holding(stock_code, name, data.shares, data.cost_price)
+    # 1b) 如果前端传了券商, 在 recompute 之前写入, 这样 _recompute_holding 能用正确的费率
+    if data.broker:
+        await update_holding(stock_code, broker=data.broker)
     # 2) 写一笔 BUY action,然后重算综合成本 (会自动加佣金/印花税/过户费)
     await add_position_action(
         stock_code, "BUY", data.cost_price, data.shares,
