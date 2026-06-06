@@ -51,6 +51,21 @@ export default function SectorOpportunities() {
   const [filter, setFilter] = useState(() => localStorage.getItem('sectorScanFilter') || 'unheld')
   const [sortKey, setSortKey] = useState(() => localStorage.getItem('sectorScanSort') || '5d')
   const [openSector, setOpenSector] = useState(null)
+  const [whyOpen, setWhyOpen] = useState(null)
+  const [whyData, setWhyData] = useState({})
+  const toggleWhy = (r) => {
+    if (whyOpen === r.name) { setWhyOpen(null); return }
+    setWhyOpen(r.name)
+    const k = `${market}:${r.name}`
+    if (whyData[k]) return
+    setWhyData(d => ({ ...d, [k]: { loading: true } }))
+    fetch('/api/sector/why', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ market, name: r.name, change_1d: r.change_1d, change_5d: r.change_5d, held: !!r.held, leader: r.leader || null }),
+    }).then(res => res.json())
+      .then(j => setWhyData(d => ({ ...d, [k]: j })))
+      .catch(() => setWhyData(d => ({ ...d, [k]: { error: '解读暂不可用' } })))
+  }
 
   const cfg = MARKETS[market] || MARKETS.A
   const data = dataByMarket[market]
@@ -230,56 +245,81 @@ export default function SectorOpportunities() {
             ) : '暂无数据'}
           </div>
         ) : visibleRows.map(r => (
-          <div key={r.name} className="licai-opp-row px-3 md:px-5 py-2 items-center text-[11.5px]">
-            <div className="flex items-center gap-1.5 min-w-0">
-              <span className="text-text-bright font-semibold truncate">{r.name}</span>
-              {cfg.hasHeld && r.held && (
-                <span className="shrink-0 px-1 py-0 rounded text-[9px] bg-accent/20 text-accent border border-accent/40">
-                  持仓
-                </span>
-              )}
-            </div>
-            <div className={`text-right font-mono licai-md-only ${colorOf(r.change_1d)}`}>
-              {fmtPct(r.change_1d)}
-            </div>
-            <div className={`text-right font-mono font-semibold ${colorOf(r.change_5d)}`}>
-              {fmtPct(r.change_5d)}
-            </div>
-            <div className={`text-right font-mono ${colorOf(r.change_30d)}`}>
-              {fmtPct(r.change_30d)}
-            </div>
-            <div className={`text-right font-mono licai-md-only ${cfg.hasFlow ? (r.net_flow > 0 ? 'text-bear' : r.net_flow < 0 ? 'text-bull' : 'text-text-dim') : 'text-text-dim'}`}>
-              {cfg.hasFlow ? fmtFlow(r.net_flow) : '--'}
-            </div>
-            <div className="text-right truncate licai-md-only">
-              {cfg.hasFlow ? (
-                r.leader ? (
-                  <span className="text-text truncate">
-                    {r.leader}
-                    {r.leader_change != null && (
-                      <span className={`ml-1 text-[10px] ${colorOf(r.leader_change)}`}>
-                        {fmtPct(r.leader_change)}
-                      </span>
-                    )}
+          <div key={r.name}>
+            <div className="licai-opp-row px-3 md:px-5 py-2 items-center text-[11.5px]">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <span className="text-text-bright font-semibold truncate">{r.name}</span>
+                {cfg.hasHeld && r.held && (
+                  <span className="shrink-0 px-1 py-0 rounded text-[9px] bg-accent/20 text-accent border border-accent/40">
+                    持仓
                   </span>
-                ) : <span className="text-text-dim">--</span>
-              ) : (
-                r.symbol ? <span className="font-mono text-[10.5px] text-text-dim">{r.symbol}</span>
-                  : <span className="text-text-dim">--</span>
-              )}
+                )}
+                <button onClick={() => toggleWhy(r)}
+                  className="ml-1.5 text-[10px] px-1 py-[1px] rounded border border-border-med text-text-dim hover:text-accent hover:border-accent cursor-pointer shrink-0">
+                  为什么动
+                </button>
+              </div>
+              <div className={`text-right font-mono licai-md-only ${colorOf(r.change_1d)}`}>
+                {fmtPct(r.change_1d)}
+              </div>
+              <div className={`text-right font-mono font-semibold ${colorOf(r.change_5d)}`}>
+                {fmtPct(r.change_5d)}
+              </div>
+              <div className={`text-right font-mono ${colorOf(r.change_30d)}`}>
+                {fmtPct(r.change_30d)}
+              </div>
+              <div className={`text-right font-mono licai-md-only ${cfg.hasFlow ? (r.net_flow > 0 ? 'text-bear' : r.net_flow < 0 ? 'text-bull' : 'text-text-dim') : 'text-text-dim'}`}>
+                {cfg.hasFlow ? fmtFlow(r.net_flow) : '--'}
+              </div>
+              <div className="text-right truncate licai-md-only">
+                {cfg.hasFlow ? (
+                  r.leader ? (
+                    <span className="text-text truncate">
+                      {r.leader}
+                      {r.leader_change != null && (
+                        <span className={`ml-1 text-[10px] ${colorOf(r.leader_change)}`}>
+                          {fmtPct(r.leader_change)}
+                        </span>
+                      )}
+                    </span>
+                  ) : <span className="text-text-dim">--</span>
+                ) : (
+                  r.symbol ? <span className="font-mono text-[10.5px] text-text-dim">{r.symbol}</span>
+                    : <span className="text-text-dim">--</span>
+                )}
+              </div>
+              <div className="text-right truncate licai-md-only">
+                {r.etf_code ? (
+                  <span className="font-mono text-[10.5px] text-text">{r.etf_code}</span>
+                ) : <span className="text-text-dim">--</span>}
+              </div>
+              <div className="flex justify-end">
+                <button onClick={() => setOpenSector(r)}
+                  className="cursor-pointer hover:bg-surface-3 rounded p-0.5 -m-0.5 transition-colors"
+                  title="点击查看大图">
+                  <Sparkline data={r.kline_tail} />
+                </button>
+              </div>
             </div>
-            <div className="text-right truncate licai-md-only">
-              {r.etf_code ? (
-                <span className="font-mono text-[10.5px] text-text">{r.etf_code}</span>
-              ) : <span className="text-text-dim">--</span>}
-            </div>
-            <div className="flex justify-end">
-              <button onClick={() => setOpenSector(r)}
-                className="cursor-pointer hover:bg-surface-3 rounded p-0.5 -m-0.5 transition-colors"
-                title="点击查看大图">
-                <Sparkline data={r.kline_tail} />
-              </button>
-            </div>
+            {whyOpen === r.name && (() => {
+              const w = whyData[`${market}:${r.name}`]
+              return (
+                <div className="px-3 md:px-5 pb-2.5 -mt-1">
+                  <div className="rounded-lg border border-accent/20 bg-accent/5 p-2.5 space-y-1">
+                    {!w || w.loading ? (
+                      <div className="text-[11px] text-text-dim animate-pulse">解读生成中…</div>
+                    ) : w.error ? (
+                      <div className="text-[11px] text-text-dim">解读暂不可用</div>
+                    ) : (
+                      <>
+                        {w.why && <div className="text-[11.5px] text-text"><span className="text-accent">为什么动 · </span>{w.why}</div>}
+                        {w.relation && <div className="text-[11.5px] text-text"><span className="text-accent">跟你的关系 · </span>{w.relation}</div>}
+                      </>
+                    )}
+                  </div>
+                </div>
+              )
+            })()}
           </div>
         ))}
       </div>
