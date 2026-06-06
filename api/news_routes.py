@@ -1,9 +1,14 @@
 """Portfolio news aggregation. 用 akshare 拉持仓个股的新闻 + 公告."""
 from __future__ import annotations
 import asyncio
+import hashlib
+import json as _json
 import time
 from fastapi import APIRouter
+from pydantic import BaseModel
 
+from typing import Optional
+import services.llm_client as _llm
 from database import get_all_holdings
 
 router = APIRouter(prefix="/api/news", tags=["news"])
@@ -307,3 +312,67 @@ async def news_digest(force: bool = False, max_items: int = 80):
     }
     _cache[cache_key] = (result, time.time())
     return result
+
+
+# ---------------------------------------------------------------------------
+# POST /api/news/interpret — LLM 单条新闻解读 (三段式 + 缓存 + 降级)
+# ---------------------------------------------------------------------------
+
+_INTERPRET_CACHE: dict[str, dict] = {}
+
+
+class InterpretIn(BaseModel):
+    title: str
+    content: Optional[str] = ""
+    code: Optional[str] = None
+    name: Optional[str] = None
+    source: Optional[str] = None
+    time: Optional[str] = None
+
+
+_INTERPRET_SYS = (
+    "你是 A 股资讯解读助手。只解释新闻, 严禁任何操作建议(买入/卖出/加仓/减仓/目标价/仓位都不许出)。"
+    "用简体中文输出严格 JSON, 三个键:\n"
+    '{"what":"这条新闻讲了什么(1-2句)","why":"为什么重要/影响面(1-2句)",'
+    '"relation":"跟用户持仓或关注板块什么关系(没有就写\'与你当前持仓无直接关系\')"}'
+    "\n只输出 JSON, 不要多余文字。"
+)
+
+
+@router.post("/interpret")
+async def interpret_news(data: InterpretIn):
+    key = hashlib.sha1(f"{data.title}|{data.content}|{data.code or ''}".encode("utf-8")).hexdigest()
+    if key in _INTERPRET_CACHE:
+        return {**_INTERPRET_CACHE[key], "cached": True}
+    try:
+        holdings = await get_all_holdings()
+        hold_desc = ", ".join(f"{h['stock_code']}({h.get('stock_name','')})" for h in holdings) or "(无持仓信息)"
+    except Exception:
+        hold_desc = "(无持仓信息)"
+    rel = f"[{data.code}{('-'+data.name) if data.name else ''}] " if data.code else ""
+    user_prompt = (
+        f"用户持仓: {hold_desc}\n\n"
+        f"新闻标题: {rel}{data.title}\n"
+        f"新闻正文: {data.content or '(无正文, 仅标题)'}\n\n请按要求输出 JSON。"
+    )
+    try:
+        raw = await asyncio.to_thread(_llm.call_claude, user_prompt, _INTERPRET_SYS, "claude-sonnet-4-20250514", 600)
+    except Exception:
+        return {"what": "", "why": "", "relation": "", "error": "解读暂不可用", "cached": False}
+    parsed = None
+    try:
+        s = raw.strip()
+        i, j = s.find("{"), s.rfind("}")
+        if i >= 0 and j > i:
+            parsed = _json.loads(s[i:j+1])
+    except Exception:
+        parsed = None
+    if not isinstance(parsed, dict):
+        parsed = {"what": raw.strip()[:300], "why": "", "relation": ""}
+    out = {
+        "what": str(parsed.get("what") or "").strip(),
+        "why": str(parsed.get("why") or "").strip(),
+        "relation": str(parsed.get("relation") or "").strip(),
+    }
+    _INTERPRET_CACHE[key] = out
+    return {**out, "cached": False}
