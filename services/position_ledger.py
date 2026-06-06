@@ -36,10 +36,13 @@ def _is_shanghai(stock_code: str) -> bool:
     return stock_code.startswith("6") or stock_code.startswith("9")
 
 
-def estimate_trade_fee(action_type: str, price: float, shares: int, stock_code: str = "") -> float:
+def estimate_trade_fee(action_type: str, price: float, shares: int, stock_code: str = "",
+                       commission_rate: float | None = None,
+                       commission_min: float | None = None) -> float:
     """Estimate A-share trading fees (commission + stamp + transfer + regulatory).
 
     Returns total fee in yuan. Used to adjust cost basis to match broker display.
+    commission_rate / commission_min default to the 招商证券 constants when not passed.
     """
     if stock_code and not is_a_share(stock_code):
         return 0.0
@@ -49,7 +52,9 @@ def estimate_trade_fee(action_type: str, price: float, shares: int, stock_code: 
     amount = price * shares
     if amount <= 0:
         return 0.0
-    commission = max(amount * _COMMISSION_RATE, _COMMISSION_MIN)
+    c_rate = _COMMISSION_RATE if commission_rate is None else commission_rate
+    c_min = _COMMISSION_MIN if commission_min is None else commission_min
+    commission = max(amount * c_rate, c_min)
     stamp = amount * _STAMP_RATE if action_type in RELEASE else 0.0
     transfer = amount * _TRANSFER_RATE if _is_shanghai(stock_code) else 0.0
     regulatory = amount * (_EXCHANGE_HANDLE_RATE + _REGULATORY_FEE_RATE)
@@ -70,6 +75,8 @@ def compute_position_state(
     actions: Iterable[dict],
     today: date | None = None,
     stock_code: str = "",
+    commission_rate: float | None = None,
+    commission_min: float | None = None,
 ) -> dict:
     """Process actions in chronological order using FIFO.
 
@@ -92,7 +99,8 @@ def compute_position_state(
         if not stock_code:
             return 0.0
         override = a.get("fee")
-        return float(override) if override is not None else estimate_trade_fee(t, price, shares, stock_code)
+        return float(override) if override is not None else estimate_trade_fee(
+            t, price, shares, stock_code, commission_rate, commission_min)
 
     # 单次按时间顺序遍历: 同时跑 FIFO + 按"持仓段"算综合成本。
     # 一段持仓 = 从份数 0→正 到再次归 0。完全清仓后再买入会开启全新一段,
