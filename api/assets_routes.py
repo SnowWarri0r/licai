@@ -55,6 +55,7 @@ class AssetCreate(BaseModel):
     bot_budget_override_usdt: Optional[float] = None   # OKX 马丁实际总预算 (USDT), 覆盖算法反推
     purchase_fee_rate: Optional[float] = None   # FUND 申购费率 (小数, 0.0015=0.15%); C 类填 0
     fee: Optional[float] = None                 # 建仓手续费 ¥ (含在 cost_amount 内, 单存便于流水展示)
+    broker: Optional[str] = None               # 托管券商/平台, e.g. "招商证券"
     dca: Optional[DcaInlineCreate] = None       # FUND/CRYPTO 同时建定投计划 (可选)
 
 
@@ -72,6 +73,7 @@ class AssetUpdate(BaseModel):
     pending_amount: Optional[float] = None
     bot_budget_override_usdt: Optional[float] = None
     purchase_fee_rate: Optional[float] = None
+    broker: Optional[str] = None
 
 
 class OkxCredentials(BaseModel):
@@ -409,6 +411,7 @@ async def create_asset(data: AssetCreate):
         start_date=data.start_date,
         pending_amount=effective_pending,
         purchase_fee_rate=data.purchase_fee_rate,
+        broker=data.broker,
     )
     # 写一条初始 action 进 ledger (BOT 不入账, 走 OKX 同步)
     if data.asset_type != "BOT" and data.cost_amount and data.cost_amount > 0:
