@@ -70,6 +70,16 @@ async def list_holdings() -> list[HoldingResponse]:
     result = []
     for h in holdings:
         code = h["stock_code"]
+        # 现算 shares/cost_price (而非读 holdings 表存的值): 综合成本法按"持仓段"
+        # 计算, 清仓后复活会重置成本, 存量值可能是旧算法写的, 现算保证一致。
+        try:
+            _acts = await get_position_actions(code, limit=500)
+            if _acts:
+                _st = compute_position_state(_acts, stock_code=code)
+                h["shares"] = _st["shares"]
+                h["cost_price"] = _st["cost_price"]
+        except Exception:
+            pass
         q = quotes.get(code)
         current_price = q["price"] if q else None
         change_pct = q["change_pct"] if q else None
@@ -147,13 +157,18 @@ async def realized_pnl():
     holdings_map = {h["stock_code"]: h for h in await get_all_holdings()}
     items: list[dict] = []
     total = 0.0
+    total_carry = 0.0
     for code in codes:
         actions = await get_position_actions(code, limit=500)
         if not actions:
             continue
         state = compute_position_state(actions, stock_code=code)
         rp = float(state.get("realized_pnl") or 0)
+        # carry = 不在当前浮动里的已实现 (已平仓段 + 分红). 当前持仓段的已实现已被
+        # 综合成本法摊进浮动盈亏, 顶部总盈亏只能加 carry, 否则重复算。
+        carry = float(state.get("realized_carry") or 0)
         total += rp
+        total_carry += carry
         h = holdings_map.get(code) or {}
         name = h.get("stock_name") or ""
         # 已清仓股票 holdings 行可能已删 → 用 quote 缓存或 akshare 补名字
@@ -166,12 +181,14 @@ async def realized_pnl():
             "stock_code": code,
             "stock_name": name,
             "realized_pnl": rp,
+            "realized_carry": round(carry, 2),
             "still_holding": (state.get("shares") or 0) > 0,
         })
     items.sort(key=lambda x: x["realized_pnl"])
     return {
         "items": items,
         "total_realized_pnl": round(total, 2),
+        "total_realized_carry": round(total_carry, 2),
         "count": len(items),
     }
 
