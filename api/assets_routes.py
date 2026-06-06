@@ -19,13 +19,13 @@ from services import okx_client
 router = APIRouter(prefix="/api/assets", tags=["external-assets"])
 
 
+from services.external_assets import _is_onchain_etf
+
+
 def _is_etf_code(code: str) -> bool:
-    """场内 ETF: 上交所 5xxxxx / 深交所 159xxx / 科创 588xxx (6 位).
-    场外基金 (含 ETF 联接): 0xxxxx / 1xxxxx (除 159) / 9xxxxx 等."""
-    c = (code or "").strip()
-    if len(c) != 6 or not c.isdigit():
-        return False
-    return c.startswith("5") or c.startswith("159") or c.startswith("588")
+    """场内 ETF/LOF 判定 — 跟报价层 (_is_onchain_etf) 用同一套规则, 避免一处当场内
+    报价、另一处当场外走 T+1 pending 的分裂。深市 1xxxxx / 沪市 5xxxxx 都算场内。"""
+    return _is_onchain_etf(code)
 
 
 class DcaInlineCreate(BaseModel):
@@ -791,6 +791,8 @@ async def settle_pending_dca():
         if asset.get("asset_type") != "FUND":
             continue
         code = asset.get("code")
+        if _is_onchain_etf(code):
+            continue  # 场内 ETF 按市价成交, 不走 T+1 净值结算
         actions = await list_external_actions(asset["id"])
         pend = [a for a in actions
                 if (a.get("status") or "confirmed") == "pending"
@@ -861,8 +863,10 @@ async def recompute_dca_fees():
         rate = asset.get("purchase_fee_rate")
         if rate is None:                       # 没设费率 → 不碰 (含 C 类 / 手动确认)
             continue
-        rate = float(rate)
         code = asset.get("code")
+        if _is_onchain_etf(code):
+            continue  # 场内 ETF 走市价/佣金, 不按净值+申购费重算
+        rate = float(rate)
         actions = await list_external_actions(asset["id"])
         dca_rows = [a for a in actions
                     if (a.get("status") or "confirmed") == "confirmed"
