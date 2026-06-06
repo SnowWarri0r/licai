@@ -109,3 +109,10 @@ export function fundPassthroughBucketDetailed(name = '') {
   if (/沪深|中证|上证|创业|科创|A\s*股|国证|AIDC|数据中心|股票|混合|主题|行业|精选|成长|价值|蓝筹|医药|消费|科技|新能源|半导体|芯片|信息|算力|电力|金融|银行|证券|地产|材料|机械|军工|汽车|有色|钢铁|煤炭/.test(n)) return 'A'
   return 'F'
 }
+
+// 场内 ETF/LOF 判定 — 跟后端 _is_onchain_etf 同规则 (深 1xxxxx / 沪 5xxxxx, 6 位)。
+// 场内走券商佣金、按市价成交, 没有申购费, 不走 T+1 净值确认。
+export function isOnchainEtf(code = '') {
+  const c = String(code || '').trim()
+  return c.length === 6 && /^[15]/.test(c)
+}
