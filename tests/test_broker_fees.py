@@ -28,6 +28,36 @@ def test_seed_creates_zhaoshang_yinhe(fresh_db):
     assert abs(yh["etf_rate"] - 0.00005) < 1e-9 and yh["etf_min"] == 0.1
 
 
+from datetime import date
+from services.position_ledger import estimate_trade_fee, compute_position_state
+
+
+def test_fee_uses_passed_commission():
+    amt_shares = 100000  # 100万元 @ 10, 远超最低 5
+    zs = estimate_trade_fee("BUY", 10.0, amt_shares, "000001",
+                            commission_rate=0.0001854, commission_min=5)
+    yh = estimate_trade_fee("BUY", 10.0, amt_shares, "000001",
+                            commission_rate=0.000086, commission_min=5)
+    assert abs((zs - yh) - 1000000 * (0.0001854 - 0.000086)) < 0.01
+
+
+def test_compute_state_passes_commission():
+    actions = [{"action_type": "BUY", "price": 10.0, "shares": 100000, "trade_date": "2026-01-01"}]
+    s_zs = compute_position_state(actions, today=date(2026, 6, 1), stock_code="000001",
+                                  commission_rate=0.0001854, commission_min=5)
+    s_yh = compute_position_state(actions, today=date(2026, 6, 1), stock_code="000001",
+                                  commission_rate=0.000086, commission_min=5)
+    assert s_yh["cost_price"] < s_zs["cost_price"]
+
+
+def test_compute_state_default_is_zhaoshang():
+    actions = [{"action_type": "BUY", "price": 10.0, "shares": 100000, "trade_date": "2026-01-01"}]
+    a = compute_position_state(actions, today=date(2026, 6, 1), stock_code="000001")
+    b = compute_position_state(actions, today=date(2026, 6, 1), stock_code="000001",
+                               commission_rate=0.0001854, commission_min=5)
+    assert abs(a["cost_price"] - b["cost_price"]) < 1e-9
+
+
 def test_set_default_is_exclusive(fresh_db):
     rows = asyncio.run(db.list_brokers())
     yh = next(r for r in rows if r["name"] == "银河证券")
