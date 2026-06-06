@@ -34,7 +34,19 @@ export default function Dashboard({ holdings }) {
           fetchJSON('/api/portfolio/realized'),
           fetchJSON('/api/assets/realized'),
         ])
-        setRealized({ stock: s.total_realized_pnl || 0, asset: a.total_realized_pnl || 0 })
+        // 跟 UnifiedPortfolio 口径一致, 避免两处总盈亏对不上:
+        //  股票只补 realized_carry (已平仓段+分红; 持仓段已实现已摊进浮动, 不能再加)
+        //  资产排除 CASH (现金利息已作为现金行 pnl 计入浮动)
+        const stockCarry = s.total_realized_carry != null
+          ? s.total_realized_carry
+          : (s.items || []).filter(it => !it.still_holding).reduce((sum, it) => sum + (it.realized_pnl || 0), 0)
+        const assetExclCash = (a.items || [])
+          .filter(it => it.asset_type !== 'CASH')
+          .reduce((sum, it) => sum + (it.realized_pnl || 0), 0)
+        setRealized({
+          stock: Math.round(stockCarry * 100) / 100,
+          asset: Math.round(assetExclCash * 100) / 100,
+        })
       } catch {}
     }
     load()
