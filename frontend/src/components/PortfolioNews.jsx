@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { fetchJSON } from '../hooks/useApi'
+import NewsDetailModal from './NewsDetailModal'
 
 const KIND_LABEL = {
   news: { label: '新闻', color: '#85a0b4' },
@@ -120,6 +121,7 @@ export default function PortfolioNews() {
   const [err, setErr] = useState('')
   const [filter, setFilter] = useState('all')  // all | news | notice
   const [codeFilter, setCodeFilter] = useState('')
+  const [detail, setDetail] = useState(null)
 
   const load = useCallback(async () => {
     setLoading(true); setErr('')
@@ -261,12 +263,11 @@ export default function PortfolioNews() {
           <div className="text-center text-text-dim text-[11.5px] py-6">无匹配条目</div>
         ) : items.map((it, i) => {
           const meta = KIND_LABEL[it.kind] || { label: it.kind, color: '#888' }
-          const hasUrl = !!it.url
           return (
-            <a key={i} href={hasUrl ? it.url : '#'}
-              target={hasUrl ? '_blank' : undefined} rel={hasUrl ? 'noopener noreferrer' : undefined}
-              onClick={hasUrl ? undefined : e => e.preventDefault()}
-              className={`block px-3 md:px-5 py-2.5 border-b border-border-subtle transition-colors ${hasUrl ? 'hover:bg-surface-2/40' : ''}`}>
+            <div key={i} role="button" tabIndex={0}
+              onClick={() => setDetail(it)}
+              onKeyDown={e => { if (e.key === 'Enter') setDetail(it) }}
+              className="block px-3 md:px-5 py-2.5 border-b border-border-subtle transition-colors hover:bg-surface-2/40 cursor-pointer">
               <div className="flex items-baseline gap-2 mb-0.5 flex-wrap">
                 <span className="text-[9.5px] px-1 py-[1px] rounded font-medium tracking-wider"
                   style={{ background: meta.color + '20', color: meta.color, border: '1px solid ' + meta.color + '40' }}>
@@ -286,17 +287,18 @@ export default function PortfolioNews() {
               {it.content && (
                 <div className="text-[10.5px] text-text-muted leading-snug mt-0.5 line-clamp-2">{it.content}</div>
               )}
-            </a>
+            </div>
           )
         })}
       </div>
 
       <div className="px-3 md:px-5 py-2 bg-surface-2/40 text-[10.5px] text-text-muted leading-relaxed">
         {source === 'portfolio'
-          ? '持仓股新闻 + 公告 (akshare 东财). 5min 缓存. 点条目跳原文.'
-          : '全市场要闻 (akshare 财联社 + 东财 + 同花顺). 5min 缓存. 部分源不带链接.'}
+          ? '持仓股新闻 + 公告 (akshare 东财). 5min 缓存. 点条目查看解读.'
+          : '全市场要闻 (akshare 财联社 + 东财 + 同花顺). 5min 缓存. 部分源不带链接. 点条目查看解读.'}
         仅展示信息, 不做"该买/该卖"判断 — 信号识别交给你自己.
       </div>
+      {detail && <NewsDetailModal item={detail} onClose={() => setDetail(null)} />}
     </section>
   )
 }
