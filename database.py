@@ -659,16 +659,17 @@ async def add_external_asset(asset_type: str, code: str, name: str, platform: st
                               annual_yield_rate: float | None = None,
                               start_date: str | None = None,
                               pending_amount: float | None = None,
-                              purchase_fee_rate: float | None = None) -> int:
+                              purchase_fee_rate: float | None = None,
+                              broker: str | None = None) -> int:
     db = await get_db()
     try:
         cursor = await db.execute(
             """INSERT INTO external_assets
                (asset_type, code, name, platform, cost_amount, shares, manual_value, note,
-                okx_algo_id, okx_bot_type, annual_yield_rate, start_date, pending_amount, purchase_fee_rate)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                okx_algo_id, okx_bot_type, annual_yield_rate, start_date, pending_amount, purchase_fee_rate, broker)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (asset_type, code, name, platform, cost_amount, shares, manual_value, note,
-             okx_algo_id, okx_bot_type, annual_yield_rate, start_date, pending_amount or 0, purchase_fee_rate),
+             okx_algo_id, okx_bot_type, annual_yield_rate, start_date, pending_amount or 0, purchase_fee_rate, broker),
         )
         await db.commit()
         return cursor.lastrowid
