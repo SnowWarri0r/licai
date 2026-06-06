@@ -93,6 +93,7 @@ class LotAdd(BaseModel):
     principal: float
     shares: Optional[float] = None
     unit_price: Optional[float] = None
+    fee: Optional[float] = None             # 手续费 ¥ (含在 principal 内, 单存便于流水展示/编辑)
     lot_start_date: Optional[str] = None    # WEALTH 加投起投日 (default: today)
     lot_yield_rate: Optional[float] = None  # WEALTH 加投年化 (default: keep existing)
 
@@ -601,16 +602,19 @@ async def add_lot(asset_id: int, data: LotAdd):
     seed_unit_price = None
     seed_shares = None
     status = "confirmed"
+    fee = float(data.fee or 0)
+    # principal 已含 fee; 算份额/反推单价都用净额 (principal - fee)
+    net = max(0.0, float(data.principal) - fee)
     if t in ("FUND", "CRYPTO"):
         if data.shares is not None:
             seed_shares = float(data.shares)
             if data.unit_price is not None and data.unit_price > 0:
                 seed_unit_price = float(data.unit_price)
             elif seed_shares and seed_shares > 0:
-                seed_unit_price = round(data.principal / seed_shares, 6)
+                seed_unit_price = round(net / seed_shares, 6)
         elif data.unit_price is not None and data.unit_price > 0:
             seed_unit_price = float(data.unit_price)
-            seed_shares = round(data.principal / seed_unit_price, 6)
+            seed_shares = round(net / seed_unit_price, 6)
         else:
             # OTC pending: 只填本金, 后续确认补 shares
             status = "pending"
@@ -622,6 +626,7 @@ async def add_lot(asset_id: int, data: LotAdd):
         trade_date=data.lot_start_date,
         note="add-lot",
         status=status,
+        fee=fee if fee > 0 else None,
     )
     return {"message": "lot added", "new_state": payload, "status": status}
 
