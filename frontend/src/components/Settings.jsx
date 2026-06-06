@@ -20,6 +20,21 @@ export default function Settings({ onClose }) {
   const [okxStatusText, setOkxStatusText] = useState({ text: '', ok: null })
   const [okxSaving, setOkxSaving] = useState(false)
 
+  // 券商费率
+  const [brokers, setBrokers] = useState([])
+  const reloadBrokers = () => fetch('/api/brokers').then(r => r.json()).then(setBrokers).catch(() => {})
+  useEffect(() => { reloadBrokers() }, [])
+  const editBroker = (id, field, val) => {
+    setBrokers(bs => bs.map(b => b.id === id ? { ...b, [field]: val } : b))
+    clearTimeout(window.__brokerSaveT)
+    window.__brokerSaveT = setTimeout(() => {
+      fetch(`/api/brokers/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ [field]: val }) })
+    }, 600)
+  }
+  const setDefaultBroker = (id) => fetch(`/api/brokers/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_default: true }) }).then(reloadBrokers)
+  const delBroker = (id) => { if (confirm('删除该券商？')) fetch(`/api/brokers/${id}`, { method: 'DELETE' }).then(r => r.json()).then(d => { if (d.detail) alert(d.detail); reloadBrokers() }) }
+  const addBroker = () => fetch('/api/brokers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: '新券商', stock_rate: 0.0001854, stock_min: 5, etf_rate: 0.0001854, etf_min: 5 }) }).then(reloadBrokers)
+
   const loadOkxStatus = async () => {
     try { setOkxStatus(await fetchJSON('/api/assets/okx/status')) } catch {}
   }
@@ -240,6 +255,33 @@ export default function Settings({ onClose }) {
         </div>
 
         <DataExportImport />
+
+        {/* 券商费率管理 */}
+        <section className="rounded-xl border border-accent/20 bg-surface-2/80 overflow-hidden mt-4">
+          <div className="px-4 py-3 border-b border-border flex items-center justify-between">
+            <h2 className="text-[13px] font-medium text-accent tracking-wide">券商费率</h2>
+            <button onClick={addBroker} className="text-[11px] px-2 py-1 rounded border border-accent/40 text-accent hover:bg-accent/10 cursor-pointer">+ 新增券商</button>
+          </div>
+          <div className="p-3 space-y-2">
+            <div className="grid grid-cols-[1fr_auto_auto_auto_auto_auto] gap-2 text-[10px] text-text-dim px-1">
+              <div>券商</div><div className="w-20 text-center">股票(万)</div><div className="w-16 text-center">股票起¥</div><div className="w-20 text-center">ETF(万)</div><div className="w-16 text-center">ETF起¥</div><div className="w-[72px]"></div>
+            </div>
+            {brokers.map(b => (
+              <div key={b.id} className="grid grid-cols-[1fr_auto_auto_auto_auto_auto] gap-2 items-center text-[12px]">
+                <input value={b.name} onChange={e => editBroker(b.id, 'name', e.target.value)} className="bg-bg border border-border rounded px-2 py-1 text-text" placeholder="券商名" />
+                <input type="number" step="0.0001" value={+(b.stock_rate * 10000).toFixed(4)} onChange={e => editBroker(b.id, 'stock_rate', parseFloat(e.target.value) / 10000)} className="w-20 bg-bg border border-border rounded px-2 py-1 text-text" />
+                <input type="number" step="0.1" value={b.stock_min} onChange={e => editBroker(b.id, 'stock_min', parseFloat(e.target.value))} className="w-16 bg-bg border border-border rounded px-2 py-1 text-text" />
+                <input type="number" step="0.0001" value={+(b.etf_rate * 10000).toFixed(4)} onChange={e => editBroker(b.id, 'etf_rate', parseFloat(e.target.value) / 10000)} className="w-20 bg-bg border border-border rounded px-2 py-1 text-text" />
+                <input type="number" step="0.1" value={b.etf_min} onChange={e => editBroker(b.id, 'etf_min', parseFloat(e.target.value))} className="w-16 bg-bg border border-border rounded px-2 py-1 text-text" />
+                <div className="flex gap-1">
+                  <button onClick={() => setDefaultBroker(b.id)} className={`text-[10px] px-1.5 py-1 rounded border cursor-pointer ${b.is_default ? 'border-accent text-accent bg-accent/10' : 'border-border text-text-dim'}`}>{b.is_default ? '默认' : '设默认'}</button>
+                  {!b.is_default && <button onClick={() => delBroker(b.id)} className="text-[10px] px-1.5 py-1 rounded border border-bear/40 text-bear cursor-pointer">删</button>}
+                </div>
+              </div>
+            ))}
+            <div className="text-[10px] text-text-muted">费率单位「万」(如 1.854 = 万1.854)；起¥ 为每笔最低收费。改完自动保存。</div>
+          </div>
+        </section>
       </div>
     </section>
   )
