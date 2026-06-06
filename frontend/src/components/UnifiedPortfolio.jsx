@@ -2524,6 +2524,9 @@ function AddLotRow({ asset, onDone, onCancel }) {
       } else {
         setErr('至少填本金，或同时填单价 + 份额（按股买）'); return
       }
+      // 手续费单独透传, 后端单存到流水的 fee 字段 (principal 已含 fee, 算份额用净额),
+      // 这样流水编辑里能看到/改手续费, 不会"消失"。
+      if (feeNum > 0) body.fee = feeNum
     } else if (isWealth) {
       if (!(p > 0)) { setErr('请输入本金'); return }
       body = { principal: p }

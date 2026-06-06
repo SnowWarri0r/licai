@@ -907,18 +907,20 @@ async def add_external_action(asset_id: int, action_type: str, amount: float = 0
                               shares: float | None = None, unit_price: float | None = None,
                               trade_date: str | None = None, note: str = "",
                               status: str = "confirmed",
-                              interest_part: float | None = None) -> int:
+                              interest_part: float | None = None,
+                              fee: float | None = None) -> int:
     db = await get_db()
     try:
         cursor = await db.execute(
             """INSERT INTO external_asset_actions
-               (asset_id, action_type, amount, shares, unit_price, trade_date, status, note, interest_part)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (asset_id, action_type, amount, shares, unit_price, trade_date, status, note, interest_part, fee)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (asset_id, action_type, float(amount or 0),
              float(shares) if shares is not None else None,
              float(unit_price) if unit_price is not None else None,
              trade_date, status, note or "",
-             float(interest_part) if interest_part is not None else None),
+             float(interest_part) if interest_part is not None else None,
+             float(fee) if fee is not None else None),
         )
         await db.commit()
         return cursor.lastrowid
