@@ -1781,6 +1781,8 @@ function AddAssetForm({ typeKey, onDone, onCancel }) {
           : null,
         start_date: isYieldType ? (startDate || null) : null,
         purchase_fee_rate: assetType === 'FUND' && !isOnchainEtf(code) && feeRatePct !== '' ? parseFloat(feeRatePct) / 100 : null,
+        // 手续费单独透传 (cost 已含它), 后端单存到初始流水的 fee 字段, 避免在流水里"消失"
+        fee: (assetType === 'FUND' || assetType === 'CRYPTO') && parseFloat(fee) > 0 ? parseFloat(fee) : null,
         dca: dcaPayload,
       }),
     })
