@@ -116,3 +116,30 @@ export function isOnchainEtf(code = '') {
   const c = String(code || '').trim()
   return c.length === 6 && /^[15]/.test(c)
 }
+
+// 券商费率: 拉一次缓存. resolveFee 按 (券商名, kind) 给 {rate, min}
+let _brokersCache = null
+export async function loadBrokers() {
+  if (_brokersCache) return _brokersCache
+  try {
+    const r = await fetch('/api/brokers')
+    _brokersCache = await r.json()
+  } catch { _brokersCache = [] }
+  return _brokersCache
+}
+export function clearBrokersCache() { _brokersCache = null }
+
+// kind: 'stock' | 'etf'. 找不到券商→默认券商→内置兜底(招商 万1.854/5)
+export function resolveFee(brokers, brokerName, kind) {
+  const list = brokers || []
+  let b = brokerName ? list.find(x => x.name === brokerName) : null
+  if (!b) b = list.find(x => x.is_default) || list[0]
+  if (!b) return { rate: 0.0001854, min: 5 }
+  return kind === 'etf'
+    ? { rate: b.etf_rate, min: b.etf_min }
+    : { rate: b.stock_rate, min: b.stock_min }
+}
+export function estimateFee(amount, brokers, brokerName, kind) {
+  const { rate, min } = resolveFee(brokers, brokerName, kind)
+  return Math.max((amount || 0) * rate, min)
+}
