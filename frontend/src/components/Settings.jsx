@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { api, fetchJSON } from '../hooks/useApi'
+import { clearBrokersCache } from '../helpers'
 
 export default function Settings({ onClose }) {
   const [url, setUrl] = useState('')
@@ -22,18 +23,23 @@ export default function Settings({ onClose }) {
 
   // 券商费率
   const [brokers, setBrokers] = useState([])
+  const saveTimers = useRef({})
+  const pendingPatch = useRef({})
   const reloadBrokers = () => fetch('/api/brokers').then(r => r.json()).then(setBrokers).catch(() => {})
   useEffect(() => { reloadBrokers() }, [])
   const editBroker = (id, field, val) => {
     setBrokers(bs => bs.map(b => b.id === id ? { ...b, [field]: val } : b))
-    clearTimeout(window.__brokerSaveT)
-    window.__brokerSaveT = setTimeout(() => {
-      fetch(`/api/brokers/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ [field]: val }) })
+    pendingPatch.current[id] = { ...(pendingPatch.current[id] || {}), [field]: val }
+    clearTimeout(saveTimers.current[id])
+    saveTimers.current[id] = setTimeout(() => {
+      const patch = pendingPatch.current[id]; pendingPatch.current[id] = {}
+      fetch(`/api/brokers/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) })
+        .then(() => clearBrokersCache())
     }, 600)
   }
-  const setDefaultBroker = (id) => fetch(`/api/brokers/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_default: true }) }).then(reloadBrokers)
-  const delBroker = (id) => { if (confirm('删除该券商？')) fetch(`/api/brokers/${id}`, { method: 'DELETE' }).then(r => r.json()).then(d => { if (d.detail) alert(d.detail); reloadBrokers() }) }
-  const addBroker = () => fetch('/api/brokers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: '新券商', stock_rate: 0.0001854, stock_min: 5, etf_rate: 0.0001854, etf_min: 5 }) }).then(reloadBrokers)
+  const setDefaultBroker = (id) => fetch(`/api/brokers/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_default: true }) }).then(() => { clearBrokersCache(); reloadBrokers() })
+  const delBroker = (id) => { if (confirm('删除该券商？')) fetch(`/api/brokers/${id}`, { method: 'DELETE' }).then(r => r.json()).then(d => { if (d.detail) alert(d.detail); clearBrokersCache(); reloadBrokers() }) }
+  const addBroker = () => fetch('/api/brokers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: '新券商', stock_rate: 0.0001854, stock_min: 5, etf_rate: 0.0001854, etf_min: 5 }) }).then(() => { clearBrokersCache(); reloadBrokers() })
 
   const loadOkxStatus = async () => {
     try { setOkxStatus(await fetchJSON('/api/assets/okx/status')) } catch {}

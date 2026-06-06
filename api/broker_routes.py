@@ -43,7 +43,10 @@ async def create_broker(data: BrokerCreate):
 async def modify_broker(broker_id: int, data: BrokerUpdate):
     payload = data.model_dump(exclude_unset=True)
     if "is_default" in payload:
-        payload["is_default"] = 1 if payload["is_default"] else 0
+        if payload["is_default"]:
+            payload["is_default"] = 1
+        else:
+            payload.pop("is_default")   # 不允许直接取消默认(会变成0个默认); 改默认请对另一家设 true
     if not payload:
         raise HTTPException(400, "无可改字段")
     await update_broker(broker_id, **payload)
