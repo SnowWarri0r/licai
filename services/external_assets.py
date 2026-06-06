@@ -63,6 +63,30 @@ def _fetch_fund_nav_sync(code: str) -> dict | None:
         return None
 
 
+def _fetch_fund_nav_on_date_sync(code: str, date_str: str) -> dict | None:
+    """某只基金在指定交易日的已确认净值 (lsjz 支持 start/end date)。
+    返回 {nav, nav_date} — 仅当该日确实有公布净值时; 否则 None (休市/未公布)。"""
+    url = (f"https://api.fund.eastmoney.com/f10/lsjz?fundCode={code}"
+           f"&pageIndex=1&pageSize=10&startDate={date_str}&endDate={date_str}")
+    try:
+        r = _requests.get(url, timeout=6,
+                          headers={"Referer": "http://fundf10.eastmoney.com/",
+                                   "User-Agent": "Mozilla/5.0"})
+        items = (r.json().get("Data") or {}).get("LSJZList") or []
+        for it in items:
+            if it.get("FSRQ") == date_str and float(it.get("DWJZ", 0) or 0) > 0:
+                return {"nav": float(it["DWJZ"]), "nav_date": date_str}
+        return None
+    except Exception as e:
+        print(f"[fund-nav-date] {code}@{date_str} failed: {e}")
+        return None
+
+
+async def get_fund_nav_on_date(code: str, date_str: str) -> dict | None:
+    """异步: 取 code 在 date_str (YYYY-MM-DD) 的已确认净值, 无则 None。"""
+    return await asyncio.to_thread(_fetch_fund_nav_on_date_sync, code, date_str)
+
+
 def _fetch_fund_meta_sync(code: str) -> dict | None:
     """Fallback: name from pingzhongdata + latest NAV from lsjz."""
     name = _fetch_fund_name_sync(code)

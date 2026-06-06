@@ -782,6 +782,8 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
   const [actionsAsset, setActionsAsset] = useState(null)
   const [klineHolding, setKlineHolding] = useState(null)
   const [realized, setRealized] = useState({ stock: 0, asset: 0 })
+  const [settling, setSettling] = useState(false)
+  const [settleMsg, setSettleMsg] = useState('')
 
   const loadAssets = useCallback(async () => {
     try {
@@ -789,6 +791,36 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
       setAssets(d.assets || [])
     } catch {} finally { setAssetsLoaded(true) }
   }, [])
+
+  // 一键确认所有到期定投: 后端按每条 trade_date 拉当日净值自动结算份额。
+  const settlePending = useCallback(async () => {
+    setSettling(true); setSettleMsg('')
+    try {
+      const res = await fetch('/api/assets/settle-pending', { method: 'POST' })
+      const d = await res.json()
+      if (!res.ok) throw new Error(d.detail || '确认失败')
+      const parts = [`确认 ${d.settled || 0} 笔`]
+      if (d.skipped > 0) parts.push(`${d.skipped} 笔净值未出, 留着下次`)
+      setSettleMsg(parts.join(' · '))
+      await loadAssets()
+    } catch (e) {
+      setSettleMsg('失败: ' + e.message)
+    } finally { setSettling(false) }
+  }, [loadAssets])
+
+  // 费率改了之后重算已确认的定投 (只动设了申购费率的基金, 按当日净值内扣重算份额)
+  const recomputeDca = useCallback(async () => {
+    setSettling(true); setSettleMsg('')
+    try {
+      const res = await fetch('/api/assets/recompute-dca', { method: 'POST' })
+      const d = await res.json()
+      if (!res.ok) throw new Error(d.detail || '重算失败')
+      setSettleMsg(d.recomputed > 0 ? `重算 ${d.recomputed} 笔` : '没有需要重算的（份额已是最新）')
+      await loadAssets()
+    } catch (e) {
+      setSettleMsg('失败: ' + e.message)
+    } finally { setSettling(false) }
+  }, [loadAssets])
 
   const loadRealized = useCallback(async () => {
     try {
@@ -1009,6 +1041,37 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
         </div>
         {!isEmpty && <AllocationDonut groups={agg.groups} totalMv={agg.totalMv} />}
       </div>
+
+      {/* 定投待确认 banner: 一键按当日净值自动结算所有 pending 申购 */}
+      {(() => {
+        const pendN = (assets || []).reduce((s, a) => s + (a.pending_actions_count || 0), 0)
+        const hasRateFund = (assets || []).some(a => a.asset_type === 'FUND' && a.purchase_fee_rate != null)
+        if (pendN === 0 && !hasRateFund && !settleMsg) return null
+        return (
+          <div className="px-3 md:px-6 py-2.5 border-b border-border bg-accent/5 flex items-center gap-3 flex-wrap">
+            <span className="inline-flex items-center justify-center w-4 h-4 rounded-full text-[10px] shrink-0 bg-accent/15 text-accent border border-accent/50">⏳</span>
+            <span className="text-[11.5px] text-text">
+              {pendN > 0 ? `${pendN} 笔定投待确认份额` : '定投'}
+              {settleMsg && <span className="text-text-dim ml-2">· {settleMsg}</span>}
+            </span>
+            <div className="ml-auto flex items-center gap-2">
+              {hasRateFund && (
+                <button onClick={recomputeDca} disabled={settling}
+                  title="改了申购费率后, 按当日净值重算已确认的定投份额"
+                  className="px-3 py-1 rounded text-[11.5px] border border-border-med text-text-dim hover:text-text hover:border-accent transition-colors cursor-pointer disabled:opacity-50">
+                  {settling ? '处理中…' : '按费率重算'}
+                </button>
+              )}
+              {pendN > 0 && (
+                <button onClick={settlePending} disabled={settling}
+                  className="px-3 py-1 rounded text-[11.5px] border border-accent/50 bg-accent/10 text-accent hover:bg-accent/20 transition-colors cursor-pointer disabled:opacity-50">
+                  {settling ? '确认中…' : '一键按净值确认'}
+                </button>
+              )}
+            </div>
+          </div>
+        )
+      })()}
 
       {/* Risk insights strip */}
       {!isEmpty && insights.warnings.length > 0 && (
@@ -1605,6 +1668,7 @@ function AddAssetForm({ typeKey, onDone, onCancel }) {
   const [fee, setFee] = useState('')
   const [feeTouched, setFeeTouched] = useState(false)
   const [note, setNote] = useState('')
+  const [feeRatePct, setFeeRatePct] = useState('')   // FUND 申购费率 %, C 类填 0
   const [lookingUp, setLookingUp] = useState(false)
   const [hint, setHint] = useState('')
   // OKX integration (only for BOT)
@@ -1716,6 +1780,7 @@ function AddAssetForm({ typeKey, onDone, onCancel }) {
           ? parseFloat(annualYield) / 100  // user inputs %, store as decimal
           : null,
         start_date: isYieldType ? (startDate || null) : null,
+        purchase_fee_rate: assetType === 'FUND' && feeRatePct !== '' ? parseFloat(feeRatePct) / 100 : null,
         dca: dcaPayload,
       }),
     })
@@ -1895,6 +1960,14 @@ function AddAssetForm({ typeKey, onDone, onCancel }) {
               className={`${inp} w-24 font-mono`} placeholder="5.00" />
           </div>
         )}
+        {assetType === 'FUND' && (
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] text-text-dim">申购费率 %</label>
+            <input type="number" step="0.01" value={feeRatePct} onChange={e => setFeeRatePct(e.target.value)}
+              className={`${inp} w-24 font-mono`} placeholder="C类填0"
+              title="定投批量确认按此费率内扣算份额。A类填折后实际费率(如0.15), C类/无申购费填0或留空" />
+          </div>
+        )}
         {assetType !== 'WEALTH' && assetType !== 'CASH' && (
           <div className="flex flex-col gap-1">
             <label className="text-[11px] text-text-dim">
@@ -2055,6 +2128,10 @@ function EditAssetRow({ asset, onDone, onCancel }) {
   const [mv, setMv] = useState(initMv ?? '')
   const [pending, setPending] = useState(initPending)
   const [lockMv, setLockMv] = useState(asset.manual_value != null)
+  // 申购费率以百分比展示 (DB 存小数, 0.0015 → "0.15")
+  const [feeRatePct, setFeeRatePct] = useState(
+    asset.purchase_fee_rate != null ? String(+(asset.purchase_fee_rate * 100).toFixed(4)) : ''
+  )
 
   // WEALTH-only fields
   const [cost, setCost] = useState(String(initTotalCost ?? ''))  // also reused by BOT
@@ -2107,11 +2184,23 @@ function EditAssetRow({ asset, onDone, onCancel }) {
       if (isFund || isCrypto) {
         const u = parseFloat(unitCost) || 0
         const s = parseFloat(shares) || 0
-        // Save total cost = unit cost × shares (DB stores total)
-        payload.cost_amount = u > 0 && s > 0 ? Number((u * s).toFixed(4)) : (cost !== '' ? parseFloat(cost) : null)
-        payload.shares = shares !== '' ? parseFloat(shares) : null
+        // FUND/CRYPTO 的 cost/shares 是流水推算出来的. 只在用户"实质改了"时才回传 —
+        // 否则单价是 4 位小数显示, 单价×份额 跟账本真值差几分钱, 后端会误判成本变了,
+        // 注入一条莫名其妙的"利息/分红 (adjust)"流水。差值在阈值内就不传, 不动账本。
+        const newCost = u > 0 && s > 0 ? Number((u * s).toFixed(4)) : (cost !== '' ? parseFloat(cost) : null)
+        const newShares = shares !== '' ? parseFloat(shares) : null
+        const curCost = asset.cost_amount != null ? Number(asset.cost_amount) : null
+        const curShares = asset.shares != null ? Number(asset.shares) : null
+        if (newShares != null && (curShares == null || Math.abs(newShares - curShares) > 1e-4)) {
+          payload.shares = newShares
+        }
+        if (newCost != null && (curCost == null || Math.abs(newCost - curCost) > 0.5)) {
+          payload.cost_amount = newCost
+        }
         payload.manual_value = lockMv && mv !== '' ? parseFloat(mv) : null
         payload.pending_amount = pending !== '' ? parseFloat(pending) : 0
+        // 申购费率: 百分比 → 小数. 留空写 null (= 无申购费, 等同 C 类)
+        if (isFund) payload.purchase_fee_rate = feeRatePct !== '' ? parseFloat(feeRatePct) / 100 : null
       } else if (isWealth) {
         payload.cost_amount = cost !== '' ? parseFloat(cost) : null
         payload.shares = null
@@ -2196,6 +2285,13 @@ function EditAssetRow({ asset, onDone, onCancel }) {
             <label className="text-[11px] text-text-dim">待确认金额 ¥</label>
             <input type="number" step="0.01" value={pending} onChange={e => update('pending', e.target.value)} className={`${inp} w-28`} placeholder="0" />
           </div>
+          {isFund && (
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] text-text-dim">申购费率 %</label>
+              <input type="number" step="0.01" value={feeRatePct} onChange={e => setFeeRatePct(e.target.value)}
+                className={`${inp} w-24`} placeholder="C类填0" title="定投批量确认按此费率内扣算份额。A类填折后实际费率(如0.15), C类/无申购费填0或留空" />
+            </div>
+          )}
           <label className="flex items-center gap-1.5 text-[11px] text-text-dim cursor-pointer select-none ml-1">
             <input type="checkbox" checked={lockMv} onChange={e => setLockMv(e.target.checked)} />
             锁定市值
@@ -2976,6 +3072,7 @@ function EditActionModal({ asset, action, onClose, onDone }) {
   const [shares, setShares] = React.useState(action.shares != null ? String(action.shares) : '')
   const [unitPrice, setUnitPrice] = React.useState(action.unit_price != null ? String(action.unit_price) : '')
   const [fee, setFee] = React.useState(action.fee != null ? String(action.fee) : '')
+  const [tradeDate, setTradeDate] = React.useState((action.trade_date || (action.created_at || '').slice(0, 10) || '').slice(0, 10))
   const [lastEdit, setLastEdit] = React.useState(null)  // 'amount' | 'shares' | 'unitPrice'
   const [busy, setBusy] = React.useState(false)
   const [err, setErr] = React.useState('')
@@ -3030,6 +3127,8 @@ function EditActionModal({ asset, action, onClose, onDone }) {
     if (hasShares && !isNaN(s) && s !== (action.shares ?? 0)) body.shares = s
     if (!isNaN(u) && u !== (action.unit_price ?? 0)) body.unit_price = u
     if (!isNaN(f) && f !== (action.fee ?? 0)) body.fee = f
+    const origDate = (action.trade_date || (action.created_at || '').slice(0, 10) || '').slice(0, 10)
+    if (tradeDate && tradeDate !== origDate) body.trade_date = tradeDate
     if (Object.keys(body).length === 0) { onClose(); return }
     setBusy(true)
     try {
@@ -3055,9 +3154,13 @@ function EditActionModal({ asset, action, onClose, onDone }) {
         <div className="text-[11px] text-text-dim">
           类型 <span className="font-mono text-text">{action.action_type}</span>
           <span className="mx-1.5">·</span>
-          日期 <span className="font-mono text-text">{action.trade_date || '--'}</span>
-          <span className="mx-1.5">·</span>
           改完后端会按新值重算资产 cost / shares
+        </div>
+
+        <div>
+          <label className="text-[11.5px] text-text-dim block mb-1">日期</label>
+          <input type="date" value={tradeDate} onChange={e => setTradeDate(e.target.value)}
+            className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent" />
         </div>
 
         <div>
