@@ -54,6 +54,7 @@ class AssetCreate(BaseModel):
     pending_amount: Optional[float] = None     # FUND/CRYPTO 待确认金额 (份额未结算)
     bot_budget_override_usdt: Optional[float] = None   # OKX 马丁实际总预算 (USDT), 覆盖算法反推
     purchase_fee_rate: Optional[float] = None   # FUND 申购费率 (小数, 0.0015=0.15%); C 类填 0
+    fee: Optional[float] = None                 # 建仓手续费 ¥ (含在 cost_amount 内, 单存便于流水展示)
     dca: Optional[DcaInlineCreate] = None       # FUND/CRYPTO 同时建定投计划 (可选)
 
 
@@ -412,9 +413,13 @@ async def create_asset(data: AssetCreate):
     # 写一条初始 action 进 ledger (BOT 不入账, 走 OKX 同步)
     if data.asset_type != "BOT" and data.cost_amount and data.cost_amount > 0:
         seed_type = "BUY" if data.asset_type in ("FUND", "CRYPTO") else "DEPOSIT"
+        seed_fee = float(data.fee or 0)
+        # cost_amount 已含 fee; 单价按净额 (cost - fee) / 份额, 保证 份额×单价+fee == amount,
+        # 这样流水里手续费单独可见, 编辑也不会把它算丢。
+        net = max(0.0, float(data.cost_amount) - seed_fee)
         unit_price = None
         if has_shares and data.asset_type in ("FUND", "CRYPTO"):
-            unit_price = round(float(data.cost_amount) / float(data.shares), 6)
+            unit_price = round(net / float(data.shares), 6)
         await add_external_action(
             aid, seed_type,
             amount=float(data.cost_amount),
@@ -423,6 +428,7 @@ async def create_asset(data: AssetCreate):
             trade_date=data.start_date,
             note="initial (pending: 份额待确认)" if is_pending_fund else "initial",
             status="pending" if is_pending_fund else "confirmed",
+            fee=seed_fee if seed_fee > 0 else None,
         )
 
     # 顺便创建定投计划 (FUND/CRYPTO only)
