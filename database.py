@@ -216,6 +216,9 @@ async def init_db():
         # OKX 马丁实际总预算 (USDT). raw 字段没"总预算", 算法反推不准, 让用户手填覆盖.
         if "bot_budget_override_usdt" not in cols:
             await db.execute("ALTER TABLE external_assets ADD COLUMN bot_budget_override_usdt REAL")
+        # 基金申购费率 (小数, 如 0.0015 = 0.15%). C 类/无申购费 = 0/NULL. 批量结算时内扣算份额。
+        if "purchase_fee_rate" not in cols:
+            await db.execute("ALTER TABLE external_assets ADD COLUMN purchase_fee_rate REAL")
 
         # external_asset_actions: status 字段 + fee 字段 (旧库迁移)
         cursor = await db.execute("PRAGMA table_info(external_asset_actions)")
@@ -626,16 +629,17 @@ async def add_external_asset(asset_type: str, code: str, name: str, platform: st
                               okx_bot_type: str | None = None,
                               annual_yield_rate: float | None = None,
                               start_date: str | None = None,
-                              pending_amount: float | None = None) -> int:
+                              pending_amount: float | None = None,
+                              purchase_fee_rate: float | None = None) -> int:
     db = await get_db()
     try:
         cursor = await db.execute(
             """INSERT INTO external_assets
                (asset_type, code, name, platform, cost_amount, shares, manual_value, note,
-                okx_algo_id, okx_bot_type, annual_yield_rate, start_date, pending_amount)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                okx_algo_id, okx_bot_type, annual_yield_rate, start_date, pending_amount, purchase_fee_rate)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (asset_type, code, name, platform, cost_amount, shares, manual_value, note,
-             okx_algo_id, okx_bot_type, annual_yield_rate, start_date, pending_amount or 0),
+             okx_algo_id, okx_bot_type, annual_yield_rate, start_date, pending_amount or 0, purchase_fee_rate),
         )
         await db.commit()
         return cursor.lastrowid

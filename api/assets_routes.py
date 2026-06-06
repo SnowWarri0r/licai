@@ -53,6 +53,7 @@ class AssetCreate(BaseModel):
     start_date: Optional[str] = None           # 起投日 YYYY-MM-DD
     pending_amount: Optional[float] = None     # FUND/CRYPTO 待确认金额 (份额未结算)
     bot_budget_override_usdt: Optional[float] = None   # OKX 马丁实际总预算 (USDT), 覆盖算法反推
+    purchase_fee_rate: Optional[float] = None   # FUND 申购费率 (小数, 0.0015=0.15%); C 类填 0
     dca: Optional[DcaInlineCreate] = None       # FUND/CRYPTO 同时建定投计划 (可选)
 
 
@@ -69,6 +70,7 @@ class AssetUpdate(BaseModel):
     start_date: Optional[str] = None
     pending_amount: Optional[float] = None
     bot_budget_override_usdt: Optional[float] = None
+    purchase_fee_rate: Optional[float] = None
 
 
 class OkxCredentials(BaseModel):
@@ -404,6 +406,7 @@ async def create_asset(data: AssetCreate):
         annual_yield_rate=data.annual_yield_rate,
         start_date=data.start_date,
         pending_amount=effective_pending,
+        purchase_fee_rate=data.purchase_fee_rate,
     )
     # 写一条初始 action 进 ledger (BOT 不入账, 走 OKX 同步)
     if data.asset_type != "BOT" and data.cost_amount and data.cost_amount > 0:
@@ -493,8 +496,9 @@ async def modify_asset(asset_id: int, data: AssetUpdate):
                 amount=amt, shares=abs(d_shares), unit_price=unit,
                 trade_date=today, note="adjust (from edit)",
             )
-        elif abs(d_cost) > 0.01:
-            # 份额没变只动了成本: 用 INTEREST(+) 或 一个 0 share 的成本调整 (-)
+        elif abs(d_cost) > 0.5:
+            # 份额没变只动了成本 (>0.5 元才算真改, 否则是单价4位小数的舍入噪声):
+            # 用 INTEREST(+) 或 一个 0 share 的成本调整 (-)
             if d_cost > 0:
                 await add_external_action(
                     asset_id, "INTEREST",
@@ -770,11 +774,138 @@ async def confirm_action(asset_id: int, action_id: int, data: ConfirmAction):
     return {"message": "confirmed", "state": state}
 
 
+@router.post("/settle-pending")
+async def settle_pending_dca():
+    """一键确认所有到期定投: 按每条 pending 的 trade_date 拉当日已确认净值, 自动结算份额。
+    净值未公布的 (海外休市 / T+1 未出) 跳过, 仍保持 pending, 等下次再点。
+    仅处理场外基金 (FUND) 的申购 pending (ADD/BUY); 加密等没历史净值的不动。
+    """
+    from services.external_assets import get_fund_nav_on_date
+    from database import update_external_action
+
+    assets = await list_external_assets()
+    settled = 0
+    skipped = 0
+    details: list[dict] = []
+    for asset in assets:
+        if asset.get("asset_type") != "FUND":
+            continue
+        code = asset.get("code")
+        actions = await list_external_actions(asset["id"])
+        pend = [a for a in actions
+                if (a.get("status") or "confirmed") == "pending"
+                and (a.get("action_type") or "").upper() in ("ADD", "BUY")]
+        if not pend:
+            continue
+        changed = False
+        for a in pend:
+            td = (a.get("trade_date") or "")[:10]
+            if not td:
+                skipped += 1
+                continue
+            navinfo = await get_fund_nav_on_date(code, td)
+            if not navinfo or not navinfo.get("nav"):
+                skipped += 1  # 当日净值未公布 → 留 pending
+                continue
+            nav = float(navinfo["nav"])
+            amount = float(a.get("amount") or 0)
+            known_shares = float(a.get("shares") or 0)
+            # 申购费内扣: 净申购额 = 申购金额 / (1+费率), 申购费 = 金额 - 净额, 份额 = 净额/净值。
+            # C 类/无申购费 → rate=0 → 净额=金额, fee=0 (跟原来一致)。
+            rate = float(asset.get("purchase_fee_rate") or 0)
+            if amount > 0:                       # 金额定投
+                net = amount / (1 + rate) if rate > 0 else amount
+                fee = round(amount - net, 2)
+                shares = round(net / nav, 6) if nav > 0 else 0
+                final_amount = amount
+            elif known_shares > 0:               # 份额定投: 份额×净值=净额, 反加申购费
+                shares = known_shares
+                net = shares * nav
+                fee = round(net * rate, 2)
+                final_amount = round(net + fee, 2)
+            else:
+                skipped += 1
+                continue
+            await update_external_action(
+                a["id"], amount=final_amount, shares=shares,
+                unit_price=round(nav, 6), fee=fee, status="confirmed",
+            )
+            settled += 1
+            changed = True
+            details.append({"asset": asset.get("name"), "date": td,
+                            "nav": round(nav, 4), "shares": shares, "amount": final_amount, "fee": fee})
+        if changed:
+            acts2 = await list_external_actions(asset["id"])
+            state = compute_external_state(acts2, asset["asset_type"])
+            await update_external_asset(asset["id"], cost_amount=state["cost_amount"], shares=state["shares"])
+    return {"settled": settled, "skipped": skipped, "details": details}
+
+
+@router.post("/recompute-dca")
+async def recompute_dca_fees():
+    """费率改了之后, 重算已确认的定投流水 (note 以 'DCA' 开头).
+    只动设置了 purchase_fee_rate 的基金 — 这些是用户刚补上申购费的, 之前可能按 fee=0 结算过。
+    按每条 trade_date 重新拉当日净值, 用当前费率内扣重算 shares + fee。
+    净值拉不到的跳过 (不动)。C 类 / 没设费率的基金完全不碰, 避免覆盖手动确认的值。
+    """
+    from services.external_assets import get_fund_nav_on_date
+    from database import update_external_action
+
+    assets = await list_external_assets()
+    recomputed = 0
+    skipped = 0
+    details: list[dict] = []
+    for asset in assets:
+        if asset.get("asset_type") != "FUND":
+            continue
+        rate = asset.get("purchase_fee_rate")
+        if rate is None:                       # 没设费率 → 不碰 (含 C 类 / 手动确认)
+            continue
+        rate = float(rate)
+        code = asset.get("code")
+        actions = await list_external_actions(asset["id"])
+        dca_rows = [a for a in actions
+                    if (a.get("status") or "confirmed") == "confirmed"
+                    and (a.get("action_type") or "").upper() in ("ADD", "BUY")
+                    and str(a.get("note") or "").startswith("DCA")]
+        if not dca_rows:
+            continue
+        changed = False
+        for a in dca_rows:
+            td = (a.get("trade_date") or "")[:10]
+            amount = float(a.get("amount") or 0)
+            if not td or amount <= 0:
+                skipped += 1
+                continue
+            navinfo = await get_fund_nav_on_date(code, td)
+            if not navinfo or not navinfo.get("nav"):
+                skipped += 1
+                continue
+            nav = float(navinfo["nav"])
+            net = amount / (1 + rate) if rate > 0 else amount
+            fee = round(amount - net, 2)
+            shares = round(net / nav, 6) if nav > 0 else 0
+            # 没变就不写 (幂等)
+            if abs(float(a.get("shares") or 0) - shares) < 1e-6 and abs(float(a.get("fee") or 0) - fee) < 0.005:
+                continue
+            await update_external_action(a["id"], shares=shares, unit_price=round(nav, 6), fee=fee)
+            recomputed += 1
+            changed = True
+            details.append({"asset": asset.get("name"), "date": td, "nav": round(nav, 4),
+                            "shares": shares, "fee": fee})
+        if changed:
+            acts2 = await list_external_actions(asset["id"])
+            state = compute_external_state(acts2, asset["asset_type"])
+            await update_external_asset(asset["id"], cost_amount=state["cost_amount"], shares=state["shares"])
+    return {"recomputed": recomputed, "skipped": skipped, "details": details}
+
+
 class ActionPatch(BaseModel):
     amount: Optional[float] = None
     shares: Optional[float] = None
     unit_price: Optional[float] = None
     fee: Optional[float] = None
+    trade_date: Optional[str] = None
 
 
 @router.patch("/{asset_id}/actions/{action_id}")
@@ -809,13 +940,23 @@ async def patch_action(asset_id: int, action_id: int, data: ActionPatch):
         if data.fee < 0:
             raise HTTPException(400, "fee 不能为负")
         payload["fee"] = float(data.fee)
+    if data.trade_date is not None:
+        td = str(data.trade_date)[:10]
+        # 简单校验 YYYY-MM-DD
+        from datetime import datetime as _dt
+        try:
+            _dt.strptime(td, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(400, "trade_date 格式应为 YYYY-MM-DD")
+        payload["trade_date"] = td
     if not payload:
         raise HTTPException(400, "没有可修改的字段")
 
     if status == "pending":
-        # 兼容: pending 只允许改 amount, 防 ledger 状态混乱
-        if set(payload.keys()) - {"amount"}:
-            raise HTTPException(400, "pending 流水只能改 amount, 其他字段请先点 '确认' 入账")
+        # pending 只允许改 amount / trade_date (改日期影响结算取哪天净值, 安全);
+        # shares/unit_price 这些得先点 '确认' 入账, 防 ledger 状态混乱
+        if set(payload.keys()) - {"amount", "trade_date"}:
+            raise HTTPException(400, "pending 流水只能改 amount / 日期, 其他字段请先点 '确认' 入账")
 
     from database import update_external_action
     await update_external_action(action_id, **payload)
