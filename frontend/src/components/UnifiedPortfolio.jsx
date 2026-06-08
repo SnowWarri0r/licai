@@ -545,28 +545,49 @@ function ProxyPulse({ change, label, fallbackToday, details, width = 44 }) {
   )
 }
 
-function TypeMiniInfo({ row, unwindByCode }) {
+function TypeMiniInfo({ row, unwindByCode, carry = 0 }) {
   const { type, extra, code } = row
   if (type === 'A') {
     const plan = unwindByCode?.[code]
+    // 全周期回本价: 当前持仓还要涨到这个价, 才能把这只票从头到尾(含历史已实现)拉平。
+    // 仅当历史净亏损 (carry < 0) 才有额外的山要爬; carry≥0 时当前解套即全周期盈利, 不显示。
+    const shares = extra.shares || 0
+    const avgCost = extra.avgCost || 0
+    const fullBE = (carry < -0.5 && shares > 0)
+      ? (avgCost * shares - carry) / shares   // carry 为负 → fullBE > avgCost
+      : null
+    const fullCycleLine = fullBE != null && (
+      <Tooltip content={`全周期回本价 = 当前持仓要涨到 ${currencySymbol(extra.currency)}${fmtPrice(fullBE)}, 才能把这只票从头到尾(含历史已实现 ${fmtMoney(carry)})的盈亏拉平。只作参考, 不是减仓触发价 — 现价距它越远越难, 别被它绑架。`}>
+        <span className="font-mono text-[9.5px] text-text-muted cursor-help whitespace-nowrap">
+          真回本 {currencySymbol(extra.currency)}{fmtPrice(fullBE)}
+          <span className="text-bear-bright ml-0.5">差{fmtMoney(-carry)}</span>
+        </span>
+      </Tooltip>
+    )
     if (!plan) {
-      return <span className="text-[10.5px] text-text-muted font-mono">
-        {extra.shares} 股 · {currencySymbol(extra.currency)}{fmtPrice(extra.avgCost)}
-      </span>
+      return (
+        <span className="inline-flex items-center gap-1.5 flex-wrap text-[10.5px] text-text-muted font-mono">
+          <span>{extra.shares} 股 · {currencySymbol(extra.currency)}{fmtPrice(extra.avgCost)}</span>
+          {fullCycleLine}
+        </span>
+      )
     }
     // unwind progress: pnl% recovered relative to initial loss
     const prog = plan.progress ?? 0
     const color = prog >= 1 ? 'var(--color-bull-bright)' :
       prog >= 0.5 ? 'var(--color-accent)' : 'var(--color-bear-bright)'
     return (
-      <span className="inline-flex items-center gap-1.5 text-[10.5px] text-text-dim">
-        <span>解套</span>
-        <div className="h-[3px] rounded-sm overflow-hidden" style={{ width: 36, background: 'var(--color-surface-3)' }}>
-          <div className="h-full rounded-sm" style={{ width: `${Math.min(100, prog * 100)}%`, background: color }} />
-        </div>
-        <span className="font-mono min-w-[28px]" style={{ color }}>
-          {(prog * 100).toFixed(0)}%
+      <span className="inline-flex items-center gap-1.5 flex-wrap text-[10.5px] text-text-dim">
+        <span className="inline-flex items-center gap-1.5">
+          <span>解套</span>
+          <div className="h-[3px] rounded-sm overflow-hidden" style={{ width: 36, background: 'var(--color-surface-3)' }}>
+            <div className="h-full rounded-sm" style={{ width: `${Math.min(100, prog * 100)}%`, background: color }} />
+          </div>
+          <span className="font-mono min-w-[28px]" style={{ color }}>
+            {(prog * 100).toFixed(0)}%
+          </span>
         </span>
+        {fullCycleLine}
       </span>
     )
   }
@@ -1439,7 +1460,7 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
                   <div className="relative pl-1 md:pl-2">
                     {/* TypeMiniInfo: 桌面始终可见 (不再 hover 隐藏); 移动隐藏 */}
                     <div className="hidden md:block">
-                      <TypeMiniInfo row={row} unwindByCode={unwindPlans} />
+                      <TypeMiniInfo row={row} unwindByCode={unwindPlans} carry={carryByCode[row.code] || 0} />
                     </div>
                     {/* RowActions: 桌面 hover 显示, 绝对覆盖右半. 容器 pointer-events-none 让事件
                         穿透到 TypeMiniInfo (反推 tooltip 之类), 子元素重置 auto 接收点击.
