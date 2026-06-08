@@ -16,6 +16,7 @@ from services.sector_compare import (
     _load_ths_boards,
     _fetch_ths_kline_sync,
     _resolve_ths_board,
+    _ohlc_point,
     INDUSTRY_TO_ETF,
 )
 
@@ -93,9 +94,9 @@ async def _enrich_kline(rows: list[dict], top_n: int, must_include: set[str]) ->
             closes = [k["close"] for k in kline if k.get("close")]
             row["change_5d"] = _close_pct(closes, 5)
             row["change_30d"] = _close_pct(closes, 30)
-            # 最近 60 个 close 给前端画 sparkline
+            # 最近 60 个给前端画 sparkline / 默认大图 (带 OHLC, 大图画蜡烛)
             tail = kline[-min(60, len(kline)):]
-            row["kline_tail"] = [{"date": k["date"], "close": k["close"]} for k in tail]
+            row["kline_tail"] = [_ohlc_point(k) for k in tail]
 
     await asyncio.gather(*(fetch_one(r) for r in targets), return_exceptions=True)
 

@@ -195,7 +195,8 @@ def _resolve_etf_hardcoded(industry: str) -> tuple[str, str] | None:
 
 def _fetch_ths_kline_sync(board_name: str, days: int = 80) -> list[dict]:
     """拉 THS 板块历史日 K (带 cache)."""
-    cached = _kline_cache.get(board_name)
+    ck = f"{board_name}|{days}"
+    cached = _kline_cache.get(ck)
     if cached and time.time() - cached[1] < _KLINE_TTL:
         return cached[0]
     try:
@@ -218,7 +219,7 @@ def _fetch_ths_kline_sync(board_name: str, days: int = 80) -> list[dict]:
             except (ValueError, TypeError, KeyError):
                 continue
         if rows:
-            _kline_cache[board_name] = (rows, time.time())
+            _kline_cache[ck] = (rows, time.time())
         return rows
     except Exception as e:
         print(f"[ths-kline] {board_name} failed: {e}")
@@ -226,6 +227,14 @@ def _fetch_ths_kline_sync(board_name: str, days: int = 80) -> list[dict]:
 
 
 # --- helpers ---
+
+def _ohlc_point(k: dict) -> dict:
+    """K 线点裁剪给前端: close 必带; open/high/low 三者齐全才带 (大图画蜡烛)。"""
+    d = {"date": k.get("date", ""), "close": k.get("close")}
+    if k.get("open") is not None and k.get("high") is not None and k.get("low") is not None:
+        d["open"], d["high"], d["low"] = k["open"], k["high"], k["low"]
+    return d
+
 
 def _industry_first_segment(industry: str) -> str:
     if not industry:
