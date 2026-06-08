@@ -26,14 +26,10 @@ INCOME  = {"DIVIDEND"}                # 现金分红 → realized_pnl (不动 lo
 _COMMISSION_RATE = 0.0001854  # 万1.854 (user's broker rate)
 _COMMISSION_MIN = 5.0         # ¥5 per trade minimum
 _STAMP_RATE = 0.0005         # 0.05% sell side only (since 2023-08)
-_TRANSFER_RATE = 0.00001     # 0.001% both sides, Shanghai stocks only (6xxxxx)
+_TRANSFER_RATE = 0.00001     # 过户费 万0.1, 沪深双向都收 (深市 2022-04-29 起也收, 此前仅沪市)
 # 规费 (双向收, 沪深都有)
 _EXCHANGE_HANDLE_RATE = 0.0000341  # 经手费 万0.341 (2025-07-01 起下调)
 _REGULATORY_FEE_RATE  = 0.00002    # 证管费 万0.2 (证监会)
-
-
-def _is_shanghai(stock_code: str) -> bool:
-    return stock_code.startswith("6") or stock_code.startswith("9")
 
 
 def estimate_trade_fee(action_type: str, price: float, shares: int, stock_code: str = "",
@@ -56,7 +52,8 @@ def estimate_trade_fee(action_type: str, price: float, shares: int, stock_code: 
     c_min = _COMMISSION_MIN if commission_min is None else commission_min
     commission = max(amount * c_rate, c_min)
     stamp = amount * _STAMP_RATE if action_type in RELEASE else 0.0
-    transfer = amount * _TRANSFER_RATE if _is_shanghai(stock_code) else 0.0
+    # 过户费沪深双向都收 (函数开头已对非 A 股 return 0; stock_code 为空时默认按 A 股算)
+    transfer = amount * _TRANSFER_RATE
     regulatory = amount * (_EXCHANGE_HANDLE_RATE + _REGULATORY_FEE_RATE)
     return commission + stamp + transfer + regulatory
 
