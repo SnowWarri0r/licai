@@ -29,7 +29,9 @@ async def compare_one(stock_code: str, force: bool = False):
 @router.get("/compare-all")
 async def compare_all(force: bool = False):
     holdings = await get_all_holdings()
-    holdings = [h for h in holdings if is_a_share(h["stock_code"])]
+    # 只比当前真持仓 (shares>0): 已清仓的票不该出现在板块雷达里
+    holdings = [h for h in holdings
+                if is_a_share(h["stock_code"]) and float(h.get("shares") or 0) > 0]
     if not holdings:
         return {"holdings": []}
     results = await asyncio.gather(
