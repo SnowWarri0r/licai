@@ -102,13 +102,17 @@ export default function StockKlineModal({ holding, onClose }) {
       if (idx == null) continue
       const p = points[idx]
       const isBuy = ACQUIRE.has(a.action_type)
+      // 标记锚到真实成交价 (a.price), 不再贴蜡烛上下影线
+      const yPrice = (a.price != null && range > 0)
+        ? P.t + innerH - ((a.price - rangeMin) / range) * innerH
+        : (isBuy ? p.yLow : p.yHigh)
       out.push({
-        id: a.id, x: p.x, yHigh: p.yHigh, yLow: p.yLow,
+        id: a.id, x: p.x, yPrice, yHigh: p.yHigh, yLow: p.yLow,
         date: td, price: a.price, shares: a.shares, type: a.action_type, isBuy,
       })
     }
     return out
-  }, [points, actions])
+  }, [points, actions, rangeMin, range, innerH])
 
   const handleMouseMove = (e) => {
     if (!svgRef.current || !points.length) return
@@ -260,12 +264,15 @@ export default function StockKlineModal({ holding, onClose }) {
               {/* BS 标记 */}
               {bsMarkers.map((m, idx) => {
                 const color = m.isBuy ? BUY_COLOR : SELL_COLOR
-                // 买: 蜡烛下方向上三角 ▲; 卖: 蜡烛上方向下三角 ▼
-                const baseY = m.isBuy ? m.yLow + 14 : m.yHigh - 14
-                const tipY = m.isBuy ? m.yLow + 4 : m.yHigh - 4
-                const labelY = m.isBuy ? baseY + 11 : baseY - 4
+                // 三角 tip 精确指向成交价; 买 ▲ tip 在价位、体朝下, 卖 ▼ tip 在价位、体朝上
+                const tipY = m.yPrice
+                const baseY = m.isBuy ? m.yPrice + 11 : m.yPrice - 11
+                const labelY = m.isBuy ? baseY + 10 : baseY - 3
                 return (
                   <g key={m.id || idx}>
+                    {/* 在成交价处画一小段水平虚线, 一眼对齐价位 */}
+                    <line x1={m.x - candleW} y1={m.yPrice} x2={m.x + candleW} y2={m.yPrice}
+                      stroke={color} strokeWidth="0.75" strokeDasharray="2 2" opacity="0.6" />
                     <polygon
                       points={`${m.x},${tipY} ${m.x - 5},${baseY} ${m.x + 5},${baseY}`}
                       fill={color} stroke="var(--color-bg)" strokeWidth="0.5" />
