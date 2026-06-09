@@ -34,7 +34,13 @@ export default function UnwindCard({ plan, onChange }) {
     tranches, fundamental,
     unwind_exit_price, can_unwind_now,
     npv_analysis, benchmark,
+    realized_carry, full_cycle_breakeven,
   } = plan
+
+  // 全周期回本: 仅当历史净亏(carry<0)才有额外的山要爬; 触发价不变, 这只是参考
+  const showFullCycle = full_cycle_breakeven > 0 && (realized_carry || 0) < -0.5
+    && full_cycle_breakeven > current_price * 1.005
+  const fcGapPct = current_price > 0 ? (full_cycle_breakeven / current_price - 1) * 100 : 0
 
   const hasTranches = (tranches?.length || 0) > 0
   const [showTranches, setShowTranches] = useState(hasTranches)
@@ -225,6 +231,24 @@ export default function UnwindCard({ plan, onChange }) {
               </div>
               <div className={`text-[10px] font-mono ${can_unwind_now ? 'text-bull font-semibold' : 'text-text-dim'}`}>
                 {can_unwind_now ? '✓ 可清仓' : `距 +${gapPct.toFixed(1)}%`}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 全周期回本价 — 含历史已实现, 仅参考不当触发价 */}
+        {showFullCycle && (
+          <div className="rounded-lg px-3.5 py-2 flex items-center justify-between border border-border-subtle bg-surface-3/40">
+            <div>
+              <div className="text-[10px] uppercase tracking-wider font-semibold text-text-dim">全周期回本价</div>
+              <div className="text-[9px] text-text-muted mt-0.5">
+                含历史已实现 {fmtMoney(realized_carry)} · 把这只票从头到尾拉平 · 仅参考非触发价
+              </div>
+            </div>
+            <div className="text-right">
+              <div className="font-mono text-[16px] font-bold text-text">¥{fmtPrice(full_cycle_breakeven)}</div>
+              <div className="text-[10px] font-mono text-bear-bright">
+                距 +{fcGapPct.toFixed(1)}% · 还差{fmtMoney(-realized_carry)}
               </div>
             </div>
           </div>
