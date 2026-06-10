@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from database import (
     list_external_assets, add_external_asset, update_external_asset, delete_external_asset,
-    get_external_asset,
+    get_external_asset, reassign_external_actions,
     list_external_actions, add_external_action, delete_external_action,
 )
 from services.external_assets import (
@@ -490,6 +490,38 @@ async def create_asset(data: AssetCreate):
         "merged": bool(merge_target),
         "pending": is_pending_fund,
         "dca_id": dca_created_id,
+    }
+
+
+class MergeFrom(BaseModel):
+    source_id: int
+
+
+@router.post("/{asset_id}/merge-from")
+async def merge_assets(asset_id: int, data: MergeFrom):
+    """把 source_id 的流水并入 asset_id, 重算, 删掉空壳 source。只允许同类型+同代码。"""
+    target = await get_external_asset(asset_id)
+    source = await get_external_asset(data.source_id)
+    if not target or not source:
+        raise HTTPException(404, "asset not found")
+    if asset_id == data.source_id:
+        raise HTTPException(400, "不能合并到自己")
+    if target.get("asset_type") != source.get("asset_type") or (target.get("code") or "") != (source.get("code") or ""):
+        raise HTTPException(400, "只能合并同类型+同代码的资产")
+
+    moved = await reassign_external_actions(data.source_id, asset_id)
+    acts = await list_external_actions(asset_id)
+    state = compute_external_state(acts, target["asset_type"])
+    upd: dict = {"cost_amount": state["cost_amount"]}
+    if target["asset_type"] in ("FUND", "CRYPTO"):
+        upd["shares"] = state["shares"]
+    if target.get("purchase_fee_rate") is None and source.get("purchase_fee_rate") is not None:
+        upd["purchase_fee_rate"] = source.get("purchase_fee_rate")
+    await update_external_asset(asset_id, **upd)
+    await delete_external_asset(data.source_id)
+    return {
+        "merged_into": asset_id, "deleted": data.source_id, "moved_actions": moved,
+        "shares": state["shares"], "cost_amount": state["cost_amount"],
     }
 
 
