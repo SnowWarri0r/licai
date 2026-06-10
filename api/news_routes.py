@@ -361,6 +361,176 @@ async def news_digest(force: bool = False, max_items: int = 80):
 
 
 # ---------------------------------------------------------------------------
+# GET /api/news/daily-review — 收盘 AI 复盘日报 (持仓今日归因 + 全球大事 + 明日关注)
+# ---------------------------------------------------------------------------
+
+_REVIEW_TTL = 1800  # 30min; force=true 强制重算
+
+
+@router.get("/daily-review")
+async def daily_review(force: bool = False):
+    """收盘复盘日报: A 股持仓今日涨跌 + 板块异动 + 全球快讯 → LLM 归因复盘。
+    输出 {summary, holdings[], sectors[], global[], tomorrow[]}。不给买卖建议。"""
+    from datetime import date as _date
+    today = _date.today().isoformat()
+    cache_key = f"daily_review_{today}"
+    if not force:
+        c = _cache.get(cache_key)
+        if c and time.time() - c[1] < _REVIEW_TTL:
+            return {**c[0], "cached": True}
+
+    from services.market_data import get_realtime_quotes
+    from services.sector_scanner import scan_sectors
+
+    # 1) A 股持仓今日涨跌 (实时)
+    holdings = await get_all_holdings()
+    a_codes = [h["stock_code"] for h in holdings
+               if _is_a_share(h["stock_code"]) and float(h.get("shares") or 0) > 0]
+    quotes = await get_realtime_quotes(a_codes) if a_codes else {}
+    hold_moves = []
+    for h in holdings:
+        c = h["stock_code"]
+        if c not in a_codes:
+            continue
+        q = quotes.get(c) or {}
+        hold_moves.append({
+            "name": h.get("stock_name", ""), "code": c,
+            "change_pct": q.get("change_pct"),
+            "mv": round((q.get("price") or 0) * float(h.get("shares") or 0), 0),
+        })
+    hold_moves.sort(key=lambda x: (x["change_pct"] if x["change_pct"] is not None else 0))
+
+    # 2) 持仓所属板块今日 (复用板块扫描的 held 标记)
+    held_sectors = []
+    try:
+        sec = await scan_sectors(a_codes)
+        held_sectors = [{"name": s.get("name"), "d1": s.get("change_1d"), "d5": s.get("change_5d")}
+                        for s in (sec.get("sectors") or []) if s.get("held")]
+    except Exception as e:
+        print(f"[daily-review] sector scan failed: {e}")
+
+    # 3) 资讯素材: 全球快讯 + 持仓相关新闻
+    market = await market_news()
+    g_heads = [it.get("title", "") for it in (market.get("items") or []) if it.get("title")][:45]
+    try:
+        pnews = await portfolio_news()
+        p_heads = [f"[{it.get('name') or it.get('code')}] {it.get('title','')}"
+                   for it in (pnews.get("items") or [])][:20]
+    except Exception:
+        p_heads = []
+
+    if not hold_moves and not g_heads:
+        return {"summary": "今日无可复盘数据", "holdings": [], "sectors": [], "global": [], "tomorrow": [], "cached": False}
+
+    # 4) 拼 prompt
+    holds_txt = "\n".join(
+        f"  {m['name']}({m['code']}) {('%+.2f%%' % m['change_pct']) if m['change_pct'] is not None else '—'} 市值≈{m['mv']:.0f}"
+        for m in hold_moves) or "  (无 A 股持仓)"
+    secs_txt = "\n".join(
+        f"  {s['name']} 今日{('%+.2f%%' % s['d1']) if s['d1'] is not None else '—'} 5日{('%+.2f%%' % s['d5']) if s['d5'] is not None else '—'}"
+        for s in held_sectors) or "  (无)"
+    user_prompt = (
+        f"今天是 {today}, 收盘后做组合复盘。\n\n"
+        f"【我的 A 股持仓今日涨跌】\n{holds_txt}\n\n"
+        f"【持仓所属板块今日】\n{secs_txt}\n\n"
+        f"【持仓相关新闻】\n" + ("\n".join(f"  - {h}" for h in p_heads) or "  (无)") + "\n\n"
+        f"【全球财经快讯(标题)】\n" + "\n".join(f"  - {h}" for h in g_heads if h) + "\n\n"
+        "请据此生成今日复盘 JSON。"
+    )
+    allowed_names = "、".join(m["name"] for m in hold_moves) or "(无)"
+    allowed_sectors = "、".join(s["name"] for s in held_sectors) or "(无)"
+    system_prompt = (
+        "你是组合收盘复盘助手。基于给定数据复盘今天, 严禁任何买卖/加减仓/目标价/仓位建议, "
+        "只做客观归因和资讯梳理。用简体中文输出严格 JSON (只输出 JSON, 无 markdown):\n"
+        "{\n"
+        '  "summary": "一句话总览【我的持仓】今天整体表现(≤40字)",\n'
+        '  "holdings": [{"name":"股票名","change":"+5.5%","why":"为什么涨跌, 结合板块/新闻, ≤25字"}],\n'
+        '  "sectors": [{"name":"板块","change":"-1.8%","note":"一句话(≤20字)"}],\n'
+        '  "global": ["与持仓/市场相关的全球大事, 每条≤25字, 2-4条"],\n'
+        '  "tomorrow": ["明日值得关注的点(财报/数据/事件), 据快讯推断, 没有就空数组, ≤3条"]\n'
+        "}\n"
+        "【硬性约束·必须遵守】\n"
+        f"- holdings 的 name 只能取自我的持仓: {allowed_names}。绝对不许出现持仓外的股票(如建设银行/银行股等热点新闻里的票)。\n"
+        f"- sectors 的 name 只能取自我的持仓板块: {allowed_sectors}。不许新增其它板块。\n"
+        "- summary 只讲我上面这几只持仓的整体表现, 不要扯无关的大盘/银行热点。\n"
+        "- 新闻只用来给【我的持仓】做归因和填 global/tomorrow, 不能把新闻里的别家公司写进 holdings/sectors。\n"
+        "holdings 挑今天动得明显的 3-6 只即可。why/note 要具体, 料不足写'暂无明确催化'不编造。"
+    )
+
+    from services import llm_client
+    import json as _json
+    try:
+        raw = await asyncio.to_thread(
+            llm_client.call_claude, user_prompt, system_prompt, "claude-sonnet-4-5", 1500)
+    except Exception as e:
+        return {"summary": "复盘生成失败", "holdings": [], "sectors": [], "global": [], "tomorrow": [],
+                "error": str(e)[:160], "cached": False}
+
+    raw = (raw or "").strip()
+    if raw.startswith("```"):
+        raw = raw.strip("`")
+        if raw.lower().startswith("json"):
+            raw = raw[4:].lstrip("\n").lstrip()
+        if raw.endswith("```"):
+            raw = raw[:-3].rstrip()
+    try:
+        i, j = raw.find("{"), raw.rfind("}")
+        parsed = _json.loads(raw[i:j + 1]) if i >= 0 and j > i else {}
+    except Exception:
+        parsed = {}
+
+    # 硬过滤: holdings/sectors 只保留真实持仓/板块, % 用实测覆盖 (LLM 只贡献 why/note),
+    # 彻底杜绝 LLM 把新闻里的别家公司(如建设银行)塞进来。
+    move_by_name = {m["name"]: m for m in hold_moves}
+    holdings_out = []
+    for h in (parsed.get("holdings") or []):
+        nm = (h.get("name") or "").strip()
+        if nm not in move_by_name:
+            continue
+        cp = move_by_name[nm]["change_pct"]
+        holdings_out.append({"name": nm, "change": (f"{cp:+.2f}%" if cp is not None else "—"),
+                             "why": str(h.get("why") or "").strip()})
+    sec_by_name = {s["name"]: s for s in held_sectors}
+    sectors_out = []
+    for s in (parsed.get("sectors") or []):
+        nm = (s.get("name") or "").strip()
+        if nm not in sec_by_name:
+            continue
+        d1 = sec_by_name[nm]["d1"]
+        sectors_out.append({"name": nm, "change": (f"{d1:+.2f}%" if d1 is not None else "—"),
+                            "note": str(s.get("note") or "").strip()})
+
+    # summary 用实测确定性生成 (LLM 总览总爱扯无关热点), 叙事交给每只的 why
+    vals = [m for m in hold_moves if m["change_pct"] is not None]
+    ups = sum(1 for m in vals if m["change_pct"] > 0)
+    downs = sum(1 for m in vals if m["change_pct"] < 0)
+    det = f"{len(hold_moves)} 只持仓 · {ups} 涨 {downs} 跌"
+    if vals:
+        top = max(vals, key=lambda m: m["change_pct"])
+        bot = min(vals, key=lambda m: m["change_pct"])
+        if top["change_pct"] > 0:
+            det += f" · 领涨 {top['name']}{top['change_pct']:+.1f}%"
+        if bot["change_pct"] < 0:
+            det += f" · 领跌 {bot['name']}{bot['change_pct']:+.1f}%"
+
+    from datetime import datetime, timezone, timedelta
+    now_cst = (datetime.now(timezone.utc) + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M")
+    result = {
+        "date": today,
+        "summary": det,
+        "holdings": holdings_out,
+        "sectors": sectors_out,
+        "global": parsed.get("global") or [],
+        "tomorrow": parsed.get("tomorrow") or [],
+        "generated_at": now_cst,
+        "cached": False,
+    }
+    if holdings_out or result["global"]:
+        _cache[cache_key] = (result, time.time())
+    return result
+
+
+# ---------------------------------------------------------------------------
 # POST /api/news/interpret — LLM 单条新闻解读 (三段式 + 缓存 + 降级)
 # ---------------------------------------------------------------------------
 
