@@ -516,11 +516,19 @@ async def trade_review_ai(force: int = 0):
         "当前真亏持仓里越买越高/越跌越加码(金额越亏越大)=情绪化补仓上头; "
         "亏的票比赚的票拿得久=截断利润/让亏损奔跑; 板块集中度高=押注单一赛道。每条都用具体数据举证。\n"
         "【不要用】单日买入命中率快照判'追高对错'——它隔天就翻面、噪声大, 已从数据里剔除。\n"
+        "【爱在冰川视角】额外用游资'爱在冰川'的交易哲学对照他的行为(只做客观对照, 不是让他去打板):\n"
+        "  · 大智=买前先估'这票空间/高度到哪', 没判断就别动手; 大勇=空间够才敢上, 但'一步到位/空间透支'的不碰\n"
+        "  · 卖点纪律 > 买点: 他说'炒股最难是不会卖', 条件触发就走(不创新高/放量巨阴/反包失败)\n"
+        "  · 容错+止损: 留两条命, 错了果断止损, 死扛是大忌\n"
+        "  · 克制贪念、复利靠时间: 频繁交易/想一夜回本是反面\n"
+        "  · 情绪周期: 氛围差只有小品种活, 高潮别接最后一棒\n"
+        "  针对用户数据, 找出他哪些行为【契合】、哪些【违背】这些原则, 各用他的真实数据举证。\n"
         "【硬规则】严禁任何面向未来的操作指令: 不许出现 该买/该卖/加仓/减仓/止损位/目标价/仓位建议/现在适合。"
         "只复盘已发生的行为, 不指挥下一步。不许编造给定数据里没有的票或数字。\n"
         "用 JSON 输出: {\"summary\":\"一句话客观定性(好坏都讲)\", "
         "\"good\":[\"做对的点(用数据)\", ...], "
         "\"discipline\":[{\"problem\":\"真实存在的问题\",\"evidence\":\"具体数据举证\",\"why\":\"暴露了什么习惯\"}], "
+        "\"binchuan\":[{\"principle\":\"爱在冰川的某条原则\",\"verdict\":\"契合\"或\"违背\",\"detail\":\"用他的真实数据对照\"}], "
         "\"narrative\":\"2-3段复盘正文, 先肯定再点问题\"}。只输出 JSON。"
     )
     user_prompt = f"以下是我的真实交易数据(已分'仍持有'和'已清仓'), 平衡复盘我的交易纪律, 别把我已经割掉的票当成还在死扛:\n\n{data_block}"
@@ -545,6 +553,7 @@ async def trade_review_ai(force: int = 0):
         "summary": parsed.get("summary", ""),
         "good": parsed.get("good", []) if isinstance(parsed.get("good"), list) else [],
         "discipline": parsed.get("discipline", []) if isinstance(parsed.get("discipline"), list) else [],
+        "binchuan": parsed.get("binchuan", []) if isinstance(parsed.get("binchuan"), list) else [],
         "narrative": parsed.get("narrative", ""),
         "stats": {
             "win_rate": o["win_rate"], "buy_hit_rate": journal["buy_hit_rate"],
