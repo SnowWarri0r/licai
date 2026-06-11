@@ -215,6 +215,54 @@ def _fetch_sentiment_sync():
         top = zt[zt["连板数"] == max_lb]
         leaders = [str(x) for x in top["名称"].head(4)]
 
+    # 板块热点: 涨停所属行业分布 + 每个行业的代表票
+    hot_sectors = []
+    if "所属行业" in zt.columns:
+        sc = collections.Counter(str(x) for x in zt["所属行业"] if str(x) not in ("", "nan", "None"))
+        for name, cnt in sc.most_common(10):
+            names = [str(n) for n in zt[zt["所属行业"] == name]["名称"].head(5)]
+            hot_sectors.append({"name": name, "count": cnt, "stocks": names})
+
+    # 量能: 今日两市成交额(Sina 实时) + 较5日均放量/缩量(akshare 综指日成交量)
+    volume = None
+    try:
+        import requests as _rq
+        import re as _re
+        rr = _rq.get("https://hq.sinajs.cn/list=sh000001,sz399106",
+                     headers={"Referer": "https://finance.sina.com.cn"}, timeout=6)
+        rr.encoding = "gbk"
+        amt_today, vol_today = 0.0, 0.0
+        for line in rr.text.strip().split("\n"):
+            m = _re.match(r'var hq_str_\w+="(.*)";', line.strip())
+            if m:
+                b = m.group(1).split(",")
+                if len(b) > 9:
+                    vol_today += float(b[8] or 0)
+                    amt_today += float(b[9] or 0)
+        # 放缩量: 纯用 akshare 综指日成交量(同源同单位), 最近完整交易日 vs 前5日均
+        ratio, vlabel = None, None
+        try:
+            sums = {}
+            for sym in ("sh000001", "sz399106"):
+                df = ak.stock_zh_index_daily(symbol=sym)
+                for _, row in df.tail(8).iterrows():
+                    sums[str(row.get("date"))] = sums.get(str(row.get("date")), 0) + float(row.get("volume") or 0)
+            seq = [v for _, v in sorted(sums.items())]
+            if len(seq) >= 6:
+                latest, prev5 = seq[-1], sum(seq[-6:-1]) / 5
+                if prev5:
+                    ratio = round((latest / prev5 - 1) * 100)
+                    vlabel = "放量" if ratio >= 8 else ("缩量" if ratio <= -8 else "平量")
+        except Exception:
+            pass
+        volume = {
+            "amount_yi": round(amt_today / 1e8),         # 今日两市成交额(亿)
+            "amount_wy": round(amt_today / 1e12, 2),     # 万亿
+            "ratio": ratio, "label": vlabel,             # 最近交易日量能 较前5日均
+        }
+    except Exception:
+        volume = None
+
     money_eff, red_rate = None, None
     if prev is not None and "涨跌幅" in prev.columns:
         vals = [float(x) for x in prev["涨跌幅"] if x == x]
@@ -243,6 +291,7 @@ def _fetch_sentiment_sync():
         "max_lianban": max_lb, "ladder": ladder, "leaders": leaders,
         "money_effect": money_eff, "red_rate": red_rate,
         "mood": mood, "mood_desc": desc,
+        "hot_sectors": hot_sectors, "volume": volume,
     }
 
 

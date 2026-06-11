@@ -107,7 +107,7 @@ export default function AITradeReview() {
           {/* 爱在冰川视角 */}
           {(d.binchuan || []).length > 0 && (
             <div className="mb-3 px-3 py-2.5 rounded-lg bg-info/8 border border-info/25">
-              <div className="text-[10px] text-info/90 mb-1.5 tracking-wider">爱在冰川视角 · 交易哲学对照</div>
+              <div className="text-[10px] text-info/90 mb-1.5 tracking-wider">交易哲学对照</div>
               <div className="space-y-2">
                 {d.binchuan.map((b, i) => {
                   const hit = b.verdict === '契合'
