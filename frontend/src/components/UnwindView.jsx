@@ -12,8 +12,6 @@ import MacroDashboard from './MacroDashboard'
 import PortfolioNews from './PortfolioNews'
 import DailyReview from './DailyReview'
 import SmallMetalNews from './SmallMetalNews'
-import TradeReview from './TradeReview'
-import TradeJournal from './TradeJournal'
 import AITradeReview from './AITradeReview'
 
 const TABS = [
@@ -61,8 +59,6 @@ export default function UnwindView() {
       {tab === 'config' && (
         <>
           <AITradeReview />
-          <TradeReview />
-          <TradeJournal />
           <BenchmarkCompare />
           <Cashflow />
           <AllocationAdvisor />
