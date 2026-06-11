@@ -8,8 +8,13 @@ const KIND_LABEL = {
   market: { label: '市场', color: '#7a9b8e' },
 }
 
-const SOURCES = ['portfolio', 'market']
-const SOURCE_LABEL = { portfolio: '持仓相关', market: '全市场要闻' }
+const SOURCES = ['portfolio', 'market', 'smallmetal']
+const SOURCE_LABEL = { portfolio: '持仓相关', market: '全市场要闻', smallmetal: '小金属' }
+const SOURCE_API = {
+  portfolio: '/api/news/portfolio',
+  market: '/api/news/market',
+  smallmetal: '/api/news/small-metal',
+}
 
 // 简化时间显示: "2026-05-20 09:30:00" → "今天 09:30" / "昨天 09:30" / "05-18 09:30"
 function fmtTime(s) {
@@ -114,55 +119,38 @@ function DigestCard() {
 }
 
 export default function PortfolioNews() {
-  const [data, setData] = useState(null)
-  const [marketData, setMarketData] = useState(null)
-  const [source, setSource] = useState(() => localStorage.getItem('newsSource') || 'portfolio')
+  const [cache, setCache] = useState({})  // source -> data
+  const [source, setSource] = useState(() => {
+    const s = localStorage.getItem('newsSource')
+    return SOURCES.includes(s) ? s : 'portfolio'
+  })
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
   const [filter, setFilter] = useState('all')  // all | news | notice
   const [codeFilter, setCodeFilter] = useState('')
   const [detail, setDetail] = useState(null)
 
-  const load = useCallback(async () => {
+  const fetchSource = useCallback(async (s, force = false) => {
+    if (!force && cache[s]) return
     setLoading(true); setErr('')
     try {
-      if (source === 'market') {
-        if (!marketData) {
-          const d = await fetchJSON('/api/news/market')
-          setMarketData(d)
-        }
-      } else {
-        if (!data) {
-          const d = await fetchJSON('/api/news/portfolio')
-          setData(d)
-        }
-      }
+      const d = await fetchJSON(SOURCE_API[s])
+      setCache(prev => ({ ...prev, [s]: d }))
     } catch (e) { setErr(e?.message || '加载失败') }
     finally { setLoading(false) }
-  }, [source, data, marketData])
+  }, [cache])
 
-  useEffect(() => { load() }, [load])
+  useEffect(() => { fetchSource(source) }, [source, fetchSource])
 
   const pickSource = (s) => {
     setSource(s); localStorage.setItem('newsSource', s)
     setFilter('all'); setCodeFilter('')
   }
 
-  const reload = async () => {
-    setLoading(true); setErr('')
-    try {
-      if (source === 'market') {
-        const d = await fetchJSON('/api/news/market')
-        setMarketData(d)
-      } else {
-        const d = await fetchJSON('/api/news/portfolio')
-        setData(d)
-      }
-    } catch (e) { setErr(e?.message || '加载失败') }
-    finally { setLoading(false) }
-  }
+  const reload = () => fetchSource(source, true)
 
-  const active = source === 'market' ? marketData : data
+  const active = cache[source]
+  const data = cache.portfolio
 
   if (loading && !active) {
     return (

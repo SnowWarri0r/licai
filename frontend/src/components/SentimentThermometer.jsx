@@ -8,10 +8,35 @@ const MOOD_COLOR = {
 }
 const pctColor = (v) => v == null ? 'text-text-dim' : v > 0 ? 'text-bear-bright' : v < 0 ? 'text-bull-bright' : 'text-text-dim'
 
+function VolTrend({ trend }) {
+  const vols = trend.map(t => t.vol)
+  const max = Math.max(...vols, 1)
+  const avgPrev = vols.length > 1 ? vols.slice(0, -1).reduce((a, b) => a + b, 0) / (vols.length - 1) : 0
+  return (
+    <div className="flex items-end gap-2 h-16">
+      {trend.map((t, i) => {
+        const h = Math.max(6, (t.vol / max) * 56)
+        const last = i === trend.length - 1
+        const big = last && t.vol > avgPrev * 1.08
+        const small = last && t.vol < avgPrev * 0.92
+        const color = big ? 'bg-bear-bright' : small ? 'bg-bull-bright' : last ? 'bg-accent' : 'bg-border'
+        return (
+          <div key={i} className="flex flex-col items-center gap-0.5 flex-1">
+            <span className="text-[9px] text-text-muted font-mono">{t.vol}</span>
+            <div className={`w-full rounded-t ${color}`} style={{ height: h }} />
+            <span className="text-[9px] text-text-muted">{t.date}</span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 export default function SentimentThermometer() {
   const [d, setD] = useState(null)
   const [loading, setLoading] = useState(true)
   const [showSectors, setShowSectors] = useState(false)
+  const [showVol, setShowVol] = useState(false)
 
   useEffect(() => {
     fetchJSON('/api/market/sentiment').then(setD).catch(() => {}).finally(() => setLoading(false))
@@ -40,11 +65,20 @@ export default function SentimentThermometer() {
             <span className="text-[11px] text-text-dim">赚钱效应 <span className={pctColor(d.money_effect)}>{d.money_effect > 0 ? '+' : ''}{d.money_effect}%</span></span>
           )}
           {v.amount_wy != null && (
-            <span className="text-[11px] text-text-dim">· 两市 <span className="text-text-bright font-mono">{v.amount_wy}万亿</span>
+            <button onClick={() => setShowVol(!showVol)} className="text-[11px] text-text-dim hover:text-text">
+              · 两市 <span className="text-text-bright font-mono">{v.amount_wy}万亿</span>
               {v.label && <span className={`ml-1 ${v.ratio > 0 ? 'text-bear-bright' : v.ratio < 0 ? 'text-bull-bright' : 'text-text-dim'}`}>{v.label}{v.ratio != null ? `${v.ratio > 0 ? '+' : ''}${v.ratio}%` : ''}</span>}
-            </span>
+              {(v.trend || []).length > 1 && <span className="text-text-muted ml-1">{showVol ? '▾' : '▸'}</span>}
+            </button>
           )}
         </div>
+        {/* 量能趋势(近6日两市成交量) */}
+        {showVol && (v.trend || []).length > 1 && (
+          <div className="mt-2 pt-2 border-t border-border-subtle/40">
+            <div className="text-[10px] text-text-muted mb-1">近6日两市成交量(亿股) · 看放缩量</div>
+            <VolTrend trend={v.trend} />
+          </div>
+        )}
         {d.mood_desc && <div className="text-[11.5px] text-text-dim mt-1 leading-relaxed">{d.mood_desc}</div>}
       </div>
 

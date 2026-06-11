@@ -240,25 +240,33 @@ def _fetch_sentiment_sync():
                     vol_today += float(b[8] or 0)
                     amt_today += float(b[9] or 0)
         # 放缩量: 纯用 akshare 综指日成交量(同源同单位), 最近完整交易日 vs 前5日均
-        ratio, vlabel = None, None
+        ratio, vlabel, trend = None, None, []
         try:
+            today_iso = (datetime.now(timezone.utc) + timedelta(hours=8)).date().isoformat()
             sums = {}
             for sym in ("sh000001", "sz399106"):
                 df = ak.stock_zh_index_daily(symbol=sym)
-                for _, row in df.tail(8).iterrows():
-                    sums[str(row.get("date"))] = sums.get(str(row.get("date")), 0) + float(row.get("volume") or 0)
-            seq = [v for _, v in sorted(sums.items())]
+                for _, row in df.tail(9).iterrows():
+                    ds = str(row.get("date"))[:10]
+                    if ds == today_iso:        # 当日数据盘中不完整, 排除
+                        continue
+                    sums[ds] = sums.get(ds, 0) + float(row.get("volume") or 0)
+            ordered = sorted(sums.items())
+            seq = [v for _, v in ordered]
             if len(seq) >= 6:
                 latest, prev5 = seq[-1], sum(seq[-6:-1]) / 5
                 if prev5:
                     ratio = round((latest / prev5 - 1) * 100)
                     vlabel = "放量" if ratio >= 8 else ("缩量" if ratio <= -8 else "平量")
+            # 近6日两市成交量序列(亿股, 给前端画趋势)
+            trend = [{"date": ds[5:], "vol": round(vv / 1e8)} for ds, vv in ordered[-6:]]
         except Exception:
             pass
         volume = {
             "amount_yi": round(amt_today / 1e8),         # 今日两市成交额(亿)
             "amount_wy": round(amt_today / 1e12, 2),     # 万亿
             "ratio": ratio, "label": vlabel,             # 最近交易日量能 较前5日均
+            "trend": trend,                              # 近6日两市成交量(亿股)
         }
     except Exception:
         volume = None
