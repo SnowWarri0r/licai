@@ -318,7 +318,12 @@ function aggregate(rows, aShareTradingDay = true) {
     groups,
     totalMv,
     totalCost: rows.reduce((s, r) => s + (r.cost || 0), 0),
-    totalPnl: rows.reduce((s, r) => s + (r.pnl || 0), 0),
+    // 行情未加载(有成本但市值缺失/为0)时, 这笔 pnl 不可信(会把成本瞬时当大额浮亏),
+    // 不计入总浮动, 避免调流水/基金净值未确认的中间态出现吓人的负数。等市值到位再计入。
+    totalPnl: rows.reduce((s, r) => {
+      if ((r.cost || 0) > 0 && !(r.mv > 0)) return s
+      return s + (r.pnl || 0)
+    }, 0),
     totalToday: Object.values(groups).reduce((s, g) => s + g.todayPnl, 0),
     fxExposure: Object.values(fxExposure).filter(e => e.originalMarketValue > 0),
   }
