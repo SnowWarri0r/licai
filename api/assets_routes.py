@@ -882,13 +882,12 @@ async def recompute_dca_fees():
     for asset in assets:
         if asset.get("asset_type") != "FUND":
             continue
-        rate = asset.get("purchase_fee_rate")
-        if rate is None:                       # 没设费率 → 不碰 (含 C 类 / 手动确认)
-            continue
+        # rate=None (C 类/没设费率) 当 0 处理: DCA 份额仍按当日净值重算 (amount/nav)。
+        # 只动 note 以 'DCA' 开头的自动定投行, 手动 add-lot / initial 不碰, 不会误覆盖。
+        rate = float(asset.get("purchase_fee_rate") or 0)
         code = asset.get("code")
         if _is_onchain_etf(code):
             continue  # 场内 ETF 走市价/佣金, 不按净值+申购费重算
-        rate = float(rate)
         actions = await list_external_actions(asset["id"])
         dca_rows = [a for a in actions
                     if (a.get("status") or "confirmed") == "confirmed"
