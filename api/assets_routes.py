@@ -396,24 +396,38 @@ async def create_asset(data: AssetCreate):
         else (data.pending_amount if data.pending_amount is not None else None)
     )
 
-    aid = await add_external_asset(
-        asset_type=data.asset_type,
-        code=data.code,
-        name=data.name,
-        platform=data.platform or "",
-        cost_amount=effective_cost,
-        shares=data.shares,
-        manual_value=data.manual_value,
-        note=data.note or "",
-        okx_algo_id=data.okx_algo_id,
-        okx_bot_type=data.okx_bot_type,
-        annual_yield_rate=data.annual_yield_rate,
-        start_date=data.start_date,
-        pending_amount=effective_pending,
-        purchase_fee_rate=data.purchase_fee_rate,
-        broker=data.broker,
-    )
-    # 写一条初始 action 进 ledger (BOT 不入账, 走 OKX 同步)
+    # 自动合并: FUND/CRYPTO 且 code 命中已有持仓 (同类型 + 同 code + 同券商) → 追加流水, 不新建重复。
+    # 券商不同 = 不同账户, 不合并; 已清仓(shares=0)但有历史的也合并 (等于复活续上同一条流水)。
+    merge_target = None
+    if data.asset_type in ("FUND", "CRYPTO") and data.code:
+        for ex in (await list_external_assets()):
+            if (ex.get("asset_type") == data.asset_type
+                    and (ex.get("code") or "") == data.code
+                    and (ex.get("broker") or "") == (data.broker or "")):
+                merge_target = ex
+                break
+
+    if merge_target:
+        aid = merge_target["id"]
+    else:
+        aid = await add_external_asset(
+            asset_type=data.asset_type,
+            code=data.code,
+            name=data.name,
+            platform=data.platform or "",
+            cost_amount=effective_cost,
+            shares=data.shares,
+            manual_value=data.manual_value,
+            note=data.note or "",
+            okx_algo_id=data.okx_algo_id,
+            okx_bot_type=data.okx_bot_type,
+            annual_yield_rate=data.annual_yield_rate,
+            start_date=data.start_date,
+            pending_amount=effective_pending,
+            purchase_fee_rate=data.purchase_fee_rate,
+            broker=data.broker,
+        )
+    # 写购买 action 进 ledger (BOT 不入账, 走 OKX 同步); 合并时标 add-lot, 新建标 initial
     if data.asset_type != "BOT" and data.cost_amount and data.cost_amount > 0:
         seed_type = "BUY" if data.asset_type in ("FUND", "CRYPTO") else "DEPOSIT"
         seed_fee = float(data.fee or 0)
@@ -423,16 +437,29 @@ async def create_asset(data: AssetCreate):
         unit_price = None
         if has_shares and data.asset_type in ("FUND", "CRYPTO"):
             unit_price = round(net / float(data.shares), 6)
+        _tag = "add-lot" if merge_target else "initial"
         await add_external_action(
             aid, seed_type,
             amount=float(data.cost_amount),
             shares=float(data.shares) if has_shares else None,
             unit_price=unit_price,
             trade_date=data.start_date,
-            note="initial (pending: 份额待确认)" if is_pending_fund else "initial",
+            note=(f"{_tag} (pending: 份额待确认)" if is_pending_fund else _tag),
             status="pending" if is_pending_fund else "confirmed",
             fee=seed_fee if seed_fee > 0 else None,
         )
+
+    # 合并: 追加流水后按全部 action 重算已有持仓的 cost/shares (新建已由 add_external_asset 设好)
+    if merge_target:
+        acts = await list_external_actions(aid)
+        state = compute_external_state(acts, data.asset_type)
+        upd = {"cost_amount": state["cost_amount"]}
+        if data.asset_type in ("FUND", "CRYPTO"):
+            upd["shares"] = state["shares"]
+        # 已有没设申购费率而这次填了 → 补上
+        if merge_target.get("purchase_fee_rate") is None and data.purchase_fee_rate is not None:
+            upd["purchase_fee_rate"] = data.purchase_fee_rate
+        await update_external_asset(aid, **upd)
 
     # 顺便创建定投计划 (FUND/CRYPTO only)
     dca_created_id = None
@@ -459,7 +486,8 @@ async def create_asset(data: AssetCreate):
             next_due=next_due, note=d.note or "",
         )
     return {
-        "message": "added", "id": aid,
+        "message": "merged" if merge_target else "added", "id": aid,
+        "merged": bool(merge_target),
         "pending": is_pending_fund,
         "dca_id": dca_created_id,
     }
