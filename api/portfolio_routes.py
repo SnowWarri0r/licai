@@ -360,6 +360,103 @@ async def trade_journal(limit: int = 80):
     }
 
 
+_ai_review_cache: dict = {}
+_AI_REVIEW_TTL = 1800  # 30min, LLM 调用贵
+
+
+@router.get("/trade-review-ai")
+async def trade_review_ai(force: int = 0):
+    """LLM 交易纪律复盘: 用真实流水(trade_review + trade_journal 的数据)复盘交易习惯,
+    重点指出纪律问题(追高/情绪化反复买卖/不止损/持有过短)。纯客观举证, 严禁任何未来买卖建议。"""
+    import time, asyncio, json
+    from services import llm_client
+
+    ck = "trade_review_ai"
+    if not force:
+        c = _ai_review_cache.get(ck)
+        if c and time.time() - c[1] < _AI_REVIEW_TTL:
+            return c[0]
+
+    review = await trade_review()
+    journal = await trade_journal(limit=400)
+    o = review.get("overview") or {}
+    if not o.get("n_stocks"):
+        return {"narrative": "", "discipline": [], "summary": "", "generated_at": None}
+
+    # 追高样本: 买入后股价至今下跌的笔, 按套得最深排
+    buys_under = sorted(
+        [t for t in journal["trades"] if t["kind"] == "buy" and not t["hit"]],
+        key=lambda x: x["pct"])[:10]
+    # 同股多次买入(追/补)聚合, 看是否越买越高
+    by_stock: dict = {}
+    for t in journal["trades"]:
+        if t["kind"] == "buy":
+            by_stock.setdefault(t["name"], []).append(t)
+    repeat_buys = {n: sorted(ts, key=lambda x: x["date"]) for n, ts in by_stock.items() if len(ts) >= 3}
+
+    lines = [
+        f"总览: 交易过 {o['n_stocks']} 只, 胜率 {round(o['win_rate']*100)}% ({o['n_win']}赚{o['n_loss']}亏), "
+        f"已实现合计 {o['total_realized']:.0f}, 当前持仓平均持有 {o['avg_hold_days']} 天",
+        f"买入命中率 {round(journal['buy_hit_rate']*100)}% ({journal['buy_hit']}/{journal['buy_count']} 笔买在现价之下) "
+        f"— 即约 {round((1-journal['buy_hit_rate'])*100)}% 的买入当前是套住的",
+        f"卖出命中率 {round(journal['sell_hit_rate']*100)}% ({journal['sell_hit']}/{journal['sell_count']} 笔卖完股价确实跌了)",
+    ]
+    if review.get("active_t"):
+        lines.append("做T(反复买卖)最频繁: " + "; ".join(
+            f"{a['name']} {a['n_buy']}买{a['n_sell']}卖 净已实现{a['realized']:+.0f}" for a in review["active_t"][:5]))
+    if buys_under:
+        lines.append("套得最深的买入: " + "; ".join(
+            f"{t['name']} @{t['price']}(现{t['current']},{t['pct']:+.1f}%)" for t in buys_under))
+    for n, ts in list(repeat_buys.items())[:6]:
+        seq = " → ".join(f"@{t['price']}" for t in ts)
+        trend = "越买越高(追)" if ts[-1]["price"] > ts[0]["price"] else "越买越低(补)"
+        lines.append(f"{n} 多次买入: {seq} [{trend}]")
+
+    data_block = "\n".join(lines)
+    system_prompt = (
+        "你是交易复盘教练。基于用户真实的 A 股交易流水, 复盘他的交易纪律, 像一面镜子把他的习惯照清楚。"
+        "重点找并直白指出纪律问题, 尤其: 追涨追高(越买越高)、情绪性反复买卖(高频做T但净亏)、不止损死扛、"
+        "持有过短追涨杀跌。每条问题必须用给定数据举证(具体票/价格/次数), 不许泛泛而谈。"
+        "语气直接、像老友点醒, 不留情面但只摆事实。"
+        "【硬规则】严禁任何面向未来的操作指令: 不许出现 该买/该卖/加仓/减仓/止损位/目标价/仓位建议/现在适合。"
+        "只复盘已经发生的行为, 不指挥下一步。也不许编造给定数据里没有的票或数字。"
+        "用 JSON 输出, 格式: {\"summary\":\"一句话定性他的交易纪律\", "
+        "\"discipline\":[{\"problem\":\"问题名(如:追高)\",\"evidence\":\"用具体数据举证\",\"why\":\"这暴露了什么习惯/伤了什么\"}], "
+        "\"narrative\":\"2-3段复盘正文, 把上面问题串成人话\"}。只输出 JSON。"
+    )
+    user_prompt = f"以下是我的真实交易数据, 复盘我的交易纪律, 指出我的问题:\n\n{data_block}"
+
+    try:
+        raw = await asyncio.to_thread(llm_client.call_claude, user_prompt, system_prompt, "claude-sonnet-4-5", 2800)
+    except Exception as e:
+        return {"narrative": "", "discipline": [], "summary": "", "error": str(e), "generated_at": None}
+
+    txt = (raw or "").strip()
+    if txt.startswith("```"):
+        txt = txt.split("```", 2)[1] if txt.count("```") >= 2 else txt.strip("`")
+        if txt.startswith("json"):
+            txt = txt[4:]
+        txt = txt.strip()
+    try:
+        parsed = json.loads(txt)
+    except Exception:
+        parsed = {"narrative": raw or "", "discipline": [], "summary": ""}
+
+    result = {
+        "summary": parsed.get("summary", ""),
+        "discipline": parsed.get("discipline", []) if isinstance(parsed.get("discipline"), list) else [],
+        "narrative": parsed.get("narrative", ""),
+        "stats": {
+            "win_rate": o["win_rate"], "buy_hit_rate": journal["buy_hit_rate"],
+            "sell_hit_rate": journal["sell_hit_rate"], "avg_hold_days": o["avg_hold_days"],
+            "n_stocks": o["n_stocks"],
+        },
+        "generated_at": time.time(),
+    }
+    _ai_review_cache[ck] = (result, time.time())
+    return result
+
+
 @router.get("/benchmark")
 async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
     """跑赢基准对照: 假设你 A 股的每次买卖, 同金额同日期都买在基准上 (默认沪深300).
