@@ -245,14 +245,15 @@ def _fetch_sentiment_sync():
         ratio, vlabel, trend = None, None, []
         try:
             df = ak.stock_zh_index_daily(symbol="sh000001")
-            ordered = [(str(r.get("date"))[:10], float(r.get("volume") or 0)) for _, r in df.tail(7).iterrows()]
+            ordered = [(str(r.get("date"))[:10], float(r.get("volume") or 0)) for _, r in df.tail(8).iterrows()]
             seq = [v for _, v in ordered]
             if len(seq) >= 6:
                 latest, prev5 = seq[-1], sum(seq[-6:-1]) / 5
                 if prev5:
                     ratio = round((latest / prev5 - 1) * 100)
                     vlabel = "放量" if ratio >= 8 else ("缩量" if ratio <= -8 else "平量")
-            trend = [{"date": ds[5:], "vol": round(vv / 1e8)} for ds, vv in ordered[-6:]]
+            # 多给一天(共7)当参照, 前端只画后6根, 保证每根都有前一日可比(无灰柱)
+            trend = [{"date": ds[5:], "vol": round(vv / 1e8)} for ds, vv in ordered[-7:]]
         except Exception:
             pass
         volume = {

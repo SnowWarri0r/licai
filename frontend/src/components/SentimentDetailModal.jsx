@@ -5,16 +5,18 @@ import { fetchJSON } from '../hooks/useApi'
 // A股: 涨红跌绿
 const up = 'text-bear-bright', down = 'text-bull-bright'
 
-// 量能红绿窄柱: 每日 vs 前一日, 放量红 / 缩量绿
+// 量能红绿窄柱: 每日 vs 前一日, 放量红 / 缩量绿。
+// trend 含一根参照日(首位), 只画后面每根(都有前一日可比, 不出灰柱)。
 function VolBars({ trend }) {
   if (!trend || trend.length < 2) return null
-  const vols = trend.map(t => t.vol)
+  const shown = trend.slice(1)
+  const vols = shown.map(t => t.vol)
   const max = Math.max(...vols), min = Math.min(...vols), span = max - min || 1
   return (
     <div className="flex items-end gap-3" style={{ height: 96 }}>
-      {trend.map((t, i) => {
+      {shown.map((t, i) => {
         const h = Math.round(16 + ((t.vol - min) / span) * 56)
-        const prev = i > 0 ? trend[i - 1].vol : t.vol
+        const prev = trend[i].vol   // 前一日(原数组里的前一个)
         const color = t.vol > prev ? 'bg-bear-bright' : t.vol < prev ? 'bg-bull-bright' : 'bg-text-dim'
         return (
           <div key={i} className="flex flex-col items-center justify-end gap-1 h-full" style={{ width: 34 }}>
@@ -36,6 +38,15 @@ export default function SentimentDetailModal({ summary, volume, onClose }) {
   useEffect(() => {
     fetchJSON('/api/market/sentiment-detail').then(setD).catch(() => {}).finally(() => setLoading(false))
   }, [])
+
+  // 打开时锁住底下页面滚动 + Esc 关闭
+  useEffect(() => {
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const onKey = (e) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => { document.body.style.overflow = prev; window.removeEventListener('keydown', onKey) }
+  }, [onClose])
 
   const v = volume || {}
   const zt = d?.zt || []
