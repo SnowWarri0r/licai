@@ -156,3 +156,106 @@ async def get_macro_kline(symbol: str, days: int = 60):
     import asyncio as _asyncio
     data = await _asyncio.to_thread(_kline_for_symbol, symbol, days)
     return {"symbol": symbol, "kline": data}
+
+
+# ============================================================
+# 爱在冰川式 市场情绪温度计 (打板情绪: 涨停/连板/炸板/赚钱效应)
+# ============================================================
+import time as _time
+_senti_cache: dict = {}
+_SENTI_TTL = 300
+
+
+def _fetch_sentiment_sync():
+    import os
+    for k in list(os.environ):
+        if "proxy" in k.lower():
+            os.environ.pop(k, None)
+    import akshare as ak
+    import collections
+    today = (datetime.now(timezone.utc) + timedelta(hours=8)).date()
+    zt = None
+    d = None
+    for back in range(0, 8):
+        dd = (today - timedelta(days=back)).strftime("%Y%m%d")
+        try:
+            z = ak.stock_zt_pool_em(date=dd)
+            if z is not None and len(z):
+                zt, d = z, dd
+                break
+        except Exception:
+            pass
+    if zt is None:
+        return None
+
+    def _safe(fn):
+        try:
+            r = fn(date=d)
+            return r if r is not None and len(r) else None
+        except Exception:
+            return None
+
+    dt_pool = _safe(ak.stock_zt_pool_dtgc_em)
+    zb = _safe(ak.stock_zt_pool_zbgc_em)
+    prev = _safe(ak.stock_zt_pool_previous_em)
+
+    n_zt = len(zt)
+    n_dt = len(dt_pool) if dt_pool is not None else 0
+    n_zb = len(zb) if zb is not None else 0
+    zbl_rate = round(n_zb / (n_zt + n_zb) * 100) if (n_zt + n_zb) else 0
+
+    ladder, max_lb = [], 1
+    if "连板数" in zt.columns:
+        vc = collections.Counter(int(x) for x in zt["连板数"].fillna(1))
+        max_lb = max(vc.keys()) if vc else 1
+        ladder = [{"lb": k, "count": vc[k]} for k in sorted(vc.keys(), reverse=True) if k >= 2]
+    # 最高连板的票名(空间龙头)
+    leaders = []
+    if "连板数" in zt.columns and "名称" in zt.columns:
+        top = zt[zt["连板数"] == max_lb]
+        leaders = [str(x) for x in top["名称"].head(4)]
+
+    money_eff, red_rate = None, None
+    if prev is not None and "涨跌幅" in prev.columns:
+        vals = [float(x) for x in prev["涨跌幅"] if x == x]
+        if vals:
+            money_eff = round(sum(vals) / len(vals), 2)
+            red_rate = round(sum(1 for v in vals if v > 0) / len(vals) * 100)
+
+    # 情绪定性 (纯客观, 看赚钱效应+连板高度, 不给买卖建议)
+    if money_eff is None:
+        mood, desc = "数据不足", ""
+    elif money_eff >= 3 and max_lb >= 4:
+        mood = "情绪高潮"
+        desc = f"昨日涨停今天平均 {money_eff:+.1f}%, 接力能赚, 最高 {max_lb} 连板, 资金敢打高位"
+    elif money_eff >= 1:
+        mood = "回暖/进攻"
+        desc = f"昨日涨停今天平均 {money_eff:+.1f}%, 接力有肉, 情绪偏暖"
+    elif money_eff > -1:
+        mood = "分歧/震荡"
+        desc = f"昨日涨停今天平均 {money_eff:+.1f}%, 多空分歧, 追高赚钱效应一般"
+    else:
+        mood = "退潮/亏钱效应"
+        desc = f"昨日涨停今天平均 {money_eff:+.1f}%, 接力被埋, 炸板率 {zbl_rate}%, 高位危险"
+
+    return {
+        "date": d, "n_zt": n_zt, "n_dt": n_dt, "n_zb": n_zb, "zbl_rate": zbl_rate,
+        "max_lianban": max_lb, "ladder": ladder, "leaders": leaders,
+        "money_effect": money_eff, "red_rate": red_rate,
+        "mood": mood, "mood_desc": desc,
+    }
+
+
+@router.get("/sentiment")
+async def market_sentiment():
+    """爱在冰川式市场情绪温度计: 涨停家数/连板高度/炸板率/赚钱效应。
+    纯客观情绪指标, 不构成买卖建议。看市场是高潮还是退潮的宏观参考。5min 缓存。"""
+    import asyncio
+    c = _senti_cache.get("s")
+    if c and _time.time() - c[1] < _SENTI_TTL:
+        return c[0]
+    r = await asyncio.to_thread(_fetch_sentiment_sync)
+    if r:
+        _senti_cache["s"] = (r, _time.time())
+        return r
+    return {"date": None, "mood": "数据不足", "n_zt": 0}
