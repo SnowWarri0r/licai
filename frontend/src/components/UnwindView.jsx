@@ -11,7 +11,6 @@ import Cashflow from './Cashflow'
 import MacroDashboard from './MacroDashboard'
 import PortfolioNews from './PortfolioNews'
 import DailyReview from './DailyReview'
-import SmallMetalNews from './SmallMetalNews'
 import AITradeReview from './AITradeReview'
 
 const TABS = [
@@ -51,7 +50,6 @@ export default function UnwindView() {
       {tab === 'news' && (
         <div className="space-y-4">
           <DailyReview />
-          <SmallMetalNews />
           <PortfolioNews />
         </div>
       )}

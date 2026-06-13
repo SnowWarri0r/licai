@@ -366,17 +366,28 @@ _AI_REVIEW_TTL = 1800  # 30min, LLM 调用贵
 
 
 def _parse_llm_json(raw):
+    import json, re
     txt = (raw or "").strip()
     if txt.startswith("```"):
-        txt = txt.split("```", 2)[1] if txt.count("```") >= 2 else txt.strip("`")
-        if txt.startswith("json"):
-            txt = txt[4:]
-        txt = txt.strip()
+        txt = re.sub(r"^```(json)?", "", txt).strip()
+        if txt.endswith("```"):
+            txt = txt[:-3].strip()
     try:
-        import json
         return json.loads(txt)
     except Exception:
-        return {"narrative": raw or "", "discipline": [], "summary": "", "good": [], "binchuan": []}
+        pass
+    # 截断救援: narrative/字段被 max_tokens 切断时, 试着补齐闭合符再解析
+    for tail in ['"}', '"]}', '"}]}', '}', ']}', '"}}', '"]}}']:
+        try:
+            return json.loads(txt + tail)
+        except Exception:
+            continue
+    # 仍失败: 正则尽量抠出已完整的字段, 绝不把原始 JSON 当 narrative 倒出来
+    out = {"summary": "", "good": [], "discipline": [], "binchuan": [], "narrative": ""}
+    m = re.search(r'"summary"\s*:\s*"((?:[^"\\]|\\.)*)"', txt)
+    if m:
+        out["summary"] = m.group(1)
+    return out
 
 
 @router.get("/trade-review-ai")
@@ -611,20 +622,11 @@ async def trade_review_ai(period: str = "all", force: int = 0):
     user_prompt = f"以下是我的真实交易数据(已分'仍持有'和'已清仓'), 平衡复盘我的交易纪律, 别把我已经割掉的票当成还在死扛:\n\n{data_block}"
 
     try:
-        raw = await asyncio.to_thread(llm_client.call_claude, user_prompt, system_prompt, "claude-sonnet-4-5", 2800)
+        raw = await asyncio.to_thread(llm_client.call_claude, user_prompt, system_prompt, "claude-sonnet-4-5", 4096)
     except Exception as e:
         return {"narrative": "", "discipline": [], "summary": "", "error": str(e), "generated_at": None}
 
-    txt = (raw or "").strip()
-    if txt.startswith("```"):
-        txt = txt.split("```", 2)[1] if txt.count("```") >= 2 else txt.strip("`")
-        if txt.startswith("json"):
-            txt = txt[4:]
-        txt = txt.strip()
-    try:
-        parsed = json.loads(txt)
-    except Exception:
-        parsed = {"narrative": raw or "", "discipline": [], "summary": ""}
+    parsed = _parse_llm_json(raw)
 
     result = {
         "period": "all", "period_label": "全周期", "empty": False,
