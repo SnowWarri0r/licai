@@ -12,17 +12,20 @@ function VolBars({ trend }) {
   const shown = trend.slice(1)
   const vols = shown.map(t => t.vol)
   const max = Math.max(...vols), min = Math.min(...vols), span = max - min || 1
+  const n = shown.length
+  const step = n > 10 ? 3 : n > 7 ? 2 : 1   // 日期标签密时隔位显示, 防重叠
   return (
-    <div className="flex items-end gap-3" style={{ height: 96 }}>
+    <div className="flex items-end gap-1" style={{ height: 100 }}>
       {shown.map((t, i) => {
-        const h = Math.round(16 + ((t.vol - min) / span) * 56)
+        const h = Math.round(14 + ((t.vol - min) / span) * 54)
         const prev = trend[i].vol   // 前一日(原数组里的前一个)
         const color = t.vol > prev ? 'bg-bear-bright' : t.vol < prev ? 'bg-bull-bright' : 'bg-text-dim'
+        const showDate = (n - 1 - i) % step === 0   // 从最新往前隔位, 保证最新一根有标签
         return (
-          <div key={i} className="flex flex-col items-center justify-end gap-1 h-full" style={{ width: 34 }}>
-            <span className="text-[10px] text-text-dim font-mono">{t.vol}</span>
-            <div className={`rounded-t ${color}`} style={{ height: h, width: 22 }} />
-            <span className="text-[9.5px] text-text-muted">{t.date}</span>
+          <div key={i} className="flex-1 flex flex-col items-center justify-end gap-1 h-full min-w-0" title={`${t.date}: ${t.vol}亿股`}>
+            <span className="text-[8.5px] text-text-dim font-mono leading-none">{t.vol}</span>
+            <div className={`w-full max-w-[20px] rounded-t ${color}`} style={{ height: h }} />
+            <span className="text-[8.5px] text-text-muted leading-none h-2.5">{showDate ? t.date : ''}</span>
           </div>
         )
       })}
@@ -100,7 +103,7 @@ export default function SentimentDetailModal({ summary, volume, onClose }) {
         {/* 量能红绿柱 */}
         {(v.trend || []).length > 1 && (
           <div className="mb-4 px-3 py-3 rounded-lg bg-surface-3/50 border border-border-subtle">
-            <div className="text-[10.5px] text-text-muted mb-2">近6日沪市成交量(亿股) · 放量红 / 缩量绿</div>
+            <div className="text-[10.5px] text-text-muted mb-2">近14日沪市成交量(亿股) · 放量红 / 缩量绿</div>
             <VolBars trend={v.trend} />
           </div>
         )}
