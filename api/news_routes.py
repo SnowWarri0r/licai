@@ -212,6 +212,52 @@ async def _fetch_source(fetcher) -> list[dict]:
         return []
 
 
+# 小金属关键词 (跟有色/中钨持仓相关: 钨钼锑稀土锗镓钽铌钴 + 收储/供需信号)
+_SMALL_METAL_KW = [
+    "钨", "钼", "锑", "稀土", "镨钕", "镝", "铽", "锗", "镓", "钽", "铌", "钴",
+    "小金属", "稀有金属", "永磁", "金属硅", "工业硅", "收储",
+]
+
+
+@router.get("/small-metal")
+async def small_metal_news(limit: int = 30):
+    """小金属资讯: 从全市场要闻按关键词过滤出钨钼锑稀土等的政策/收储/供需/价格消息。
+    现货价无源, 用资讯补宏观。复用 market_news 缓存的全量, 没有就现拉三源。"""
+    ck = "small_metal_news"
+    cached = _cache.get(ck)
+    if cached and time.time() - cached[1] < _TTL:
+        return cached[0]
+
+    mc = _cache.get("market_news")
+    if mc and time.time() - mc[1] < _TTL:
+        items = mc[0].get("items", [])
+    else:
+        _strip_proxy_env()
+        results = await asyncio.gather(
+            _fetch_source(_fetch_global_em),
+            _fetch_source(_fetch_global_cls),
+            _fetch_source(_fetch_global_ths),
+        )
+        items, seen = [], set()
+        for lst in results:
+            for it in lst:
+                t = it.get("title")
+                if t and t not in seen:
+                    seen.add(t)
+                    items.append(it)
+
+    def _hit(it):
+        s = (it.get("title") or "") + (it.get("content") or "")
+        return any(k in s for k in _SMALL_METAL_KW)
+
+    out = [it for it in items if _hit(it)]
+    out.sort(key=lambda x: x.get("time") or "", reverse=True)
+    result = {"items": out[:limit], "count": len(out)}
+    if out:
+        _cache[ck] = (result, time.time())
+    return result
+
+
 @router.get("/market")
 async def market_news():
     """全市场要闻 (东财 + 财联社 + 同花顺). 三源并发 + 单源超时, 5min 缓存."""
