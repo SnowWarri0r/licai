@@ -3,15 +3,19 @@ import { fetchJSON } from '../hooks/useApi'
 import MacroKlineModal from './MacroKlineModal'
 
 const GROUP_META = {
-  a_index:        { label: 'A 股大盘', desc: '上证 / 深成 / 宽基' },
-  hk_index:       { label: '港股',     desc: '外资情绪反应最直接, 涨幅 > A 股 = 外资认账' },
-  us_index:       { label: '美股',     desc: '隔夜外盘, 风险偏好风向' },
-  fx:             { label: '汇率',     desc: 'USD/CNH 离岸对消息最敏感, 看中美/贸易看这条' },
-  commodity_intl: { label: '国际商品', desc: '黄金避险 vs 铜油需求, 反向走代表风险情绪' },
-  commodity_cn:   { label: '国内商品', desc: '沪铜/铁矿/螺纹 = 中国需求实景' },
+  a_index:          { label: 'A 股大盘',   desc: '上证 / 深成 / 宽基' },
+  hk_index:         { label: '港股',       desc: '外资情绪反应最直接, 涨幅 > A 股 = 外资认账' },
+  us_index:         { label: '美股',       desc: '隔夜外盘, 风险偏好风向' },
+  overseas_index:   { label: '海外指数',   desc: '日韩欧外围, KOSDAQ/日经异动看这里' },
+  fx:               { label: '汇率',       desc: 'USD/CNH 离岸对消息最敏感, 看中美/贸易看这条' },
+  metal_base:       { label: '有色金属',   desc: '铜铝锌镍锡铅 = 工业需求 + 你有色持仓实景' },
+  metal_precious:   { label: '贵金属',     desc: '金银避险情绪, 沪金沪银对国内更贴' },
+  energy_new_black: { label: '新能源 / 黑色', desc: '碳酸锂/工业硅 = 新能源链, 螺纹/焦煤 = 地产基建' },
+  energy_chem:      { label: '能化 / 农产品', desc: '原油 PTA 甲醇等, 宏观成本与通胀风向' },
 }
 
-const GROUP_ORDER = ['a_index', 'hk_index', 'us_index', 'fx', 'commodity_intl', 'commodity_cn']
+const GROUP_ORDER = ['a_index', 'hk_index', 'us_index', 'overseas_index', 'fx',
+  'metal_base', 'metal_precious', 'energy_new_black', 'energy_chem']
 
 function colorOfPct(pct) {
   if (pct == null) return 'text-text-dim'
