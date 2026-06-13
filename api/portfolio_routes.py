@@ -483,22 +483,44 @@ async def trade_review_ai(period: str = "all", force: int = 0):
     held_loss = [s for s in held if s["total_now"] < 0]   # 当前真亏的持仓(才轮得到说追高/套牢)
     loss_held_names = {s["name"] for s in held_loss}
 
-    # "套着的买入"只在【当前真亏】的持仓里找(赚钱的持仓哪怕某笔买得高也不算追高错)
-    held_buys_under = sorted(
-        [t for t in journal["trades"] if t["kind"] == "buy" and not t["hit"] and t["name"] in loss_held_names],
-        key=lambda x: x["pct"])[:8]
-    # 同股多次买入(越买越高/补仓), 只看当前真亏的持仓
-    by_stock: dict = {}
-    for t in journal["trades"]:
-        if t["kind"] == "buy" and t["name"] in loss_held_names:
-            by_stock.setdefault(t["name"], []).append(t)
-    repeat_buys = {n: sorted(ts, key=lambda x: x["date"]) for n, ts in by_stock.items() if len(ts) >= 3}
-
     closed_win = [s for s in closed if s["realized"] > 0]
     closed_loss = [s for s in closed if s["realized"] < 0]
     closed_loss_sorted = sorted(closed_loss, key=lambda s: s["realized"])
 
     cur_by_code = {t["code"]: t["current"] for t in journal["trades"]}
+    code_by_name = {s["name"]: s["code"] for s in stats}
+
+    # 按"持仓轮次"切分每只票的买入: 期间卖到 0 即上一轮结束、新建仓算新一轮。
+    # 只有当前未平那轮的买入才算"还套着"; 卖掉的旧仓买入不能再当套牢/加码(否则会把
+    # '买→卖→后来重新买'误判成'越跌越加码',如格林美 @9.41买完已@9.11卖掉, @7.88是新仓)。
+    def _buy_rounds(code):
+        ts = sorted([t for t in journal["trades"] if t["code"] == code],
+                    key=lambda x: (x["date"], 0 if x["kind"] == "buy" else 1))
+        rounds, cur, bal = [], [], 0.0
+        for t in ts:
+            if t["kind"] == "buy":
+                bal += t["shares"]; cur.append(t)
+            else:
+                bal -= t["shares"]
+                if bal <= 1e-6:
+                    if cur:
+                        rounds.append(cur)
+                    cur, bal = [], 0.0
+        if cur:
+            rounds.append(cur)
+        return rounds
+
+    # 当前真亏持仓: 取其"开放那一轮"的买入 (held_loss 一定还持有 → 最后一轮是开放的)
+    cur_round_buys = {s["name"]: (_buy_rounds(s["code"])[-1] if _buy_rounds(s["code"]) else [])
+                      for s in held_loss}
+    # "套着的买入": 只取当前轮里现价低于买价的
+    held_buys_under = sorted(
+        [t for buys in cur_round_buys.values() for t in buys
+         if t.get("current") and t.get("price") and t["current"] < t["price"]],
+        key=lambda x: x["pct"])[:8]
+    # 当前轮内 ≥3 笔买入才算反复补仓
+    repeat_buys = {n: sorted(buys, key=lambda x: x["date"])
+                   for n, buys in cur_round_buys.items() if len(buys) >= 3}
 
     # (b) 已清仓票"卷入周期"(首次买入→末次卖出): 看赚的拿多久 vs 亏的拿多久
     def _closed_span(code):
@@ -516,25 +538,24 @@ async def trade_review_ai(period: str = "all", force: int = 0):
     avg_cw = round(sum(cw_spans) / len(cw_spans)) if cw_spans else None
     avg_cl = round(sum(cl_spans) / len(cl_spans)) if cl_spans else None
 
-    # (c) 越跌越加码: 同股多次买入价格下行但金额上行 = martingale。
-    # 只看【最终亏钱】的票(当前真亏的持仓 + 已清仓亏的)——赚钱票的越买越高是追对了, 不算问题。
+    # (c) 越跌越加码: 同股【同一持仓轮次内】多次买入价格下行但金额上行 = martingale。
+    # 只看最终亏钱的票(当前真亏持仓 + 已清仓亏的); 按轮次评估, 不把跨轮的买→卖→再买当加码。
     loser_names = loss_held_names | {s["name"] for s in closed_loss}
-    buys_by_code: dict = {}
-    for t in journal["trades"]:
-        if t["kind"] == "buy" and t["name"] in loser_names:
-            buys_by_code.setdefault(t["code"], []).append(t)
+    loser_codes = {code_by_name[n] for n in loser_names if n in code_by_name}
     escalation = []
-    for code, ts in buys_by_code.items():
-        if len(ts) < 3:
-            continue
-        ts = sorted(ts, key=lambda x: x["date"])
-        amts = [t["price"] * t["shares"] for t in ts]
-        falling = ts[-1]["price"] < ts[0]["price"]
-        growing = amts[-1] > amts[0] * 1.2
-        nm = ts[0]["name"]
-        seq = " → ".join(f"@{t['price']}×{int(t['shares'])}={round(t['price']*t['shares'])}" for t in ts)
-        flag = " [越跌越加码!]" if (falling and growing) else (" [越买越高]" if ts[-1]["price"] > ts[0]["price"] else "")
-        escalation.append({"name": nm, "seq": seq, "flag": flag, "martingale": falling and growing})
+    for code in loser_codes:
+        for ts in _buy_rounds(code):              # 逐轮看, 取第一个构成加码的轮
+            if len(ts) < 3:
+                continue
+            ts = sorted(ts, key=lambda x: x["date"])
+            amts = [t["price"] * t["shares"] for t in ts]
+            falling = ts[-1]["price"] < ts[0]["price"]
+            growing = amts[-1] > amts[0] * 1.2
+            nm = ts[0]["name"]
+            seq = " → ".join(f"@{t['price']}×{int(t['shares'])}={round(t['price']*t['shares'])}" for t in ts)
+            flag = " [越跌越加码!]" if (falling and growing) else (" [越买越高]" if ts[-1]["price"] > ts[0]["price"] else "")
+            escalation.append({"name": nm, "seq": seq, "flag": flag, "martingale": falling and growing})
+            break
 
     # (d) 板块集中度(仍持有, 按市值)
     sector_val: dict = {}
