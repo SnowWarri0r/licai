@@ -8,11 +8,12 @@ import BenchmarkCompare from './BenchmarkCompare'
 import Cashflow from './Cashflow'
 import MacroDashboard from './MacroDashboard'
 import PortfolioNews from './PortfolioNews'
+import DailyReview from './DailyReview'
 
 const TABS = [
   { key: 'sector',   label: '板块',   desc: '动量 / 资金流 / 早盘速览' },
   { key: 'macro',    label: '宏观',   desc: '指数 / 汇率 / 商品' },
-  { key: 'news',     label: '资讯',   desc: '持仓股新闻 / 公告' },
+  { key: 'news',     label: '资讯',   desc: '收盘复盘 / 持仓新闻' },
   { key: 'config',   label: '配置',   desc: '现金流 / 大类 / 跑赢基准' },
 ]
 const TAB_KEYS = TABS.map(t => t.key)
@@ -42,7 +43,10 @@ export default function UnwindView() {
       )}
 
       {tab === 'news' && (
-        <PortfolioNews />
+        <div className="space-y-4">
+          <DailyReview />
+          <PortfolioNews />
+        </div>
       )}
 
       {tab === 'config' && (
