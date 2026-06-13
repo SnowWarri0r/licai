@@ -18,7 +18,7 @@ export default function AITradeReview() {
       AI 正在复盘你的交易纪律…<span className="text-text-muted">（首次约 30–60 秒）</span>
     </div>
   )
-  if (err || !d || (!d.summary && !d.narrative && !(d.discipline || []).length)) {
+  if (err || !d || (!d.summary && !d.narrative && !(d.discipline || []).length && !(d.good || []).length)) {
     return (
       <div className="bg-surface-2 border border-border rounded-xl p-4 flex items-center justify-between">
         <span className="text-text-dim text-[12px]">AI 复盘暂不可用</span>
@@ -48,9 +48,24 @@ export default function AITradeReview() {
         </div>
       )}
 
+      {/* 做对的 */}
+      {(d.good || []).length > 0 && (
+        <div className="mb-3 px-3 py-2.5 rounded-lg bg-bull/8 border border-bull/25">
+          <div className="text-[10px] text-bull-bright/90 mb-1.5 tracking-wider">做对的</div>
+          <ul className="space-y-1">
+            {d.good.map((g, i) => (
+              <li key={i} className="text-[11.5px] text-text-dim flex gap-1.5 leading-relaxed">
+                <span className="text-bull-bright shrink-0">✓</span><span>{g}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* 纪律问题 */}
       {(d.discipline || []).length > 0 && (
         <div className="space-y-2.5 mb-3">
+          <div className="text-[10px] text-bear-bright/80 tracking-wider mb-0.5">要改的</div>
           {d.discipline.map((x, i) => (
             <div key={i} className="border-l-2 border-bear-bright/50 pl-3">
               <div className="text-[13px] font-semibold text-text-bright flex items-center gap-1.5">
