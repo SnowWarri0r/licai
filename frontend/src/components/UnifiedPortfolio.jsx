@@ -230,8 +230,10 @@ function normalizeAsset(a) {
     pnlPct: a.pnl_pct,
     today,
     _raw: a,
+    broker: a.broker || null,
     extra: {
       platform: a.platform,
+      broker: a.broker || null,
       nav: q?.nav ?? q?.est_nav,  // 优先官方净值，对齐 App "持有金额" 口径
       realtime: q?.realtime,
       price: q?.price,
@@ -1233,6 +1235,11 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
                       <span className="text-[13px] font-semibold text-text-bright truncate">{row.name}</span>
                       <TypeChip type={row.type} compact />
                       {row.type === 'A' && <MarketChip market={row.extra?.market} />}
+                      {row.broker && (
+                        <span className="text-[9.5px] px-1 py-0 rounded bg-surface-3 text-text-muted border border-border-subtle shrink-0 whitespace-nowrap">
+                          {row.broker}
+                        </span>
+                      )}
                       {row.extra?.okxSynced && (
                         <Tooltip content="OKX 自动同步中">
                           <span className="text-bull cursor-help text-[12px] leading-none">🔗</span>
