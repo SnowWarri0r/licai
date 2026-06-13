@@ -176,6 +176,7 @@ function normalizeHolding(h) {
     category: stockCategoryOf(h),
     code: h.stock_code,
     name: h.stock_name,
+    broker: h.broker || null,
     mv,
     cost,
     pnl: h.unrealized_pnl ?? (mv - cost),
@@ -1236,7 +1237,7 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
                       <TypeChip type={row.type} compact />
                       {row.type === 'A' && <MarketChip market={row.extra?.market} />}
                       {row.broker && (
-                        <span className="text-[9.5px] px-1 py-0 rounded bg-surface-3 text-text-muted border border-border-subtle shrink-0 whitespace-nowrap">
+                        <span className="text-[10px] px-1.5 py-[1px] rounded bg-info/15 text-info border border-info/40 shrink-0 whitespace-nowrap font-medium">
                           {row.broker}
                         </span>
                       )}
