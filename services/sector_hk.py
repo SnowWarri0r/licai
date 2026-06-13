@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 import time
 
+from services.sector_compare import _ohlc_point
+
 
 _CACHE_TTL = 600
 _cache: tuple[dict, float] | None = None
@@ -74,19 +76,19 @@ def _close_pct(closes: list[float], n: int) -> float | None:
     return round((last / prior - 1) * 100, 2)
 
 
-def _fetch_index_kline_sync(symbol: str) -> list[dict]:
+def _fetch_index_kline_sync(symbol: str, days: int = 120) -> list[dict]:
     try:
         import akshare as ak
         df = ak.stock_hk_index_daily_em(symbol=symbol)
         if df is None or df.empty:
             return []
         out = []
-        for _, r in df.tail(120).iterrows():
+        for _, r in df.tail(days).iterrows():
             try:
-                out.append({
-                    "date": str(r["date"]),
-                    "close": float(r["latest"]),
-                })
+                row = {"date": str(r["date"]), "close": float(r["latest"])}
+                if all(c in r for c in ("open", "high", "low")):
+                    row["open"], row["high"], row["low"] = float(r["open"]), float(r["high"]), float(r["low"])
+                out.append(row)
             except (ValueError, TypeError, KeyError):
                 continue
         return out
@@ -157,7 +159,7 @@ async def _scan_uncached(held_codes: list[str]) -> dict:
             "change_1d": _close_pct(closes, 1),
             "change_5d": _close_pct(closes, 5),
             "change_30d": _close_pct(closes, 30),
-            "kline_tail": [{"date": k["date"], "close": k["close"]} for k in tail],
+            "kline_tail": [_ohlc_point(k) for k in tail],
             "etf_code": etf_code,
             "etf_name": etf_name,
             "held": cn in held_sectors,
