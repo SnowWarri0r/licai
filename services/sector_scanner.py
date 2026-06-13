@@ -182,28 +182,39 @@ def _resolve_etf_for_board(board_name: str) -> tuple[str, str] | None:
     return None
 
 
-async def _resolve_held_boards(held_codes: list[str]) -> set[str]:
-    if not held_codes:
-        return set()
-    from services.market_data import _lookup_industry
+async def _resolve_held_boards(held_codes: list[str], etf_names: list[str] | None = None) -> set[str]:
     boards_list = await _load_ths_boards(force=False)
     if not boards_list:
         return set()
-    industries = await asyncio.gather(*(
-        asyncio.to_thread(_lookup_industry, c) for c in held_codes
-    ), return_exceptions=True)
     held: set[str] = set()
-    for ind in industries:
-        if isinstance(ind, Exception) or not ind:
+    # 个股: 反查行业 → 板块
+    if held_codes:
+        from services.market_data import _lookup_industry
+        industries = await asyncio.gather(*(
+            asyncio.to_thread(_lookup_industry, c) for c in held_codes
+        ), return_exceptions=True)
+        for ind in industries:
+            if isinstance(ind, Exception) or not ind:
+                continue
+            board = _resolve_ths_board(ind, boards_list)
+            if board:
+                held.add(board)
+    # 行业 ETF: 名字里 "xxxETF" 取 xxx 当行业词 → 板块 (海外/宽基/无对应板块的自然 None 跳过)
+    for nm in (etf_names or []):
+        if not nm or "ETF" not in nm:
             continue
-        board = _resolve_ths_board(ind, boards_list)
+        key = nm.split("ETF")[0].strip()
+        if not key:
+            continue
+        board = _resolve_ths_board(key, boards_list)
         if board:
             held.add(board)
     return held
 
 
-async def scan_sectors(held_codes: list[str], force: bool = False) -> dict:
-    held_boards = await _resolve_held_boards(held_codes)
+async def scan_sectors(held_codes: list[str], etf_names: list[str] | None = None,
+                       force: bool = False) -> dict:
+    held_boards = await _resolve_held_boards(held_codes, etf_names)
     rows = await _load_summary(force=force)
     if not rows:
         return {"sectors": [], "total": 0, "held_boards": sorted(held_boards), "kline_top_n": 0}
