@@ -365,18 +365,95 @@ _ai_review_cache: dict = {}
 _AI_REVIEW_TTL = 1800  # 30min, LLM 调用贵
 
 
+def _parse_llm_json(raw):
+    txt = (raw or "").strip()
+    if txt.startswith("```"):
+        txt = txt.split("```", 2)[1] if txt.count("```") >= 2 else txt.strip("`")
+        if txt.startswith("json"):
+            txt = txt[4:]
+        txt = txt.strip()
+    try:
+        import json
+        return json.loads(txt)
+    except Exception:
+        return {"narrative": raw or "", "discipline": [], "summary": "", "good": [], "binchuan": []}
+
+
 @router.get("/trade-review-ai")
-async def trade_review_ai(force: int = 0):
-    """LLM 交易纪律复盘: 用真实流水(trade_review + trade_journal 的数据)复盘交易习惯,
-    重点指出纪律问题(追高/情绪化反复买卖/不止损/持有过短)。纯客观举证, 严禁任何未来买卖建议。"""
+async def trade_review_ai(period: str = "all", force: int = 0):
+    """LLM 交易纪律复盘。period: all(全周期总览) / day(当日) / week(本周) / month(本月)。
+    纯客观举证, 严禁任何未来买卖建议。"""
     import time, asyncio, json, datetime as _dt
     from services import llm_client
 
-    ck = "trade_review_ai"
+    period = period if period in ("all", "day", "week", "month") else "all"
+    ck = f"trade_review_ai_{period}"
     if not force:
         c = _ai_review_cache.get(ck)
         if c and time.time() - c[1] < _AI_REVIEW_TTL:
             return c[0]
+
+    # ---- 日/周/月: 只复盘该时间窗内实际发生的买卖动作 ----
+    if period != "all":
+        journal = await trade_journal(limit=1000)
+        trades_all = journal.get("trades", [])
+        today = (_dt.datetime.utcnow() + _dt.timedelta(hours=8)).date()
+        if period == "day":
+            dates = [t["date"] for t in trades_all if t["date"]]
+            anchor = max(dates) if dates else today.isoformat()
+            start, label, win = anchor, f"{anchor} 当日", lambda t: t["date"] == anchor
+        elif period == "week":
+            monday = (today - _dt.timedelta(days=today.weekday())).isoformat()
+            start, label, win = monday, f"本周({monday}起)", lambda t: t["date"] and t["date"] >= monday
+        else:  # month
+            first = today.replace(day=1).isoformat()
+            start, label, win = first, f"本月({first}起)", lambda t: t["date"] and t["date"] >= first
+        ptrades = sorted([t for t in trades_all if win(t)], key=lambda x: x["date"])
+        if not ptrades:
+            result = {"period": period, "period_label": label, "empty": True,
+                      "summary": f"{label}没有交易记录", "good": [], "discipline": [],
+                      "binchuan": [], "narrative": "", "generated_at": time.time()}
+            _ai_review_cache[ck] = (result, time.time())
+            return result
+        nb = sum(1 for t in ptrades if t["kind"] == "buy")
+        ns = sum(1 for t in ptrades if t["kind"] == "sell")
+        lines = [f"{label} 共 {len(ptrades)} 笔: {nb} 买 {ns} 卖", ""]
+        for t in ptrades:
+            kd = "买" if t["kind"] == "buy" else "卖"
+            lines.append(f"  {t['date']} {kd} {t['name']} @{t['price']}×{int(t['shares'])} (现价{t['current']}, 至今{t['pct']:+.1f}%)")
+        data_block = "\n".join(lines)
+        system_prompt = (
+            f"你是交易复盘教练。这是用户【{label}】这个时间窗内实际发生的买卖动作, 复盘他这一段的交易节奏和纪律。\n"
+            "重点看: 这期间有没有追高(越买越高)、有没有同一只票反复买卖(频繁做T)、买卖节奏是否情绪化、"
+            "有没有追涨杀跌。'至今X%'是该笔对现价的表现(参考, 别据此判他追高对错——他可能还持有/趋势未走完)。\n"
+            "客观、像老友点评这一段操作; 该夸的夸(节奏克制/卖点干脆)该点的点(追高/频繁)。\n"
+            "可用爱在冰川视角: 大智(买前估空间)、卖点纪律、克制贪念、别接最后一棒。\n"
+            "【硬规则】严禁任何未来操作指令(该买/该卖/加减仓/止损位/目标价/现在适合), 只复盘已发生, 不编造数字。\n"
+            "JSON 输出: {\"summary\":\"一句话点评这段\", \"good\":[\"做对的(用数据)\"], "
+            "\"discipline\":[{\"problem\":\"问题\",\"evidence\":\"数据举证\",\"why\":\"什么习惯\"}], "
+            "\"binchuan\":[{\"principle\":\"爱在冰川原则\",\"verdict\":\"契合/违背\",\"detail\":\"对照\"}], "
+            "\"narrative\":\"1-2段复盘正文\"}。只输出 JSON。"
+        )
+        user_prompt = f"复盘我{label}的交易:\n\n{data_block}"
+        try:
+            raw = await asyncio.to_thread(llm_client.call_claude, user_prompt, system_prompt, "claude-sonnet-4-5", 1800)
+        except Exception as e:
+            return {"period": period, "period_label": label, "error": str(e), "summary": "", "narrative": ""}
+        parsed = _parse_llm_json(raw)
+        result = {
+            "period": period, "period_label": label, "empty": False,
+            "summary": parsed.get("summary", ""),
+            "good": parsed.get("good", []) if isinstance(parsed.get("good"), list) else [],
+            "discipline": parsed.get("discipline", []) if isinstance(parsed.get("discipline"), list) else [],
+            "binchuan": parsed.get("binchuan", []) if isinstance(parsed.get("binchuan"), list) else [],
+            "narrative": parsed.get("narrative", ""),
+            "n_buy": nb, "n_sell": ns, "n_trades": len(ptrades),
+            "generated_at": time.time(),
+        }
+        _ai_review_cache[ck] = (result, time.time())
+        return result
+
+    # ---- all: 全周期总览 (完整纪律复盘) ----
 
     review = await trade_review()
     journal = await trade_journal(limit=400)
@@ -550,6 +627,7 @@ async def trade_review_ai(force: int = 0):
         parsed = {"narrative": raw or "", "discipline": [], "summary": ""}
 
     result = {
+        "period": "all", "period_label": "全周期", "empty": False,
         "summary": parsed.get("summary", ""),
         "good": parsed.get("good", []) if isinstance(parsed.get("good"), list) else [],
         "discipline": parsed.get("discipline", []) if isinstance(parsed.get("discipline"), list) else [],
