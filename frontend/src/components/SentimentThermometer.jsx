@@ -11,20 +11,23 @@ const pctColor = (v) => v == null ? 'text-text-dim' : v > 0 ? 'text-bear-bright'
 function VolTrend({ trend }) {
   const vols = trend.map(t => t.vol)
   const max = Math.max(...vols, 1)
+  const min = Math.min(...vols)
+  const span = max - min || 1
   const avgPrev = vols.length > 1 ? vols.slice(0, -1).reduce((a, b) => a + b, 0) / (vols.length - 1) : 0
   return (
-    <div className="flex items-end gap-2 h-16">
+    <div className="flex items-end gap-2" style={{ height: 88 }}>
       {trend.map((t, i) => {
-        const h = Math.max(6, (t.vol / max) * 56)
+        // 14~64px, 按相对高低拉开差异
+        const h = Math.round(14 + ((t.vol - min) / span) * 50)
         const last = i === trend.length - 1
-        const big = last && t.vol > avgPrev * 1.08
-        const small = last && t.vol < avgPrev * 0.92
-        const color = big ? 'bg-bear-bright' : small ? 'bg-bull-bright' : last ? 'bg-accent' : 'bg-border'
+        const color = !last ? 'bg-info/55'
+          : t.vol > avgPrev * 1.05 ? 'bg-bear-bright'
+          : t.vol < avgPrev * 0.95 ? 'bg-bull-bright' : 'bg-accent'
         return (
-          <div key={i} className="flex flex-col items-center gap-0.5 flex-1">
-            <span className="text-[9px] text-text-muted font-mono">{t.vol}</span>
+          <div key={i} className="flex-1 flex flex-col items-center justify-end gap-1 h-full">
+            <span className="text-[9.5px] text-text-dim font-mono">{t.vol}</span>
             <div className={`w-full rounded-t ${color}`} style={{ height: h }} />
-            <span className="text-[9px] text-text-muted">{t.date}</span>
+            <span className="text-[9.5px] text-text-muted">{t.date}</span>
           </div>
         )
       })}
@@ -72,15 +75,16 @@ export default function SentimentThermometer() {
             </button>
           )}
         </div>
-        {/* 量能趋势(近6日两市成交量) */}
-        {showVol && (v.trend || []).length > 1 && (
-          <div className="mt-2 pt-2 border-t border-border-subtle/40">
-            <div className="text-[10px] text-text-muted mb-1">近6日沪市成交量(亿股) · 看放缩量</div>
-            <VolTrend trend={v.trend} />
-          </div>
-        )}
         {d.mood_desc && <div className="text-[11.5px] text-text-dim mt-1 leading-relaxed">{d.mood_desc}</div>}
       </div>
+
+      {/* 量能趋势(近6日沪市成交量) — 独立区块, 点上方两市成交额展开 */}
+      {showVol && (v.trend || []).length > 1 && (
+        <div className="mb-3 px-3 py-3 rounded-lg bg-surface-3/60 border border-border-subtle">
+          <div className="text-[10.5px] text-text-muted mb-2">近6日沪市成交量(亿股) · 看放缩量</div>
+          <VolTrend trend={v.trend} />
+        </div>
+      )}
 
       {/* 指标 grid */}
       <div className="grid grid-cols-3 md:grid-cols-6 gap-2 mb-3 text-[11px]">
