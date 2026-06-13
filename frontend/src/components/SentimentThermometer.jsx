@@ -75,7 +75,7 @@ export default function SentimentThermometer() {
         {/* 量能趋势(近6日两市成交量) */}
         {showVol && (v.trend || []).length > 1 && (
           <div className="mt-2 pt-2 border-t border-border-subtle/40">
-            <div className="text-[10px] text-text-muted mb-1">近6日两市成交量(亿股) · 看放缩量</div>
+            <div className="text-[10px] text-text-muted mb-1">近6日沪市成交量(亿股) · 看放缩量</div>
             <VolTrend trend={v.trend} />
           </div>
         )}
