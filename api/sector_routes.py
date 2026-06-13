@@ -45,6 +45,35 @@ async def compare_all(force: bool = False):
     return {"holdings": out}
 
 
+@router.get("/kline")
+async def sector_kline(market: str = "A", key: str = "", days: int = 60):
+    """单板块 K线 (OHLC, 支持周期切换). 放大图按 days 拉.
+    market=A → key 是 THS 板块名; HK → 指数 symbol; US → SPDR ETF symbol.
+    A 股走 THS(可达); HK/US 走 eastmoney(本网络可能不可达, 拉不到回空)。"""
+    days = max(10, min(int(days or 60), 250))
+    m = (market or "A").upper()
+    if not key:
+        return {"kline": [], "count": 0}
+    try:
+        if m == "A":
+            from services.sector_compare import _fetch_ths_kline_sync
+            rows = await asyncio.to_thread(_fetch_ths_kline_sync, key, days)
+        elif m == "HK":
+            from services.sector_hk import _fetch_index_kline_sync
+            rows = await asyncio.to_thread(_fetch_index_kline_sync, key, days)
+        elif m == "US":
+            from services.sector_us import _fetch_etf_kline_sync
+            rows = await asyncio.to_thread(_fetch_etf_kline_sync, key, days)
+        else:
+            rows = []
+    except Exception as e:
+        print(f"[sector-kline] {m}/{key} failed: {e}")
+        rows = []
+    from services.sector_compare import _ohlc_point
+    tail = [_ohlc_point(k) for k in (rows or [])[-days:]]
+    return {"kline": tail, "count": len(tail)}
+
+
 @router.get("/scan")
 async def scan(force: bool = False):
     """A 股全板块扫描: 90 个 THS 板块的 1d/5d/30d 涨幅 + 持仓标记 + 兜底 ETF."""
