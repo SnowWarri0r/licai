@@ -212,6 +212,95 @@ async def realized_pnl():
     }
 
 
+@router.get("/trade-review")
+async def trade_review():
+    """A 股交易复盘报告 (纯客观, 不给建议): 用 position_actions 算每只的
+    已实现/浮动/全周期盈亏 + 买卖次数(做T频率) + 持有天数, 再汇总胜率/盈亏榜/做T榜。"""
+    from database import get_db
+    from services.position_ledger import ACQUIRE, RELEASE
+    from services.market_data import get_realtime_quotes
+
+    db = await get_db()
+    try:
+        cursor = await db.execute("SELECT DISTINCT stock_code FROM position_actions ORDER BY stock_code")
+        codes = [r[0] for r in await cursor.fetchall()]
+    finally:
+        await db.close()
+
+    holdings_map = {h["stock_code"]: h for h in await get_all_holdings()}
+    stats = []
+    for code in codes:
+        actions = await get_position_actions(code, limit=500)
+        if not actions:
+            continue
+        c_rate, c_min = await _broker_stock_fee((holdings_map.get(code) or {}).get("broker"))
+        state = compute_position_state(actions, stock_code=code, commission_rate=c_rate, commission_min=c_min)
+        n_buy = sum(1 for a in actions if (a.get("action_type") or "").upper() in ACQUIRE)
+        n_sell = sum(1 for a in actions if (a.get("action_type") or "").upper() in RELEASE)
+        name = (holdings_map.get(code) or {}).get("stock_name") or ""
+        if not name:
+            try:
+                name = await get_stock_name(code) or code
+            except Exception:
+                name = code
+        stats.append({
+            "code": code, "name": name,
+            "realized": round(float(state.get("realized_pnl") or 0), 2),
+            "shares": float(state.get("shares") or 0),
+            "cost_price": float(state.get("cost_price") or 0),
+            "hold_days": int(state.get("weighted_days") or 0),
+            "n_buy": n_buy, "n_sell": n_sell,
+        })
+
+    # 浮动 (在持仓的): 实时价 - 成本
+    held = [s for s in stats if s["shares"] > 0]
+    quotes = await get_realtime_quotes([s["code"] for s in held]) if held else {}
+    for s in stats:
+        floating = 0.0
+        if s["shares"] > 0:
+            price = (quotes.get(s["code"]) or {}).get("price") or 0
+            if price:
+                floating = (price - s["cost_price"]) * s["shares"]
+        s["floating"] = round(floating, 2)
+        s["total_pnl"] = round(s["realized"] + floating, 2)
+
+    n = len(stats)
+    n_win = sum(1 for s in stats if s["total_pnl"] > 0)
+    n_loss = sum(1 for s in stats if s["total_pnl"] < 0)
+    by_real = sorted(stats, key=lambda s: s["realized"])
+    best = [{"name": s["name"], "realized": s["realized"]} for s in reversed(by_real[-3:]) if s["realized"] > 0]
+    worst = [{"name": s["name"], "realized": s["realized"]} for s in by_real[:3] if s["realized"] < 0]
+    active = sorted([s for s in stats if s["n_sell"] > 0], key=lambda s: -(s["n_buy"] + s["n_sell"]))[:5]
+    active_t = [{"name": s["name"], "n_buy": s["n_buy"], "n_sell": s["n_sell"], "realized": s["realized"]} for s in active]
+    held_days = [s["hold_days"] for s in held if s["hold_days"]]
+    avg_hold = round(sum(held_days) / len(held_days)) if held_days else 0
+
+    obs = []
+    if n:
+        obs.append(f"交易过 {n} 只 · {n_win} 赚 {n_loss} 亏 · 胜率 {round(n_win / n * 100)}%")
+    if active_t:
+        a0 = active_t[0]
+        tone = "净赚" if a0["realized"] >= 0 else "净亏"
+        obs.append(f"做T最频繁: {a0['name']} ({a0['n_buy']}买{a0['n_sell']}卖), 这只{tone} {abs(a0['realized']):.0f}")
+    losers_active = [a for a in active_t if a["realized"] < 0]
+    if active_t:
+        winners_active = len(active_t) - len(losers_active)
+        obs.append(f"做T(反复买卖)的票里 {len(losers_active)} 只净亏、{winners_active} 只净赚")
+    if avg_hold and avg_hold <= 15:
+        obs.append(f"当前持仓平均才拿 {avg_hold} 天 — 偏短线")
+
+    return {
+        "overview": {
+            "n_stocks": n, "n_win": n_win, "n_loss": n_loss,
+            "win_rate": round(n_win / n, 3) if n else 0,
+            "total_realized": round(sum(s["realized"] for s in stats), 2),
+            "avg_hold_days": avg_hold,
+        },
+        "best": best, "worst": worst, "active_t": active_t,
+        "observations": obs,
+    }
+
+
 @router.get("/benchmark")
 async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
     """跑赢基准对照: 假设你 A 股的每次买卖, 同金额同日期都买在基准上 (默认沪深300).
