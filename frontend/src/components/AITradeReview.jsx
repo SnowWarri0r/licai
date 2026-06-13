@@ -78,6 +78,29 @@ export default function AITradeReview() {
         </div>
       )}
 
+      {/* 爱在冰川视角 */}
+      {(d.binchuan || []).length > 0 && (
+        <div className="mb-3 px-3 py-2.5 rounded-lg bg-info/8 border border-info/25">
+          <div className="text-[10px] text-info/90 mb-1.5 tracking-wider">爱在冰川视角 · 交易哲学对照</div>
+          <div className="space-y-2">
+            {d.binchuan.map((b, i) => {
+              const hit = b.verdict === '契合'
+              return (
+                <div key={i} className="text-[11.5px] leading-relaxed">
+                  <div className="flex items-center gap-1.5">
+                    <span className={`text-[10px] px-1 rounded shrink-0 ${hit ? 'bg-bull/15 text-bull-bright' : 'bg-bear/15 text-bear-bright'}`}>
+                      {hit ? '契合' : '违背'}
+                    </span>
+                    <span className="text-text-bright">{b.principle}</span>
+                  </div>
+                  {b.detail && <div className="text-text-dim mt-0.5 pl-1">{b.detail}</div>}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
       {/* 正文复盘 */}
       {d.narrative && (
         <div className="text-[12.5px] text-text leading-relaxed whitespace-pre-line border-t border-border-subtle pt-3">
