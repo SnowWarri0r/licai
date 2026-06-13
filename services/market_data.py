@@ -887,6 +887,21 @@ MACRO_SYMBOLS = [
     ("overseas_index", "int_nikkei", "日经225"),
     ("overseas_index", "znb_KOSPI", "韩国KOSPI"),
     ("overseas_index", "int_ftse", "伦敦FTSE"),
+    # AI / 算力 全产业链 (A股 ETF/指数实时市价): 主题→算力硬件→云软件→应用→机器人→电力→上游金属
+    ("ai_tech", "sz159819", "人工智能"),
+    ("ai_tech", "sz399363", "算力指数"),
+    ("ai_tech", "sz159995", "芯片"),
+    ("ai_tech", "sh561980", "半导体设备"),    # 国产替代/设备
+    ("ai_tech", "sh515880", "通信/CPO"),     # 光模块/数据中心互联
+    ("ai_tech", "sz159890", "云计算"),
+    ("ai_tech", "sh515230", "软件"),
+    ("ai_tech", "sz159363", "创业板AI"),
+    ("ai_tech", "sh512980", "传媒AIGC"),     # AIGC 内容应用
+    ("ai_tech", "sh561600", "消费电子"),      # AI 手机/AIPC/AI 终端
+    ("ai_tech", "sz159770", "机器人"),
+    ("ai_tech", "sz159611", "电力"),         # 算力耗电, AI 扩张拉动用电
+    ("ai_tech", "sz159713", "稀土"),         # 永磁 → 机器人/伺服电机
+    ("ai_tech", "sz159608", "稀有金属"),      # 钨钼钽锑 → 电子/钽电容
     # 汇率 (USD 计价对其他)
     ("fx", "fx_susdcnh", "USD/CNH 离岸"),
     ("fx", "fx_susdcny", "USD/CNY 在岸"),
