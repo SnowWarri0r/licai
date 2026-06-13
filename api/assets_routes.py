@@ -760,7 +760,15 @@ async def confirm_action(asset_id: int, action_id: int, data: ConfirmAction):
 
     shares = data.shares if data.shares is not None else target.get("shares")
     unit_price = data.unit_price
-    fee = float(data.fee or 0)
+    # 手续费: 显式传了就用显式值; 没传则对场外基金申购按申购费率外扣自动算,
+    # 跟「一键确认到期定投」(settle-pending) 口径一致 → 净额=金额/(1+费率)。
+    if data.fee is not None:
+        fee = float(data.fee)
+    else:
+        rate = float(asset.get("purchase_fee_rate") or 0)
+        is_buy = (target.get("action_type") or "").upper() in ("ADD", "BUY")
+        fee = round(float(data.amount) - float(data.amount) / (1 + rate), 2) \
+            if (asset.get("asset_type") == "FUND" and rate > 0 and is_buy) else 0.0
     # 净额 = amount - fee (实际买到份额对应的钱), 反推 unit_price 用净额
     net_for_shares = float(data.amount) - fee
     if shares and shares > 0 and (unit_price is None or unit_price <= 0):
