@@ -21,6 +21,19 @@ export default function Settings({ onClose }) {
   const [okxStatusText, setOkxStatusText] = useState({ text: '', ok: null })
   const [okxSaving, setOkxSaving] = useState(false)
 
+  // 刷新基金名 (按天天基金官方全称回填)
+  const [refreshMsg, setRefreshMsg] = useState('')
+  const [refreshing, setRefreshing] = useState(false)
+  const refreshFundNames = async () => {
+    setRefreshing(true); setRefreshMsg('')
+    try {
+      const r = await fetch('/api/assets/refresh-names', { method: 'POST' })
+      const d = await r.json()
+      setRefreshMsg(d.updated > 0 ? `已更新 ${d.updated} 只基金名` : '都已是官方全称, 无需更新')
+    } catch { setRefreshMsg('失败, 稍后再试') }
+    finally { setRefreshing(false) }
+  }
+
   // 券商费率
   const [brokers, setBrokers] = useState([])
   const saveTimers = useRef({})
@@ -286,6 +299,20 @@ export default function Settings({ onClose }) {
               </div>
             ))}
             <div className="text-[10px] text-text-muted">费率单位「万」(如 1.854 = 万1.854)；起¥ 为每笔最低收费。改完自动保存。</div>
+          </div>
+        </section>
+
+        {/* 数据维护 */}
+        <section className="rounded-xl border border-accent/20 bg-surface-2/80 overflow-hidden mt-4">
+          <div className="px-4 py-3 border-b border-border flex items-center justify-between">
+            <h2 className="text-[13px] font-medium text-accent tracking-wide">数据维护</h2>
+          </div>
+          <div className="p-3 flex items-center gap-3 flex-wrap">
+            <button onClick={refreshFundNames} disabled={refreshing}
+              className="text-[12px] px-3 py-1.5 rounded border border-accent/40 text-accent hover:bg-accent/10 cursor-pointer disabled:opacity-50">
+              {refreshing ? '刷新中…' : '刷新基金名'}
+            </button>
+            <span className="text-[11px] text-text-dim">{refreshMsg || '按天天基金官方全称回填(场内 ETF 行情接口给的是简称)'}</span>
           </div>
         </section>
       </div>

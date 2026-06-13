@@ -918,6 +918,33 @@ async def recompute_dca_fees():
     return {"recomputed": recomputed, "skipped": skipped, "details": details}
 
 
+@router.post("/refresh-names")
+async def refresh_fund_names():
+    """按天天基金官方全称回填所有基金的名字 (场内 ETF 行情接口给的是简称, 会对不上)。
+    名字拉不到的跳过; 一致的不动。"""
+    from services.external_assets import _fetch_fund_name_sync
+    assets = await list_external_assets()
+    updated = 0
+    details: list[dict] = []
+    seen: dict[str, str] = {}
+    for asset in assets:
+        if asset.get("asset_type") != "FUND":
+            continue
+        code = asset.get("code") or ""
+        full = seen.get(code)
+        if full is None:
+            try:
+                full = await asyncio.to_thread(_fetch_fund_name_sync, code)
+            except Exception:
+                full = ""
+            seen[code] = full or ""
+        if full and full != asset.get("name"):
+            await update_external_asset(asset["id"], name=full)
+            details.append({"code": code, "old": asset.get("name"), "new": full})
+            updated += 1
+    return {"updated": updated, "details": details}
+
+
 class ActionPatch(BaseModel):
     amount: Optional[float] = None
     shares: Optional[float] = None
