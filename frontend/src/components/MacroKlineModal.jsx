@@ -29,8 +29,13 @@ export default function MacroKlineModal({ item, onClose }) {
   }, [onClose])
 
   const closes = series.map(d => d.close).filter(c => c > 0)
-  const min = closes.length ? Math.min(...closes) : 0
-  const max = closes.length ? Math.max(...closes) : 1
+  // 真 K 线: 多数点带 open/high/low 才画蜡烛 (汇率只有 close → 回退折线)
+  const hasCandle = series.length >= 2 &&
+    series.filter(d => d.high != null && d.low != null && d.open != null).length >= series.length * 0.6
+  const highs = series.map(d => (hasCandle ? (d.high ?? d.close) : d.close)).filter(c => c > 0)
+  const lows = series.map(d => (hasCandle ? (d.low ?? d.close) : d.close)).filter(c => c > 0)
+  const min = lows.length ? Math.min(...lows) : 0
+  const max = highs.length ? Math.max(...highs) : 1
   const range = max - min || 1
   const start = closes[0]
   const end = closes[closes.length - 1]
@@ -40,14 +45,23 @@ export default function MacroKlineModal({ item, onClose }) {
   const innerW = W - P.l - P.r
   const innerH = H - P.t - P.b
 
+  const yOf = (v) => P.t + innerH - ((v - min) / range) * innerH
   const points = useMemo(() => {
     if (series.length < 2) return []
     return series.map((d, i) => {
       const x = P.l + (i / (series.length - 1)) * innerW
-      const y = P.t + innerH - ((d.close - min) / range) * innerH
-      return { ...d, x, y, i }
+      const y = yOf(d.close)
+      const yOpen = d.open != null ? yOf(d.open) : null
+      const yHigh = d.high != null ? yOf(d.high) : null
+      const yLow = d.low != null ? yOf(d.low) : null
+      return { ...d, x, y, yOpen, yHigh, yLow, i }
     })
   }, [series, innerH, innerW, min, range])
+
+  // 蜡烛体宽度: 按点数自适应, 留间隙
+  const candleW = points.length > 1
+    ? Math.max(1.5, Math.min(11, (innerW / points.length) * 0.62))
+    : 4
 
   const linePath = useMemo(() =>
     points.length ? points.map((p, i) => (i === 0 ? 'M' : 'L') + p.x.toFixed(1) + ' ' + p.y.toFixed(1)).join(' ') : ''
@@ -172,8 +186,27 @@ export default function MacroKlineModal({ item, onClose }) {
                   {(t.date || '').slice(5)}
                 </text>
               ))}
-              <path d={areaPath} fill={fillColor} />
-              <path d={linePath} fill="none" stroke={lineColor} strokeWidth="1.5" />
+              {hasCandle ? (
+                points.map((p, i) => {
+                  if (p.yHigh == null || p.yLow == null || p.yOpen == null) return null
+                  const up = p.close >= p.open
+                  const col = up ? '#cf5c5c' : '#5fa86c'   // A股口径: 涨红 跌绿
+                  const bodyTop = Math.min(p.yOpen, p.y)
+                  const bodyH = Math.max(1, Math.abs(p.yOpen - p.y))
+                  return (
+                    <g key={'cdl' + i}>
+                      <line x1={p.x} y1={p.yHigh} x2={p.x} y2={p.yLow} stroke={col} strokeWidth="1" />
+                      <rect x={p.x - candleW / 2} y={bodyTop} width={candleW} height={bodyH}
+                        fill={col} stroke={col} strokeWidth="0.5" />
+                    </g>
+                  )
+                })
+              ) : (
+                <>
+                  <path d={areaPath} fill={fillColor} />
+                  <path d={linePath} fill="none" stroke={lineColor} strokeWidth="1.5" />
+                </>
+              )}
               {hover && (
                 <g>
                   <line x1={hover.x} y1={P.t} x2={hover.x} y2={P.t + innerH}
@@ -188,10 +221,19 @@ export default function MacroKlineModal({ item, onClose }) {
           {hover && (
             <div className="absolute top-2 right-2 bg-surface-2 border border-border-med rounded-md px-2.5 py-1.5 text-[11px] font-mono pointer-events-none">
               <div className="text-text-dim">{hover.date}</div>
-              <div className="text-text-bright">{fmtVal(hover.close)}</div>
+              {hover.open != null && hover.high != null ? (
+                <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 mt-0.5">
+                  <span className="text-text-dim">开 <span className="text-text">{fmtVal(hover.open)}</span></span>
+                  <span className="text-text-dim">高 <span className="text-bear-bright">{fmtVal(hover.high)}</span></span>
+                  <span className="text-text-dim">收 <span className="text-text-bright">{fmtVal(hover.close)}</span></span>
+                  <span className="text-text-dim">低 <span className="text-bull-bright">{fmtVal(hover.low)}</span></span>
+                </div>
+              ) : (
+                <div className="text-text-bright">{fmtVal(hover.close)}</div>
+              )}
               {start > 0 && (
-                <div className={colorPct(((hover.close / start) - 1) * 100)}>
-                  {fmtPct(((hover.close / start) - 1) * 100)}
+                <div className={`mt-0.5 ${colorPct(((hover.close / start) - 1) * 100)}`}>
+                  累计 {fmtPct(((hover.close / start) - 1) * 100)}
                 </div>
               )}
             </div>
