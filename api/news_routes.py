@@ -131,82 +131,128 @@ async def portfolio_news(limit_per_code: int = 5):
     return result
 
 
-def _fetch_market_global_sync() -> list[dict]:
-    """全市场要闻: 财联社 + 东财 + 同花顺 三源合并去重."""
+def _strip_proxy_env():
+    """akshare 这几个源走国内直连, 清掉 proxy 环境变量避免被代理拖慢/拦截."""
     import os
     for k in list(os.environ):
         if "proxy" in k.lower():
             os.environ.pop(k, None)
-    out = []
-    seen_titles = set()
+
+
+def _item(src: str, title: str, content: str, t: str, url: str = "") -> dict | None:
+    title = (title or "").strip()
+    if not title:
+        return None
+    return {
+        "kind": "market",
+        "source": src,
+        "title": title,
+        "content": (content or "").strip()[:200],
+        "time": (t or "").strip(),
+        "url": url,
+    }
+
+
+def _fetch_global_em() -> list[dict]:
+    """东财全球财经 (量最大 ~200 条)."""
     try:
         import akshare as ak
-    except Exception:
-        return out
-
-    def push(src: str, title: str, content: str, t: str, url: str = ""):
-        t = (t or "").strip()
-        title = (title or "").strip()
-        if not title or title in seen_titles:
-            return
-        seen_titles.add(title)
-        out.append({
-            "kind": "market",
-            "source": src,
-            "title": title,
-            "content": (content or "").strip()[:200],
-            "time": t,
-            "url": url,
-        })
-
-    # 1) 东财全球财经 (200 条, 量最大)
-    try:
         df = ak.stock_info_global_em()
-        for _, r in df.iterrows():
-            push("东财", str(r.get("标题") or ""),
-                 str(r.get("摘要") or ""),
-                 str(r.get("发布时间") or ""),
-                 str(r.get("链接") or ""))
     except Exception:
-        pass
-
-    # 2) 财联社全球财经
-    try:
-        df = ak.stock_info_global_cls()
-        for _, r in df.iterrows():
-            t = str(r.get("发布日期") or "") + " " + str(r.get("发布时间") or "")
-            push("财联社", str(r.get("标题") or ""),
-                 str(r.get("内容") or ""), t.strip())
-    except Exception:
-        pass
-
-    # 3) 同花顺全球财经
-    try:
-        df = ak.stock_info_global_ths()
-        for _, r in df.iterrows():
-            push("同花顺", str(r.get("标题") or ""),
-                 str(r.get("内容") or ""),
-                 str(r.get("发布时间") or ""),
-                 str(r.get("链接") or ""))
-    except Exception:
-        pass
-
-    # 按时间倒序
-    out.sort(key=lambda x: x.get("time") or "", reverse=True)
+        return []
+    out = []
+    for _, r in df.iterrows():
+        it = _item("东财", str(r.get("标题") or ""), str(r.get("摘要") or ""),
+                   str(r.get("发布时间") or ""), str(r.get("链接") or ""))
+        if it:
+            out.append(it)
     return out
+
+
+def _fetch_global_cls() -> list[dict]:
+    """财联社全球财经."""
+    try:
+        import akshare as ak
+        df = ak.stock_info_global_cls()
+    except Exception:
+        return []
+    out = []
+    for _, r in df.iterrows():
+        t = (str(r.get("发布日期") or "") + " " + str(r.get("发布时间") or "")).strip()
+        it = _item("财联社", str(r.get("标题") or ""), str(r.get("内容") or ""), t)
+        if it:
+            out.append(it)
+    return out
+
+
+def _fetch_global_ths() -> list[dict]:
+    """同花顺全球财经."""
+    try:
+        import akshare as ak
+        df = ak.stock_info_global_ths()
+    except Exception:
+        return []
+    out = []
+    for _, r in df.iterrows():
+        it = _item("同花顺", str(r.get("标题") or ""), str(r.get("内容") or ""),
+                   str(r.get("发布时间") or ""), str(r.get("链接") or ""))
+        if it:
+            out.append(it)
+    return out
+
+
+# 单源超时: 任一源(如同花顺/财联社)卡死也不拖累整体, 最坏冷启动 ≈ 该超时值
+_SOURCE_TIMEOUT = 8.0
+
+
+async def _fetch_source(fetcher) -> list[dict]:
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(fetcher), timeout=_SOURCE_TIMEOUT)
+    except Exception:
+        return []
 
 
 @router.get("/market")
 async def market_news():
-    """全市场要闻 (财联社 + 东财 + 同花顺). 5min 缓存."""
+    """全市场要闻 (东财 + 财联社 + 同花顺). 三源并发 + 单源超时, 5min 缓存."""
     cache_key = "market_news"
     cached = _cache.get(cache_key)
     if cached and time.time() - cached[1] < _TTL:
         return cached[0]
-    items = await asyncio.to_thread(_fetch_market_global_sync)
-    result = {"items": items, "count": len(items)}
-    _cache[cache_key] = (result, time.time())
+    _strip_proxy_env()
+    # 三源并发拉取, 任一源超时/失败只丢自己, 不阻塞其余
+    results = await asyncio.gather(
+        _fetch_source(_fetch_global_em),
+        _fetch_source(_fetch_global_cls),
+        _fetch_source(_fetch_global_ths),
+    )
+    # 合并去重 (按 title; 顺序 em→cls→ths 决定保留优先级), 时间倒序
+    out, seen = [], set()
+    for lst in results:
+        for it in lst:
+            title = it.get("title")
+            if not title or title in seen:
+                continue
+            seen.add(title)
+            out.append(it)
+    out.sort(key=lambda x: x.get("time") or "", reverse=True)
+    result = {"items": out, "count": len(out)}
+    # 三源全空(全超时)不写缓存, 避免把空结果钉死 5 分钟; 有数据才缓存
+    if out:
+        _cache[cache_key] = (result, time.time())
     return result
+
+
+async def news_prewarm_loop():
+    """后台预热 market_news 缓存, 让 sector/why、digest 等读到的永远是热缓存,
+    用户点击不再吃冷启动的几秒。每 4 分钟刷一次 (< 5min TTL, 始终保鲜)。"""
+    await asyncio.sleep(5)  # 让 app 先起来
+    while True:
+        try:
+            await market_news()
+        except Exception as e:
+            print(f"[news-prewarm] failed: {e}")
+        await asyncio.sleep(240)
 
 
 _DIGEST_TTL = 1800  # LLM 摘要 30 分钟缓存 (调用贵 + 慢)
