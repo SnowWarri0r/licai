@@ -369,7 +369,7 @@ _AI_REVIEW_TTL = 1800  # 30min, LLM 调用贵
 async def trade_review_ai(force: int = 0):
     """LLM 交易纪律复盘: 用真实流水(trade_review + trade_journal 的数据)复盘交易习惯,
     重点指出纪律问题(追高/情绪化反复买卖/不止损/持有过短)。纯客观举证, 严禁任何未来买卖建议。"""
-    import time, asyncio, json
+    import time, asyncio, json, datetime as _dt
     from services import llm_client
 
     ck = "trade_review_ai"
@@ -404,8 +404,60 @@ async def trade_review_ai(force: int = 0):
     closed_loss = [s for s in closed if s["realized"] < 0]
     closed_loss_sorted = sorted(closed_loss, key=lambda s: s["realized"])
 
+    cur_by_code = {t["code"]: t["current"] for t in journal["trades"]}
+
+    # (b) 已清仓票"卷入周期"(首次买入→末次卖出): 看赚的拿多久 vs 亏的拿多久
+    def _closed_span(code):
+        ts = [t for t in journal["trades"] if t["code"] == code and t["date"]]
+        bd = [t["date"] for t in ts if t["kind"] == "buy"]
+        sd = [t["date"] for t in ts if t["kind"] == "sell"]
+        if not bd or not sd:
+            return None
+        try:
+            return max(0, (_dt.date.fromisoformat(max(sd)) - _dt.date.fromisoformat(min(bd))).days)
+        except Exception:
+            return None
+    cw_spans = [x for x in (_closed_span(s["code"]) for s in closed_win) if x is not None]
+    cl_spans = [x for x in (_closed_span(s["code"]) for s in closed_loss) if x is not None]
+    avg_cw = round(sum(cw_spans) / len(cw_spans)) if cw_spans else None
+    avg_cl = round(sum(cl_spans) / len(cl_spans)) if cl_spans else None
+
+    # (c) 越跌越加码: 同股多次买入(含已清仓), 价格下行但单笔金额上行 = martingale
+    buys_by_code: dict = {}
+    for t in journal["trades"]:
+        if t["kind"] == "buy":
+            buys_by_code.setdefault(t["code"], []).append(t)
+    escalation = []
+    for code, ts in buys_by_code.items():
+        if len(ts) < 3:
+            continue
+        ts = sorted(ts, key=lambda x: x["date"])
+        amts = [t["price"] * t["shares"] for t in ts]
+        falling = ts[-1]["price"] < ts[0]["price"]
+        growing = amts[-1] > amts[0] * 1.2
+        nm = ts[0]["name"]
+        seq = " → ".join(f"@{t['price']}×{int(t['shares'])}={round(t['price']*t['shares'])}" for t in ts)
+        flag = " [越跌越加码!]" if (falling and growing) else (" [越买越高]" if ts[-1]["price"] > ts[0]["price"] else "")
+        escalation.append({"name": nm, "seq": seq, "flag": flag, "martingale": falling and growing})
+
+    # (d) 板块集中度(仍持有, 按市值)
+    sector_val: dict = {}
+    sector_names: dict = {}
+    held_total = 0.0
+    for s in held:
+        val = (cur_by_code.get(s["code"]) or 0) * s["shares"]
+        held_total += val
+        try:
+            sec = await get_stock_sector(s["code"]) or "其他"
+        except Exception:
+            sec = "其他"
+        sector_val[sec] = sector_val.get(sec, 0) + val
+        sector_names.setdefault(sec, []).append(s["name"])
+
     lines = [
         f"总览: 交易过 {o['n_stocks']} 只, 已实现合计 {o['total_realized']:.0f}, 当前持仓平均持有 {o['avg_hold_days']} 天",
+        f"买入命中率 {round(journal['buy_hit_rate']*100)}% ({journal['buy_hit']}/{journal['buy_count']} 笔买在现价之下) "
+        f"— 约 {round((1-journal['buy_hit_rate'])*100)}% 的买入当前是套住的, 反映追高/接盘倾向",
         f"卖出命中率 {round(journal['sell_hit_rate']*100)}% ({journal['sell_hit']}/{journal['sell_count']} 笔卖完股价确实跌了) — 卖点把握",
         "",
         f"【仍持有 {len(held)} 只】(这些说'浮亏/套着'才成立):",
@@ -426,6 +478,21 @@ async def trade_review_ai(force: int = 0):
         "  赚着出的: " + ("; ".join(f"{s['name']}+{s['realized']:.0f}" for s in sorted(closed_win, key=lambda x:-x['realized'])) or "无"),
         "  亏着割的: " + ("; ".join(f"{s['name']}{s['realized']:.0f}({s['n_buy']}买{s['n_sell']}卖)" for s in closed_loss_sorted) or "无"),
     ]
+    if avg_cw is not None and avg_cl is not None:
+        lines.append(f"  持有周期(首次买入→清仓): 赚钱的票平均 {avg_cw} 天清掉, 亏钱的票平均 {avg_cl} 天才割"
+                     + (" — 亏的拿得比赚的久(让亏损奔跑/截断利润)" if avg_cl > avg_cw else ""))
+
+    multi = [e for e in escalation if e["flag"]]
+    if multi:
+        lines += ["", "【同股多次买入·加码轨迹】(看每笔金额是否越亏越大):"]
+        for e in multi[:6]:
+            lines.append(f"  {e['name']}: {e['seq']}{e['flag']}")
+
+    if sector_val and held_total > 0:
+        top = sorted(sector_val.items(), key=lambda x: -x[1])
+        lines += ["", "【持仓板块集中度·按市值】:"]
+        lines.append("  " + "; ".join(
+            f"{sec} {round(v/held_total*100)}%({'/'.join(sector_names[sec])})" for sec, v in top))
 
     data_block = "\n".join(lines)
     system_prompt = (
@@ -434,8 +501,9 @@ async def trade_review_ai(force: int = 0):
         "【最重要·别冤枉他】数据分两类: '仍持有'和'已清仓'。已清仓=他已经卖掉离场了, 亏损票=他割肉止损了, "
         "这是执行了纪律, 绝对不许说他'还在死扛/装死/越套越补/现在还亏着'——他早卖了。"
         "'浮亏/套着/还拿着'这种话只能用在'仍持有'的票上。\n"
-        "先认可做对的(已实现赚钱的票、卖出命中率高=卖点准、亏了能割肉止损), 再指出真问题: "
-        "追涨追高(仍持有的票越买越高)、情绪性高频做T但净亏、追涨杀跌持有过短。每条都用具体数据举证。\n"
+        "先认可做对的(已实现赚钱的票、卖出命中率高=卖点准、亏了能割肉止损), 再指出真问题。可用维度: "
+        "买入命中率低=追高接盘; 同股越跌越加码(金额越亏越大)=情绪化补仓上头; "
+        "亏的票比赚的票拿得久=截断利润/让亏损奔跑; 板块集中度高=押注单一赛道。每条都用具体数据举证。\n"
         "【硬规则】严禁任何面向未来的操作指令: 不许出现 该买/该卖/加仓/减仓/止损位/目标价/仓位建议/现在适合。"
         "只复盘已发生的行为, 不指挥下一步。不许编造给定数据里没有的票或数字。\n"
         "用 JSON 输出: {\"summary\":\"一句话客观定性(好坏都讲)\", "
