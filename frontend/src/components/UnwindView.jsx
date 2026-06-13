@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import MorningBriefing from './MorningBriefing'
 import SentimentThermometer from './SentimentThermometer'
+import HotRank from './HotRank'
 import SectorRadar from './SectorRadar'
 import SectorOpportunities from './SectorOpportunities'
 import AllocationAdvisor from './AllocationAdvisor'
@@ -39,6 +40,7 @@ export default function UnwindView() {
         <>
           <MorningBriefing />
           <SentimentThermometer />
+          <HotRank />
           <SectorRadar />
           <SectorOpportunities />
         </>

@@ -259,3 +259,61 @@ async def market_sentiment():
         _senti_cache["s"] = (r, _time.time())
         return r
     return {"date": None, "mood": "数据不足", "n_zt": 0}
+
+
+# ============================================================
+# 爱在冰川式 资金热度榜 (东财人气榜代理; 买/卖/锁仓三分榜的买卖源 push2 被墙, 只用人气)
+# ============================================================
+_hot_cache: dict = {}
+_HOT_TTL = 300
+
+
+def _fetch_hot_sync():
+    import os
+    for k in list(os.environ):
+        if "proxy" in k.lower():
+            os.environ.pop(k, None)
+    import akshare as ak
+    try:
+        h = ak.stock_hot_rank_em()
+    except Exception:
+        return None
+    if h is None or not len(h):
+        return None
+    rows = []
+    for _, r in h.iterrows():
+        raw = str(r.get("代码") or "")          # SH600378
+        code = raw[2:] if raw[:2].upper() in ("SH", "SZ", "BJ") else raw
+        try:
+            pct = float(r.get("涨跌幅"))
+        except Exception:
+            pct = None
+        rows.append({
+            "rank": int(r.get("当前排名") or 0), "code": code,
+            "name": str(r.get("股票名称") or ""), "price": r.get("最新价"),
+            "pct": round(pct, 2) if pct is not None else None,
+        })
+    return rows
+
+
+@router.get("/hot-rank")
+async def hot_rank(top: int = 20):
+    """爱在冰川式资金热度榜: 东财人气榜(资金/散户关注度)。标出你的持仓在不在榜、排第几。
+    纯客观人气数据, 不构成买卖建议。5min 缓存。"""
+    import asyncio
+    c = _hot_cache.get("h")
+    if c and _time.time() - c[1] < _HOT_TTL:
+        rows = c[0]
+    else:
+        rows = await asyncio.to_thread(_fetch_hot_sync)
+        if rows:
+            _hot_cache["h"] = (rows, _time.time())
+    if not rows:
+        return {"items": [], "mine": [], "count": 0}
+
+    from database import get_all_holdings
+    held_codes = {h["stock_code"] for h in await get_all_holdings()}
+    for r in rows:
+        r["mine"] = r["code"] in held_codes
+    mine = [r for r in rows if r["mine"]]
+    return {"items": rows[:top], "mine": mine, "count": len(rows)}
