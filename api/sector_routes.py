@@ -76,17 +76,27 @@ async def sector_kline(market: str = "A", key: str = "", days: int = 60):
 
 @router.get("/scan")
 async def scan(force: bool = False):
-    """A 股全板块扫描: 90 个 THS 板块的 1d/5d/30d 涨幅 + 持仓标记 + 兜底 ETF."""
+    """A 股全板块扫描: 90 个 THS 板块的 1d/5d/30d 涨幅 + 持仓标记 + 兜底 ETF.
+    持仓标记同时考虑 A 股个股 + 行业 ETF (基金持仓里名字带 ETF 的)。"""
     holdings = await get_all_holdings()
-    held_codes = [h["stock_code"] for h in holdings if is_a_share(h["stock_code"])] if holdings else []
-    return await scan_sectors(held_codes, force=force)
+    # 只算当前真持仓 (shares>0): 已清仓的票不该再标 held
+    held_codes = [h["stock_code"] for h in holdings
+                  if is_a_share(h["stock_code"]) and float(h.get("shares") or 0) > 0] if holdings else []
+    # 行业 ETF: 从外部资产里捞持有中 (shares>0) 且名字带 ETF 的基金, 名字用于映射板块
+    from database import list_external_assets
+    assets = await list_external_assets()
+    etf_names = [a.get("name") or "" for a in (assets or [])
+                 if a.get("asset_type") == "FUND" and float(a.get("shares") or 0) > 0
+                 and "ETF" in (a.get("name") or "")]
+    return await scan_sectors(held_codes, etf_names=etf_names, force=force)
 
 
 @router.get("/scan-us")
 async def scan_us(force: bool = False):
     """美股板块扫描: 11 个 GICS 板块 (SPDR Sector ETFs)."""
     holdings = await get_all_holdings()
-    held_codes = [h["stock_code"] for h in holdings if str(h.get("stock_code", "")).upper().startswith("US.")] if holdings else []
+    held_codes = [h["stock_code"] for h in holdings
+                  if str(h.get("stock_code", "")).upper().startswith("US.") and float(h.get("shares") or 0) > 0] if holdings else []
     return await scan_us_sectors(held_codes, force=force)
 
 
@@ -94,7 +104,8 @@ async def scan_us(force: bool = False):
 async def scan_hk(force: bool = False):
     """港股板块扫描: 12 个恒生综合行业指数."""
     holdings = await get_all_holdings()
-    held_codes = [h["stock_code"] for h in holdings if str(h.get("stock_code", "")).upper().startswith("HK.")] if holdings else []
+    held_codes = [h["stock_code"] for h in holdings
+                  if str(h.get("stock_code", "")).upper().startswith("HK.") and float(h.get("shares") or 0) > 0] if holdings else []
     return await scan_hk_sectors(held_codes, force=force)
 
 
