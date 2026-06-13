@@ -301,6 +301,65 @@ async def trade_review():
     }
 
 
+@router.get("/trade-journal")
+async def trade_journal(limit: int = 80):
+    """逐笔交易复盘: 每笔买/卖对照现价, 标命中(买便宜了/卖高了)。
+    买入命中 = 现价 > 买入价 (这笔买在低位); 卖出命中 = 现价 < 卖出价 (卖完躲过下跌)。"""
+    from database import get_db
+    from services.position_ledger import ACQUIRE, RELEASE
+    from services.market_data import get_realtime_quotes
+
+    db = await get_db()
+    try:
+        cursor = await db.execute("SELECT DISTINCT stock_code FROM position_actions")
+        codes = [r[0] for r in await cursor.fetchall()]
+    finally:
+        await db.close()
+
+    holdings_map = {h["stock_code"]: h for h in await get_all_holdings()}
+    quotes = await get_realtime_quotes(codes) if codes else {}
+    name_cache = {}
+    trades = []
+    for code in codes:
+        cur = (quotes.get(code) or {}).get("price") or 0
+        if not cur:
+            continue
+        name = (holdings_map.get(code) or {}).get("stock_name") or name_cache.get(code)
+        if not name:
+            try:
+                name = await get_stock_name(code) or code
+            except Exception:
+                name = code
+            name_cache[code] = name
+        for a in await get_position_actions(code, limit=500):
+            t = (a.get("action_type") or "").upper()
+            kind = "buy" if t in ACQUIRE else ("sell" if t in RELEASE else None)
+            price = float(a.get("price") or 0)
+            if not kind or price <= 0:
+                continue
+            pct = round((cur - price) / price * 100, 2)   # 买/卖后股价至今涨跌
+            hit = (cur > price) if kind == "buy" else (cur < price)
+            trades.append({
+                "date": (a.get("trade_date") or "")[:10], "code": code, "name": name,
+                "kind": kind, "price": round(price, 3), "shares": float(a.get("shares") or 0),
+                "current": round(cur, 3), "pct": pct, "hit": hit,
+            })
+
+    trades.sort(key=lambda x: x["date"], reverse=True)
+    buys = [t for t in trades if t["kind"] == "buy"]
+    sells = [t for t in trades if t["kind"] == "sell"]
+    return {
+        "trades": trades[:limit],
+        "buy_count": len(buys),
+        "buy_hit": sum(1 for t in buys if t["hit"]),
+        "buy_hit_rate": round(sum(1 for t in buys if t["hit"]) / len(buys), 3) if buys else 0,
+        "sell_count": len(sells),
+        "sell_hit": sum(1 for t in sells if t["hit"]),
+        "sell_hit_rate": round(sum(1 for t in sells if t["hit"]) / len(sells), 3) if sells else 0,
+        "total": len(trades),
+    }
+
+
 @router.get("/benchmark")
 async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
     """跑赢基准对照: 假设你 A 股的每次买卖, 同金额同日期都买在基准上 (默认沪深300).

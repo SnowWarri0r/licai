@@ -10,6 +10,7 @@ import MacroDashboard from './MacroDashboard'
 import PortfolioNews from './PortfolioNews'
 import DailyReview from './DailyReview'
 import TradeReview from './TradeReview'
+import TradeJournal from './TradeJournal'
 
 const TABS = [
   { key: 'sector',   label: '板块',   desc: '动量 / 资金流 / 早盘速览' },
@@ -52,6 +53,7 @@ export default function UnwindView() {
 
       {tab === 'config' && (
         <>
+          <TradeJournal />
           <TradeReview />
           <BenchmarkCompare />
           <Cashflow />
