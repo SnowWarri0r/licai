@@ -701,6 +701,20 @@ async def delete_external_asset(asset_id: int):
         await db.close()
 
 
+async def reassign_external_actions(source_id: int, target_id: int) -> int:
+    """把 source 资产的全部流水 + DCA 计划改挂到 target (合并重复资产用)。返回搬动的流水条数。"""
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "UPDATE external_asset_actions SET asset_id = ? WHERE asset_id = ?", (target_id, source_id))
+        await db.execute(
+            "UPDATE dca_schedules SET asset_id = ? WHERE asset_id = ?", (target_id, source_id))
+        await db.commit()
+        return cur.rowcount
+    finally:
+        await db.close()
+
+
 async def mark_tranche_sold_back(tranche_id: int, sold_price: float):
     """Record the sell-leg of a tranche (做T 回收). Tranche remains 'executed'
     so it stays in the ladder; status of sell leg is tracked via sold_back_price."""
