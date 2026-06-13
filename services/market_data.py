@@ -566,6 +566,36 @@ async def get_stock_sector(stock_code: str) -> str:
     return sector
 
 
+async def get_stock_sector_detail(stock_code: str) -> str:
+    """有色金属细分到二级(小金属/基本金属/贵金属/能源金属), 其它返回一级。
+    钨钼锑稀土等 EM 归在 '有色金属-稀有金属', 这里映射成 '小金属' 跟用户口径一致。"""
+    import time
+    import asyncio as _asyncio
+    sc = normalize_stock_code(stock_code)
+    market, _ = split_stock_code(sc)
+    if market == "HK":
+        return "港股"
+    if market == "US":
+        return "美股"
+    ck = sc + ":detail"
+    cached = _sector_cache.get(ck)
+    if cached and time.time() - cached[1] < _SECTOR_TTL:
+        return cached[0]
+    try:
+        industry = await _asyncio.to_thread(_lookup_industry, sc)
+    except Exception:
+        industry = ""
+    parts = [p.strip() for p in (industry or "").split("-") if p.strip()]
+    if not parts:
+        out = ""
+    elif parts[0] == "有色金属" and len(parts) >= 2:
+        out = "小金属" if parts[1] == "稀有金属" else parts[1]
+    else:
+        out = parts[0]
+    _sector_cache[ck] = (out, time.time())
+    return out
+
+
 def _lookup_industry(stock_code: str) -> str:
     """Look up stock industry via East Money CompanySurvey API (emweb domain, stable)."""
     try:

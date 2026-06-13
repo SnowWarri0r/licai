@@ -11,7 +11,7 @@ from database import (
     get_unwind_plan, get_tranches, mark_tranche_executed, list_brokers,
 )
 from services.market_data import (
-    get_realtime_quotes, get_stock_name, get_stock_sector,
+    get_realtime_quotes, get_stock_name, get_stock_sector, get_stock_sector_detail,
     normalize_stock_code, split_stock_code, get_fx_info, is_a_share,
 )
 from services.position_ledger import compute_position_state
@@ -456,7 +456,7 @@ async def trade_review_ai(force: int = 0):
         val = (cur_by_code.get(s["code"]) or 0) * s["shares"]
         held_total += val
         try:
-            sec = await get_stock_sector(s["code"]) or "其他"
+            sec = await get_stock_sector_detail(s["code"]) or "其他"  # 二级: 小金属/基本金属/贵金属…
         except Exception:
             sec = "其他"
         sector_val[sec] = sector_val.get(sec, 0) + val
