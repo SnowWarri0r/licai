@@ -367,3 +367,75 @@ async def hot_rank(top: int = 20):
         r["mine"] = r["code"] in held_codes
     mine = [r for r in rows if r["mine"]]
     return {"items": rows[:top], "mine": mine, "count": len(rows)}
+
+
+def _fetch_sentiment_detail_sync():
+    """情绪二级页明细: 涨停/跌停完整股票列表(含连板数/所属行业/封板资金), 给前端按连板梯队/板块分组。"""
+    import os
+    for k in list(os.environ):
+        if "proxy" in k.lower():
+            os.environ.pop(k, None)
+    import akshare as ak
+    today = (datetime.now(timezone.utc) + timedelta(hours=8)).date()
+    zt, d = None, None
+    for back in range(0, 8):
+        dd = (today - timedelta(days=back)).strftime("%Y%m%d")
+        try:
+            z = ak.stock_zt_pool_em(date=dd)
+            if z is not None and len(z):
+                zt, d = z, dd
+                break
+        except Exception:
+            pass
+    if zt is None:
+        return None
+
+    def _f(x, default=0.0):
+        try:
+            return float(x)
+        except Exception:
+            return default
+
+    zt_list = []
+    for _, r in zt.iterrows():
+        zt_list.append({
+            "name": str(r.get("名称") or ""),
+            "code": str(r.get("代码") or ""),
+            "lb": int(_f(r.get("连板数"), 1)),
+            "sector": str(r.get("所属行业") or "其他"),
+            "pct": round(_f(r.get("涨跌幅")), 2),
+            "seal_yi": round(_f(r.get("封板资金")) / 1e8, 2),  # 封板资金(亿)
+        })
+    zt_list.sort(key=lambda x: (-x["lb"], -x["seal_yi"]))
+
+    dt_list = []
+    try:
+        dtp = ak.stock_zt_pool_dtgc_em(date=d)
+        if dtp is not None:
+            for _, r in dtp.iterrows():
+                dt_list.append({
+                    "name": str(r.get("名称") or ""),
+                    "code": str(r.get("代码") or ""),
+                    "pct": round(_f(r.get("涨跌幅")), 2),
+                })
+    except Exception:
+        pass
+
+    return {"date": d, "zt": zt_list, "dt": dt_list, "n_zt": len(zt_list), "n_dt": len(dt_list)}
+
+
+_senti_detail_cache: dict = {}
+
+
+@router.get("/sentiment-detail")
+async def market_sentiment_detail():
+    """情绪温度计二级页: 涨停/跌停完整股票列表(连板数/行业/封板资金)。5min 缓存。"""
+    import asyncio
+    c = _senti_detail_cache.get("d")
+    if c and _time.time() - c[1] < _SENTI_TTL:
+        return c[0]
+    r = await asyncio.to_thread(_fetch_sentiment_detail_sync)
+    if r:
+        _senti_detail_cache["d"] = (r, _time.time())
+        return r
+    return {"date": None, "zt": [], "dt": [], "n_zt": 0, "n_dt": 0}
