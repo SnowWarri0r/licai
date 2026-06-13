@@ -22,7 +22,7 @@ export default function HotRank() {
       <div className="flex items-baseline justify-between gap-2 mb-3 flex-wrap">
         <div className="flex items-baseline gap-2">
           <h3 className="text-[14px] font-semibold text-text-bright m-0">资金热度榜</h3>
-          <span className="text-[10.5px] text-text-muted">爱在冰川式 · 东财人气榜</span>
+          <span className="text-[10.5px] text-text-muted">东财人气榜 · 资金关注度</span>
         </div>
       </div>
 
