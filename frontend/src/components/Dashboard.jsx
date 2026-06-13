@@ -322,36 +322,6 @@ export default function Dashboard({ holdings }) {
         </>
       )}
 
-      {indices.length > 0 && <div className="w-px h-4 bg-border shrink-0" />}
-      {indices.map((idx, i) => (
-        <div key={i} className="flex items-center gap-1 shrink-0">
-          <span className="text-[11px] text-text-muted">{idx.name}</span>
-          <span className={`text-[12px] font-mono ${priceColor(idx.change_pct)}`}>
-            {idx.change_pct > 0 ? '+' : ''}{idx.change_pct}%
-          </span>
-        </div>
-      ))}
-
-      {unwindStats && unwindStats.totalBudget > 0 && (
-        <>
-          <div className="w-px h-4 bg-border shrink-0" />
-          <div className="flex items-center gap-1.5 shrink-0">
-            <span className="text-[11px] text-text-muted">子弹池</span>
-            <span className="text-[13px] font-mono font-medium text-accent">
-              {fmtMoney(unwindStats.totalBudget)}
-            </span>
-            <span className="text-[10px] text-text-muted">
-              · {unwindStats.pendingCount}档待触发
-            </span>
-          </div>
-          <div className="flex items-center gap-1.5 shrink-0">
-            <span className="text-[11px] text-text-muted">每日机会损失</span>
-            <span className="text-[12px] font-mono text-bear">
-              ¥{unwindStats.dailyOpp.toFixed(2)}
-            </span>
-          </div>
-        </>
-      )}
     </div>
   )
 }
