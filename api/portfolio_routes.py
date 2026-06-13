@@ -683,7 +683,9 @@ async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
         for bd in bench_dates_sorted:
             if bd >= d:
                 return bench_by_date[bd]
-        return None
+        # d 晚于基准最新数据(今天/最近几天指数日线还没更新): 用最后一个可得收盘兜底,
+        # 否则这几天的买卖会被整笔跳过, 导致"已收回/投入"漏算出现假的巨额盈亏。
+        return bench_by_date[bench_dates_sorted[-1]] if bench_dates_sorted else None
 
     # 2) 收集所有 A 股 actions (跳过 HK./US.)
     from database import get_db
