@@ -787,7 +787,7 @@ function SummaryStrip({ agg, aShareClosed, realized }) {
 // ============================================================
 // Main
 // ============================================================
-export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd }) {
+export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, dataVersion = 0 }) {
   const [assets, setAssets] = useState([])
   const [brokers, setBrokers] = useState([])
   useEffect(() => { loadBrokers().then(setBrokers) }, [])
@@ -902,7 +902,12 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
       }
       setUnwindPlans(map)
     }).catch(() => {})
-  }, [holdings.length])
+  }, [holdings.length, dataVersion])
+
+  // 交易流水编辑后 (dataVersion 变化): 立即重载已实现/已清仓/资产, 不用等 20s 轮询
+  useEffect(() => {
+    if (dataVersion > 0) { loadRealized(); loadAssets() }
+  }, [dataVersion, loadRealized, loadAssets])
 
   const rows = useMemo(() => {
     // 0 持仓的股票/基金 不在主列表显示, 走 "已清仓" 区块

@@ -82,7 +82,9 @@ export default function App() {
   useWebSocket(handleWsMessage)
 
   const handleRefresh = () => loadPortfolio()
-  const handleHoldingChange = () => loadPortfolio()
+  // 交易流水变动: 既重载持仓, 也 +1 dataVersion 触发 UnifiedPortfolio 重载已实现/已清仓/解套
+  const [dataVersion, setDataVersion] = useState(0)
+  const handleHoldingChange = () => { loadPortfolio(); setDataVersion(v => v + 1) }
 
   return (
     <div className="min-h-screen">
@@ -104,6 +106,7 @@ export default function App() {
           onEdit={setEditTarget}
           onHistory={setHistoryTarget}
           onAdd={handleHoldingChange}
+          dataVersion={dataVersion}
         />
 
         <UnwindView />
