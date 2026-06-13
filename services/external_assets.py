@@ -142,8 +142,29 @@ def _is_onchain_etf(code: str) -> bool:
     return code[0] in ("1", "5")
 
 
+# 基金全称缓存 (名字稳定, 长期缓存避免每次报价都打 pingzhongdata)
+_fund_name_cache: dict[str, str] = {}
+
+
+async def _onchain_fund_name(code: str, fallback: str) -> str:
+    """场内 ETF 的展示名: 优先天天基金全称 (如 '半导体ETF鹏华'), 拉不到回退
+    A股行情的证券简称 (如 '芯片')。全称缓存, 失败也缓存 fallback 避免反复重试。"""
+    cached = _fund_name_cache.get(code)
+    if cached:
+        return cached
+    try:
+        full = await asyncio.to_thread(_fetch_fund_name_sync, code)
+    except Exception:
+        full = ""
+    name = full or fallback
+    if name:
+        _fund_name_cache[code] = name
+    return name
+
+
 async def _fetch_onchain_etf_quote(code: str) -> dict | None:
-    """场内 ETF 用 A股实时行情接口，返回二级市场成交价（用户在券商 App 看到的"现价"）。"""
+    """场内 ETF 用 A股实时行情接口，返回二级市场成交价（用户在券商 App 看到的"现价"）。
+    名字用天天基金全称 (行情接口的证券简称对不上基金全称)。"""
     from services.market_data import get_realtime_quotes
     quotes = await get_realtime_quotes([code])
     q = quotes.get(code)
@@ -152,7 +173,7 @@ async def _fetch_onchain_etf_quote(code: str) -> dict | None:
     price = q["price"]
     return {
         "code": code,
-        "name": q.get("stock_name", ""),
+        "name": await _onchain_fund_name(code, q.get("stock_name", "")),
         "nav": price,          # 字段复用：场内场景下这是市价
         "est_nav": price,
         "change_pct": q.get("change_pct", 0),
