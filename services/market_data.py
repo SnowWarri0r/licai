@@ -1035,10 +1035,30 @@ async def get_macro_quotes() -> dict:
 
 
 # ============================================================
-# K 线数据源 (sparkline 用)
-# 不同符号家族走不同接口, 单 symbol 拉 30 日 close 序列.
-# 返回值统一: [{date, close}, ...] 按时间升序.
+# K 线数据源 (sparkline + 放大图真 K 线用)
+# 不同符号家族走不同接口, 单 symbol 拉 30/60 日序列.
+# 返回值统一: [{date, close, open?, high?, low?}, ...] 按时间升序.
+# close 必有 (sparkline 用); open/high/low 有则画真 K 线蜡烛, 缺则前端回退折线.
 # ============================================================
+def _mk_ohlc(date, c, o=None, h=None, l=None) -> dict | None:
+    """构造统一 K 线点。close 必填且 >0; open/high/low 三者齐全且 >0 才带上 (画蜡烛)。"""
+    try:
+        c = float(c or 0)
+    except (TypeError, ValueError):
+        return None
+    if c <= 0:
+        return None
+    row = {"date": date or "", "close": c}
+    try:
+        if o not in (None, "") and h not in (None, "") and l not in (None, ""):
+            o, h, l = float(o), float(h), float(l)
+            if o > 0 and h > 0 and l > 0:
+                row["open"], row["high"], row["low"] = o, h, l
+    except (TypeError, ValueError):
+        pass
+    return row
+
+
 def _kline_sina_ashare(sym: str, datalen: int = 30) -> list[dict]:
     """sh*/sz* A 股 / A 股板块指数."""
     url = (f"http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
@@ -1047,7 +1067,12 @@ def _kline_sina_ashare(sym: str, datalen: int = 30) -> list[dict]:
     arr = r.json()
     if not isinstance(arr, list):
         return []
-    return [{"date": d.get("day", ""), "close": float(d.get("close") or 0)} for d in arr if d.get("close")]
+    out = []
+    for d in arr:
+        row = _mk_ohlc(d.get("day"), d.get("close"), d.get("open"), d.get("high"), d.get("low"))
+        if row:
+            out.append(row)
+    return out
 
 
 def _kline_tencent_hk(sym: str, datalen: int = 30) -> list[dict]:
@@ -1071,10 +1096,13 @@ def _kline_tencent_hk(sym: str, datalen: int = 30) -> list[dict]:
     for r in rows[-datalen:]:
         if len(r) < 3:
             continue
-        try:
-            out.append({"date": r[0], "close": float(r[2])})
-        except Exception:
-            continue
+        # 腾讯日线数组: [日期, 开, 收, 高, 低, ...]
+        o = r[1] if len(r) > 1 else None
+        h = r[3] if len(r) > 3 else None
+        lo = r[4] if len(r) > 4 else None
+        row = _mk_ohlc(r[0], r[2], o, h, lo)
+        if row:
+            out.append(row)
     return out
 
 
@@ -1103,13 +1131,10 @@ def _kline_sina_us(sym: str, datalen: int = 30) -> list[dict]:
         return []
     out = []
     for d in arr[-datalen:]:
-        c = d.get("c") or d.get("close")
-        date = d.get("d") or d.get("date") or ""
-        if c:
-            try:
-                out.append({"date": date, "close": float(c)})
-            except Exception:
-                continue
+        row = _mk_ohlc(d.get("d") or d.get("date"), d.get("c") or d.get("close"),
+                       d.get("o"), d.get("h"), d.get("l"))
+        if row:
+            out.append(row)
     return out
 
 
@@ -1138,13 +1163,10 @@ def _kline_sina_futures_cn(sym: str, datalen: int = 30) -> list[dict]:
         return []
     out = []
     for d in arr[-datalen:]:
-        c = d.get("c") or d.get("close")
-        date = d.get("d") or d.get("date") or ""
-        if c:
-            try:
-                out.append({"date": date, "close": float(c)})
-            except Exception:
-                continue
+        row = _mk_ohlc(d.get("d") or d.get("date"), d.get("c") or d.get("close"),
+                       d.get("o"), d.get("h"), d.get("l"))
+        if row:
+            out.append(row)
     return out
 
 
@@ -1215,13 +1237,9 @@ def _kline_sina_futures_intl(sym: str, datalen: int = 30) -> list[dict]:
         return []
     out = []
     for d in arr[-datalen:]:
-        c = d.get("close")
-        date = d.get("date") or ""
-        if c:
-            try:
-                out.append({"date": date, "close": float(c)})
-            except Exception:
-                continue
+        row = _mk_ohlc(d.get("date"), d.get("close"), d.get("open"), d.get("high"), d.get("low"))
+        if row:
+            out.append(row)
     return out
 
 
@@ -1244,13 +1262,9 @@ def _kline_sina_global_index(sym: str, datalen: int = 30) -> list[dict]:
     rows = (r.json().get("result") or {}).get("data") or []
     out = []
     for d in rows[-datalen:]:
-        c = d.get("c")
-        date = d.get("d") or ""
-        if c:
-            try:
-                out.append({"date": date, "close": float(c)})
-            except Exception:
-                continue
+        row = _mk_ohlc(d.get("d"), d.get("c"), d.get("o"), d.get("h"), d.get("l"))
+        if row:
+            out.append(row)
     return out
 
 
