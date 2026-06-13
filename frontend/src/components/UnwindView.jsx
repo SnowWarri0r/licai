@@ -1,6 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
-import { fetchJSON } from '../hooks/useApi'
-import UnwindCard from './UnwindCard'
+import { useState } from 'react'
 import MorningBriefing from './MorningBriefing'
 import SectorRadar from './SectorRadar'
 import SectorOpportunities from './SectorOpportunities'
@@ -16,43 +14,16 @@ const TABS = [
   { key: 'macro',    label: '宏观',   desc: '指数 / 汇率 / 商品' },
   { key: 'news',     label: '资讯',   desc: '持仓股新闻 / 公告' },
   { key: 'config',   label: '配置',   desc: '现金流 / 大类 / 跑赢基准' },
-  { key: 'holdings', label: '持仓',   desc: '减仓阶梯 / 解套档位' },
 ]
+const TAB_KEYS = TABS.map(t => t.key)
 
 export default function UnwindView() {
-  const [plans, setPlans] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [tab, setTab] = useState(() => localStorage.getItem('unwindTab') || 'sector')
-
-  const loadPlans = useCallback(async () => {
-    try {
-      setPlans(await fetchJSON('/api/unwind/plans'))
-    } catch (e) {
-      console.error(e)
-    } finally {
-      setLoading(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    loadPlans()
-    const t = setInterval(loadPlans, 30000)
-    return () => clearInterval(t)
-  }, [loadPlans])
+  const [tab, setTab] = useState(() => {
+    const saved = localStorage.getItem('unwindTab')
+    return TAB_KEYS.includes(saved) ? saved : 'sector'  // 旧的 'holdings' 已移除, 回退板块
+  })
 
   const pickTab = (k) => { setTab(k); localStorage.setItem('unwindTab', k) }
-
-  if (loading) {
-    return <div className="text-center py-8 text-text-dim text-[13px]">加载中...</div>
-  }
-  if (plans.length === 0 && tab === 'holdings') {
-    return (
-      <div className="space-y-4">
-        <TabBar tab={tab} onPick={pickTab} />
-        <div className="text-center py-8 text-text-dim text-[13px]">暂无持仓</div>
-      </div>
-    )
-  }
 
   return (
     <div className="space-y-4">
@@ -81,14 +52,6 @@ export default function UnwindView() {
           <AllocationAdvisor />
           <AShareSectorGap />
         </>
-      )}
-
-      {tab === 'holdings' && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {plans.filter(p => (p.shares || 0) > 0).map(p => (
-            <UnwindCard key={p.stock_code} plan={p} onChange={loadPlans} />
-          ))}
-        </div>
       )}
     </div>
   )
