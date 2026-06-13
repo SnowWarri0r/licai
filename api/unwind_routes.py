@@ -58,11 +58,13 @@ async def _build_plan_response(h: dict, q: dict) -> dict:
     # Prefer FIFO-derived state from position_actions (accurate over multiple buys)
     actions = await get_position_actions(code, limit=500)
     first_buy_date = None
+    realized_carry = 0.0   # 该股已平仓段+分红的已实现 (不在当前浮动里, 用于全周期回本)
     if actions:
         state = compute_position_state(actions, stock_code=code)
         shares = state["shares"] if state["shares"] > 0 else h["shares"]
         cost = state["cost_price"] if state["shares"] > 0 else h["cost_price"]
         holding_days = state["weighted_days"] or 1
+        realized_carry = float(state.get("realized_carry") or 0)
         # Earliest buy among remaining lots is the right anchor for benchmark comparison
         lots = state.get("lots") or []
         if lots:
@@ -71,6 +73,10 @@ async def _build_plan_response(h: dict, q: dict) -> dict:
         shares = h["shares"]
         cost = h["cost_price"]
         holding_days = _days_held(h.get("created_at", ""))
+
+    # 全周期回本价: 当前持仓涨到该价, 才能把这只票从头到尾(含历史已实现)盈亏拉平。
+    # carry<0(历史净亏)时 > 当前成本; 仅作参考, 不当减仓触发价。
+    full_cycle_breakeven = round((cost * shares - realized_carry) / shares, 4) if shares > 0 else cost
 
     # Economics
     real_c = calc_real_cost(cost, holding_days, config.risk_free_rate)
@@ -197,6 +203,8 @@ async def _build_plan_response(h: dict, q: dict) -> dict:
         "nominal_loss_pct": nominal_loss_pct,
         "real_cost": round(real_c, 4),
         "real_loss_pct": real_loss_pct,
+        "realized_carry": round(realized_carry, 2),
+        "full_cycle_breakeven": full_cycle_breakeven,
         "opportunity_cost_accumulated": round(opp_cost, 2),
         "daily_opportunity_cost": round(daily_opp, 2),
         "price_progress": round(price_progress, 3),
