@@ -901,6 +901,15 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
     ? !!tradingDay.is_trading_day
     : ![0, 6].includes(new Date().getDay())
   const agg = useMemo(() => aggregate(filtered, aShareTradingDay), [filtered, aShareTradingDay])
+  // 个股「历史已实现」(清仓段+分红, 不在当前浮动里). 用来在行内补「真实总盈亏」,
+  // 否则清仓后复活的票只看浮动会误判 (中钨高新浮动+245 实则全周期 -373)。
+  const carryByCode = useMemo(() => {
+    const m = {}
+    for (const it of (realized?.stockItems || [])) {
+      if (it.realized_carry) m[it.stock_code] = it.realized_carry
+    }
+    return m
+  }, [realized])
   // tabTypes: always show all types regardless of holdings
   const tabTypes = TYPE_ORDER
   // visibleTypes: from filtered rows — drives content section rendering
@@ -1388,6 +1397,16 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd })
                         <span className={`font-mono text-[10px] opacity-85 ${priceColor(row.pnlPct)}`}>
                           {row.pnlPct != null ? fmtPct(row.pnlPct) : ''}
                         </span>
+                        {row.type === 'A' && Math.abs(carryByCode[row.code] || 0) > 0.5 && (() => {
+                          const total = (row.pnl || 0) + carryByCode[row.code]
+                          return (
+                            <Tooltip content="全周期真实盈亏 = 当前持仓浮动 + 历史已实现(清仓段/部分卖出)。清仓后又买回的票, 行内浮动只算这手, 这里把历史亏赚补回来。">
+                              <div className={`font-mono text-[9.5px] ${priceColor(total)} opacity-90 cursor-help`}>
+                                真实 {total >= 0 ? '+' : ''}{fmtMoney(total)}
+                              </div>
+                            </Tooltip>
+                          )
+                        })()}
                       </>
                     )}
                   </div>
