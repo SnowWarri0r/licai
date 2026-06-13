@@ -388,15 +388,21 @@ async def trade_review_ai(force: int = 0):
     held = [s for s in stats if s["shares"] > 0]      # 还拿着的
     closed = [s for s in stats if s["shares"] <= 0]   # 已清仓(割了/卖了)
     held_names = {s["name"] for s in held}
+    # 每只持仓真实总盈亏(浮动+已实现): 这才是判赚亏的唯一标准, 不是拿单笔买入价对现价的快照
+    for s in held:
+        s["total_now"] = round(s.get("floating", 0) + s.get("realized", 0), 1)
+    held_win = [s for s in held if s["total_now"] > 0]    # 当前在赚的持仓(追高追对了也算)
+    held_loss = [s for s in held if s["total_now"] < 0]   # 当前真亏的持仓(才轮得到说追高/套牢)
+    loss_held_names = {s["name"] for s in held_loss}
 
-    # 仍持有的票, 每笔买入对现价(只有还持有时"套着"才成立)
+    # "套着的买入"只在【当前真亏】的持仓里找(赚钱的持仓哪怕某笔买得高也不算追高错)
     held_buys_under = sorted(
-        [t for t in journal["trades"] if t["kind"] == "buy" and not t["hit"] and t["name"] in held_names],
+        [t for t in journal["trades"] if t["kind"] == "buy" and not t["hit"] and t["name"] in loss_held_names],
         key=lambda x: x["pct"])[:8]
-    # 同股多次买入, 只看仍持有的(已清仓的别拿现价说"还在补/还套着")
+    # 同股多次买入(越买越高/补仓), 只看当前真亏的持仓
     by_stock: dict = {}
     for t in journal["trades"]:
-        if t["kind"] == "buy" and t["name"] in held_names:
+        if t["kind"] == "buy" and t["name"] in loss_held_names:
             by_stock.setdefault(t["name"], []).append(t)
     repeat_buys = {n: sorted(ts, key=lambda x: x["date"]) for n, ts in by_stock.items() if len(ts) >= 3}
 
@@ -422,10 +428,12 @@ async def trade_review_ai(force: int = 0):
     avg_cw = round(sum(cw_spans) / len(cw_spans)) if cw_spans else None
     avg_cl = round(sum(cl_spans) / len(cl_spans)) if cl_spans else None
 
-    # (c) 越跌越加码: 同股多次买入(含已清仓), 价格下行但单笔金额上行 = martingale
+    # (c) 越跌越加码: 同股多次买入价格下行但金额上行 = martingale。
+    # 只看【最终亏钱】的票(当前真亏的持仓 + 已清仓亏的)——赚钱票的越买越高是追对了, 不算问题。
+    loser_names = loss_held_names | {s["name"] for s in closed_loss}
     buys_by_code: dict = {}
     for t in journal["trades"]:
-        if t["kind"] == "buy":
+        if t["kind"] == "buy" and t["name"] in loser_names:
             buys_by_code.setdefault(t["code"], []).append(t)
     escalation = []
     for code, ts in buys_by_code.items():
@@ -456,17 +464,18 @@ async def trade_review_ai(force: int = 0):
 
     lines = [
         f"总览: 交易过 {o['n_stocks']} 只, 已实现合计 {o['total_realized']:.0f}, 当前持仓平均持有 {o['avg_hold_days']} 天",
-        f"买入命中率 {round(journal['buy_hit_rate']*100)}% ({journal['buy_hit']}/{journal['buy_count']} 笔买在现价之下) "
-        f"— 约 {round((1-journal['buy_hit_rate'])*100)}% 的买入当前是套住的, 反映追高/接盘倾向",
         f"卖出命中率 {round(journal['sell_hit_rate']*100)}% ({journal['sell_hit']}/{journal['sell_count']} 笔卖完股价确实跌了) — 卖点把握",
         "",
-        f"【仍持有 {len(held)} 只】(这些说'浮亏/套着'才成立):",
+        f"【仍持有 {len(held)} 只 — 以真实总盈亏(浮动+已实现)判赚亏, 不看单笔买入价对现价的快照】:",
     ]
     for s in held:
-        floating = s.get("floating", 0)
-        lines.append(f"  {s['name']}: 持{s['shares']:.0f}股, 浮动{floating:+.0f}, 已实现{s['realized']:+.0f}, {s['n_buy']}买{s['n_sell']}卖")
+        tag = "✅赚" if s["total_now"] > 0 else ("❌亏" if s["total_now"] < 0 else "持平")
+        lines.append(f"  {s['name']}: {tag} 总{s['total_now']:+.0f}(浮动{s.get('floating',0):+.0f}+已实现{s['realized']:+.0f}), "
+                     f"持{s['shares']:.0f}股, {s['n_buy']}买{s['n_sell']}卖")
+    if held_win:
+        lines.append("  注: " + "/".join(s["name"] for s in held_win) + " 当前在赚 — 哪怕当初追高买的, 趋势走对了就是对的, 不许当追高错来骂")
     if held_buys_under:
-        lines.append("  仍套着的买入(对现价): " + "; ".join(
+        lines.append("  当前真亏持仓里套着的买入: " + "; ".join(
             f"{t['name']}@{t['price']}(现{t['current']},{t['pct']:+.1f}%)" for t in held_buys_under))
     for n, ts in list(repeat_buys.items())[:6]:
         seq = " → ".join(f"@{t['price']}" for t in ts)
@@ -498,12 +507,15 @@ async def trade_review_ai(force: int = 0):
     system_prompt = (
         "你是交易复盘教练。基于用户真实的 A 股交易流水, 复盘他的交易纪律, 像一面镜子照清楚他的习惯——"
         "该夸的夸、该点的点, 要平衡客观, 不是单纯挑刺骂人。\n"
-        "【最重要·别冤枉他】数据分两类: '仍持有'和'已清仓'。已清仓=他已经卖掉离场了, 亏损票=他割肉止损了, "
-        "这是执行了纪律, 绝对不许说他'还在死扛/装死/越套越补/现在还亏着'——他早卖了。"
-        "'浮亏/套着/还拿着'这种话只能用在'仍持有'的票上。\n"
-        "先认可做对的(已实现赚钱的票、卖出命中率高=卖点准、亏了能割肉止损), 再指出真问题。可用维度: "
-        "买入命中率低=追高接盘; 同股越跌越加码(金额越亏越大)=情绪化补仓上头; "
+        "【最重要·别冤枉他·两条铁律】\n"
+        "(1) 仍持有的票, 赚亏只看'真实总盈亏(浮动+已实现)'。当前在赚的持仓(标✅赚), 哪怕当初追高买的、"
+        "买入价比某天现价高过, 都算他做对了(追高 + 趋势走对 = 成功), 绝对不许拿单笔买入价对现价的快照说他'追高/套牢/接盘'。"
+        "'追高/套着/浮亏'只能点【当前真亏(标❌亏)】的持仓。\n"
+        "(2) 已清仓=他已卖掉离场, 亏损票=他割肉止损了, 这是执行纪律, 不许说'还在死扛/装死/越套越补/现在还亏着'。\n"
+        "先认可做对的(在赚的持仓含追对的追高、已实现赚钱的票、卖出命中率高、亏了能割肉止损), 再指出真问题。可用维度: "
+        "当前真亏持仓里越买越高/越跌越加码(金额越亏越大)=情绪化补仓上头; "
         "亏的票比赚的票拿得久=截断利润/让亏损奔跑; 板块集中度高=押注单一赛道。每条都用具体数据举证。\n"
+        "【不要用】单日买入命中率快照判'追高对错'——它隔天就翻面、噪声大, 已从数据里剔除。\n"
         "【硬规则】严禁任何面向未来的操作指令: 不许出现 该买/该卖/加仓/减仓/止损位/目标价/仓位建议/现在适合。"
         "只复盘已发生的行为, 不指挥下一步。不许编造给定数据里没有的票或数字。\n"
         "用 JSON 输出: {\"summary\":\"一句话客观定性(好坏都讲)\", "
