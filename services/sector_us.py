@@ -13,6 +13,8 @@ import asyncio
 import time
 from datetime import datetime, timedelta
 
+from services.sector_compare import _ohlc_point
+
 
 _CACHE_TTL = 600  # 10 min
 _cache: tuple[dict, float] | None = None
@@ -121,19 +123,22 @@ def _close_pct(closes: list[float], n: int) -> float | None:
     return round((last / prior - 1) * 100, 2)
 
 
-def _fetch_etf_kline_sync(symbol: str) -> list[dict]:
+def _fetch_etf_kline_sync(symbol: str, days: int = 120) -> list[dict]:
     try:
         import akshare as ak
         end = datetime.now().strftime("%Y%m%d")
-        start = (datetime.now() - timedelta(days=120)).strftime("%Y%m%d")
+        start = (datetime.now() - timedelta(days=int(days * 1.6) + 15)).strftime("%Y%m%d")
         df = ak.stock_us_hist(symbol=f"107.{symbol}", period="daily",
                               start_date=start, end_date=end, adjust="qfq")
         if df is None or df.empty:
             return []
         out = []
-        for _, r in df.iterrows():
+        for _, r in df.tail(days).iterrows():
             try:
-                out.append({"date": str(r["日期"]), "close": float(r["收盘"])})
+                row = {"date": str(r["日期"]), "close": float(r["收盘"])}
+                if all(c in r for c in ("开盘", "最高", "最低")):
+                    row["open"], row["high"], row["low"] = float(r["开盘"]), float(r["最高"]), float(r["最低"])
+                out.append(row)
             except (ValueError, TypeError, KeyError):
                 continue
         return out
@@ -171,7 +176,7 @@ async def _scan_uncached(held_codes: list[str]) -> dict:
             "change_1d": _close_pct(closes, 1),
             "change_5d": _close_pct(closes, 5),
             "change_30d": _close_pct(closes, 30),
-            "kline_tail": [{"date": k["date"], "close": k["close"]} for k in tail],
+            "kline_tail": [_ohlc_point(k) for k in tail],
             "etf_code": f"US.{sym}",
             "etf_name": f"{cn} ETF (SPDR)",
             "held": cn in held_sectors,
