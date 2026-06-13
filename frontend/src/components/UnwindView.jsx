@@ -9,6 +9,7 @@ import Cashflow from './Cashflow'
 import MacroDashboard from './MacroDashboard'
 import PortfolioNews from './PortfolioNews'
 import DailyReview from './DailyReview'
+import SmallMetalNews from './SmallMetalNews'
 import TradeReview from './TradeReview'
 import TradeJournal from './TradeJournal'
 import AITradeReview from './AITradeReview'
@@ -48,6 +49,7 @@ export default function UnwindView() {
       {tab === 'news' && (
         <div className="space-y-4">
           <DailyReview />
+          <SmallMetalNews />
           <PortfolioNews />
         </div>
       )}

@@ -10,13 +10,14 @@ const GROUP_META = {
   ai_tech:          { label: 'AI / 算力',  desc: 'AI 全产业链: 算力/芯片/光模块/云软件/AIGC/机器人/电力 + 上游金属' },
   fx:               { label: '汇率',       desc: 'USD/CNH 离岸对消息最敏感, 看中美/贸易看这条' },
   metal_base:       { label: '有色金属',   desc: '铜铝锌镍锡铅 — 工业/电力需求晴雨表 (算力扩张拉动铜)' },
+  metal_minor:      { label: '小金属',     desc: '钨钼锑稀土 — 跟中钨/有色持仓最相关 (现货价无源, 用板块 ETF 实时价代理)' },
   metal_precious:   { label: '贵金属',     desc: '金银避险情绪, 沪金沪银对国内更贴' },
   energy_new_black: { label: '新能源 / 黑色', desc: '碳酸锂/工业硅 = 新能源链, 螺纹/焦煤 = 地产基建' },
   energy_chem:      { label: '能化 / 农产品', desc: '原油 PTA 甲醇等, 宏观成本与通胀风向' },
 }
 
 const GROUP_ORDER = ['a_index', 'hk_index', 'us_index', 'overseas_index', 'ai_tech', 'fx',
-  'metal_base', 'metal_precious', 'energy_new_black', 'energy_chem']
+  'metal_base', 'metal_minor', 'metal_precious', 'energy_new_black', 'energy_chem']
 
 function colorOfPct(pct) {
   if (pct == null) return 'text-text-dim'

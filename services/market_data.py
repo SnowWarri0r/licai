@@ -900,8 +900,6 @@ MACRO_SYMBOLS = [
     ("ai_tech", "sh561600", "消费电子"),      # AI 手机/AIPC/AI 终端
     ("ai_tech", "sz159770", "机器人"),
     ("ai_tech", "sz159611", "电力"),         # 算力耗电, AI 扩张拉动用电
-    ("ai_tech", "sz159713", "稀土"),         # 永磁 → 机器人/伺服电机
-    ("ai_tech", "sz159608", "稀有金属"),      # 钨钼钽锑 → 电子/钽电容
     # 汇率 (USD 计价对其他)
     ("fx", "fx_susdcnh", "USD/CNH 离岸"),
     ("fx", "fx_susdcny", "USD/CNY 在岸"),
@@ -915,6 +913,10 @@ MACRO_SYMBOLS = [
     ("metal_base", "nf_SN0", "沪锡"),
     ("metal_base", "nf_PB0", "沪铅"),
     ("metal_base", "hf_HG", "COMEX 铜"),
+    # 小金属 (钨钼锑稀土 — 跟你中钨/有色持仓最相关; 真实现货价数据源缺, 用板块 ETF 实时价代理)
+    ("metal_minor", "sh512400", "有色金属ETF"),
+    ("metal_minor", "sz159608", "稀有金属"),    # 钨钼钽锑
+    ("metal_minor", "sz159713", "稀土"),        # 永磁/稀土
     # 贵金属
     ("metal_precious", "nf_AU0", "沪金"),
     ("metal_precious", "nf_AG0", "沪银"),
