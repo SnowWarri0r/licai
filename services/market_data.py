@@ -882,22 +882,46 @@ MACRO_SYMBOLS = [
     # 美股
     ("us_index", "gb_dji", "道琼斯"),
     ("us_index", "gb_ixic", "纳斯达克"),
+    ("us_index", "gb_inx", "标普500"),
+    # 海外指数 (日韩欧, 看外围风险情绪)
+    ("overseas_index", "int_nikkei", "日经225"),
+    ("overseas_index", "znb_KOSPI", "韩国KOSPI"),
+    ("overseas_index", "int_ftse", "伦敦FTSE"),
     # 汇率 (USD 计价对其他)
     ("fx", "fx_susdcnh", "USD/CNH 离岸"),
     ("fx", "fx_susdcny", "USD/CNY 在岸"),
     ("fx", "fx_seurusd", "EUR/USD"),
     ("fx", "fx_susdjpy", "USD/JPY"),
-    # 商品 (国际)
-    ("commodity_intl", "hf_GC", "COMEX 黄金"),
-    ("commodity_intl", "hf_SI", "COMEX 白银"),
-    ("commodity_intl", "hf_CL", "WTI 原油"),
-    ("commodity_intl", "hf_HG", "COMEX 铜"),
-    # 商品 (国内连续合约)
-    ("commodity_cn", "nf_CU0", "沪铜"),
-    ("commodity_cn", "nf_AL0", "沪铝"),
-    ("commodity_cn", "nf_RB0", "螺纹钢"),
-    ("commodity_cn", "nf_I0", "铁矿石"),
-    ("commodity_cn", "nf_SC0", "原油 SC"),
+    # 有色金属 (基本金属, 跟有色持仓最相关)
+    ("metal_base", "nf_CU0", "沪铜"),
+    ("metal_base", "nf_AL0", "沪铝"),
+    ("metal_base", "nf_ZN0", "沪锌"),
+    ("metal_base", "nf_NI0", "沪镍"),
+    ("metal_base", "nf_SN0", "沪锡"),
+    ("metal_base", "nf_PB0", "沪铅"),
+    ("metal_base", "hf_HG", "COMEX 铜"),
+    # 贵金属
+    ("metal_precious", "nf_AU0", "沪金"),
+    ("metal_precious", "nf_AG0", "沪银"),
+    ("metal_precious", "hf_GC", "COMEX 黄金"),
+    ("metal_precious", "hf_SI", "COMEX 白银"),
+    # 新能源金属 / 黑色
+    ("energy_new_black", "nf_LC0", "碳酸锂"),
+    ("energy_new_black", "nf_SI0", "工业硅"),
+    ("energy_new_black", "nf_RB0", "螺纹钢"),
+    ("energy_new_black", "nf_I0", "铁矿石"),
+    ("energy_new_black", "nf_J0", "焦炭"),
+    ("energy_new_black", "nf_JM0", "焦煤"),
+    # 能化 / 农产品
+    ("energy_chem", "nf_SC0", "原油 SC"),
+    ("energy_chem", "hf_CL", "WTI 原油"),
+    ("energy_chem", "nf_TA0", "PTA"),
+    ("energy_chem", "nf_MA0", "甲醇"),
+    ("energy_chem", "nf_FG0", "玻璃"),
+    ("energy_chem", "nf_SA0", "纯碱"),
+    ("energy_chem", "nf_V0", "PVC"),
+    ("energy_chem", "nf_M0", "豆粕"),
+    ("energy_chem", "nf_P0", "棕榈油"),
 ]
 
 
@@ -927,6 +951,13 @@ def _parse_macro_line(sym: str, body: str) -> dict | None:
                 return None
             price = float(fields[1]) if fields[1] else 0
             prev = float(fields[5]) if fields[5] else 0
+        # 海外指数 int_/znb_: 名,当前,涨跌额,涨跌%,... → 昨收 = 当前 - 涨跌额
+        elif sym.startswith("int_") or sym.startswith("znb_"):
+            if len(fields) < 4:
+                return None
+            price = float(fields[1]) if fields[1] else 0
+            change = float(fields[2]) if fields[2] else 0
+            prev = price - change
         # 国际商品 hf_: 当前,买,卖,高,低,时间,昨收,开,涨,跌...
         # 实际格式: 当前,(空),买,卖,高,低,时间,昨收,开... 但有的源是 高,低,...
         elif sym.startswith("hf_"):
@@ -1194,6 +1225,74 @@ def _kline_sina_futures_intl(sym: str, datalen: int = 30) -> list[dict]:
     return out
 
 
+# 海外指数 → 新浪环球市场代码 (gi.finance.sina.com.cn/hq/daily)
+_SINA_GLOBAL_IDX = {
+    "int_nikkei": "NKY",     # 日经225
+    "znb_KOSPI": "KOSPI",    # 首尔综合
+    "int_ftse": "UKX",       # 英国富时100
+}
+
+
+def _kline_sina_global_index(sym: str, datalen: int = 30) -> list[dict]:
+    """日经/韩国/英国等环球指数日K, 走新浪 gi.finance (eastmoney push2his 本网络不可达)."""
+    code = _SINA_GLOBAL_IDX.get(sym)
+    if not code:
+        return []
+    url = "https://gi.finance.sina.com.cn/hq/daily"
+    r = _requests.get(url, params={"symbol": code, "num": max(datalen, 60)},
+                      headers={"Referer": "https://finance.sina.com.cn"}, timeout=6)
+    rows = (r.json().get("result") or {}).get("data") or []
+    out = []
+    for d in rows[-datalen:]:
+        c = d.get("c")
+        date = d.get("d") or ""
+        if c:
+            try:
+                out.append({"date": date, "close": float(c)})
+            except Exception:
+                continue
+    return out
+
+
+# 汇率历史回退源: frankfurter (ECB 口径, 境外直连可达; 东财 push2his 本网络不可达时用它).
+# 注: ECB 参考价与盘中市价略有差异 (~0.2-1%), 只用于画 sparkline 趋势, 不替代实时价.
+_FRANKFURTER_FX = {
+    "fx_susdcny": ("CNY", False),
+    "fx_susdcnh": ("CNY", False),   # frankfurter 无离岸 CNH, 用在岸 CNY 近似走势
+    "fx_seurusd": ("EUR", True),    # EUR/USD = 1 / (USD->EUR)
+    "fx_susdjpy": ("JPY", False),
+}
+_fx_direct_session = None
+
+
+def _kline_frankfurter_fx(sym: str, datalen: int = 30) -> list[dict]:
+    global _fx_direct_session
+    conf = _FRANKFURTER_FX.get(sym)
+    if not conf:
+        return []
+    cur, invert = conf
+    from datetime import date, timedelta
+    end = date.today()
+    start = end - timedelta(days=datalen * 2 + 15)
+    if _fx_direct_session is None:
+        _fx_direct_session = _requests.Session()
+        _fx_direct_session.trust_env = False  # 境外源, 直连不走代理
+    url = "https://api.frankfurter.app/{}..{}".format(start, end)
+    r = _fx_direct_session.get(url, params={"base": "USD", "symbols": cur}, timeout=8)
+    rates = r.json().get("rates") or {}
+    out = []
+    for d in sorted(rates.keys()):
+        v = rates[d].get(cur)
+        if not v:
+            continue
+        try:
+            close = (1.0 / float(v)) if invert else float(v)
+        except Exception:
+            continue
+        out.append({"date": d, "close": round(close, 4)})
+    return out[-datalen:]
+
+
 def _kline_for_symbol(sym: str, datalen: int = 30) -> list[dict]:
     """根据 symbol 前缀分发到对应接口. 失败返回 []."""
     try:
@@ -1203,12 +1302,21 @@ def _kline_for_symbol(sym: str, datalen: int = 30) -> list[dict]:
             return _kline_tencent_hk(sym, datalen)
         if sym.startswith("gb_") or sym.startswith("us"):
             return _kline_sina_us(sym, datalen)
+        if sym.startswith("int_") or sym.startswith("znb_"):
+            return _kline_sina_global_index(sym, datalen)
         if sym.startswith("nf_"):
             return _kline_sina_futures_cn(sym, datalen)
         if sym.startswith("hf_"):
             return _kline_sina_futures_intl(sym, datalen)
         if sym.startswith("fx_"):
-            return _kline_eastmoney_fx(sym, datalen)
+            # 优先东财 (盘中市价口径); 不可达/空则回退 frankfurter (ECB 口径)
+            try:
+                k = _kline_eastmoney_fx(sym, datalen)
+                if k:
+                    return k
+            except Exception:
+                pass
+            return _kline_frankfurter_fx(sym, datalen)
         return []
     except Exception:
         return []
