@@ -3329,8 +3329,12 @@ function ConfirmActionModal({ asset, action, onClose, onDone }) {
   const s = parseFloat(shares) || 0
   const u = parseFloat(unitPrice) || 0
   const fNum = parseFloat(fee) || 0
-  // 净额: 用户填的"金额"是含费的总付出, 实际买到份额的净额 = amount - fee
-  const netForShares = Math.max(0, a - fNum)
+  // 申购费率外扣: 没手填 fee 时, 对场外基金申购按费率自动算 (净额=金额/(1+费率))
+  const feeRate = isAdd ? (parseFloat(asset.purchase_fee_rate) || 0) : 0
+  const autoFee = feeRate > 0 && a > 0 ? +(a - a / (1 + feeRate)).toFixed(2) : 0
+  const effFee = fNum > 0 ? fNum : autoFee
+  // 净额: 用户填的"金额"是含费的总付出, 实际买到份额的净额 = amount - 实际手续费
+  const netForShares = Math.max(0, a - effFee)
 
   // 反推占位 (用净额, 不用 amount)
   const inferredUnit = (netForShares > 0 && s > 0 && !u) ? (netForShares / s).toFixed(4) : ''
@@ -3340,7 +3344,7 @@ function ConfirmActionModal({ asset, action, onClose, onDone }) {
   const submit = async () => {
     setErr('')
     let finalAmount = a
-    if (!finalAmount && s > 0 && u > 0) finalAmount = s * u + fNum
+    if (!finalAmount && s > 0 && u > 0) finalAmount = s * u + effFee
     if (!finalAmount || finalAmount <= 0) { setErr('金额必填'); return }
     if (isAdd && !s && !u) { setErr('申购确认: 至少填份额或净值'); return }
     setBusy(true)
@@ -3348,7 +3352,7 @@ function ConfirmActionModal({ asset, action, onClose, onDone }) {
       const body = { amount: finalAmount }
       if (s > 0) body.shares = s
       if (u > 0) body.unit_price = u
-      if (fNum > 0) body.fee = fNum
+      if (effFee > 0) body.fee = effFee
       const res = await fetch(`/api/assets/${asset.id}/actions/${action.id}/confirm`, {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -3418,9 +3422,15 @@ function ConfirmActionModal({ asset, action, onClose, onDone }) {
         <div>
           <label className="text-[11.5px] text-text-dim block mb-1">
             手续费 (CNY) <span className="text-text-muted text-[10px]">— 含在上方金额里, 单填方便看净额</span>
+            {feeRate > 0 && (
+              <span className="text-accent text-[10px] ml-1">
+                · 申购费率 {(feeRate * 100).toFixed(2)}% 自动外扣 {autoFee > 0 ? `¥${autoFee.toFixed(2)}` : ''}
+              </span>
+            )}
           </label>
           <div className="flex gap-2 items-stretch">
-            <input type="number" inputMode="decimal" placeholder="0 (默认无费)"
+            <input type="number" inputMode="decimal"
+              placeholder={autoFee > 0 ? `${autoFee.toFixed(2)} (申购费率自动)` : '0 (默认无费)'}
               value={fee} onChange={e => setFee(e.target.value)}
               className="flex-1 bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent" />
             <button type="button"
@@ -3435,9 +3445,10 @@ function ConfirmActionModal({ asset, action, onClose, onDone }) {
               券商费率
             </button>
           </div>
-          {fNum > 0 && a > 0 && (
+          {effFee > 0 && a > 0 && (
             <div className="text-[10.5px] text-text-muted mt-1">
-              净额 ¥{netForShares.toFixed(2)} (= 金额 ¥{a.toFixed(2)} − 费 ¥{fNum.toFixed(2)})
+              净额 ¥{netForShares.toFixed(2)} (= 金额 ¥{a.toFixed(2)} − 费 ¥{effFee.toFixed(2)}
+              {fNum <= 0 && autoFee > 0 && <span className="text-accent"> 申购费率</span>})
               {s > 0 && netForShares > 0 && (
                 <span className="ml-1.5">· 实际净值 ≈ <span className="font-mono">{(netForShares / s).toFixed(4)}</span></span>
               )}
