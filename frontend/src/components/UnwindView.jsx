@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import MorningBriefing from './MorningBriefing'
+import SentimentThermometer from './SentimentThermometer'
 import SectorRadar from './SectorRadar'
 import SectorOpportunities from './SectorOpportunities'
 import AllocationAdvisor from './AllocationAdvisor'
@@ -37,6 +38,7 @@ export default function UnwindView() {
       {tab === 'sector' && (
         <>
           <MorningBriefing />
+          <SentimentThermometer />
           <SectorRadar />
           <SectorOpportunities />
         </>
