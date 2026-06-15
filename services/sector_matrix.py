@@ -121,6 +121,18 @@ def eval_prod(pcts):
     return p
 
 
+async def sector_matrix_prewarm_loop():
+    """后台预热板块矩阵(逐板块拉K线慢, ~20-40s), 让用户打开板块tab即秒开。
+    启动后稍等再首跑, 之后每小时刷新一次(缓存 2h, 始终保鲜)。"""
+    await asyncio.sleep(20)
+    while True:
+        try:
+            await get_sector_matrix(days=10, force=True)
+        except Exception:
+            pass
+        await asyncio.sleep(3600)
+
+
 async def get_sector_matrix(days: int = 10, force: bool = False) -> dict:
     days = max(5, min(int(days or 10), 20))
     ck = f"matrix_{days}"
