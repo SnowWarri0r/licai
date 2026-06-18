@@ -128,7 +128,7 @@ export default function StockAsk() {
 
       <div className="flex gap-2">
         <input value={q} onChange={e => setQ(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter') ask() }} disabled={loading}
+          onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) ask() }} disabled={loading}
           placeholder="例: 这周市场什么风格 / 洛阳钼业今天为什么涨 / 资金主线在哪"
           className="flex-1 text-[12px] px-3 py-2 rounded-lg bg-surface-3 border border-border text-text placeholder:text-text-muted focus:border-accent/50 outline-none disabled:opacity-50" />
         <button onClick={() => ask()} disabled={loading || !q.trim()}
