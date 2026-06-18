@@ -23,10 +23,14 @@ KEYCHAIN_SERVICE = "okx-trading-api"
 KEYCHAIN_ACCOUNT = "default"
 
 # Session with CN-compatible proxy (same config as crypto quote fetcher)
-_CRYPTO_PROXY = os.environ.get("CRYPTO_PROXY", "http://127.0.0.1:7897")
+_CRYPTO_PROXY = os.environ.get("CRYPTO_PROXY", "http://127.0.0.1:7890")
 _okx_session = _requests.Session()
 _okx_session.trust_env = False
 _okx_session.proxies = {"http": _CRYPTO_PROXY, "https": _CRYPTO_PROXY}
+# 直连兜底: 代理挂掉时, 很多网络其实能直连 www.okx.com。
+# 代理优先(CN 被墙时必需), 代理报错再直连, 避免 OKX 同步整个失效退回过时 manual_value。
+_okx_direct_session = _requests.Session()
+_okx_direct_session.trust_env = False
 
 
 # --- Credential storage (macOS Keychain, explicit login.keychain-db path) ---
@@ -135,14 +139,19 @@ def _authed_get(path: str, params: dict | None = None) -> dict | None:
         "Content-Type": "application/json",
     }
 
-    try:
-        r = _okx_session.get(OKX_BASE + request_path, headers=headers, timeout=15)
-        data = r.json()
-        if data.get("code") != "0":
-            return {"error": f"OKX {data.get('code')}: {data.get('msg', 'unknown')}"}
-        return data
-    except Exception as e:
-        return {"error": f"request failed: {e}"}
+    url = OKX_BASE + request_path
+    last_err = None
+    for sess in (_okx_session, _okx_direct_session):   # 代理优先, 失败直连兜底
+        try:
+            r = sess.get(url, headers=headers, timeout=15)
+            data = r.json()
+            if data.get("code") != "0":
+                return {"error": f"OKX {data.get('code')}: {data.get('msg', 'unknown')}"}
+            return data
+        except Exception as e:
+            last_err = e
+            continue
+    return {"error": f"request failed: {last_err}"}
 
 
 # --- High-level APIs ---
