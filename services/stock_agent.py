@@ -170,6 +170,54 @@ async def _tool_sector_momentum(days: int = 10) -> dict:
         return {"error": str(e)}
 
 
+_concept_cache: dict = {}
+
+
+def _fetch_hot_concepts_sync(top: int = 15) -> list[dict]:
+    """今日东财概念板块涨幅榜(带主力净流入)。这是 量化/游资正在冲的'概念'粒度
+    (如 CPO/HBM/先进封装/玻璃基板…), 比行业级更细。
+    akshare 走死分片 79.push2 被墙 → 直连可达 host(push2delay 优先)+ 重试轮换。"""
+    import requests as _rq
+    import time as _t
+    ck = f"concepts_{top}"
+    c = _concept_cache.get(ck)
+    if c and _t.time() - c[1] < 300:
+        return c[0]
+    hosts = ["push2delay.eastmoney.com", "push2.eastmoney.com",
+             "1.push2.eastmoney.com", "50.push2.eastmoney.com"]
+    params = {"pn": "1", "pz": str(max(top, 30)), "po": "1", "np": "1", "fltt": "2",
+              "invt": "2", "fid": "f3", "fs": "m:90 t:3",
+              "fields": "f12,f14,f3,f62,f104,f105"}
+    for i in range(12):
+        host = hosts[i % len(hosts)]
+        try:
+            r = _rq.get(f"https://{host}/api/qt/clist/get", params=params, timeout=7)
+            diff = (r.json().get("data") or {}).get("diff")
+            if diff:
+                out = []
+                for x in diff[:top]:
+                    try:
+                        out.append({"概念": x.get("f14"), "涨跌幅": float(x.get("f3")),
+                                    "主力净流入亿": round(float(x.get("f62") or 0) / 1e8, 2),
+                                    "涨家": x.get("f104"), "跌家": x.get("f105")})
+                    except (ValueError, TypeError):
+                        continue
+                if out:
+                    _concept_cache[ck] = (out, _t.time())
+                    return out
+        except Exception:
+            _t.sleep(0.3)
+    return []
+
+
+async def _tool_hot_concepts(top: int = 15) -> dict:
+    """今日热门概念榜(概念粒度, 比行业细): 涨幅 + 主力净流入。看量化/资金在冲哪个具体概念。"""
+    out = await asyncio.to_thread(_fetch_hot_concepts_sync, int(top or 15))
+    if not out:
+        return {"error": "概念榜暂不可达(东财源抖动), 请改用行业级 get_sector_momentum"}
+    return {"top_concepts": out, "note": "按今日涨幅排序; 主力净流入正=资金流入"}
+
+
 async def _tool_hot_rank() -> dict:
     """资金人气榜(东财): 资金/散户关注度最高的个股, 标出哪些在用户持仓里。看资金主线/抱团方向。"""
     try:
@@ -211,6 +259,8 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"days": {"type": "integer"}}}},
     {"name": "get_hot_rank", "description": "资金人气榜(东财): 关注度最高的个股, 标出哪些在用户持仓。看资金主线/抱团方向。",
      "input_schema": {"type": "object", "properties": {}}},
+    {"name": "get_hot_concepts", "description": "今日热门概念板块榜(概念粒度, 比行业更细, 如 CPO/HBM/先进封装/玻璃基板/固态电池等): 涨幅+主力净流入。回答'量化/资金这几天在冲哪个具体概念、概念怎么切'时用它。",
+     "input_schema": {"type": "object", "properties": {"top": {"type": "integer", "description": "默认15"}}}},
 ]
 
 _EXECUTORS = {
@@ -222,6 +272,7 @@ _EXECUTORS = {
     "get_market_sentiment": lambda a: _tool_market_sentiment(),
     "get_sector_momentum": lambda a: _tool_sector_momentum(a.get("days", 10)),
     "get_hot_rank": lambda a: _tool_hot_rank(),
+    "get_hot_concepts": lambda a: _tool_hot_concepts(a.get("top", 15)),
 }
 
 _SYSTEM = (
@@ -236,11 +287,13 @@ _SYSTEM = (
     "【分析框架·一线打板资金视角】(客观套用, 不点名出处, 不据此给操作建议):\n"
     "  · 量化/游资以【板块/概念】为维度运作, 不是单票。判断市场=判断资金这几天在冲哪个板块概念、节奏多快"
     "(概念可能一两天就切, 如从 A 概念直接换到 B 概念)。要找出资金主线板块 + 有没有概念轮动切换。\n"
+    "  · 概念粒度优先用 get_hot_concepts(能拿到 CPO/HBM/先进封装/玻璃基板 这种具体概念名 + 主力净流入), "
+    "它比 get_sector_momentum 的行业级更细, 正是判断'量化在冲哪个概念'的关键; 两个结合看(概念找主攻方向, 行业动量看延续性)。\n"
     "  · 个股位置分层看'看逻辑 vs 纯资金博弈': 短线打板股 3板以下看逻辑(题材/催化/空间扎不扎实)、3板以上逻辑让位转纯资金接力; "
     "趋势股 涨幅1倍(100%)以内看逻辑、超1倍转纯资金博弈。即低位看逻辑、高位看资金, 点出领涨标的当前在哪一段。\n"
     "  · 据此描述: 资金的板块主线、概念切换的轮动节奏、领涨票在'看逻辑'还是'资金博弈'区。\n"
-    "  · 数据粒度: 你的工具到 行业级(THS)+涨停板块分布+连板梯队+板块动量/资金流, 能看行业主线和连板高度; "
-    "很细的微概念(某些题材小分支)若没在涨停板块/领涨股里体现, 就如实说'数据只到行业级, 更细的概念无法确认', 绝不硬编概念名。\n"
+    "  · 数据粒度: get_hot_concepts 给到概念级(今日榜), get_sector_momentum 给行业级近N日动量, 配合用。"
+    "概念榜是当日快照, '这几天怎么切'的多日轨迹要结合行业动量推断; 概念榜偶发不可达(东财抖动)时就退回行业级, 并说明。绝不硬编榜上没有的概念名。\n"
     "每个结论都要有工具数据支撑。\n"
     "【硬规则】只做客观解读与市场逻辑分析(市场在奖励什么/为什么动/什么消息), 严禁任何面向用户的操作建议: "
     "不许出现 你该买/该卖/该用XX策略去操作/加仓/减仓/能不能追/还能不能拿/目标价/止损/现在适合。"
@@ -253,6 +306,7 @@ _TOOL_CN = {
     "resolve_stock": "解析代码", "get_quote": "查行情", "get_trend": "查走势",
     "get_news": "查新闻", "get_holdings": "看持仓", "get_market_sentiment": "看大盘情绪",
     "get_sector_momentum": "看板块动量", "get_hot_rank": "看资金热度",
+    "get_hot_concepts": "看热门概念",
 }
 
 
