@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from database import get_all_holdings
 from services.sector_compare import get_sector_compare
+from services.sector_matrix import get_sector_matrix
 from services.sector_scanner import scan_sectors
 from services.sector_us import scan_us_sectors
 from services.sector_hk import scan_hk_sectors
@@ -45,6 +46,88 @@ async def compare_all(force: bool = False):
         r["stock_name"] = h.get("stock_name", "")
         out.append(r)
     return {"holdings": out}
+
+
+@router.get("/matrix")
+async def sector_matrix(days: int = 10, force: bool = False):
+    """板块趋势量化矩阵: 板块 × 过去 N 个交易日 日涨跌幅 + N日累计/净流入/动能。"""
+    return await get_sector_matrix(days=days, force=force)
+
+
+_trend_cache: dict = {}
+
+
+@router.get("/trend-ai")
+async def sector_trend_ai(days: int = 10, force: bool = False):
+    """基于量化矩阵的板块趋势 AI 分析: 走强/退潮/轮动/资金流向 + 跟持仓关系。纯客观, 不给买卖建议。"""
+    import time as _t
+    ck = f"trend_{days}"
+    c = _trend_cache.get(ck)
+    if not force and c and _t.time() - c[1] < 1800:
+        return c[0]
+
+    m = await get_sector_matrix(days=days)
+    rows = m.get("rows") or []
+    if not rows:
+        return {"summary": "", "trends": [], "holdings_note": "", "generated_at": None}
+
+    # 用户持仓所在的 A 股板块(二级), 让 AI 点出跟持仓的关系
+    from services.market_data import get_stock_sector_detail
+    held = [h for h in await get_all_holdings() if is_a_share(h["stock_code"]) and float(h.get("shares") or 0) > 0]
+    held_secs = set()
+    for h in held:
+        try:
+            s = await get_stock_sector_detail(h["stock_code"])
+            if s:
+                held_secs.add(s)
+        except Exception:
+            pass
+
+    lines = [f"过去 {m.get('days')} 个交易日板块矩阵({'/'.join(m.get('dates', []))}):"]
+    for r in rows:
+        lines.append(
+            f"{r['name']}: 今日{r['today_pct']:+.1f}% 近{r['n_days']}日累计{r['cum_pct']:+.1f}% "
+            f"连涨{r['streak']}天 净流入{r['net_inflow']:+.0f}亿 日序[{','.join(f'{p:+.1f}' for p in [x['pct'] for x in r['daily']])}]"
+        )
+    data_block = "\n".join(lines)
+    held_line = ("我持仓所在板块: " + "、".join(sorted(held_secs))) if held_secs else "（无 A 股持仓）"
+
+    system_prompt = (
+        "你是板块趋势分析师。基于给定的'板块×近N交易日涨跌幅矩阵'+净流入+连涨动能, 客观分析板块趋势。\n"
+        "要点: 哪些板块在走强(持续放量上行/资金流入/连涨), 哪些在退潮(冲高回落/资金流出/转弱), "
+        "有没有板块轮动迹象(强弱切换/资金从A板块流向B板块), 资金主线在哪。结合'我持仓所在板块'点出它当前在矩阵里的强弱位置。\n"
+        "每条结论都要引用矩阵里的具体数字(板块名/累计涨幅/净流入/连涨/日序)。\n"
+        "【硬规则】只做客观趋势描述, 严禁任何买卖/加减仓/该买该卖/目标价/现在适合 等操作建议。不编造矩阵里没有的板块或数字。\n"
+        "JSON 输出: {\"summary\":\"一句话概括当前板块格局\", "
+        "\"trends\":[{\"type\":\"走强/退潮/轮动/资金主线\",\"detail\":\"用矩阵数字说明\"}], "
+        "\"holdings_note\":\"我持仓板块当前在矩阵中的强弱位置(客观)\"}。只输出 JSON。"
+    )
+    user_prompt = f"{held_line}\n\n{data_block}"
+    try:
+        raw = await asyncio.to_thread(_llm.call_claude, user_prompt, system_prompt, "claude-sonnet-4-5", 1600)
+    except Exception as e:
+        return {"summary": "", "trends": [], "holdings_note": "", "error": str(e)}
+
+    txt = (raw or "").strip()
+    if txt.startswith("```"):
+        import re as _re
+        txt = _re.sub(r"^```(json)?", "", txt).strip().rstrip("`").strip()
+    try:
+        parsed = _json.loads(txt)
+    except Exception:
+        for tail in ['"}', '"]}', '}]}', '"}]}']:
+            try:
+                parsed = _json.loads(txt + tail); break
+            except Exception:
+                parsed = {"summary": "", "trends": [], "holdings_note": ""}
+    result = {
+        "summary": parsed.get("summary", ""),
+        "trends": parsed.get("trends", []) if isinstance(parsed.get("trends"), list) else [],
+        "holdings_note": parsed.get("holdings_note", ""),
+        "generated_at": _t.time(),
+    }
+    _trend_cache[ck] = (result, _t.time())
+    return result
 
 
 @router.get("/kline")
