@@ -7,7 +7,7 @@ const up = 'text-bear-bright', down = 'text-bull-bright'
 
 // 量能红绿窄柱: 每日 vs 前一日, 放量红 / 缩量绿。
 // trend 含一根参照日(首位), 只画后面每根(都有前一日可比, 不出灰柱)。
-function VolBars({ trend }) {
+function VolBars({ trend, intraday }) {
   if (!trend || trend.length < 2) return null
   const shown = trend.slice(1)
   const vols = shown.map(t => t.vol)
@@ -19,13 +19,14 @@ function VolBars({ trend }) {
       {shown.map((t, i) => {
         const h = Math.round(14 + ((t.vol - min) / span) * 54)
         const prev = trend[i].vol   // 前一日(原数组里的前一个)
+        const isToday = intraday && i === n - 1   // 末根=今日实时盘中
         const color = t.vol > prev ? 'bg-bear-bright' : t.vol < prev ? 'bg-bull-bright' : 'bg-text-dim'
         const showDate = (n - 1 - i) % step === 0   // 从最新往前隔位, 保证最新一根有标签
         return (
-          <div key={i} className="flex-1 flex flex-col items-center justify-end gap-1 h-full min-w-0" title={`${t.date}: ${t.vol}亿股`}>
-            <span className="text-[8.5px] text-text-dim font-mono leading-none">{t.vol}</span>
-            <div className={`w-full max-w-[20px] rounded-t ${color}`} style={{ height: h }} />
-            <span className="text-[8.5px] text-text-muted leading-none h-2.5">{showDate ? t.date : ''}</span>
+          <div key={i} className="flex-1 flex flex-col items-center justify-end gap-1 h-full min-w-0" title={`${t.date}${isToday ? ' 今日盘中' : ''}: ${t.vol}亿股`}>
+            <span className={`text-[8.5px] font-mono leading-none ${isToday ? 'text-bear-bright font-semibold' : 'text-text-dim'}`}>{t.vol}</span>
+            <div className={`w-full max-w-[20px] rounded-t ${color}`} style={{ height: h, outline: isToday ? '1px solid var(--color-accent)' : 'none', outlineOffset: 1 }} />
+            <span className={`text-[8.5px] leading-none h-2.5 ${isToday ? 'text-accent font-semibold' : 'text-text-muted'}`}>{showDate ? t.date : ''}</span>
           </div>
         )
       })}
@@ -103,8 +104,8 @@ export default function SentimentDetailModal({ summary, volume, onClose }) {
         {/* 量能红绿柱 */}
         {(v.trend || []).length > 1 && (
           <div className="mb-4 px-3 py-3 rounded-lg bg-surface-3/50 border border-border-subtle">
-            <div className="text-[10.5px] text-text-muted mb-2">近14日沪市成交量(亿股) · 放量红 / 缩量绿</div>
-            <VolBars trend={v.trend} />
+            <div className="text-[10.5px] text-text-muted mb-2">近14日沪市成交量(亿股) · 放量红 / 缩量绿{v.intraday ? ' · 末根今日盘中' : ''}</div>
+            <VolBars trend={v.trend} intraday={v.intraday} />
           </div>
         )}
 
