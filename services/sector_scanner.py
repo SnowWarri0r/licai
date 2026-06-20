@@ -100,7 +100,15 @@ async def _enrich_kline(rows: list[dict], top_n: int, must_include: set[str]) ->
     # days=80 与 sector_compare 对齐, 避免 _kline_cache (key=board_name) 串话导致 60d 数据不足
     async def fetch_one(row: dict):
         async with sem:
-            kline = await asyncio.to_thread(_fetch_ths_kline_sync, row["name"], 80)
+            # THS 偶发 RemoteDisconnected/超时 → 单次拿空会让该板块 5d/30d 永久空 (前端缓存到手动刷新)。
+            # 重试几次 (成功会进 _kline_cache, 重试只命中失败板块, 成本低)。
+            kline: list[dict] = []
+            for attempt in range(3):
+                kline = await asyncio.to_thread(_fetch_ths_kline_sync, row["name"], 80)
+                if len(kline) >= 6:   # 至少够算 5d
+                    break
+                if attempt < 2:
+                    await asyncio.sleep(0.5)
             closes = [k["close"] for k in kline if k.get("close")]
             row["change_5d"] = _close_pct(closes, 5)
             row["change_30d"] = _close_pct(closes, 30)
