@@ -97,6 +97,45 @@ def _fetch_index_kline_sync(symbol: str, days: int = 120) -> list[dict]:
         return []
 
 
+# 无对应 A 股跨境 ETF 的港股行业 → 代表股等权篮子 (经腾讯 gtimg HK 日 K, 可达)。
+# 选每个行业流动性最好的几只蓝筹, 等权归一成板块指数, 仅作板块强弱代理。
+_HK_SECTOR_BASKETS: dict[str, list[str]] = {
+    "原材料":   ["02899", "01378", "01208", "00358", "02600"],  # 紫金矿业/中国宏桥/五矿资源/江西铜业/中国铝业
+    "公用事业": ["00002", "00003", "00006", "00836", "01038"],  # 中电控股/中华煤气/电能实业/华润电力/长江基建
+    "地产建筑": ["01113", "00016", "00012", "01109", "00688"],  # 长实/新鸿基地产/恒基地产/华润置地/中国海外发展
+}
+
+
+def _fetch_hk_basket_kline_sync(tickers: list[str], days: int = 60) -> list[dict]:
+    """代表股等权归一篮子日 K (腾讯 gtimg HK). 返回 {date, close}(close 为基期=100 的指数值)。"""
+    import requests as _rq
+    import json as _json
+    series: dict[str, list[tuple]] = {}
+    for t in tickers:
+        try:
+            url = ("https://web.ifzq.gtimg.cn/appstock/app/hkfqkline/get"
+                   f"?param=hk{t},day,,,{days + 5},qfq")
+            r = _rq.get(url, timeout=10)
+            node = (_json.loads(r.text).get("data") or {}).get("hk" + t) or {}
+            kl = node.get("qfqday") or node.get("day") or []
+            pts = [(str(row[0])[:10], float(row[2])) for row in kl if len(row) > 2]
+            if len(pts) >= 6:
+                series[t] = pts
+        except Exception:
+            continue
+    if not series:
+        return []
+    n = min(min(len(s) for s in series.values()), days)
+    base = {t: s[-n][1] for t, s in series.items()}
+    out = []
+    ref = next(iter(series.values()))
+    for i in range(-n, 0):
+        vals = [s[i][1] / base[t] for t, s in series.items() if base[t]]
+        if vals:
+            out.append({"date": ref[i][0], "close": round(sum(vals) / len(vals) * 100, 4)})
+    return out
+
+
 async def _fetch_etf_kline_via_ashare(etf_code: str) -> list[dict]:
     """用 A 股上市的跨境 ETF(513xxx/159xxx)日 K 作港股板块代理。
     get_historical_data 走新浪(可达), 输出 {date, open, high, low, close}。"""
@@ -172,12 +211,18 @@ async def _scan_uncached(held_codes: list[str]) -> dict:
     held_sectors = await _resolve_held_sectors(held_codes)
 
     async def fetch_one(code: str, cn: str, etf_code: str | None, etf_name: str | None) -> dict:
-        # HSCI 行业指数走东财 push2.eastmoney, 本网络被墙(RemoteDisconnected)。
-        # 改用映射的 A 股上市跨境 ETF(513xxx/159xxx, 走新浪 A 股日 K, 可达)作板块代理。
+        # HSCI 行业指数走东财 push2.eastmoney, 本网络被墙(RemoteDisconnected)。代理优先级:
+        #   1) 映射的 A 股上市跨境 ETF(513xxx/159xxx, 新浪 A 股日 K)
+        #   2) 无对应 ETF 的行业 → 代表股等权篮子(腾讯 gtimg HK 日 K)
         kline: list[dict] = []
+        src_name, is_basket = etf_name, False
         if etf_code:
             async with sem:
                 kline = await _fetch_etf_kline_via_ashare(etf_code)
+        elif cn in _HK_SECTOR_BASKETS:
+            async with sem:
+                kline = await asyncio.to_thread(_fetch_hk_basket_kline_sync, _HK_SECTOR_BASKETS[cn])
+            src_name, is_basket = f"{len(_HK_SECTOR_BASKETS[cn])}只代表股等权", True
         closes = [k["close"] for k in kline if k.get("close")]
         tail = kline[-min(60, len(kline)):]
         return {
@@ -188,8 +233,9 @@ async def _scan_uncached(held_codes: list[str]) -> dict:
             "change_30d": _close_pct(closes, 30),
             "kline_tail": [_ohlc_point(k) for k in tail],
             "etf_code": etf_code,
-            "etf_name": etf_name,
-            "proxy_etf": bool(etf_code),   # 涨幅来自代理 ETF 而非 HSCI 指数本身
+            "etf_name": src_name,
+            "proxy_etf": bool(etf_code),    # 涨幅来自代理 ETF
+            "proxy_basket": is_basket,      # 涨幅来自代表股等权篮子
             "held": cn in held_sectors,
         }
 
