@@ -76,25 +76,46 @@ def _close_pct(closes: list[float], n: int) -> float | None:
     return round((last / prior - 1) * 100, 2)
 
 
-def _fetch_index_kline_sync(symbol: str, days: int = 120) -> list[dict]:
-    try:
-        import akshare as ak
-        df = ak.stock_hk_index_daily_em(symbol=symbol)
-        if df is None or df.empty:
-            return []
-        out = []
-        for _, r in df.tail(days).iterrows():
-            try:
-                row = {"date": str(r["date"]), "close": float(r["latest"])}
-                if all(c in r for c in ("open", "high", "low")):
-                    row["open"], row["high"], row["low"] = float(r["open"]), float(r["high"]), float(r["low"])
-                out.append(row)
-            except (ValueError, TypeError, KeyError):
-                continue
-        return out
-    except Exception as e:
-        print(f"[sector_hk] {symbol} kline failed: {e}")
-        return []
+_hsci_cache: dict = {}
+
+
+def _fetch_hsci_kline_sync(hsci_code: str, days: int = 80) -> list[dict]:
+    """真·恒生综合行业指数日 K。直连 push2his.eastmoney(secid 前缀 124),
+    绕开 akshare stock_hk_index_daily_em 内部 _symbol_code_dict() 命中的被墙 15.push2 分片。
+    eastmoney 经 GFW 时通时断, 重试几次; 成功缓存 10min。"""
+    import requests as _rq
+    import time as _t
+    ck = f"{hsci_code}|{days}"
+    cached = _hsci_cache.get(ck)
+    if cached and _t.time() - cached[1] < _CACHE_TTL:
+        return cached[0]
+    url = "https://push2his.eastmoney.com/api/qt/stock/kline/get"
+    params = {
+        "secid": f"124.{hsci_code}", "klt": "101", "fqt": "1",
+        "lmt": str(days + 10), "end": "20500000",
+        "fields1": "f1,f2,f3", "fields2": "f51,f52,f53,f54,f55",
+        "ut": "f057cbcbce2a86e2866ab8877db1d059",
+    }
+    for attempt in range(5):
+        try:
+            r = _rq.get(url, params=params, timeout=8)
+            data = r.json().get("data")
+            if data is None:
+                _t.sleep(0.4); continue   # 分片忙 → 重试
+            out = []
+            for item in (data.get("klines") or [])[-days:]:
+                p = item.split(",")  # date,open,close,high,low
+                try:
+                    out.append({"date": p[0], "open": float(p[1]), "close": float(p[2]),
+                                "high": float(p[3]), "low": float(p[4])})
+                except (ValueError, IndexError):
+                    continue
+            if out:
+                _hsci_cache[ck] = (out, _t.time())
+            return out
+        except Exception:
+            _t.sleep(0.4)
+    return []
 
 
 # 无对应 A 股跨境 ETF 的港股行业 → 代表股等权篮子 (经腾讯 gtimg HK 日 K, 可达)。
@@ -211,18 +232,27 @@ async def _scan_uncached(held_codes: list[str]) -> dict:
     held_sectors = await _resolve_held_sectors(held_codes)
 
     async def fetch_one(code: str, cn: str, etf_code: str | None, etf_name: str | None) -> dict:
-        # HSCI 行业指数走东财 push2.eastmoney, 本网络被墙(RemoteDisconnected)。代理优先级:
-        #   1) 映射的 A 股上市跨境 ETF(513xxx/159xxx, 新浪 A 股日 K)
-        #   2) 无对应 ETF 的行业 → 代表股等权篮子(腾讯 gtimg HK 日 K)
+        # 数据源优先级:
+        #   1) 真·恒生综合行业指数 (push2his 直连, eastmoney 时通时断但能拿到真指数)
+        #   2) 拿不到 → 映射的 A 股上市跨境 ETF (513xxx/159xxx, 新浪 A 股日 K)
+        #   3) 还没有 → 代表股等权篮子 (腾讯 gtimg HK 日 K)
         kline: list[dict] = []
-        src_name, is_basket = etf_name, False
-        if etf_code:
-            async with sem:
-                kline = await _fetch_etf_kline_via_ashare(etf_code)
-        elif cn in _HK_SECTOR_BASKETS:
-            async with sem:
-                kline = await asyncio.to_thread(_fetch_hk_basket_kline_sync, _HK_SECTOR_BASKETS[cn])
-            src_name, is_basket = f"{len(_HK_SECTOR_BASKETS[cn])}只代表股等权", True
+        source, src_name = "index", None
+        async with sem:
+            kline = await asyncio.to_thread(_fetch_hsci_kline_sync, code)
+        if len(kline) < 6:
+            if etf_code:
+                async with sem:
+                    kline = await _fetch_etf_kline_via_ashare(etf_code)
+                if len(kline) >= 6:
+                    source, src_name = "etf", etf_name
+            if len(kline) < 6 and cn in _HK_SECTOR_BASKETS:
+                async with sem:
+                    kline = await asyncio.to_thread(_fetch_hk_basket_kline_sync, _HK_SECTOR_BASKETS[cn])
+                if len(kline) >= 6:
+                    source, src_name = "basket", f"{len(_HK_SECTOR_BASKETS[cn])}只代表股等权"
+            if len(kline) < 6:
+                source = "none"
         closes = [k["close"] for k in kline if k.get("close")]
         tail = kline[-min(60, len(kline)):]
         return {
@@ -232,10 +262,11 @@ async def _scan_uncached(held_codes: list[str]) -> dict:
             "change_5d": _close_pct(closes, 5),
             "change_30d": _close_pct(closes, 30),
             "kline_tail": [_ohlc_point(k) for k in tail],
-            "etf_code": etf_code,
-            "etf_name": src_name,
-            "proxy_etf": bool(etf_code),    # 涨幅来自代理 ETF
-            "proxy_basket": is_basket,      # 涨幅来自代表股等权篮子
+            "etf_code": etf_code if source != "index" else None,
+            "etf_name": src_name,                 # 真指数时为 None (无需代理标签)
+            "source": source,                     # index(真指数) / etf / basket / none
+            "proxy_etf": source == "etf",
+            "proxy_basket": source == "basket",
             "held": cn in held_sectors,
         }
 
