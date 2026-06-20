@@ -69,8 +69,9 @@ def _fetch_top10_sync(fund_code: str) -> list[dict]:
         m_names = re.findall(r"<a[^>]*>([^<]+)</a>", row)
         name = m_names[1] if len(m_names) >= 2 else ticker
 
-        # 占净值比例: 找 toc class 里的 X.XX%
-        m_pct = re.search(r"<td class='toc'>([\d.]+)%</td>", row)
+        # 占净值比例: 不同基金布局列 class 不同 — 普通基金用 toc, ETF/部分基金用 tor。
+        # 取该行第一个带 % 的 to[rc] 单元格 (持股数/市值列无 %, 当前价/涨跌列是空 span)。
+        m_pct = re.search(r"<td class='to[rc]'>([\d.]+)%</td>", row)
         if not m_pct:
             continue
         weight = float(m_pct.group(1)) / 100  # 转成 0.0 ~ 1.0
