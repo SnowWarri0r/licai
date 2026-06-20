@@ -14,7 +14,7 @@ import requests as _requests
 
 # Dedicated session for crypto exchanges (OKX/Binance often blocked without proxy).
 # Respects CRYPTO_PROXY env var; defaults to local Clash port if running.
-_CRYPTO_PROXY = os.environ.get("CRYPTO_PROXY", "http://127.0.0.1:7897")
+_CRYPTO_PROXY = os.environ.get("CRYPTO_PROXY", "http://127.0.0.1:7890")
 _crypto_session = _requests.Session()
 _crypto_session.trust_env = False
 _crypto_session.proxies = {"http": _CRYPTO_PROXY, "https": _CRYPTO_PROXY}
