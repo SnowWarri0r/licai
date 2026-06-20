@@ -13,9 +13,17 @@ export default function SentimentThermometer() {
   const [d, setD] = useState(null)
   const [loading, setLoading] = useState(true)
   const [showDetail, setShowDetail] = useState(false)
+  const [ai, setAi] = useState(null)
+  const [aiLoading, setAiLoading] = useState(true)
+
+  const loadAi = (force = false) => {
+    setAiLoading(true)
+    fetchJSON(`/api/market/sentiment-ai${force ? '?force=true' : ''}`).then(setAi).catch(() => {}).finally(() => setAiLoading(false))
+  }
 
   useEffect(() => {
     fetchJSON('/api/market/sentiment').then(setD).catch(() => {}).finally(() => setLoading(false))
+    loadAi()
   }, [])
 
   if (loading) return <div className="text-center py-4 text-text-dim text-[12px]">市场情绪加载中…</div>
@@ -51,6 +59,33 @@ export default function SentimentThermometer() {
         </div>
         {d.mood_desc && <div className="text-[11.5px] text-text-dim mt-1 leading-relaxed">{d.mood_desc}</div>}
       </div>
+
+      {/* AI 情绪解读 */}
+      {aiLoading && !ai && <div className="text-[11.5px] text-text-dim mb-3">AI 分析市场情绪中…</div>}
+      {ai && ai.summary && (
+        <div className="mb-3 px-3 py-2.5 rounded-lg bg-accent/10 border border-accent/30">
+          <div className="flex items-baseline justify-between gap-2 mb-1.5">
+            <span className="text-[11px] text-accent font-medium">AI 情绪解读</span>
+            <button onClick={() => loadAi(true)} className="text-[10.5px] text-text-muted hover:text-text">重新分析</button>
+          </div>
+          <div className="text-[12.5px] text-text-bright leading-relaxed mb-1.5">{ai.summary}</div>
+          {ai.cycle && (
+            <div className="text-[11.5px] mb-1.5 flex gap-1.5">
+              <span className="text-accent shrink-0 font-medium">周期</span>
+              <span className="text-text-dim">{ai.cycle}</span>
+            </div>
+          )}
+          <div className="space-y-1">
+            {(ai.points || []).map((p, i) => (
+              <div key={i} className="text-[11.5px] leading-relaxed flex gap-1.5">
+                <span className="text-accent shrink-0 font-medium">{p.type}</span>
+                <span className="text-text-dim">{p.detail}</span>
+              </div>
+            ))}
+          </div>
+          {ai.holdings_note && <div className="text-[11px] text-info mt-1.5 leading-relaxed">持仓: {ai.holdings_note}</div>}
+        </div>
+      )}
 
       {/* 指标 grid */}
       <div className="grid grid-cols-3 md:grid-cols-6 gap-2 mb-3 text-[11px]">
