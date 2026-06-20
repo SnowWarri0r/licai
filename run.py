@@ -34,6 +34,7 @@ from api.cashflow_routes import router as cashflow_router
 from api.export_routes import router as export_router
 from api.dca_routes import router as dca_router
 from api.news_routes import router as news_router, news_prewarm_loop
+from api.ask_routes import router as ask_router
 from services.sector_matrix import sector_matrix_prewarm_loop
 from api.broker_routes import router as broker_router
 from api.ws import router as ws_router, price_monitor_loop, premarket_push_loop, backup_loop, briefing_loop, dca_loop
@@ -92,6 +93,7 @@ app.include_router(cashflow_router)
 app.include_router(export_router)
 app.include_router(dca_router)
 app.include_router(news_router)
+app.include_router(ask_router)
 app.include_router(broker_router)
 app.include_router(ws_router)
 

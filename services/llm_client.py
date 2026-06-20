@@ -176,6 +176,46 @@ def _post_with_fallback(headers, payload) -> requests.Response:
         return _direct_session.post(API_URL, headers=headers, json=payload, timeout=60)
 
 
+def call_claude_messages(
+    messages: list,
+    system: str | None = None,
+    model: str = "claude-opus-4-8",
+    max_tokens: int = 2048,
+    tools: list | None = None,
+) -> dict:
+    """底层 Messages 调用, 支持完整 messages 历史 + tool-use。返回原始响应 dict
+    (调用方自行看 stop_reason / content 里的 tool_use 块)。用于 agent loop。
+    出错抛异常 (不走 CLI 兜底——CLI 不支持 tools)。"""
+    token, is_oauth = _resolve_token()
+    if is_oauth:
+        headers = {**CLAUDE_CODE_HEADERS, "Authorization": f"Bearer {token}"}
+        headers["X-Claude-Code-Session-Id"] = str(uuid.uuid4())
+        system_blocks = [{"type": "text", "text": CLAUDE_IDENTITY}]
+        if system:
+            system_blocks.append({"type": "text", "text": system})
+    else:
+        headers = {"Content-Type": "application/json", "anthropic-version": "2023-06-01", "x-api-key": token}
+        system_blocks = system
+    payload = {
+        "model": model,
+        "max_tokens": max_tokens,
+        "messages": messages,
+        "system": system_blocks,
+    }
+    if tools:
+        payload["tools"] = tools
+    resp = _post_with_fallback(headers, payload)
+    if resp.status_code == 401 and is_oauth:
+        global _cached_token
+        _cached_token = None
+        token, is_oauth = _resolve_token()
+        headers["Authorization"] = f"Bearer {token}"
+        resp = _post_with_fallback(headers, payload)
+    if not resp.ok:
+        raise RuntimeError(f"Claude API error {resp.status_code}: {resp.text[:300]}")
+    return resp.json()
+
+
 def call_claude(
     user_prompt: str,
     system: str | None = None,
