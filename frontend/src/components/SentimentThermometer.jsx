@@ -13,12 +13,16 @@ export default function SentimentThermometer() {
   const [d, setD] = useState(null)
   const [loading, setLoading] = useState(true)
   const [showDetail, setShowDetail] = useState(false)
-  const [ai, setAi] = useState(null)
-  const [aiLoading, setAiLoading] = useState(true)
+  // 客户端缓存: 刷新页面秒显上次 AI 解读, 不再每次转圈重拉 (后端本就缓存)
+  const cachedAi = (() => { try { return JSON.parse(localStorage.getItem('sentimentAi') || 'null') } catch { return null } })()
+  const [ai, setAi] = useState(cachedAi)
+  const [aiLoading, setAiLoading] = useState(!cachedAi)
 
   const loadAi = (force = false) => {
-    setAiLoading(true)
-    fetchJSON(`/api/market/sentiment-ai${force ? '?force=true' : ''}`).then(setAi).catch(() => {}).finally(() => setAiLoading(false))
+    setAiLoading(force || !cachedAi)
+    fetchJSON(`/api/market/sentiment-ai${force ? '?force=true' : ''}`)
+      .then(r => { setAi(r); try { if (r?.summary) localStorage.setItem('sentimentAi', JSON.stringify(r)) } catch {} })
+      .catch(() => {}).finally(() => setAiLoading(false))
   }
 
   useEffect(() => {
