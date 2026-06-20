@@ -34,6 +34,9 @@ export default function SectorMatrix() {
         <div className="flex items-baseline gap-2">
           <h3 className="text-[14px] font-semibold text-text-bright m-0">板块趋势矩阵</h3>
           <span className="text-[10.5px] text-text-muted">近 {m.days} 日 · 红涨绿跌 · 资金/动能</span>
+          {m.intraday && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-bear/15 text-bear-bright">含今日盘中 {m.today}</span>
+          )}
         </div>
         <div className="flex gap-1 items-center">
           {[10, 20].map(dy => (
@@ -80,7 +83,7 @@ export default function SectorMatrix() {
               <th className="font-normal px-1 text-right pb-1">累计</th>
               <th className="font-normal px-1 text-right pb-1">净流入</th>
               {(m.dates || []).map((d, i) => (
-                <th key={i} className="font-normal text-center pb-1">{d}</th>
+                <th key={i} className={`text-center pb-1 ${m.intraday && d === m.today ? 'text-bear-bright font-semibold' : 'font-normal'}`}>{d}</th>
               ))}
             </tr>
           </thead>
