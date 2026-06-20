@@ -30,7 +30,7 @@ from api.assets_routes import router as assets_router
 from api.briefing_routes import router as briefing_router
 from api.sector_routes import router as sector_router
 from api.ws import router as ws_router, price_monitor_loop, premarket_push_loop, backup_loop, briefing_loop
-from services import feishu_notify
+from services import feishu_notify, llm_client
 
 
 @asynccontextmanager
@@ -45,6 +45,28 @@ async def lifespan(app: FastAPI):
         feishu_notify.set_muted(True)
     if url:
         print(f"飞书推送 {'静音中' if feishu_notify.is_muted() else '已启用'}")
+    # Restore saved LLM config
+    llm_base_url = await get_config("llm_base_url")
+    llm_api_key = await get_config("llm_api_key")
+    llm_api_key_header = await get_config("llm_api_key_header")
+    llm_api_key_prefix = await get_config("llm_api_key_prefix")
+    llm_proxy = await get_config("llm_proxy")
+    llm_model_map_raw = await get_config("llm_model_map")
+    llm_model_map = None
+    if llm_model_map_raw:
+        try:
+            import json
+            llm_model_map = json.loads(llm_model_map_raw)
+        except Exception:
+            pass
+    llm_client.configure_llm(
+        base_url=llm_base_url or "",
+        api_key=llm_api_key or "",
+        api_key_header=llm_api_key_header or "",
+        api_key_prefix=llm_api_key_prefix or "",
+        proxy=llm_proxy or "",
+        model_map=llm_model_map,
+    )
     task1 = asyncio.create_task(price_monitor_loop())
     task2 = asyncio.create_task(premarket_push_loop())
     task3 = asyncio.create_task(backup_loop())
