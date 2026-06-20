@@ -9,18 +9,31 @@ function cellBg(pct) {
 }
 const pctColor = (v) => v == null ? 'text-text-dim' : v > 0 ? 'text-bear-bright' : v < 0 ? 'text-bull-bright' : 'text-text-dim'
 
+// 客户端缓存: 刷新页面立刻显示上次结果, 不再每次都转圈重拉 (后端本就缓存, 这里只去掉前端闪烁)
+const CKEY = (dy) => `sectorMatrix_${dy}`
+const readCache = (dy) => { try { return JSON.parse(localStorage.getItem(CKEY(dy)) || 'null') } catch { return null } }
+const writeCache = (dy, m, ai) => { try { localStorage.setItem(CKEY(dy), JSON.stringify({ m, ai })) } catch {} }
+
 export default function SectorMatrix() {
   const [days, setDays] = useState(10)
-  const [m, setM] = useState(null)
-  const [ai, setAi] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [aiLoading, setAiLoading] = useState(false)
+  const cached = readCache(10)
+  const [m, setM] = useState(cached?.m || null)
+  const [ai, setAi] = useState(cached?.ai || null)
+  const [loading, setLoading] = useState(!cached)
+  const [aiLoading, setAiLoading] = useState(!cached?.ai)
 
   const load = useCallback((dy, force = false) => {
-    setLoading(true)
-    fetchJSON(`/api/sector/matrix?days=${dy}${force ? '&force=true' : ''}`).then(setM).catch(() => {}).finally(() => setLoading(false))
-    setAiLoading(true)
-    fetchJSON(`/api/sector/trend-ai?days=${dy}${force ? '&force=true' : ''}`).then(setAi).catch(() => {}).finally(() => setAiLoading(false))
+    const cache = readCache(dy)
+    // 有缓存先秒显, 不显示 loading; 无缓存才转圈
+    if (cache?.m) setM(cache.m)
+    if (cache?.ai) setAi(cache.ai)
+    setLoading(!cache?.m || force)
+    setAiLoading(!cache?.ai || force)
+    let nm = cache?.m || null, na = cache?.ai || null
+    fetchJSON(`/api/sector/matrix?days=${dy}${force ? '&force=true' : ''}`)
+      .then(r => { nm = r; setM(r); writeCache(dy, nm, na) }).catch(() => {}).finally(() => setLoading(false))
+    fetchJSON(`/api/sector/trend-ai?days=${dy}${force ? '&force=true' : ''}`)
+      .then(r => { na = r; setAi(r); writeCache(dy, nm, na) }).catch(() => {}).finally(() => setAiLoading(false))
   }, [])
 
   useEffect(() => { load(days) }, [days, load])
