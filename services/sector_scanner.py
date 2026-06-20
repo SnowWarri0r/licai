@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 import asyncio
+import math
 import time
 
 from services.sector_compare import (
@@ -29,6 +30,15 @@ _KLINE_TOP_N = 999  # 全部 90 个板块都拉 K 线 (复用 sector_compare 的
 _KLINE_CONCURRENCY = 12
 
 
+def _safe_f(x, default=0.0) -> float:
+    """float(numpy.nan) 不抛异常但会污染 JSON(Out of range float). NaN/Inf 一律归到默认值。"""
+    try:
+        v = float(x)
+    except (ValueError, TypeError):
+        return default
+    return v if math.isfinite(v) else default
+
+
 def _fetch_summary_sync() -> list[dict]:
     try:
         import akshare as ak
@@ -40,12 +50,12 @@ def _fetch_summary_sync() -> list[dict]:
             try:
                 rows.append({
                     "name": str(r["板块"]).strip(),
-                    "change_1d": float(r["涨跌幅"]),
-                    "net_flow": float(r.get("净流入", 0) or 0),  # 单位: 亿
+                    "change_1d": _safe_f(r["涨跌幅"]),
+                    "net_flow": _safe_f(r.get("净流入", 0)),  # 单位: 亿
                     "up_count": int(r.get("上涨家数", 0) or 0),
                     "down_count": int(r.get("下跌家数", 0) or 0),
                     "leader": str(r.get("领涨股", "")).strip(),
-                    "leader_change": float(r.get("领涨股-涨跌幅", 0) or 0),
+                    "leader_change": _safe_f(r.get("领涨股-涨跌幅", 0)),
                 })
             except (ValueError, TypeError, KeyError):
                 continue
@@ -236,9 +246,20 @@ async def scan_sectors(held_codes: list[str], etf_names: list[str] | None = None
         return (-(c5 if c5 is not None else -999), -r["change_1d"])
     rows.sort(key=sort_key)
 
-    return {
+    return _scrub_nan({
         "sectors": rows,
         "total": len(rows),
         "held_boards": sorted(held_boards),
         "kline_top_n": _KLINE_TOP_N,
-    }
+    })
+
+
+def _scrub_nan(obj):
+    """递归把 NaN/Inf 浮点换成 None, 防 FastAPI JSON 编码 ValueError(兜底, K线等嵌套值也覆盖)。"""
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _scrub_nan(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_scrub_nan(v) for v in obj]
+    return obj
