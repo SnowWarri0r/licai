@@ -148,19 +148,18 @@ async def sector_kline(market: str = "A", key: str = "", days: int = 60):
             from services.sector_compare import _fetch_ths_kline_sync
             rows = await asyncio.to_thread(_fetch_ths_kline_sync, key, days)
         elif m == "HK":
-            # HSCI 指数(东财)被墙 → 该板块映射的 A 股跨境 ETF; 无 ETF 则代表股等权篮子
+            # 优先真·恒生综合行业指数(push2his); 不可达再回退 A 股跨境 ETF / 代表股篮子
             from services.sector_hk import (
                 _SECTORS as _HK_SECTORS, _HK_SECTOR_BASKETS,
-                _fetch_etf_kline_via_ashare, _fetch_hk_basket_kline_sync,
+                _fetch_hsci_kline_sync, _fetch_etf_kline_via_ashare, _fetch_hk_basket_kline_sync,
             )
-            row = next(((cn, e) for c, cn, e, _en in _HK_SECTORS if c == key), (None, None))
-            cn_name, etf = row
-            if etf:
-                rows = await _fetch_etf_kline_via_ashare(etf)
-            elif cn_name in _HK_SECTOR_BASKETS:
-                rows = await asyncio.to_thread(_fetch_hk_basket_kline_sync, _HK_SECTOR_BASKETS[cn_name], days)
-            else:
-                rows = []
+            rows = await asyncio.to_thread(_fetch_hsci_kline_sync, key, days)
+            if len(rows) < 6:
+                cn_name, etf = next(((cn, e) for c, cn, e, _en in _HK_SECTORS if c == key), (None, None))
+                if etf:
+                    rows = await _fetch_etf_kline_via_ashare(etf)
+                elif cn_name in _HK_SECTOR_BASKETS:
+                    rows = await asyncio.to_thread(_fetch_hk_basket_kline_sync, _HK_SECTOR_BASKETS[cn_name], days)
         elif m == "US":
             from services.sector_us import _fetch_etf_kline_sync
             rows = await asyncio.to_thread(_fetch_etf_kline_sync, key, days)
