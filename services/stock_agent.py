@@ -192,6 +192,57 @@ _SYSTEM = (
 )
 
 
+_TOOL_CN = {
+    "resolve_stock": "解析代码", "get_quote": "查行情", "get_trend": "查走势",
+    "get_news": "查新闻", "get_holdings": "看持仓", "get_market_sentiment": "看大盘情绪",
+}
+
+
+async def ask_stock_stream(question: str):
+    """流式版: 边跑边 yield 事件 (step/answer/done/error), 供 SSE 推给前端。
+    每轮 LLM 调用之间 yield 工具步骤, 步骤实时出现; 末轮文本作为答案。"""
+    question = (question or "").strip()
+    if not question:
+        yield {"type": "error", "error": "空问题"}
+        return
+    messages = [{"role": "user", "content": question}]
+    for rnd in range(_MAX_ROUNDS):
+        try:
+            resp = await asyncio.to_thread(
+                _llm.call_claude_messages, messages, _SYSTEM, _MODEL, 2048, _TOOLS)
+        except Exception as e:
+            yield {"type": "error", "error": str(e)}
+            return
+        content = resp.get("content", [])
+        messages.append({"role": "assistant", "content": content})
+        tus = [b for b in content if b.get("type") == "tool_use"]
+        if not tus:
+            text = "".join(b.get("text", "") for b in content if b.get("type") == "text")
+            yield {"type": "answer", "text": text.strip()}
+            yield {"type": "done"}
+            return
+        # 先把这一轮模型的简短思考文本(若有)推出去当“正在做什么”的旁白
+        think = "".join(b.get("text", "") for b in content if b.get("type") == "text").strip()
+        if think:
+            yield {"type": "thought", "text": think[:120]}
+        for tu in tus:
+            yield {"type": "step", "tool": tu.get("name"),
+                   "label": _TOOL_CN.get(tu.get("name"), tu.get("name")),
+                   "arg": (tu.get("input") or {}).get("query") or (tu.get("input") or {}).get("code") or ""}
+        results = []
+        for tu in tus:
+            try:
+                fn = _EXECUTORS.get(tu.get("name"))
+                out = await fn(tu.get("input") or {}) if fn else {"error": "未知工具"}
+            except Exception as e:
+                out = {"error": str(e)}
+            results.append({"type": "tool_result", "tool_use_id": tu.get("id"),
+                            "content": _json.dumps(out, ensure_ascii=False)})
+        messages.append({"role": "user", "content": results})
+    yield {"type": "answer", "text": "（分析步数超限, 请换个问法或更具体）"}
+    yield {"type": "done"}
+
+
 async def ask_stock(question: str) -> dict:
     """跑 agent loop, 返回 {answer, tools_used, rounds}。"""
     question = (question or "").strip()
