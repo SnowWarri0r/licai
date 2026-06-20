@@ -57,7 +57,7 @@ export default function SentimentThermometer() {
           )}
           {v.amount_wy != null && (
             <span className="text-[11px] text-text-dim">· 两市 <span className="text-text-bright font-mono">{v.amount_wy}万亿</span>
-              {v.label && <span className={`ml-1 ${v.ratio > 0 ? 'text-bear-bright' : v.ratio < 0 ? 'text-bull-bright' : 'text-text-dim'}`}>{v.label}{v.ratio != null ? `${v.ratio > 0 ? '+' : ''}${v.ratio}%` : ''}</span>}
+              {v.label && <span className={`ml-1 ${v.ratio > 0 ? 'text-bear-bright' : v.ratio < 0 ? 'text-bull-bright' : 'text-text-dim'}`} title="今日沪市成交量 较前5个交易日均值">{v.label}<span className="text-text-muted">较5日均</span>{v.ratio != null ? `${v.ratio > 0 ? '+' : ''}${v.ratio}%` : ''}</span>}
             </span>
           )}
         </div>

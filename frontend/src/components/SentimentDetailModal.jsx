@@ -104,8 +104,13 @@ export default function SentimentDetailModal({ summary, volume, onClose }) {
         {/* 量能红绿柱 */}
         {(v.trend || []).length > 1 && (
           <div className="mb-4 px-3 py-3 rounded-lg bg-surface-3/50 border border-border-subtle">
-            <div className="text-[10.5px] text-text-muted mb-2">近14日沪市成交量(亿股) · 放量红 / 缩量绿{v.intraday ? ' · 末根今日盘中' : ''}</div>
+            <div className="text-[10.5px] text-text-muted mb-2">近14日沪市成交量(亿股) · 每根较<b className="text-text-dim">前一日</b>放量红/缩量绿{v.intraday ? ' · 末根今日盘中' : ''}</div>
             <VolBars trend={v.trend} intraday={v.intraday} />
+            {v.label && v.ratio != null && (
+              <div className="text-[10px] text-text-muted mt-2">
+                注: 头部「{v.label}{v.ratio > 0 ? '+' : ''}{v.ratio}%」是<b className="text-text-dim">今日 较前5日均值</b>口径, 与上面"较前一日"的柱色基准不同 — 今日量可低于周五大阳, 但仍高于5日均。
+              </div>
+            )}
           </div>
         )}
 
