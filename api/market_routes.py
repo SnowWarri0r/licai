@@ -1,7 +1,10 @@
 """Market data REST endpoints."""
 from __future__ import annotations
+import json as _json
 from datetime import date, datetime, timedelta, timezone
 from fastapi import APIRouter
+
+import services.llm_client as _llm
 
 from services.market_data import (
     get_realtime_quotes, get_historical_data, get_intraday_data,
@@ -326,6 +329,109 @@ async def market_sentiment():
         _senti_cache["s"] = (r, _time.time())
         return r
     return {"date": None, "mood": "数据不足", "n_zt": 0}
+
+
+# ============================================================
+# 市场情绪 AI 分析 (情绪周期定位 + 接力赚钱效应/炸板退潮/量能/板块主线, 纯客观不给建议)
+# ============================================================
+_senti_ai_cache: dict = {}
+
+
+@router.get("/sentiment-ai")
+async def sentiment_ai(force: bool = False):
+    """基于情绪温度计数据的 AI 客观解读: 当前处在情绪周期哪个位置(冰点/修复/发酵/高潮/退潮),
+    接力赚钱效应、连板高度、炸板率、量能、板块主线说明什么, 跟持仓板块的关系。
+    硬规则: 只做客观情绪描述, 严禁任何买卖/加减仓/抄底/止盈建议。20min 缓存。"""
+    import asyncio
+    s = await market_sentiment()
+    if not s or not s.get("n_zt"):
+        return {"summary": "", "points": [], "cycle": "", "holdings_note": "", "generated_at": None}
+
+    # 用 数据日期 + 小时 做 key, 盘中随小时滚动刷新
+    ck = f"{s.get('date')}-{datetime.now(timezone.utc).hour}"
+    c = _senti_ai_cache.get("c")
+    if not force and c and c[1] == ck:
+        return c[0]
+
+    v = s.get("volume") or {}
+    vol_line = ""
+    if v:
+        vol_line = (f"两市成交额{v.get('amount_wy','?')}万亿; 沪市量能{v.get('label','')}"
+                    f"{(('%+d%%' % v['ratio']) if v.get('ratio') is not None else '')}"
+                    f"{'(末根含今日盘中)' if v.get('intraday') else ''}")
+    ladder_line = "、".join(f"{l['lb']}板×{l['count']}" for l in (s.get("ladder") or [])) or "无2板以上梯队"
+    hot_line = "、".join(f"{h['name']}({h['count']}家:{'/'.join(h.get('stocks', [])[:3])})"
+                        for h in (s.get("hot_sectors") or [])[:8]) or "无明显热点"
+
+    # 持仓所在 A 股板块(二级), 让 AI 点出持仓跟今日热点的关系
+    from services.market_data import get_stock_sector_detail, is_a_share
+    from database import get_all_holdings
+    held = [h for h in await get_all_holdings() if is_a_share(h["stock_code"]) and float(h.get("shares") or 0) > 0]
+    held_secs = set()
+    for h in held:
+        try:
+            sec = await get_stock_sector_detail(h["stock_code"])
+            if sec:
+                held_secs.add(sec)
+        except Exception:
+            pass
+    held_line = ("我持仓所在板块: " + "、".join(sorted(held_secs))) if held_secs else "（无 A 股持仓）"
+
+    data_block = (
+        f"数据日期 {s.get('date')}\n"
+        f"涨停 {s.get('n_zt')} 家 / 跌停 {s.get('n_dt')} 家 / 炸板 {s.get('n_zb')} 家, 炸板率 {s.get('zbl_rate')}%\n"
+        f"最高连板 {s.get('max_lianban')} 板; 连板梯队: {ladder_line}; 空间龙头: {'、'.join(s.get('leaders') or []) or '无'}\n"
+        f"昨日涨停今日平均涨幅(接力赚钱效应) {s.get('money_effect')}%; 昨涨停红盘率 {s.get('red_rate')}%\n"
+        f"量能: {vol_line}\n"
+        f"今日涨停板块热点分布: {hot_line}\n"
+        f"系统初判情绪: {s.get('mood')} — {s.get('mood_desc')}"
+    )
+
+    system_prompt = (
+        "你是 A 股打板情绪分析师。基于给定的'涨停/跌停/连板梯队/炸板率/接力赚钱效应/量能/板块热点'数据, "
+        "客观判断当前市场情绪。\n"
+        "要点: (1)情绪处在周期哪个位置——冰点/修复/发酵/高潮/分歧/退潮, 用赚钱效应+连板高度+炸板率佐证; "
+        "(2)接力赚钱效应说明高位资金敢不敢打, 炸板率高说明分歧/退潮; (3)量能放缩说明增量资金进出; "
+        "(4)涨停板块热点反映资金主线在哪、是否扩散或退潮; (5)结合'我持仓所在板块'点出它在今日热点里是否被资金关照。\n"
+        "每条结论都引用数据里的具体数字。语言可借鉴成熟游资对情绪周期的理解, 但不点名出处。\n"
+        "【硬规则】只做客观情绪描述, 严禁任何买卖/加减仓/抄底/止盈/该不该买/目标价/仓位 等操作建议。不编造数据里没有的数字。\n"
+        "JSON 输出: {\"summary\":\"一句话概括当前情绪状态\", "
+        "\"cycle\":\"情绪周期定位(冰点/修复/发酵/高潮/分歧/退潮)+一句依据\", "
+        "\"points\":[{\"type\":\"赚钱效应/连板高度/炸板/量能/板块主线\",\"detail\":\"用数字说明\"}], "
+        "\"holdings_note\":\"我持仓板块在今日情绪/热点里的位置(客观)\"}。只输出 JSON。"
+    )
+    user_prompt = f"{held_line}\n\n{data_block}"
+    try:
+        raw = await asyncio.to_thread(_llm.call_claude, user_prompt, system_prompt, "claude-sonnet-4-5", 1600)
+    except Exception as e:
+        return {"summary": "", "cycle": "", "points": [], "holdings_note": "", "error": str(e)}
+
+    txt = (raw or "").strip()
+    if txt.startswith("```"):
+        import re as _re2
+        txt = _re2.sub(r"^```(json)?", "", txt).strip().rstrip("`").strip()
+    try:
+        parsed = _json.loads(txt)
+    except Exception:
+        parsed = None
+        for tail in ['"}', '"]}', '}]}', '"}]}', '"}}', '"]}}']:
+            try:
+                parsed = _json.loads(txt + tail); break
+            except Exception:
+                continue
+        if not isinstance(parsed, dict):
+            parsed = {"summary": "", "cycle": "", "points": [], "holdings_note": ""}
+    result = {
+        "summary": parsed.get("summary", ""),
+        "cycle": parsed.get("cycle", ""),
+        "points": parsed.get("points", []) if isinstance(parsed.get("points"), list) else [],
+        "holdings_note": parsed.get("holdings_note", ""),
+        "generated_at": _time.time(),
+    }
+    # 只有真拿到内容才缓存; LLM/代理抖动(call_claude 可能返回错误串而非抛异常)不污染整小时缓存
+    if result["summary"]:
+        _senti_ai_cache["c"] = (result, ck)
+    return result
 
 
 # ============================================================

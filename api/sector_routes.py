@@ -128,7 +128,9 @@ async def sector_trend_ai(days: int = 10, force: bool = False):
         "holdings_note": parsed.get("holdings_note", ""),
         "generated_at": _t.time(),
     }
-    _trend_cache[ck] = (result, _t.time())
+    # 只有真拿到内容才缓存; LLM/代理抖动不污染整段缓存
+    if result["summary"]:
+        _trend_cache[ck] = (result, _t.time())
     return result
 
 
