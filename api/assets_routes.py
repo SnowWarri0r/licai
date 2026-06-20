@@ -157,16 +157,19 @@ async def _enrich(asset: dict) -> dict:
             current_value = round(nav * float(asset["shares"]) + pending, 2)
         elif pending > 0:
             current_value = round(float(asset.get("cost_amount") or 0) + pending, 2)
-        # 附加代理标的行情 (用底层市场实时数据预判基金当日走势)
-        try:
-            from services.fund_proxy import get_fund_proxy
-            proxy = await get_fund_proxy(asset["code"])
-            if proxy and quote is not None:
-                quote["proxy_change_pct"] = proxy["weighted_change_pct"]
-                quote["proxy_label"] = proxy["label"]
-                quote["proxy_details"] = proxy["proxies"]
-        except Exception as e:
-            print(f"[fund-proxy] {asset['code']} failed: {e}")
+        # 附加代理标的行情 (用底层市场实时数据预判基金当日走势)。
+        # 仅对场外基金 (NAV 是 T+1, 盘中看不到今日) 才需要代理推测;
+        # 场内 ETF 本身有二级市场实时成交价 (quote.change_pct 即今日真实涨跌), 无需代理。
+        if quote is not None and not _is_onchain_etf(asset["code"]):
+            try:
+                from services.fund_proxy import get_fund_proxy
+                proxy = await get_fund_proxy(asset["code"])
+                if proxy:
+                    quote["proxy_change_pct"] = proxy["weighted_change_pct"]
+                    quote["proxy_label"] = proxy["label"]
+                    quote["proxy_details"] = proxy["proxies"]
+            except Exception as e:
+                print(f"[fund-proxy] {asset['code']} failed: {e}")
         # 今日涨跌口径: 场外基金净值是 T+1, change_pct 常是 1-2 天前的旧净值,
         # 拿来当"今日"会把昨天的涨幅冒充成今天。折算规则:
         #   - nav_date 为空 (场内 ETF 实时市价) 或 == 今天 → change_pct 就是今天
