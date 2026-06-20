@@ -447,7 +447,7 @@ async def trade_review_ai(period: str = "all", force: int = 0):
         )
         user_prompt = f"复盘我{label}的交易:\n\n{data_block}"
         try:
-            raw = await asyncio.to_thread(llm_client.call_claude, user_prompt, system_prompt, "claude-sonnet-4-5", 1800)
+            raw = await asyncio.to_thread(llm_client.call_claude, user_prompt, system_prompt, "claude-opus-4-8", 1800)
         except Exception as e:
             return {"period": period, "period_label": label, "error": str(e), "summary": "", "narrative": ""}
         parsed = _parse_llm_json(raw)
@@ -643,7 +643,7 @@ async def trade_review_ai(period: str = "all", force: int = 0):
     user_prompt = f"以下是我的真实交易数据(已分'仍持有'和'已清仓'), 平衡复盘我的交易纪律, 别把我已经割掉的票当成还在死扛:\n\n{data_block}"
 
     try:
-        raw = await asyncio.to_thread(llm_client.call_claude, user_prompt, system_prompt, "claude-sonnet-4-5", 4096)
+        raw = await asyncio.to_thread(llm_client.call_claude, user_prompt, system_prompt, "claude-opus-4-8", 4096)
     except Exception as e:
         return {"narrative": "", "discipline": [], "summary": "", "error": str(e), "generated_at": None}
 
