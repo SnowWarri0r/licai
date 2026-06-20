@@ -137,8 +137,8 @@ async def sector_trend_ai(days: int = 10, force: bool = False):
 @router.get("/kline")
 async def sector_kline(market: str = "A", key: str = "", days: int = 60):
     """单板块 K线 (OHLC, 支持周期切换). 放大图按 days 拉.
-    market=A → key 是 THS 板块名; HK → 指数 symbol; US → SPDR ETF symbol.
-    A 股走 THS(可达); HK/US 走 eastmoney(本网络可能不可达, 拉不到回空)。"""
+    market=A → key 是 THS 板块名(走 THS); HK → HSCI 指数 symbol(东财被墙, 改用映射的 A 股跨境 ETF 代理);
+    US → SPDR ETF symbol(走新浪美股日 K)。"""
     days = max(10, min(int(days or 60), 250))
     m = (market or "A").upper()
     if not key:
@@ -148,8 +148,10 @@ async def sector_kline(market: str = "A", key: str = "", days: int = 60):
             from services.sector_compare import _fetch_ths_kline_sync
             rows = await asyncio.to_thread(_fetch_ths_kline_sync, key, days)
         elif m == "HK":
-            from services.sector_hk import _fetch_index_kline_sync
-            rows = await asyncio.to_thread(_fetch_index_kline_sync, key, days)
+            # HSCI 指数(东财)被墙 → 用该板块映射的 A 股上市跨境 ETF 作代理
+            from services.sector_hk import _SECTORS as _HK_SECTORS, _fetch_etf_kline_via_ashare
+            etf = next((e for code, _cn, e, _en in _HK_SECTORS if code == key and e), None)
+            rows = await _fetch_etf_kline_via_ashare(etf) if etf else []
         elif m == "US":
             from services.sector_us import _fetch_etf_kline_sync
             rows = await asyncio.to_thread(_fetch_etf_kline_sync, key, days)

@@ -124,26 +124,32 @@ def _close_pct(closes: list[float], n: int) -> float | None:
 
 
 def _fetch_etf_kline_sync(symbol: str, days: int = 120) -> list[dict]:
+    """美股 ETF 日 K. 东财 push2.eastmoney(stock_us_hist) 在本网络被墙(RemoteDisconnected),
+    改走新浪美股日 K 接口(可达), 返回最近 days 根 {date, open, high, low, close}。"""
+    import requests as _rq
+    import json as _json
     try:
-        import akshare as ak
-        end = datetime.now().strftime("%Y%m%d")
-        start = (datetime.now() - timedelta(days=int(days * 1.6) + 15)).strftime("%Y%m%d")
-        df = ak.stock_us_hist(symbol=f"107.{symbol}", period="daily",
-                              start_date=start, end_date=end, adjust="qfq")
-        if df is None or df.empty:
+        url = ("https://stock.finance.sina.com.cn/usstock/api/jsonp_v2.php/"
+               f"x=/US_MinKService.getDailyK?symbol={symbol.lower()}&___qn=3")
+        r = _rq.get(url, headers={"Referer": "https://finance.sina.com.cn"}, timeout=12)
+        r.encoding = "gbk"
+        t = r.text
+        i, j = t.find("["), t.rfind("]")
+        if i < 0 or j <= i:
             return []
+        arr = _json.loads(t[i:j + 1])
         out = []
-        for _, r in df.tail(days).iterrows():
+        for it in arr[-days:]:
             try:
-                row = {"date": str(r["日期"]), "close": float(r["收盘"])}
-                if all(c in r for c in ("开盘", "最高", "最低")):
-                    row["open"], row["high"], row["low"] = float(r["开盘"]), float(r["最高"]), float(r["最低"])
-                out.append(row)
+                out.append({
+                    "date": str(it["d"]), "close": float(it["c"]),
+                    "open": float(it["o"]), "high": float(it["h"]), "low": float(it["l"]),
+                })
             except (ValueError, TypeError, KeyError):
                 continue
         return out
     except Exception as e:
-        print(f"[sector_us] {symbol} kline failed: {e}")
+        print(f"[sector_us] {symbol} sina kline failed: {e}")
         return []
 
 
