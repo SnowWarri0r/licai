@@ -58,14 +58,20 @@ export default function SectorMatrix() {
               {dy}日
             </button>
           ))}
-          <button onClick={() => load(days, true)} className="text-[11px] px-2 py-0.5 rounded border border-border text-text-dim hover:text-text">刷新</button>
+          <button onClick={() => load(days, true)} disabled={loading || aiLoading}
+            className="text-[11px] px-2 py-0.5 rounded border border-border text-text-dim hover:text-text disabled:opacity-40 disabled:cursor-wait">
+            {(loading || aiLoading) ? '刷新中…' : '刷新'}
+          </button>
         </div>
       </div>
 
       {/* AI 趋势分析 */}
-      {aiLoading && !ai && <div className="text-[11.5px] text-text-dim mb-3">AI 分析板块趋势中…</div>}
+      {aiLoading && !ai?.summary && <div className="text-[11.5px] text-text-dim mb-3">AI 分析板块趋势中…<span className="text-text-muted">(Opus 推理约 10–20 秒)</span></div>}
       {ai && ai.summary && (
-        <div className="mb-3 px-3 py-2.5 rounded-lg bg-accent/10 border border-accent/30">
+        <div className={`mb-3 px-3 py-2.5 rounded-lg bg-accent/10 border border-accent/30 transition-opacity ${aiLoading ? 'opacity-50' : ''}`}>
+          <div className="flex items-baseline justify-between gap-2 mb-1.5">
+            <span className="text-[11px] text-accent font-medium">AI 趋势分析{aiLoading && <span className="ml-1 text-text-muted">· 重新分析中…</span>}</span>
+          </div>
           <div className="text-[12.5px] text-text-bright leading-relaxed mb-1.5">{ai.summary}</div>
           <div className="space-y-1">
             {(ai.trends || []).map((t, i) => (

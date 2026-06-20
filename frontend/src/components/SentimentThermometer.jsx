@@ -65,12 +65,15 @@ export default function SentimentThermometer() {
       </div>
 
       {/* AI 情绪解读 */}
-      {aiLoading && !ai && <div className="text-[11.5px] text-text-dim mb-3">AI 分析市场情绪中…</div>}
+      {aiLoading && !ai?.summary && <div className="text-[11.5px] text-text-dim mb-3">AI 分析市场情绪中…<span className="text-text-muted">(Opus 推理约 10–20 秒)</span></div>}
       {ai && ai.summary && (
-        <div className="mb-3 px-3 py-2.5 rounded-lg bg-accent/10 border border-accent/30">
+        <div className={`mb-3 px-3 py-2.5 rounded-lg bg-accent/10 border border-accent/30 transition-opacity ${aiLoading ? 'opacity-50' : ''}`}>
           <div className="flex items-baseline justify-between gap-2 mb-1.5">
-            <span className="text-[11px] text-accent font-medium">AI 情绪解读</span>
-            <button onClick={() => loadAi(true)} className="text-[10.5px] text-text-muted hover:text-text">重新分析</button>
+            <span className="text-[11px] text-accent font-medium">AI 情绪解读{aiLoading && <span className="ml-1 text-text-muted">· 重新分析中…</span>}</span>
+            <button onClick={() => loadAi(true)} disabled={aiLoading}
+              className="text-[10.5px] text-text-muted hover:text-text disabled:opacity-40 disabled:cursor-wait">
+              {aiLoading ? '分析中…' : '重新分析'}
+            </button>
           </div>
           <div className="text-[12.5px] text-text-bright leading-relaxed mb-1.5">{ai.summary}</div>
           {ai.cycle && (
