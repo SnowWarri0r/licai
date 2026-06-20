@@ -232,20 +232,35 @@ def _fetch_sentiment_sync():
                      headers={"Referer": "https://finance.sina.com.cn"}, timeout=6)
         rr.encoding = "gbk"
         amt_today, vol_today = 0.0, 0.0
+        sh_vol_today_shares = 0.0   # 沪市今日实时成交量(股); Sina 指数成交量是"手", ×100 → 股
         for line in rr.text.strip().split("\n"):
-            m = _re.match(r'var hq_str_\w+="(.*)";', line.strip())
+            m = _re.match(r'var hq_str_(\w+)="(.*)";', line.strip())
             if m:
-                b = m.group(1).split(",")
+                sym, b = m.group(1), m.group(2).split(",")
                 if len(b) > 9:
                     vol_today += float(b[8] or 0)
                     amt_today += float(b[9] or 0)
+                    if sym == "sh000001":
+                        sh_vol_today_shares = float(b[8] or 0) * 100
         # 放缩量: 纯用 akshare 综指日成交量(同源同单位), 最近完整交易日 vs 前5日均
         # 量能趋势/放缩量: 用上证综指(沪市)日成交量。两市综指 akshare 更新不同步
         # (深证综指常滞后一天), 求和会缺腿; 沪市单源可靠且当日收盘后即全, 作市场量能代表。
-        ratio, vlabel, trend = None, None, []
+        ratio, vlabel, trend, _vol_intraday = None, None, [], False
+        try:
+            from services.market_data import _is_a_share_trading_day
+            _trading = _is_a_share_trading_day(today)
+        except Exception:
+            _trading = today.weekday() < 5
+        _opened = (datetime.now(timezone.utc) + timedelta(hours=8)).hour * 60 + \
+                  (datetime.now(timezone.utc) + timedelta(hours=8)).minute >= 570
         try:
             df = ak.stock_zh_index_daily(symbol="sh000001")
             ordered = [(str(r.get("date"))[:10], float(r.get("volume") or 0)) for _, r in df.tail(16).iterrows()]
+            # akshare 综指日线滞后约一天; 交易日已开盘时, 用沪市实时成交量补出"今日"格(同换算成股)
+            today_str = today.strftime("%Y-%m-%d")
+            if _trading and _opened and sh_vol_today_shares > 0 and (not ordered or ordered[-1][0] != today_str):
+                ordered.append((today_str, sh_vol_today_shares))
+                _vol_intraday = True
             seq = [v for _, v in ordered]
             if len(seq) >= 6:
                 latest, prev5 = seq[-1], sum(seq[-6:-1]) / 5
@@ -260,7 +275,8 @@ def _fetch_sentiment_sync():
             "amount_yi": round(amt_today / 1e8),         # 今日两市成交额(亿)
             "amount_wy": round(amt_today / 1e12, 2),     # 万亿
             "ratio": ratio, "label": vlabel,             # 沪市最新成交量 较前5日均
-            "trend": trend,                              # 近6日沪市成交量(亿股)
+            "trend": trend,                              # 近14日沪市成交量(亿股)
+            "intraday": _vol_intraday,                   # 末根是否为今日实时盘中
         }
     except Exception:
         volume = None
