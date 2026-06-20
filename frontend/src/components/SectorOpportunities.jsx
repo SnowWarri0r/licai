@@ -326,8 +326,8 @@ export default function SectorOpportunities() {
 
       <div className="px-3 md:px-5 py-2 text-[10.5px] text-text-muted bg-surface-2/40 border-t border-border-subtle">
         仅展示数据，不构成投资建议。K 线缓存 10 分钟刷新一次，点击走势图可查看大图。
-        {market === 'US' && <span className="ml-1">美股以 SPDR Sector ETF 作为 GICS 板块代理。</span>}
-        {market === 'HK' && <span className="ml-1">港股使用恒生综合行业指数。</span>}
+        {market === 'US' && <span className="ml-1">美股以 SPDR Sector ETF 作为 GICS 板块代理（新浪美股日 K）。</span>}
+        {market === 'HK' && <span className="ml-1">港股恒生综合行业指数源（东财）当前网络不可达，改以对应 A 股上市跨境 ETF 作板块代理（行 ETF 名）；无对应 ETF 的板块暂无数据（原材料/公用事业/地产建筑）。</span>}
       </div>
 
       {openSector && (

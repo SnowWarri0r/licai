@@ -97,6 +97,29 @@ def _fetch_index_kline_sync(symbol: str, days: int = 120) -> list[dict]:
         return []
 
 
+async def _fetch_etf_kline_via_ashare(etf_code: str) -> list[dict]:
+    """用 A 股上市的跨境 ETF(513xxx/159xxx)日 K 作港股板块代理。
+    get_historical_data 走新浪(可达), 输出 {date, open, high, low, close}。"""
+    try:
+        from services.market_data import get_historical_data
+        df = await get_historical_data(etf_code, 120)
+        if df is None or df.empty:
+            return []
+        out = []
+        for _, r in df.iterrows():
+            try:
+                out.append({
+                    "date": str(r["日期"])[:10], "close": float(r["收盘"]),
+                    "open": float(r["开盘"]), "high": float(r["最高"]), "low": float(r["最低"]),
+                })
+            except (ValueError, TypeError, KeyError):
+                continue
+        return out
+    except Exception as e:
+        print(f"[sector_hk] etf {etf_code} via a-share failed: {e}")
+        return []
+
+
 _industry_cache: dict[str, str | None] = {}  # ticker → HSCI sector cn_name (or None)
 
 
@@ -149,8 +172,12 @@ async def _scan_uncached(held_codes: list[str]) -> dict:
     held_sectors = await _resolve_held_sectors(held_codes)
 
     async def fetch_one(code: str, cn: str, etf_code: str | None, etf_name: str | None) -> dict:
-        async with sem:
-            kline = await asyncio.to_thread(_fetch_index_kline_sync, code)
+        # HSCI 行业指数走东财 push2.eastmoney, 本网络被墙(RemoteDisconnected)。
+        # 改用映射的 A 股上市跨境 ETF(513xxx/159xxx, 走新浪 A 股日 K, 可达)作板块代理。
+        kline: list[dict] = []
+        if etf_code:
+            async with sem:
+                kline = await _fetch_etf_kline_via_ashare(etf_code)
         closes = [k["close"] for k in kline if k.get("close")]
         tail = kline[-min(60, len(kline)):]
         return {
@@ -162,6 +189,7 @@ async def _scan_uncached(held_codes: list[str]) -> dict:
             "kline_tail": [_ohlc_point(k) for k in tail],
             "etf_code": etf_code,
             "etf_name": etf_name,
+            "proxy_etf": bool(etf_code),   # 涨幅来自代理 ETF 而非 HSCI 指数本身
             "held": cn in held_sectors,
         }
 
