@@ -80,8 +80,8 @@ export default function StockAsk() {
   return (
     <div className="bg-surface-2 border border-border rounded-xl p-4 md:p-5">
       <div className="flex items-baseline gap-2 mb-3">
-        <h3 className="text-[14px] font-semibold text-text-bright m-0">问问个股</h3>
-        <span className="text-[10.5px] text-text-muted">为什么涨/跌 · 最近消息 · 跟我持仓的关系</span>
+        <h3 className="text-[14px] font-semibold text-text-bright m-0">问问市场</h3>
+        <span className="text-[10.5px] text-text-muted">个股涨跌/消息 · 这周市场什么风格 · 资金主线</span>
       </div>
 
       {holdings.length > 0 && history.length === 0 && (
@@ -129,7 +129,7 @@ export default function StockAsk() {
       <div className="flex gap-2">
         <input value={q} onChange={e => setQ(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter') ask() }} disabled={loading}
-          placeholder="例: 洛阳钼业今天为什么大涨 / 中钨高新最近什么消息"
+          placeholder="例: 这周市场什么风格 / 洛阳钼业今天为什么涨 / 资金主线在哪"
           className="flex-1 text-[12px] px-3 py-2 rounded-lg bg-surface-3 border border-border text-text placeholder:text-text-muted focus:border-accent/50 outline-none disabled:opacity-50" />
         <button onClick={() => ask()} disabled={loading || !q.trim()}
           className="text-[12px] px-3.5 py-2 rounded-lg bg-accent/20 text-accent border border-accent/40 hover:bg-accent/30 disabled:opacity-40 disabled:cursor-not-allowed">

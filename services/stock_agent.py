@@ -152,6 +152,36 @@ async def _tool_get_holdings() -> dict:
         return {"error": str(e)}
 
 
+async def _tool_sector_momentum(days: int = 10) -> dict:
+    """板块趋势矩阵: 各行业近 N 日累计涨跌/连涨动能/净流入 → 看动量是否延续(动量风格) 还是冲高回落(退潮/反转)。"""
+    try:
+        from services.sector_matrix import get_sector_matrix
+        m = await get_sector_matrix(days=int(days or 10))
+        rows = m.get("rows") or []
+        if not rows:
+            return {"error": "板块矩阵暂无数据"}
+        def brief(r):
+            return {"板块": r["name"], "今日": r.get("today_pct"), f"近{m.get('days')}日累计": r.get("cum_pct"),
+                    "连涨天": r.get("streak"), "净流入亿": r.get("net_inflow")}
+        return {"days": m.get("days"), "intraday": m.get("intraday"),
+                "走强top": [brief(r) for r in rows[:8]],
+                "退潮bottom": [brief(r) for r in rows[-5:]]}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+async def _tool_hot_rank() -> dict:
+    """资金人气榜(东财): 资金/散户关注度最高的个股, 标出哪些在用户持仓里。看资金主线/抱团方向。"""
+    try:
+        from api.market_routes import hot_rank
+        r = await hot_rank(top=20)
+        items = [{"name": x.get("name"), "code": x.get("code"), "rank": x.get("rank"),
+                  "mine": x.get("mine")} for x in (r.get("items") or [])]
+        return {"top": items, "mine": [x.get("name") for x in (r.get("mine") or [])]}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 async def _tool_market_sentiment() -> dict:
     try:
         from api.market_routes import market_sentiment
@@ -175,7 +205,11 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_holdings", "description": "查用户当前持仓列表(代码/名称/股数), 用于回答跟用户持仓的关系。",
      "input_schema": {"type": "object", "properties": {}}},
-    {"name": "get_market_sentiment", "description": "查大盘打板情绪(涨停数/连板高度/炸板率/赚钱效应/热点板块), 判断是个股原因还是大盘普涨普跌。",
+    {"name": "get_market_sentiment", "description": "查大盘打板情绪(涨停数/连板高度/炸板率/赚钱效应/热点板块), 判断是个股原因还是大盘普涨普跌; 也用于判断市场风格(打板赚钱效应高=追涨/动量有效; 炸板率高+亏钱效应=高位分歧/反转)。",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "get_sector_momentum", "description": "板块趋势矩阵: 各行业近N日累计涨跌/连涨动能/净流入。看哪些板块在持续走强(动量延续)、哪些冲高回落(退潮), 判断市场是动量风格还是高低切/轮动, 资金主线在哪。days 默认10。",
+     "input_schema": {"type": "object", "properties": {"days": {"type": "integer"}}}},
+    {"name": "get_hot_rank", "description": "资金人气榜(东财): 关注度最高的个股, 标出哪些在用户持仓。看资金主线/抱团方向。",
      "input_schema": {"type": "object", "properties": {}}},
 ]
 
@@ -186,23 +220,31 @@ _EXECUTORS = {
     "get_news": lambda a: _tool_get_news(a.get("code", "")),
     "get_holdings": lambda a: _tool_get_holdings(),
     "get_market_sentiment": lambda a: _tool_market_sentiment(),
+    "get_sector_momentum": lambda a: _tool_sector_momentum(a.get("days", 10)),
+    "get_hot_rank": lambda a: _tool_hot_rank(),
 }
 
 _SYSTEM = (
-    "你是个股异动解读助手。用户自由提问(为什么涨/跌、最近什么消息、跟我持仓什么关系等)。\n"
-    "你挂了工具: resolve_stock(名字转代码)、get_quote(实时行情)、get_trend(近N日走势)、"
-    "get_news(个股新闻)、get_holdings(用户持仓)、get_market_sentiment(大盘情绪)。\n"
-    "流程: 用户报名字先 resolve_stock 拿代码; 要解读涨跌就调 get_quote 看当日幅度 + get_trend 看是不是趋势 + "
-    "get_news 找消息面 + 需要时 get_market_sentiment 判断是个股事件还是大盘普涨/普跌。每个结论都要有工具数据支撑。\n"
-    "【硬规则】只做客观解读(为什么动、什么消息、跟持仓什么关系), 严禁任何操作建议: 不许出现 该买/该卖/加仓/减仓/"
-    "能不能追/还能不能拿/目标价/止损/现在适合。料不足就直说不确定, 绝不编造新闻或数字。\n"
-    "回答用简体中文, 简洁直给: 先一句结论(今日涨跌幅+主因), 再分点列消息面/资金面/大盘背景, 最后点跟持仓的关系(若相关)。"
+    "你是市场&个股解读助手。用户自由提问: 个股为什么涨跌/消息面/跟持仓关系, 以及【市场风格】类问题"
+    "(这周市场在奖励什么打法、是动量追涨还是低吸反转、是题材轮动还是抱团、高低切迹象、资金主线在哪、情绪处在什么周期)。\n"
+    "工具: resolve_stock(名字转代码)、get_quote(个股实时行情)、get_trend(个股近N日走势)、get_news(个股新闻)、"
+    "get_holdings(用户持仓)、get_market_sentiment(大盘打板情绪)、get_sector_momentum(板块趋势矩阵:动量/退潮/资金流)、get_hot_rank(资金人气榜)。\n"
+    "【个股问题】先 resolve_stock 拿代码, 再 get_quote+get_trend+get_news, 需要时 get_market_sentiment 判断个股事件还是大盘普涨跌。\n"
+    "【市场风格问题】用 get_market_sentiment(打板赚钱效应高=追涨/动量有效; 炸板率高+亏钱效应=高位分歧/反转占优) + "
+    "get_sector_momentum(连涨板块多=动量延续; 普遍冲高回落=退潮/高低切) + get_hot_rank(资金主线/抱团方向) 综合判断, "
+    "用具体数字描述'市场这周在奖励什么行为、惩罚什么行为、资金往哪走'。这是客观的市场逻辑分析, 不是策略推荐。\n"
+    "每个结论都要有工具数据支撑。\n"
+    "【硬规则】只做客观解读与市场逻辑分析(市场在奖励什么/为什么动/什么消息), 严禁任何面向用户的操作建议: "
+    "不许出现 你该买/该卖/该用XX策略去操作/加仓/减仓/能不能追/还能不能拿/目标价/止损/现在适合。"
+    "描述'市场在奖励动量'可以, 但不许说'所以你该追涨'。料不足就直说不确定, 绝不编造新闻或数字。\n"
+    "回答用简体中文, 简洁直给, 分点列证据(数字), 该下的客观结论就下。"
 )
 
 
 _TOOL_CN = {
     "resolve_stock": "解析代码", "get_quote": "查行情", "get_trend": "查走势",
     "get_news": "查新闻", "get_holdings": "看持仓", "get_market_sentiment": "看大盘情绪",
+    "get_sector_momentum": "看板块动量", "get_hot_rank": "看资金热度",
 }
 
 
