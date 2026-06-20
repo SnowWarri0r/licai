@@ -179,7 +179,7 @@ def _post_with_fallback(headers, payload) -> requests.Response:
 def call_claude(
     user_prompt: str,
     system: str | None = None,
-    model: str = "claude-sonnet-4-20250514",
+    model: str = "claude-sonnet-4-6",
     max_tokens: int = 2048,
 ) -> str:
     """Call Claude API. Returns the text response.

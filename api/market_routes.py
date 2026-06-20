@@ -402,7 +402,7 @@ async def sentiment_ai(force: bool = False):
     )
     user_prompt = f"{held_line}\n\n{data_block}"
     try:
-        raw = await asyncio.to_thread(_llm.call_claude, user_prompt, system_prompt, "claude-sonnet-4-5", 1600)
+        raw = await asyncio.to_thread(_llm.call_claude, user_prompt, system_prompt, "claude-opus-4-8", 1600)
     except Exception as e:
         return {"summary": "", "cycle": "", "points": [], "holdings_note": "", "error": str(e)}
 

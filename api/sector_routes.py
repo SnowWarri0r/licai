@@ -106,7 +106,7 @@ async def sector_trend_ai(days: int = 10, force: bool = False):
     )
     user_prompt = f"{held_line}\n\n{data_block}"
     try:
-        raw = await asyncio.to_thread(_llm.call_claude, user_prompt, system_prompt, "claude-sonnet-4-5", 1600)
+        raw = await asyncio.to_thread(_llm.call_claude, user_prompt, system_prompt, "claude-opus-4-8", 1600)
     except Exception as e:
         return {"summary": "", "trends": [], "holdings_note": "", "error": str(e)}
 
@@ -255,7 +255,7 @@ async def sector_why(data: WhyIn):
         + "\n\n请据此按要求输出 JSON。"
     )
     try:
-        raw = await asyncio.to_thread(_llm.call_claude, user_prompt, _WHY_SYS, "claude-sonnet-4-20250514", 500)
+        raw = await asyncio.to_thread(_llm.call_claude, user_prompt, _WHY_SYS, "claude-sonnet-4-6", 500)
     except Exception:
         return {"why": "", "relation": "", "error": "解读暂不可用", "cached": False}
     parsed = None
