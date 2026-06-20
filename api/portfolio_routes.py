@@ -343,12 +343,45 @@ async def trade_journal(limit: int = 80):
             trades.append({
                 "date": (a.get("trade_date") or "")[:10], "code": code, "name": name,
                 "kind": kind, "price": round(price, 3), "shares": float(a.get("shares") or 0),
-                "current": round(cur, 3), "pct": pct, "hit": hit,
+                "current": round(cur, 3), "pct": pct, "hit": hit, "asset_class": "stock",
+            })
+
+    # ---- 基金/ETF 交易 (external_asset_actions): 场内ETF 当个股看, 场外基金当定投看 ----
+    from database import list_external_assets, list_external_actions
+    from services.external_assets import get_fund_quote, _is_onchain_etf
+    for a in await list_external_assets():
+        if a.get("asset_type") != "FUND":
+            continue
+        fcode = str(a.get("code") or "")
+        fname = a.get("name") or fcode
+        cls = "etf" if _is_onchain_etf(fcode) else "fund"   # 场内ETF / 场外基金
+        try:
+            fq = await get_fund_quote(fcode)
+        except Exception:
+            fq = None
+        fcur = float((fq or {}).get("nav") or (fq or {}).get("est_nav") or 0)
+        for act in await list_external_actions(a["id"]):
+            if (act.get("status") or "confirmed") != "confirmed":
+                continue
+            at = (act.get("action_type") or "").upper()
+            kind = "buy" if at in ("BUY", "ADD") else ("sell" if at == "REDEEM" else None)
+            price = float(act.get("unit_price") or 0)
+            if not kind or price <= 0:
+                continue
+            pct = round((fcur - price) / price * 100, 2) if fcur else None
+            hit = ((fcur > price) if kind == "buy" else (fcur < price)) if fcur else None
+            trades.append({
+                "date": (act.get("trade_date") or "")[:10], "code": fcode, "name": fname,
+                "kind": kind, "price": round(price, 4), "shares": abs(float(act.get("shares") or 0)),
+                "current": round(fcur, 4) if fcur else None, "pct": pct, "hit": hit,
+                "asset_class": cls, "amount": round(float(act.get("amount") or 0), 2),
             })
 
     trades.sort(key=lambda x: x["date"], reverse=True)
-    buys = [t for t in trades if t["kind"] == "buy"]
-    sells = [t for t in trades if t["kind"] == "sell"]
+    # 命中率统计保持 A 股口径 (基金定投不适用"买在低位"这套), 只统计个股
+    stock_trades = [t for t in trades if t.get("asset_class") == "stock"]
+    buys = [t for t in stock_trades if t["kind"] == "buy"]
+    sells = [t for t in stock_trades if t["kind"] == "sell"]
     return {
         "trades": trades[:limit],
         "buy_count": len(buys),
@@ -428,16 +461,26 @@ async def trade_review_ai(period: str = "all", force: int = 0):
             return result
         nb = sum(1 for t in ptrades if t["kind"] == "buy")
         ns = sum(1 for t in ptrades if t["kind"] == "sell")
+        _cls_tag = {"stock": "个股", "etf": "场内ETF", "fund": "场外基金"}
         lines = [f"{label} 共 {len(ptrades)} 笔: {nb} 买 {ns} 卖", ""]
         for t in ptrades:
             kd = "买" if t["kind"] == "buy" else "卖"
-            lines.append(f"  {t['date']} {kd} {t['name']} @{t['price']}×{int(t['shares'])} (现价{t['current']}, 至今{t['pct']:+.1f}%)")
+            tag = _cls_tag.get(t.get("asset_class", "stock"), "个股")
+            sh = t.get("shares") or 0
+            sh_s = f"{sh:.0f}" if sh == int(sh) else f"{sh:.2f}"
+            tail = (f" (现价{t['current']}, 至今{t['pct']:+.1f}%)"
+                    if t.get("current") and t.get("pct") is not None else "")
+            amt = f" 约¥{t['amount']:.0f}" if t.get("amount") else ""
+            lines.append(f"  [{tag}] {t['date']} {kd} {t['name']} @{t['price']}×{sh_s}{amt}{tail}")
         data_block = "\n".join(lines)
         system_prompt = (
             f"你是交易复盘教练。这是用户【{label}】这个时间窗内实际发生的买卖动作, 复盘他这一段的交易节奏和纪律。\n"
-            "重点看: 这期间有没有追高(越买越高)、有没有同一只票反复买卖(频繁做T)、买卖节奏是否情绪化、"
-            "有没有追涨杀跌。'至今X%'是该笔对现价的表现(参考, 别据此判他追高对错——他可能还持有/趋势未走完)。\n"
-            "客观、像老友点评这一段操作; 该夸的夸(节奏克制/卖点干脆)该点的点(追高/频繁)。\n"
+            "每笔前面标了资产类型, 不同类型用不同标准评, 别一套尺子量到底:\n"
+            "  · [个股]/[场内ETF]: 可做T, 看有没有追高(越买越高)、同一标的反复买卖(频繁做T)、追涨杀跌、情绪化。\n"
+            "  · [场外基金]: T+1 净值成交, 不能做T。小额规律买入是【定投】=策略, 不是追高/情绪化, 别拿做T那套骂它; "
+            "    它该看的是: 定投有没有乱中断、是否在高位还大额追加、有没有恐慌赎回/追涨赎回。净值滞后, 别用单日表现判对错。\n"
+            "'至今X%'是该笔对现价的表现(参考, 别据此判追高对错——可能还持有/趋势未走完; 基金更别看这个下结论)。\n"
+            "客观、像老友点评; 该夸的夸(节奏克制/卖点干脆/定投坚持)该点的点(追高/频繁/恐慌操作)。\n"
             "可用进阶交易原则(不点名出处): 买前估空间、卖点纪律、克制贪念、别接最后一棒。\n"
             "【硬规则】严禁任何未来操作指令(该买/该卖/加减仓/止损位/目标价/现在适合), 只复盘已发生, 不编造数字。\n"
             "JSON 输出: {\"summary\":\"一句话点评这段\", \"good\":[\"做对的(用数据)\"], "
@@ -612,7 +655,45 @@ async def trade_review_ai(period: str = "all", force: int = 0):
         lines.append("  " + "; ".join(
             f"{sec} {round(v/held_total*100)}%({'/'.join(sector_names[sec])})" for sec, v in top))
 
+    # ---- 基金/ETF 交易聚合 (场外基金按定投评, 场内ETF按个股评; 不逐笔列 225 条定投) ----
+    fund_trades = [t for t in journal["trades"] if t.get("asset_class") in ("fund", "etf")]
+    fund_lines = []
+    if fund_trades:
+        grouped: dict = {}
+        for t in fund_trades:
+            grouped.setdefault((t["name"], t["asset_class"]), []).append(t)
+        for (nm, cls), ts in sorted(grouped.items()):
+            bs = [t for t in ts if t["kind"] == "buy"]
+            ss = [t for t in ts if t["kind"] == "sell"]
+            invested = sum((t.get("amount") or t["price"] * t["shares"]) for t in bs)
+            redeemed = sum((t.get("amount") or t["price"] * t["shares"]) for t in ss)
+            sh_buy = sum(t["shares"] for t in bs)
+            avg_cost = (sum(t["price"] * t["shares"] for t in bs) / sh_buy) if sh_buy else 0
+            cur = next((t["current"] for t in ts if t.get("current")), None)
+            dts = sorted(t["date"] for t in ts if t["date"])
+            small = sum(1 for t in bs if (t.get("amount") or 0) and t["amount"] <= 200)
+            dca = " [多笔小额=定投]" if small >= 3 else ""
+            label = "场内ETF" if cls == "etf" else "场外基金"
+            ln = f"  [{label}] {nm}: {len(bs)}买{len(ss)}赎, 投入约¥{invested:.0f}"
+            if redeemed:
+                ln += f", 赎回约¥{redeemed:.0f}"
+            if avg_cost and cur:
+                ln += f", 均成本{avg_cost:.3f}→现价{cur:.3f}({(cur/avg_cost-1)*100:+.1f}%)"
+            if dts:
+                ln += f", {dts[0]}起"
+            fund_lines.append(ln + dca)
+    if fund_lines:
+        lines += ["", "【基金/ETF 交易】(下面这些不是个股, 按各自逻辑评):"] + fund_lines
+
     data_block = "\n".join(lines)
+    _fund_rule = (
+        "\n【基金/ETF 评判另一套尺子】数据末尾的'基金/ETF 交易'不是个股, 严禁套用上面个股的追高/做T/越跌加码那套:\n"
+        "  · [场外基金]: T+1 净值成交, 根本不能做T。'多笔小额=定投'是纪律性策略, 越跌越买/逢高也买都是定投正常机制, 不是情绪化追高; "
+        "    要评就评: 定投有没有乱中断、有没有在明显高位还大额一次性追加、有没有恐慌割在地板/追涨赎回。\n"
+        "  · [场内ETF]: 可做T, 跟个股一个标准(追高/频繁做T 可点)。\n"
+        "  对基金的肯定也要给(坚持定投/分批摊低成本/止盈干脆); 没有基金交易就忽略这段。\n"
+        if fund_lines else ""
+    )
     system_prompt = (
         "你是交易复盘教练。基于用户真实的 A 股交易流水, 复盘他的交易纪律, 像一面镜子照清楚他的习惯——"
         "该夸的夸、该点的点, 要平衡客观, 不是单纯挑刺骂人。\n"
@@ -639,6 +720,7 @@ async def trade_review_ai(period: str = "all", force: int = 0):
         "\"discipline\":[{\"problem\":\"真实存在的问题\",\"evidence\":\"具体数据举证\",\"why\":\"暴露了什么习惯\"}], "
         "\"binchuan\":[{\"principle\":\"对照的交易原则(如:卖点纪律>买点)\",\"verdict\":\"契合\"或\"违背\",\"detail\":\"用他的真实数据对照\"}], "
         "\"narrative\":\"2-3段复盘正文, 先肯定再点问题\"}。只输出 JSON。"
+        + _fund_rule
     )
     user_prompt = f"以下是我的真实交易数据(已分'仍持有'和'已清仓'), 平衡复盘我的交易纪律, 别把我已经割掉的票当成还在死扛:\n\n{data_block}"
 
