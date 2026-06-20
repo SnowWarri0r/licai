@@ -261,6 +261,8 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_hot_concepts", "description": "今日热门概念板块榜(概念粒度, 比行业更细, 如 CPO/HBM/先进封装/玻璃基板/固态电池等): 涨幅+主力净流入。回答'量化/资金这几天在冲哪个具体概念、概念怎么切'时用它。",
      "input_schema": {"type": "object", "properties": {"top": {"type": "integer", "description": "默认15"}}}},
+    # Anthropic 服务端联网搜索: 碰到本地工具查不到/可能过期的事实(海外公司是否上市/IPO/代码/政策/最新消息)用它核实, 不要凭记忆嘴硬。
+    {"type": "web_search_20250305", "name": "web_search", "max_uses": 4},
 ]
 
 _EXECUTORS = {
@@ -298,11 +300,10 @@ _SYSTEM = (
     "【硬规则】只做客观解读与市场逻辑分析(市场在奖励什么/为什么动/什么消息), 严禁任何面向用户的操作建议: "
     "不许出现 你该买/该卖/该用XX策略去操作/加仓/减仓/能不能追/还能不能拿/目标价/止损/现在适合。"
     "描述'市场在奖励动量'可以, 但不许说'所以你该追涨'。料不足就直说不确定, 绝不编造新闻或数字。\n"
-    "【知识边界·别嘴硬】你的工具只覆盖 A 股行情/走势/新闻 + 港美股报价 + A股板块/概念/情绪。"
-    "对工具查不到、只能靠你训练记忆的事实——尤其海外公司是否上市/最新IPO/重组并购/政策/某公司基本面细节——"
-    "你的知识有截止日、可能已过期, 不许凭记忆下肯定结论。先试着用工具验证(如 resolve_stock/get_quote 看能不能查到该标的); "
-    "查不到或不确定就明确说'这超出我的数据范围/我的信息可能已过期, 无法确认', 让用户自行核实, 绝不自信地断言一个你没法验证的事实。"
-    "宁可说不知道, 不要编一个确定的答案。\n"
+    "【知识边界·先搜再答, 别嘴硬】你的训练知识有截止日、可能已过期(尤其海外公司是否上市/最新IPO/重组/政策/某公司近况)。"
+    "碰到本地工具(行情/板块/概念)查不到、或时效性强、或你不确定的事实, 不许凭记忆下肯定结论——先用 web_search 联网核实; "
+    "搜到结果就以搜到的为准(并可在文中标明来源/日期), 若搜到该标的有代码就再用 get_quote 查实时行情。"
+    "只有 web_search 也查不到时, 才说'查不到/无法确认, 建议你自行核实'。宁可去搜或说不知道, 绝不编一个确定的答案。\n"
     "回答用简体中文, 简洁直给, 分点列证据(数字), 该下的客观结论就下——但只对工具数据支撑的结论自信。"
 )
 
@@ -311,7 +312,7 @@ _TOOL_CN = {
     "resolve_stock": "解析代码", "get_quote": "查行情", "get_trend": "查走势",
     "get_news": "查新闻", "get_holdings": "看持仓", "get_market_sentiment": "看大盘情绪",
     "get_sector_momentum": "看板块动量", "get_hot_rank": "看资金热度",
-    "get_hot_concepts": "看热门概念",
+    "get_hot_concepts": "看热门概念", "web_search": "联网搜索",
 }
 
 
@@ -332,6 +333,11 @@ async def ask_stock_stream(question: str):
             return
         content = resp.get("content", [])
         messages.append({"role": "assistant", "content": content})
+        # 服务端联网搜索(web_search)已由 API 执行完, 这里只把"联网搜索"作为步骤推给前端
+        for b in content:
+            if b.get("type") == "server_tool_use" and b.get("name") == "web_search":
+                yield {"type": "step", "tool": "web_search", "label": "联网搜索",
+                       "arg": (b.get("input") or {}).get("query", "")}
         tus = [b for b in content if b.get("type") == "tool_use"]
         if not tus:
             text = "".join(b.get("text", "") for b in content if b.get("type") == "text")
