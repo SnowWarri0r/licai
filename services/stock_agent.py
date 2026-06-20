@@ -6,6 +6,7 @@ LLM 自己决定调哪些工具(查行情/走势/新闻/持仓/大盘情绪)拿�
 from __future__ import annotations
 import asyncio
 import json as _json
+import re as _re
 import time as _time
 
 import services.llm_client as _llm
@@ -50,6 +51,13 @@ async def _code_name_maps():
 # 工具执行器 (都返回可 JSON 序列化的 dict/list)
 # ---------------------------------------------------------------------------
 
+def _norm_code(code: str) -> str:
+    """LLM 常给 A 股带 sh/sz 前缀(如 sh600171), 但行情接口要裸 6 位代码; 这里剥掉前缀。
+    HK./US. 这类保持原样。"""
+    c = (code or "").strip()
+    m = _re.match(r"^(?:sh|sz|SH|SZ)(\d{6})$", c)
+    return m.group(1) if m else c
+
 async def _tool_resolve_stock(query: str) -> dict:
     """名字或代码 → 标准代码 + 名称。先查持仓, 再查 A 股全表。"""
     from database import get_all_holdings
@@ -79,7 +87,7 @@ async def _tool_resolve_stock(query: str) -> dict:
 
 async def _tool_get_quote(code: str) -> dict:
     from services.market_data import get_realtime_quotes, normalize_stock_code, get_stock_name
-    code = normalize_stock_code(code)
+    code = normalize_stock_code(_norm_code(code))
     q = (await get_realtime_quotes([code])).get(code)
     if not q:
         return {"error": f"{code} 无行情"}
@@ -100,7 +108,7 @@ async def _tool_get_quote(code: str) -> dict:
 async def _tool_get_trend(code: str, days: int = 20) -> dict:
     """近 N 日走势: 每日涨跌幅 + 累计。仅 A 股(走新浪历史)。"""
     from services.market_data import get_historical_data, normalize_stock_code, is_a_share
-    code = normalize_stock_code(code)
+    code = normalize_stock_code(_norm_code(code))
     if not is_a_share(code):
         return {"error": "走势仅支持 A 股"}
     days = max(5, min(int(days or 20), 60))
@@ -125,7 +133,7 @@ async def _tool_get_news(code: str) -> dict:
     """个股最近新闻 (akshare 东财, A 股)。"""
     from api.news_routes import _fetch_stock_news_em_sync
     from services.market_data import normalize_stock_code
-    raw = normalize_stock_code(code)
+    raw = normalize_stock_code(_norm_code(code))
     bare = raw.split(".")[-1] if "." in raw else raw
     items = await asyncio.to_thread(_fetch_stock_news_em_sync, bare)
     if not items:
@@ -159,7 +167,7 @@ async def _tool_market_sentiment() -> dict:
 _TOOLS = [
     {"name": "resolve_stock", "description": "把股票名字或代码解析成标准代码+名称。用户报名字(如'锡业股份')时先调它拿代码。",
      "input_schema": {"type": "object", "properties": {"query": {"type": "string", "description": "股票名字或代码"}}, "required": ["query"]}},
-    {"name": "get_quote", "description": "查个股实时行情: 现价/当日涨跌幅/开高低/成交额/换手。code 是标准代码(如 sh600519 / 000960 / HK.00700 / US.AAPL)。",
+    {"name": "get_quote", "description": "查个股实时行情: 现价/当日涨跌幅/开高低/成交额/换手。code 直接用 resolve_stock 返回的 code 原样传(A股是裸6位如 600171 / 000960; 港美股 HK.00700 / US.AAPL), 不要自己加 sh/sz 前缀。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_trend", "description": "查个股近 N 个交易日走势: 累计涨跌/逐日涨跌/上涨天数。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}, "days": {"type": "integer", "description": "默认20"}}, "required": ["code"]}},
