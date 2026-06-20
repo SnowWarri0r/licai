@@ -83,7 +83,8 @@ async def sector_trend_ai(days: int = 10, force: bool = False):
         except Exception:
             pass
 
-    lines = [f"过去 {m.get('days')} 个交易日板块矩阵({'/'.join(m.get('dates', []))}):"]
+    _intraday_note = f"(末列 {m.get('today')} 为今日实时盘中涨跌, 未收盘)" if m.get("intraday") else ""
+    lines = [f"过去 {m.get('days')} 个交易日板块矩阵({'/'.join(m.get('dates', []))}){_intraday_note}:"]
     for r in rows:
         lines.append(
             f"{r['name']}: 今日{r['today_pct']:+.1f}% 近{r['n_days']}日累计{r['cum_pct']:+.1f}% "
@@ -94,6 +95,7 @@ async def sector_trend_ai(days: int = 10, force: bool = False):
 
     system_prompt = (
         "你是板块趋势分析师。基于给定的'板块×近N交易日涨跌幅矩阵'+净流入+连涨动能, 客观分析板块趋势。\n"
+        "若末列标注为今日实时盘中, 要重点描述今日盘中的板块走向/资金切换(并说明尚未收盘)。\n"
         "要点: 哪些板块在走强(持续放量上行/资金流入/连涨), 哪些在退潮(冲高回落/资金流出/转弱), "
         "有没有板块轮动迹象(强弱切换/资金从A板块流向B板块), 资金主线在哪。结合'我持仓所在板块'点出它当前在矩阵里的强弱位置。\n"
         "每条结论都要引用矩阵里的具体数字(板块名/累计涨幅/净流入/连涨/日序)。\n"

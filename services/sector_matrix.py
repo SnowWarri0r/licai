@@ -57,9 +57,21 @@ def _fetch_matrix_sync(days: int) -> dict | None:
         if n in today and n not in seen:
             seen.add(n); universe.append(n)
 
-    end = (datetime.now(timezone.utc) + timedelta(hours=8)).date()
+    cst = datetime.now(timezone.utc) + timedelta(hours=8)
+    end = cst.date()
     start = end - timedelta(days=days + 20)
     sd, ed = start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
+
+    # THS 日线指数滞后约一天(盘中/收盘后都拿不到今日 bar), 但实时榜 today_pct 是当下的。
+    # 今天是交易日且已开盘(>=9:30)时, 用实时涨跌幅补出"今日"这一格, 让累计/连涨/AI 都能看到今日走向。
+    today_str = end.strftime("%m-%d")
+    try:
+        from services.market_data import _is_a_share_trading_day
+        _trading_today = _is_a_share_trading_day(end)
+    except Exception:
+        _trading_today = end.weekday() < 5
+    _opened = (cst.hour * 60 + cst.minute) >= 570  # 9:30
+    add_today = _trading_today and _opened
 
     def _board_series(name: str):
         try:
@@ -81,6 +93,10 @@ def _fetch_matrix_sync(days: int) -> dict | None:
         daily = _board_series(name)
         if not daily:
             continue
+        t = today.get(name, {})
+        # 补今日实时格(若日线还没今日 bar)
+        if add_today and daily[-1]["date"] != today_str and "today_pct" in t:
+            daily = (daily + [{"date": today_str, "pct": round(float(t["today_pct"]), 2)}])[-days:]
         pcts = [d["pct"] for d in daily]
         cum = round((eval_prod(pcts) - 1) * 100, 1)  # N日累计
         # 动能: 末尾连涨天数(>0)
@@ -91,7 +107,6 @@ def _fetch_matrix_sync(days: int) -> dict | None:
             else:
                 break
         up_days = sum(1 for p in pcts if p > 0)
-        t = today.get(name, {})
         rows.append({
             "name": name,
             "daily": daily,
@@ -110,6 +125,8 @@ def _fetch_matrix_sync(days: int) -> dict | None:
         "days": days,
         "dates": [d["date"] for d in dates],
         "rows": rows,
+        "intraday": bool(add_today),       # 末列是否为今日实时格
+        "today": today_str if add_today else "",
         "generated_at": time.time(),
     }
 
@@ -123,14 +140,19 @@ def eval_prod(pcts):
 
 async def sector_matrix_prewarm_loop():
     """后台预热板块矩阵(逐板块拉K线慢, ~20-40s), 让用户打开板块tab即秒开。
-    启动后稍等再首跑, 之后每小时刷新一次(缓存 2h, 始终保鲜)。"""
+    启动后稍等再首跑; 盘中每 15min 刷新一次(让"今日"实时格保鲜), 非盘中每小时一次。"""
     await asyncio.sleep(20)
     while True:
         try:
             await get_sector_matrix(days=10, force=True)
         except Exception:
             pass
-        await asyncio.sleep(3600)
+        try:
+            from services.market_data import is_trading_day_active
+            interval = 900 if is_trading_day_active() else 3600
+        except Exception:
+            interval = 3600
+        await asyncio.sleep(interval)
 
 
 async def get_sector_matrix(days: int = 10, force: bool = False) -> dict:
