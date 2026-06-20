@@ -63,32 +63,39 @@ export default function SectorMatrix() {
         </div>
       )}
 
-      {/* 热力矩阵 */}
+      {/* 热力矩阵 — 铺满整宽, 日格等分剩余空间 */}
       <div className="overflow-x-auto -mx-1 px-1">
-        <table className="border-collapse text-[10px]" style={{ minWidth: 560 }}>
+        <table className="w-full border-collapse text-[11.5px]" style={{ tableLayout: 'fixed' }}>
+          <colgroup>
+            <col style={{ width: 104 }} />
+            <col style={{ width: 56 }} />
+            <col style={{ width: 56 }} />
+            <col style={{ width: 64 }} />
+            {(m.dates || []).map((_, i) => <col key={i} />)}
+          </colgroup>
           <thead>
-            <tr className="text-text-muted">
-              <th className="text-left font-normal sticky left-0 bg-surface-2 pr-2 z-10">板块</th>
-              <th className="font-normal px-1 text-right">今日</th>
-              <th className="font-normal px-1 text-right">累计</th>
-              <th className="font-normal px-1 text-right">净流入</th>
+            <tr className="text-text-muted text-[10.5px]">
+              <th className="text-left font-normal sticky left-0 bg-surface-2 pr-2 z-10 pb-1">板块</th>
+              <th className="font-normal px-1 text-right pb-1">今日</th>
+              <th className="font-normal px-1 text-right pb-1">累计</th>
+              <th className="font-normal px-1 text-right pb-1">净流入</th>
               {(m.dates || []).map((d, i) => (
-                <th key={i} className="font-normal px-0.5 text-center" style={{ minWidth: 30 }}>{d}</th>
+                <th key={i} className="font-normal text-center pb-1">{d}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {m.rows.map((r, ri) => (
-              <tr key={ri}>
-                <td className="text-text-bright whitespace-nowrap sticky left-0 bg-surface-2 pr-2 z-10 py-0.5">
-                  {r.name}{r.streak >= 2 && <span className="text-bear-bright ml-1">↑{r.streak}</span>}
+              <tr key={ri} className="border-t border-border-subtle/30">
+                <td className="text-text-bright whitespace-nowrap truncate sticky left-0 bg-surface-2 pr-2 z-10 py-1.5">
+                  {r.name}{r.streak >= 2 && <span className="text-bear-bright ml-1 text-[10px]">↑{r.streak}</span>}
                 </td>
                 <td className={`px-1 text-right font-mono ${pctColor(r.today_pct)}`}>{r.today_pct >= 0 ? '+' : ''}{r.today_pct}</td>
                 <td className={`px-1 text-right font-mono font-semibold ${pctColor(r.cum_pct)}`}>{r.cum_pct >= 0 ? '+' : ''}{r.cum_pct}</td>
                 <td className={`px-1 text-right font-mono ${pctColor(r.net_inflow)}`}>{r.net_inflow >= 0 ? '+' : ''}{r.net_inflow}亿</td>
                 {(r.daily || []).map((c, ci) => (
-                  <td key={ci} className="text-center font-mono" title={`${c.date} ${c.pct >= 0 ? '+' : ''}${c.pct}%`}
-                    style={{ background: cellBg(c.pct), color: Math.abs(c.pct) > 2 ? '#fff' : 'var(--color-text-dim)' }}>
+                  <td key={ci} className="text-center font-mono px-1 py-1.5 rounded-sm" title={`${c.date} ${c.pct >= 0 ? '+' : ''}${c.pct}%`}
+                    style={{ background: cellBg(c.pct), color: Math.abs(c.pct) > 1.5 ? '#fff' : 'var(--color-text-dim)' }}>
                     {c.pct >= 0 ? '+' : ''}{c.pct.toFixed(1)}
                   </td>
                 ))}
