@@ -442,30 +442,70 @@ _HOT_TTL = 300
 
 
 def _fetch_hot_sync():
+    """东财人气榜。两步: ① emappdata 拿排名 secids ② push2 拿行情。
+    akshare 单发命中死分片 push2.eastmoney 时通时断 → 直接实现, push2 这步 host 轮换+重试。"""
     import os
+    import requests as _rq
+    import time as _t
     for k in list(os.environ):
         if "proxy" in k.lower():
             os.environ.pop(k, None)
-    import akshare as ak
-    try:
-        h = ak.stock_hot_rank_em()
-    except Exception:
+    # ① 排名列表 (emappdata)
+    rank_rows = None
+    for _ in range(4):
+        try:
+            r = _rq.post("https://emappdata.eastmoney.com/stockrank/getAllCurrentList",
+                         json={"appId": "appId01", "globalId": "786e4c21-70dc-435a-93bb-38",
+                               "marketType": "", "pageNo": 1, "pageSize": 100}, timeout=8)
+            d = r.json().get("data")
+            if d:
+                rank_rows = d
+                break
+        except Exception:
+            _t.sleep(0.3)
+    if not rank_rows:
         return None
-    if h is None or not len(h):
+    rank_by_sec = {}
+    secids = []
+    for it in rank_rows:
+        sc = str(it.get("sc") or "")           # SZ000001 / SH600378
+        if not sc:
+            continue
+        mark = ("0." if "SZ" in sc else "1.") + sc[2:]
+        secids.append(mark)
+        rank_by_sec[sc] = it.get("rk")
+    # ② 行情 (push2 系, host 轮换 + 重试)
+    hosts = ["push2delay.eastmoney.com", "push2.eastmoney.com",
+             "1.push2.eastmoney.com", "50.push2.eastmoney.com"]
+    params = {"ut": "f057cbcbce2a86e2866ab8877db1d059", "fltt": "2", "invt": "2",
+              "fields": "f14,f3,f12,f2,f13", "secids": ",".join(secids)}
+    diff = None
+    for i in range(10):
+        try:
+            r = _rq.get(f"https://{hosts[i % len(hosts)]}/api/qt/ulist.np/get",
+                        params=params, timeout=7)
+            diff = (r.json().get("data") or {}).get("diff")
+            if diff:
+                break
+        except Exception:
+            _t.sleep(0.3)
+    if not diff:
         return None
     rows = []
-    for _, r in h.iterrows():
-        raw = str(r.get("代码") or "")          # SH600378
-        code = raw[2:] if raw[:2].upper() in ("SH", "SZ", "BJ") else raw
+    for q in diff:
+        raw = str(q.get("f12") or "")
+        mkt = "SZ" if str(q.get("f13")) == "0" else "SH"
+        sc = f"{mkt}{raw}"
         try:
-            pct = float(r.get("涨跌幅"))
+            pct = float(q.get("f3"))
         except Exception:
             pct = None
         rows.append({
-            "rank": int(r.get("当前排名") or 0), "code": code,
-            "name": str(r.get("股票名称") or ""), "price": r.get("最新价"),
+            "rank": rank_by_sec.get(sc) or rank_by_sec.get(f"SH{raw}") or rank_by_sec.get(f"SZ{raw}") or 0,
+            "code": raw, "name": str(q.get("f14") or ""), "price": q.get("f2"),
             "pct": round(pct, 2) if pct is not None else None,
         })
+    rows.sort(key=lambda x: x["rank"] or 999)
     return rows
 
 
