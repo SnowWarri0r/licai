@@ -28,7 +28,7 @@ export default function StockAsk() {
   const [holdings, setHoldings] = useState([])
   const esRef = useRef(null)
   const typer = useRef(null)
-  const bottomRef = useRef(null)
+  const scrollBox = useRef(null)
 
   useEffect(() => {
     fetchJSON('/api/portfolio').then(d => {
@@ -39,7 +39,13 @@ export default function StockAsk() {
   }, [])
 
   const patchLast = (fn) => setHistory(h => h.map((it, i) => i === h.length - 1 ? fn(it) : it))
-  const scrollDown = () => setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 30)
+  // 只在面板内部滚动容器里滚, 不动整个页面; 且仅当用户已贴近底部时才跟随(没在往上翻看就不抢)
+  const scrollDown = () => setTimeout(() => {
+    const el = scrollBox.current
+    if (!el) return
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60
+    if (nearBottom) el.scrollTop = el.scrollHeight
+  }, 30)
 
   const typewriter = (full) => {
     clearInterval(typer.current)
@@ -89,7 +95,7 @@ export default function StockAsk() {
         </div>
       )}
 
-      <div className="space-y-3 mb-3">
+      <div ref={scrollBox} className={`space-y-3 mb-3 ${history.length ? 'max-h-[58vh] overflow-y-auto pr-1' : ''}`}>
         {history.map((it, i) => (
           <div key={i}>
             <div className="text-[12px] text-text-bright bg-surface-3 rounded-lg px-3 py-1.5 inline-block">{it.q}</div>
@@ -118,7 +124,6 @@ export default function StockAsk() {
             </div>
           </div>
         ))}
-        <div ref={bottomRef} />
       </div>
 
       <div className="flex gap-2">
