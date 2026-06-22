@@ -16,6 +16,19 @@
 
 我自己的需求很简单：**把所有理财头寸装进一个屏幕，看清楚自己的钱在哪、配比合不合理、今天该不该动**。
 
+## 🔍 问问市场 · 市场 AI 问答（独立页）
+
+一个挂了 **19 个数据工具**的问答 agent，自由问个股涨跌 / 市场风格 / 资金主线，它自己决定调哪些工具取数据，再客观解读——**只给客观信息，不给任何买卖建议**。流式打字机展示每一步在调什么工具，支持多轮追问（"它明天呢"会顺着上文标的继续）。
+
+工具覆盖四个维度：
+
+- **资金面** — 主力资金流（超大/大/中/小单净额 + 近几日趋势）、龙虎榜（游资/机构席位）、同行横向对比（PE/PB/涨幅/资金流对照表）、筹码面（十大流通股东 + 北向增减 + 解禁抛压）、打板情绪、板块动量、热门概念榜、资金人气榜
+- **基本面** — 营收/净利及同比、ROE/毛利率/净利率、资产负债率、PE/PB/总市值/行业，**A股 + 港股 + 美股**
+- **消息面** — 个股新闻（A/港/美）、结构化公告（分红/回购/增减持/业绩/重组）、政策面快讯（货币财政/监管/产业调控/地缘）
+- **行情** — 实时报价 + 走势（A/港/美），外加 Anthropic 联网搜索兜底（查不到/可能过期的事实先搜再答，不嘴硬）
+
+内置"一线打板资金"分析框架（板块为维度、低位看逻辑高位看资金、概念轮动节奏），但**严格不输出操作建议**——描述"市场在奖励动量"可以，绝不说"所以你该追"。
+
 ## 核心能力
 
 ### 1. 全资产看板（UnifiedPortfolio）
@@ -98,7 +111,7 @@ A股 / 港股 / 美股个股实时报价全部走 Sina 免费接口，无需 API
 
 ## 技术栈
 
-**后端**：FastAPI + SQLite + akshare + Sina API + 东方财富 API + 同花顺 API + Claude API（OAuth）
+**后端**：FastAPI + SQLite + akshare + Sina API + 东方财富 API + 同花顺 API + Claude API（OAuth，含 tool-calling agent + SSE 流式）
 
 **前端**：React + Vite + Tailwind CSS + PWA（可装到桌面）
 
@@ -112,7 +125,8 @@ A股 / 港股 / 美股个股实时报价全部走 Sina 免费接口，无需 API
 - 商品期货 / 海外指数：Sina nf_ / hf_
 - 行业板块：同花顺（akshare 内置）
 - 加密：OKX 公开 ticker
-- LLM：Claude API（OAuth via Claude Code 或 ANTHROPIC_API_KEY）
+- 问问市场 agent：东财 个股资金流(fflow/kline) / 龙虎榜 / F10 所属概念 / 财务摘要 / 港美股财务(em) / 板块成分 / 个股公告(np-anotice)
+- LLM：Claude API（OAuth via Claude Code 或 ANTHROPIC_API_KEY），个股问答 agent 走 tool-calling + 服务端联网搜索
 
 ## 快速启动
 
@@ -176,9 +190,11 @@ licai/
 │   ├── briefing_routes   # 早盘简报
 │   ├── sector_routes     # 板块雷达
 │   ├── settings_routes   # 飞书 / 风控配置
-│   ├── market_routes     # 市场指数 / 节假日
+│   ├── market_routes     # 市场指数 / 情绪 / 人气榜
+│   ├── ask_routes        # 问问市场 agent 端点（SSE 流式 + 多轮）
 │   └── ws.py             # WebSocket + 后台任务
 ├── services/
+│   ├── stock_agent       # 问问市场 agent（19 个工具 + tool-calling loop）
 │   ├── market_data       # 行情接口 (Sina/EM)
 │   ├── external_assets   # 基金 + 加密 + 期货 + 港美股 quote
 │   ├── fund_proxy        # 基金代理标的（top10 持仓加权）
