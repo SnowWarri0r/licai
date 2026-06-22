@@ -223,7 +223,12 @@ async def _enrich(asset: dict) -> dict:
         implied_rate = None
         source = None
 
-        if manual is not None:
+        if principal <= 0:
+            # 本金已全部赎回(ledger 净取出 ≥ 存入), 仓位已清; 利息已记进 realized_pnl。
+            # 不能再用残留的 manual_value 当市值, 否则已赎回本金会被当成纯利润。
+            current_value = 0.0
+            source = "closed"
+        elif manual is not None:
             # manual_value 语义: App 上显示的"当前账户余额"(剩余本金 + 当下浮动利息).
             # 卖出/赎回不修改它的语义, 因为 WITHDRAW 已经把本金部分从 lot 扣掉了.
             # 用户每次去 App 看完都直接同步这个数即可.
