@@ -58,19 +58,51 @@ def _norm_code(code: str) -> str:
     m = _re.match(r"^(?:sh|sz|SH|SZ)(\d{6})$", c)
     return m.group(1) if m else c
 
+async def _active_holdings() -> list[dict]:
+    """真实在持的持仓: 按 ledger(综合成本法)现算 shares, 只留 shares>0。
+    holdings 表的 shares 列对已清仓的票可能是陈旧非0值, 不能直接信; 这里跟 /api/portfolio 口径一致。"""
+    from database import get_all_holdings, get_position_actions
+    from services.position_ledger import compute_position_state
+    from api.portfolio_routes import _broker_stock_fee
+    out = []
+    for h in await get_all_holdings():
+        code = h.get("stock_code")
+        shares = float(h.get("shares") or 0)
+        try:
+            acts = await get_position_actions(code, limit=500)
+            if acts:
+                rate, mn = await _broker_stock_fee(h.get("broker"))
+                st = compute_position_state(acts, stock_code=code, commission_rate=rate, commission_min=mn)
+                shares = float(st.get("shares") or 0)
+        except Exception:
+            pass  # ledger 算不出就退回表里的 shares
+        if shares > 0:
+            out.append({**h, "shares": shares})
+    return out
+
+
 async def _tool_resolve_stock(query: str) -> dict:
-    """名字或代码 → 标准代码 + 名称。先查持仓, 再查 A 股全表。"""
+    """名字或代码 → 标准代码 + 名称。先查在持持仓(已清仓不算在持), 再查持仓表全部, 最后 A 股全表。"""
     from database import get_all_holdings
     q = (query or "").strip()
     if not q:
         return {"error": "空查询"}
-    # 1) 持仓里匹配 (名字/代码 子串)
+    # 1) 在持持仓里匹配 (名字/代码 子串) → in_holdings=True
+    try:
+        for h in await _active_holdings():
+            nm = h.get("stock_name") or ""
+            cd = h.get("stock_code") or ""
+            if q == nm or q == cd or (q in nm) or (q in cd):
+                return {"code": cd, "name": nm, "in_holdings": True}
+    except Exception:
+        pass
+    # 1b) 持仓表里有但已清仓 → 能解析出代码, 但标记 in_holdings=False
     try:
         for h in await get_all_holdings():
             nm = h.get("stock_name") or ""
             cd = h.get("stock_code") or ""
             if q == nm or q == cd or (q in nm) or (q in cd):
-                return {"code": cd, "name": nm, "in_holdings": True}
+                return {"code": cd, "name": nm, "in_holdings": False, "note": "已清仓, 不在当前持仓"}
     except Exception:
         pass
     # 2) A 股全表
@@ -726,11 +758,11 @@ async def _tool_announcements(code: str) -> dict:
 
 
 async def _tool_get_holdings() -> dict:
-    from database import get_all_holdings
     try:
-        hs = await get_all_holdings()
+        hs = await _active_holdings()
         return {"holdings": [{"code": h.get("stock_code"), "name": h.get("stock_name"),
-                              "shares": h.get("shares")} for h in hs if float(h.get("shares") or 0) > 0]}
+                              "shares": h.get("shares")} for h in hs],
+                "note": "仅当前在持(已清仓的票不在此列, 按综合成本法现算 shares>0)。"}
     except Exception as e:
         return {"error": str(e)}
 

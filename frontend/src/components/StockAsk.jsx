@@ -42,7 +42,8 @@ export default function StockAsk({ page = false }) {
   useEffect(() => {
     fetchJSON('/api/portfolio').then(d => {
       const hs = Array.isArray(d) ? d : (d.holdings || d.positions || [])
-      setHoldings(hs.filter(h => (h.stock_name || h.stock_code)).slice(0, 8))
+      // 只留当前在持(shares>0); 已清仓的票不该出现在"我的持仓"快捷入口
+      setHoldings(hs.filter(h => (h.stock_name || h.stock_code) && Number(h.shares) > 0).slice(0, 8))
     }).catch(() => {})
     return () => { abortRef.current?.abort(); clearInterval(typer.current) }
   }, [])
