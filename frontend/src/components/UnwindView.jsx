@@ -14,12 +14,13 @@ import PortfolioNews from './PortfolioNews'
 import DailyReview from './DailyReview'
 import AITradeReview from './AITradeReview'
 import StockAsk from './StockAsk'
+import Jin10Flash from './Jin10Flash'
 
 const TABS = [
   { key: 'ask',      label: '问市',   desc: '个股 / 市场风格 / 资金主线 AI 问答' },
   { key: 'sector',   label: '板块',   desc: '动量 / 资金流 / 早盘速览' },
   { key: 'macro',    label: '宏观',   desc: '指数 / 汇率 / 商品' },
-  { key: 'news',     label: '资讯',   desc: '收盘复盘 / 持仓新闻' },
+  { key: 'news',     label: '资讯',   desc: '金十快讯 / 收盘复盘 / 持仓新闻' },
   { key: 'config',   label: '复盘',   desc: '交易复盘 / 现金流 / 跑赢基准' },
 ]
 const TAB_KEYS = TABS.map(t => t.key)
@@ -57,6 +58,7 @@ export default function UnwindView() {
 
       {tab === 'news' && (
         <div className="space-y-4">
+          <Jin10Flash />
           <DailyReview />
           <PortfolioNews />
         </div>
