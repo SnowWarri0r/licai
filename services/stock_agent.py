@@ -1004,6 +1004,97 @@ async def _tool_hot_concepts(top: int = 15) -> dict:
     return {"top_concepts": out, "note": "按今日涨幅排序; 主力净流入正=资金流入"}
 
 
+_board_list_cache: dict = {}
+
+
+def _fetch_board_code_sync(name: str) -> tuple | None:
+    """板块/概念名 → (BK代码, 标准名, 类型)。直接传 BKxxxx 也认。搜概念(t:3)+行业(t:2)板块列表。"""
+    import requests as _rq
+    import time as _t
+    q = (name or "").strip()
+    if not q:
+        return None
+    if q.upper().startswith("BK") and q[2:].isdigit():
+        return (q.upper(), q.upper(), "板块")
+    cache = _board_list_cache.get("boards")
+    if not cache or _t.time() - cache[1] > 600:
+        hdr = {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
+        hosts = ["push2delay.eastmoney.com", "push2.eastmoney.com"]
+        boards = []
+        # 翻页拉全量(EM 单页截 ~100; 概念 400+/行业 90+ 必须分页, 否则只拿到涨幅靠前的)
+        for fs, kind in (("m:90 t:3", "概念"), ("m:90 t:2", "行业")):
+            for pn in range(1, 8):
+                page = None
+                for h in hosts:
+                    try:
+                        page = (_rq.get(f"https://{h}/api/qt/clist/get", timeout=7, headers=hdr,
+                                        params={"pn": str(pn), "pz": "100", "po": "1", "np": "1", "fltt": "2",
+                                                "invt": "2", "fid": "f3", "fs": fs, "fields": "f12,f14"}).json()
+                                .get("data") or {}).get("diff")
+                        break
+                    except Exception:
+                        _t.sleep(0.3)
+                if not page:
+                    break
+                boards += [(x.get("f14"), x.get("f12"), kind) for x in page if x.get("f12")]
+                if len(page) < 100:
+                    break
+        if boards:
+            _board_list_cache["boards"] = (boards, _t.time())
+            cache = _board_list_cache["boards"]
+    if not cache:
+        return None
+    boards = cache[0]
+    for nm, cd, kind in boards:                       # 精确
+        if nm == q:
+            return (cd, nm, kind)
+    hits = [(nm, cd, kind) for nm, cd, kind in boards if q in (nm or "")]
+    if hits:
+        hits.sort(key=lambda x: len(x[0]))            # 最短名优先(最贴近)
+        return (hits[0][1], hits[0][0], hits[0][2])
+    return None
+
+
+def _fetch_board_stocks_sync(name: str, top: int = 12) -> dict:
+    """某板块/概念成分股按今日涨幅 top: 涨跌幅/现价/换手/主力净流入。"""
+    import requests as _rq
+    import time as _t
+    resolved = _fetch_board_code_sync(name)
+    if not resolved:
+        return {"error": f"找不到板块/概念「{name}」(试试更标准的名字, 或先用 get_hot_concepts 看在榜的概念名)"}
+    bk, std, kind = resolved
+    hdr = {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
+    params = {"pn": "1", "pz": str(max(top, 12)), "po": "1", "np": "1", "fltt": "2", "invt": "2",
+              "fid": "f3", "fs": f"b:{bk}", "fields": "f12,f14,f2,f3,f8,f62"}
+    for i in range(9):
+        host = ["push2delay.eastmoney.com", "push2.eastmoney.com", "1.push2.eastmoney.com"][i % 3]
+        try:
+            diff = (_rq.get(f"https://{host}/api/qt/clist/get", params=params, timeout=7,
+                            headers=hdr).json().get("data") or {}).get("diff")
+            if diff:
+                rows = []
+                for x in diff[:top]:
+                    try:
+                        rows.append({"name": x.get("f14"), "code": x.get("f12"),
+                                     "涨跌幅": x.get("f3"), "现价": x.get("f2"),
+                                     "换手%": x.get("f8"),
+                                     "主力净流入亿": round(float(x.get("f62") or 0) / 1e8, 2)})
+                    except (ValueError, TypeError):
+                        continue
+                if rows:
+                    return {"板块": std, "类型": kind, "code": bk, "top_stocks": rows,
+                            "note": f"「{std}」成分股按今日涨幅排序; 主力净流入正=资金净买入。看龙头/资金集中在哪几只。"}
+        except Exception:
+            _t.sleep(0.3)
+    return {"error": f"「{std}」成分股暂不可达(东财源抖动)"}
+
+
+async def _tool_board_stocks(board: str, top: int = 12) -> dict:
+    """查某个板块/概念里今日涨幅 top-N 的个股(龙头), 带涨跌幅/现价/换手/主力净流入。
+    board 传概念或行业名(如 玻璃基板/CPO/光通信/小金属)或 BK 代码。"""
+    return await asyncio.to_thread(_fetch_board_stocks_sync, board, int(top or 12))
+
+
 async def _tool_hot_rank() -> dict:
     """资金人气榜(东财): 资金/散户关注度最高的个股, 标出哪些在用户持仓里。看资金主线/抱团方向。"""
     try:
@@ -1093,6 +1184,8 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_hot_concepts", "description": "今日热门概念板块榜(概念粒度, 比行业更细, 如 CPO/HBM/先进封装/玻璃基板/固态电池等): 涨幅+主力净流入。回答'量化/资金这几天在冲哪个具体概念、概念怎么切'时用它。",
      "input_schema": {"type": "object", "properties": {"top": {"type": "integer", "description": "默认15"}}}},
+    {"name": "get_board_stocks", "description": "查某个板块/概念里今日涨幅 top-N 的个股(龙头): 涨跌幅/现价/换手/主力净流入。找到主线概念后看里面哪几只领涨、资金集中在谁身上。board 传概念或行业名(如 玻璃基板/CPO/光通信/小金属)或 BK 代码。",
+     "input_schema": {"type": "object", "properties": {"board": {"type": "string"}, "top": {"type": "integer", "description": "默认12"}}, "required": ["board"]}},
     {"name": "get_market_news", "description": "全市场财经快讯(含政策面/国家调控: 货币财政、央行、证监会/部委监管、产业政策、行业调控、出口管制/关税、国常会/政治局等重要会议)。分析市场背景、判断政策驱动/调控影响时必看; policy_news 是政策相关筛选。",
      "input_schema": {"type": "object", "properties": {"limit": {"type": "integer", "description": "默认40"}}}},
     # Anthropic 服务端联网搜索: 碰到本地工具查不到/可能过期的事实(海外公司是否上市/IPO/代码/政策/最新消息)用它核实, 不要凭记忆嘴硬。
@@ -1118,6 +1211,7 @@ _EXECUTORS = {
     "get_sector_momentum": lambda a: _tool_sector_momentum(a.get("days", 10)),
     "get_hot_rank": lambda a: _tool_hot_rank(),
     "get_hot_concepts": lambda a: _tool_hot_concepts(a.get("top", 15)),
+    "get_board_stocks": lambda a: _tool_board_stocks(a.get("board", ""), a.get("top", 12)),
     "get_market_news": lambda a: _tool_market_news(a.get("limit", 40)),
 }
 
@@ -1170,7 +1264,8 @@ _SYSTEM = (
     "  · 量化/游资以【板块/概念】为维度运作, 不是单票。判断市场=判断资金这几天在冲哪个板块概念、节奏多快"
     "(概念可能一两天就切, 如从 A 概念直接换到 B 概念)。要找出资金主线板块 + 有没有概念轮动切换。\n"
     "  · 概念粒度优先用 get_hot_concepts(能拿到 CPO/HBM/先进封装/玻璃基板 这种具体概念名 + 主力净流入), "
-    "它比 get_sector_momentum 的行业级更细, 正是判断'量化在冲哪个概念'的关键; 两个结合看(概念找主攻方向, 行业动量看延续性)。\n"
+    "它比 get_sector_momentum 的行业级更细, 正是判断'量化在冲哪个概念'的关键; 两个结合看(概念找主攻方向, 行业动量看延续性)。"
+    "锁定主线概念后, 用 get_board_stocks(传概念名)钻进去看里面今日涨幅 top 的个股——谁是龙头、资金集中在哪几只, 这是'板块→龙头'落地的关键一步。\n"
     "  · 个股位置分层看'看逻辑 vs 纯资金博弈': 短线打板股 3板以下看逻辑(题材/催化/空间扎不扎实)、3板以上逻辑让位转纯资金接力; "
     "趋势股 涨幅1倍(100%)以内看逻辑、超1倍转纯资金博弈。即低位看逻辑、高位看资金, 点出领涨标的当前在哪一段。\n"
     "  · 据此描述: 资金的板块主线、概念切换的轮动节奏、领涨票在'看逻辑'还是'资金博弈'区。\n"
@@ -1205,7 +1300,7 @@ _TOOL_CN = {
     "get_peers": "同行对比", "get_shareholders": "查股东解禁",
     "get_holdings": "看持仓", "get_trades": "查成交记录", "get_market_sentiment": "看大盘情绪",
     "get_sector_momentum": "看板块动量", "get_hot_rank": "看资金热度",
-    "get_hot_concepts": "看热门概念", "get_market_news": "看政策快讯", "web_search": "联网搜索",
+    "get_hot_concepts": "看热门概念", "get_board_stocks": "查板块龙头", "get_market_news": "看政策快讯", "web_search": "联网搜索",
 }
 
 
