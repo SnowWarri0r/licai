@@ -761,12 +761,22 @@ _ACTION_CN = {"BUY": "买入", "ADD": "加仓", "SELL": "卖出", "REDUCE": "减
               "BONUS": "送转股", "DIVIDEND": "现金分红"}
 
 
-async def _tool_trades(code: str = "") -> dict:
+async def _tool_trades(code: str = "", start: str = "", end: str = "") -> dict:
     """成交记录(含个股/场内ETF/场外基金): 传 code→该标的流水 + (A股)持仓状态(综合成本/已实现盈亏/持有天数);
-    不传→最近全部成交(三类合并)。"""
+    不传→最近全部成交(三类合并)。start/end (YYYY-MM-DD) 按成交日期筛选区间。"""
     from database import get_position_actions, get_all_holdings
     from services.position_ledger import compute_position_state
     from api.portfolio_routes import _broker_stock_fee
+
+    s, e = (start or "").strip()[:10], (end or "").strip()[:10]
+
+    def in_range(d: str) -> bool:
+        d = (d or "")[:10]
+        if s and d < s:
+            return False
+        if e and d > e:
+            return False
+        return True
 
     def fmt(a: dict) -> dict:
         amt = float(a.get("price") or 0) * float(a.get("shares") or 0)
@@ -794,8 +804,10 @@ async def _tool_trades(code: str = "") -> dict:
                                  "price": x.get("unit_price"), "shares": x.get("shares"),
                                  "金额": x.get("amount"), "note": x.get("note") or ""}
                                 for x in await list_external_actions(a["id"])
-                                if (x.get("status") or "confirmed") == "confirmed"]
+                                if (x.get("status") or "confirmed") == "confirmed"
+                                and in_range(x.get("trade_date") or "")]
                         return {"code": ac, "name": an, "asset_class": "基金/ETF", "trades": recs,
+                                "range": {"start": s or None, "end": e or None},
                                 "note": "基金/ETF 申赎流水(外部资产账本); 综合成本/盈亏请用看板。"}
             except Exception:
                 pass
@@ -806,7 +818,8 @@ async def _tool_trades(code: str = "") -> dict:
             if h.get("stock_code") == bare:
                 name = h.get("stock_name") or ""
                 break
-        recs = sorted([fmt(a) for a in acts], key=lambda x: x["date"])
+        recs = sorted([fmt(a) for a in acts if in_range(a.get("trade_date") or str(a.get("created_at") or ""))],
+                      key=lambda x: x["date"])
         summary = {}
         try:
             rate, mn = await _broker_stock_fee(None)
@@ -820,20 +833,22 @@ async def _tool_trades(code: str = "") -> dict:
         except Exception:
             pass
         return {"code": bare, "name": name, "trades": recs, "position": summary,
-                "note": "trades=按日期升序的成交流水(含手续费); position=综合成本法算的当前状态。同日有买有卖=做T。已实现盈亏含已平仓段+分红。"}
+                "range": {"start": s or None, "end": e or None},
+                "note": "trades=区间内成交流水(含手续费,按日期升序); position=按全历史算的当前状态(不受区间影响)。同日有买有卖=做T。已实现盈亏含已平仓段+分红。"}
 
     # 无 code: 最近全部成交 —— 复用 trade_journal 的合并账本(个股 + 场内ETF + 场外基金)
     try:
         from api.portfolio_routes import trade_journal
-        j = await trade_journal(limit=50)
+        # 带区间时多取一些再筛, 避免 limit 在筛选前就截断
+        j = await trade_journal(limit=300 if (s or e) else 50)
         cls_cn = {"stock": "个股", "etf": "场内ETF", "fund": "场外基金"}
         recs = [{"date": t.get("date"), "code": t.get("code"), "name": t.get("name"),
                  "动作": {"buy": "买入", "sell": "卖出"}.get(t.get("kind"), t.get("kind")),
                  "类型": cls_cn.get(t.get("asset_class"), t.get("asset_class")),
                  "price": t.get("price"), "shares": t.get("shares"), "金额": t.get("amount")}
-                for t in (j.get("trades") or [])]
-        return {"recent_trades": recs,
-                "note": "最近成交(时间倒序), 含个股/场内ETF/场外基金三类。看某只票完整流水+综合成本请带 code 再调一次。"}
+                for t in (j.get("trades") or []) if in_range(t.get("date"))]
+        return {"recent_trades": recs[:80], "range": {"start": s or None, "end": e or None},
+                "note": "成交(时间倒序), 含个股/场内ETF/场外基金三类; 已按区间筛选。看某只票完整流水+综合成本请带 code 再调一次。"}
     except Exception:
         acts = await get_position_actions(None, limit=40)
         name_by = {h.get("stock_code"): h.get("stock_name") for h in await get_all_holdings()}
@@ -996,8 +1011,8 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_holdings", "description": "查用户当前持仓列表(代码/名称/股数), 用于回答跟用户持仓的关系。",
      "input_schema": {"type": "object", "properties": {}}},
-    {"name": "get_trades", "description": "查用户成交记录(含个股/场内ETF/场外基金): 传 code→该标的买卖/加减仓/分红或申赎流水(A股另给综合成本/已实现盈亏/持有天数, 同日有买有卖=做T); 不传→最近全部成交(三类合并)。回答'我什么时候买的、成本多少、做过几次T、这票赚没赚、持有多久、最近交易了啥'时用。",
-     "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选; 留空看最近全部成交"}}}},
+    {"name": "get_trades", "description": "查用户成交记录(含个股/场内ETF/场外基金): 传 code→该标的买卖/加减仓/分红或申赎流水(A股另给综合成本/已实现盈亏/持有天数, 同日有买有卖=做T); 不传→最近全部成交(三类合并)。可用 start/end(YYYY-MM-DD)按成交日期筛区间('这周/6月/上个月'自己换算成日期传)。回答'我什么时候买的、成本多少、做过几次T、这票赚没赚、持有多久、最近/某段时间交易了啥'时用。",
+     "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选; 留空看全部"}, "start": {"type": "string", "description": "可选, 起始日 YYYY-MM-DD"}, "end": {"type": "string", "description": "可选, 截止日 YYYY-MM-DD"}}}},
     {"name": "get_market_sentiment", "description": "查大盘打板情绪(涨停数/连板高度/炸板率/赚钱效应/热点板块), 判断是个股原因还是大盘普涨普跌; 也用于判断市场风格(打板赚钱效应高=追涨/动量有效; 炸板率高+亏钱效应=高位分歧/反转)。",
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_sector_momentum", "description": "板块趋势矩阵: 各行业近N日累计涨跌/连涨动能/净流入。看哪些板块在持续走强(动量延续)、哪些冲高回落(退潮), 判断市场是动量风格还是高低切/轮动, 资金主线在哪。days 默认10。",
@@ -1026,7 +1041,7 @@ _EXECUTORS = {
     "get_peers": lambda a: _tool_peers(a.get("code", "")),
     "get_shareholders": lambda a: _tool_shareholders(a.get("code", "")),
     "get_holdings": lambda a: _tool_get_holdings(),
-    "get_trades": lambda a: _tool_trades(a.get("code", "")),
+    "get_trades": lambda a: _tool_trades(a.get("code", ""), a.get("start", ""), a.get("end", "")),
     "get_market_sentiment": lambda a: _tool_market_sentiment(),
     "get_sector_momentum": lambda a: _tool_sector_momentum(a.get("days", 10)),
     "get_hot_rank": lambda a: _tool_hot_rank(),
@@ -1063,7 +1078,8 @@ _SYSTEM = (
     "【同行对比】问'同业里贵不贵、谁是龙头、资金更偏好谁、相对估值'时调 get_peers(同行业 PE/PB/涨幅/主力净流入对照), 配合 get_fundamentals 判断相对位置。\n"
     "【筹码面】问'谁在持股、控股股东/国家队/北向在加减仓、有没有解禁抛压'时调 get_shareholders(十大流通股东增减+北向变动+未来解禁)。\n"
     "【我的成交/持仓盈亏】问'我什么时候买的/成本多少/做过几次T/这票我赚没赚/持有多久/最近交易了啥'时调 get_trades"
-    "(含个股+场内ETF+场外基金; 带 code 看该标的流水, A股另给综合成本+已实现盈亏; 不带看最近全部成交), 把分析跟用户自己的成交结合(如'你均价X、现价Y')。\n"
+    "(含个股+场内ETF+场外基金; 带 code 看该标的流水, A股另给综合成本+已实现盈亏; 不带看最近全部成交; "
+    "问'这周/本月/6月/上个月/最近三天'这类时间范围时, 用下方给的今天日期换算成 start/end(YYYY-MM-DD)传入筛选), 把分析跟用户自己的成交结合(如'你均价X、现价Y')。\n"
     "(港美股可用 get_quote+get_trend+get_news+get_fundamentals; 资金流/龙虎榜/概念/同行/筹码/商品/公告 这些仅 A 股, 港美股查不到就如实说。)\n"
     "【'能不能进/明天怎么样/还能拿吗'这类问题】不要直接拒绝了事。照样把客观分析做全"
     "(为什么涨跌、消息面、政策面、走势位置、跟持仓关系、双向风险都摆出来), 只是【不给买卖结论】——"
@@ -1096,6 +1112,16 @@ _SYSTEM = (
     "只有 web_search 也查不到时, 才说'查不到/无法确认, 建议你自行核实'。宁可去搜或说不知道, 绝不编一个确定的答案。\n"
     "回答用简体中文, 简洁直给, 分点列证据(数字), 该下的客观结论就下——但只对工具数据支撑的结论自信。"
 )
+
+
+def _system() -> str:
+    """系统提示 + 当前日期(让 agent 能把'这周/本月/上个月'换算成 get_trades 的 start/end)。"""
+    import datetime as _dt
+    d = _dt.date.today()
+    wk = "一二三四五六日"[d.weekday()]
+    monday = (d - _dt.timedelta(days=d.weekday())).isoformat()
+    return _SYSTEM + (f"\n【今天】{d.isoformat()} 周{wk}; 本周一={monday}, 本月1号={d.replace(day=1).isoformat()}。"
+                      "用户问时间范围时据此换算 start/end。")
 
 
 _TOOL_CN = {
@@ -1133,7 +1159,7 @@ async def ask_stock_stream(question: str, history: list | None = None):
     for rnd in range(_MAX_ROUNDS):
         try:
             resp = await asyncio.to_thread(
-                _llm.call_claude_messages, messages, _SYSTEM, _MODEL, 2048, _active_tools())
+                _llm.call_claude_messages, messages, _system(), _MODEL, 2048, _active_tools())
         except Exception as e:
             yield {"type": "error", "error": str(e)}
             return
@@ -1182,7 +1208,7 @@ async def ask_stock(question: str, history: list | None = None) -> dict:
     for rnd in range(_MAX_ROUNDS):
         try:
             resp = await asyncio.to_thread(
-                _llm.call_claude_messages, messages, _SYSTEM, _MODEL, 2048, _active_tools())
+                _llm.call_claude_messages, messages, _system(), _MODEL, 2048, _active_tools())
         except Exception as e:
             return {"answer": "", "error": str(e), "tools_used": tools_used, "rounds": rnd}
         content = resp.get("content", [])
