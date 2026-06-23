@@ -117,6 +117,19 @@ async def _tool_resolve_stock(query: str) -> dict:
     return {"error": f"找不到 {q}"}
 
 
+def _a_limit_pct(bare: str, name: str) -> float | None:
+    """A股当日涨跌停幅度: ST 5%, 创业板/科创板 20%, 北交所 30%, 主板 10%。港美股无涨跌停→None。"""
+    if not (len(bare) == 6 and bare.isdigit()):
+        return None
+    if "ST" in (name or "").upper():
+        return 0.05
+    if bare[:1] in ("8", "4"):          # 北交所
+        return 0.30
+    if bare[:3] == "688" or bare[:2] == "30":   # 科创板 / 创业板
+        return 0.20
+    return 0.10                          # 沪深主板
+
+
 async def _tool_get_quote(code: str) -> dict:
     from services.market_data import get_realtime_quotes, normalize_stock_code, get_stock_name
     code = normalize_stock_code(_norm_code(code))
@@ -128,13 +141,41 @@ async def _tool_get_quote(code: str) -> dict:
         name = await get_stock_name(code)
     except Exception:
         pass
-    return {
+    out = {
         "code": code, "name": name,
         "price": q.get("price"), "change_pct": q.get("change_pct"),
         "open": q.get("open"), "high": q.get("high"), "low": q.get("low"),
         "prev_close": q.get("prev_close"), "amount": q.get("amount"),
         "turnover_rate": q.get("turnover_rate"),
     }
+    # 涨停/跌停 + 封板/炸板/冲高回落 判断 (仅 A 股)
+    bare = code.split(".")[-1]
+    pct = _a_limit_pct(bare, name)
+    prev = float(q.get("prev_close") or 0)
+    price = float(q.get("price") or 0)
+    high = float(q.get("high") or 0)
+    low = float(q.get("low") or 0)
+    if pct and prev > 0 and price > 0:
+        lu = round(prev * (1 + pct), 2)
+        ld = round(prev * (1 - pct), 2)
+        out["limit_up"], out["limit_down"] = lu, ld
+        near = 0.005  # 容差
+        touched_up = high >= lu - near
+        sealed_up = price >= lu - near
+        touched_dn = low <= ld + near and low > 0
+        sealed_dn = price <= ld + near
+        if sealed_up:
+            out["盘口"] = "当前封涨停"
+        elif touched_up:
+            out["盘口"] = f"盘中触及涨停({lu})后炸板回落, 现价较最高回落{round((high - price) / high * 100, 2)}%"
+        elif sealed_dn:
+            out["盘口"] = "当前封跌停"
+        elif touched_dn:
+            out["盘口"] = f"盘中触及跌停({ld})后回升"
+        else:
+            out["盘口"] = "未触及涨跌停"
+        out["日内振幅%"] = round((high - low) / prev * 100, 2) if high and low else None
+    return out
 
 
 def _us_daily_k_sync(symbol: str, datalen: int) -> list:
@@ -1079,7 +1120,9 @@ _SYSTEM = (
     "【筹码面】问'谁在持股、控股股东/国家队/北向在加减仓、有没有解禁抛压'时调 get_shareholders(十大流通股东增减+北向变动+未来解禁)。\n"
     "【我的成交/持仓盈亏】问'我什么时候买的/成本多少/做过几次T/这票我赚没赚/持有多久/最近交易了啥'时调 get_trades"
     "(含个股+场内ETF+场外基金; 带 code 看该标的流水, A股另给综合成本+已实现盈亏; 不带看最近全部成交; "
-    "问'这周/本月/6月/上个月/最近三天'这类时间范围时, 用下方给的今天日期换算成 start/end(YYYY-MM-DD)传入筛选), 把分析跟用户自己的成交结合(如'你均价X、现价Y')。\n"
+    "问'这周/本月/6月/上个月/最近三天'这类时间范围时, 用下方给的今天日期换算成 start/end(YYYY-MM-DD)传入筛选)。\n"
+    "  · 【复盘成交不能只列流水】梳理用户买卖后, 必须对涉及的个股再调 get_quote(拿现价/今日涨跌幅/盘口: 封涨停/炸板/冲高回落), "
+    "需要时 get_trend 看近日走势, 把'你卖的X今天还在涨/你买的Y冲涨停又炸板了/现价较你成本X%'这种当下对照讲出来。只罗列成交日期价格是不够的。\n"
     "(港美股可用 get_quote+get_trend+get_news+get_fundamentals; 资金流/龙虎榜/概念/同行/筹码/商品/公告 这些仅 A 股, 港美股查不到就如实说。)\n"
     "【'能不能进/明天怎么样/还能拿吗'这类问题】不要直接拒绝了事。照样把客观分析做全"
     "(为什么涨跌、消息面、政策面、走势位置、跟持仓关系、双向风险都摆出来), 只是【不给买卖结论】——"
