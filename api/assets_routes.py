@@ -446,12 +446,15 @@ async def create_asset(data: AssetCreate):
         if has_shares and data.asset_type in ("FUND", "CRYPTO"):
             unit_price = round(net / float(data.shares), 6)
         _tag = "add-lot" if merge_target else "initial"
+        # start_date 缺失时兜底今天: 否则成交流水 trade_date 为空, 复盘/agent 会漏看这笔买入
+        from datetime import date as _date
+        seed_date = data.start_date or _date.today().isoformat()
         await add_external_action(
             aid, seed_type,
             amount=float(data.cost_amount),
             shares=float(data.shares) if has_shares else None,
             unit_price=unit_price,
-            trade_date=data.start_date,
+            trade_date=seed_date,
             note=(f"{_tag} (pending: 份额待确认)" if is_pending_fund else _tag),
             status="pending" if is_pending_fund else "confirmed",
             fee=seed_fee if seed_fee > 0 else None,
@@ -695,12 +698,13 @@ async def add_lot(asset_id: int, data: LotAdd):
         else:
             # OTC pending: 只填本金, 后续确认补 shares
             status = "pending"
+    from datetime import date as _date
     await add_external_action(
         asset_id, action_type,
         amount=float(data.principal),
         shares=seed_shares,
         unit_price=seed_unit_price,
-        trade_date=data.lot_start_date,
+        trade_date=data.lot_start_date or _date.today().isoformat(),
         note="add-lot",
         status=status,
         fee=fee if fee > 0 else None,
