@@ -118,7 +118,9 @@ async def minute(code: str) -> dict | None:
     if not isinstance(data, dict):
         return None
     raw = data.get("List") or []
-    div = _price_div([x.get("Price") for x in raw], await _ref_price(code))
+    q = await quote(code)                       # 一次拿到: 基数锚(昨收) + 开盘价
+    ref = (q or {}).get("prev_close") or (q or {}).get("price")
+    div = _price_div([x.get("Price") for x in raw], ref)
     pts = []
     for x in raw:
         p = _f(x.get("Price"), div)
@@ -127,6 +129,11 @@ async def minute(code: str) -> dict | None:
         pts.append({"time": x.get("Time"), "price": p, "手": x.get("Number")})
     if not pts:
         return None
+    # TDX 分时从 09:31 起, 缺 09:30 开盘点。用 quote 开盘价(集合竞价结果)补一个锚点,
+    # 让分时从真实开盘价起步。手=0(竞价量不在分钟数据里, 不画量柱)。
+    op = (q or {}).get("open")
+    if op and not str(pts[0].get("time") or "").startswith("09:30"):
+        pts.insert(0, {"time": "09:30", "price": op, "手": 0})
     return {"date": data.get("date"), "points": pts}
 
 
