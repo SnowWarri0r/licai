@@ -38,6 +38,7 @@ class ActionCreate(BaseModel):
     trade_time: Optional[str] = None  # HH:MM 成交时刻(可选, 留空则用录入时间)
     note: Optional[str] = ""
     fee: Optional[float] = None    # CNY override; None 让后端按券商费率自动算
+    broker: Optional[str] = None   # 本笔券商(可选, 留空用持仓默认)
 
 
 class ActionUpdate(BaseModel):
@@ -49,13 +50,66 @@ class ActionUpdate(BaseModel):
     note: Optional[str] = None
     fee: Optional[float] = None
     fee_set: bool = False           # 显式标记"我要改 fee" (用于区分 fee=None=清空 还是 不动)
+    broker: Optional[str] = None    # 本笔券商; None=不动, ""=清空(回退持仓默认), 名称=设值
+
+
+async def _broker_fee_resolver():
+    """一次性读券商表, 返回 (name)->(rate,min) 解析器(找不到→默认券商), 避免每笔查库。"""
+    brokers = await list_brokers()
+    default = next((x for x in brokers if x.get("is_default")), None) or (brokers[0] if brokers else None)
+    bymap = {x["name"]: (x["stock_rate"], x["stock_min"]) for x in brokers}
+
+    def resolve(name):
+        if name and name in bymap:
+            return bymap[name]
+        return (default["stock_rate"], default["stock_min"]) if default else (None, None)
+    return resolve
+
+
+async def _attach_auto_fees(actions: list, stock_code: str, holding_broker, resolve=None):
+    """给每笔流水按自己的 broker(没有则用持仓默认)预算自动手续费 → a['_auto_fee']。"""
+    from services.position_ledger import estimate_trade_fee
+    if resolve is None:
+        resolve = await _broker_fee_resolver()
+    for a in actions:
+        r, m = resolve(a.get("broker") or holding_broker)
+        a["_auto_fee"] = estimate_trade_fee(
+            a.get("action_type", ""), float(a.get("price") or 0),
+            int(a.get("shares") or 0), stock_code, r, m)
+    return resolve
+
+
+def _current_segment_brokers(actions: list, default_broker) -> list:
+    """当前持仓段(最后一次清仓之后)实际用到的券商集合。
+    每笔 broker 为空则回退持仓默认。用于主行显示真实券商, 而非陈旧的持仓级标签。"""
+    acq, red = {"BUY", "ADD", "BONUS"}, {"SELL", "REDUCE"}
+    sa = sorted(actions, key=lambda a: (a.get("trade_date") or a.get("created_at") or "", a.get("id") or 0))
+    seg_start, sh = 0, 0
+    for i, a in enumerate(sa):
+        t = a.get("action_type")
+        if t in acq:
+            sh += int(a.get("shares") or 0)
+        elif t in red:
+            sh -= int(a.get("shares") or 0)
+            if sh <= 0:
+                sh = 0
+                seg_start = i + 1
+    out = []
+    for a in sa[seg_start:]:
+        if a.get("action_type") in acq:
+            b = a.get("broker") or default_broker
+            if b and b not in out:
+                out.append(b)
+    return out
 
 
 async def _recompute_holding(stock_code: str):
     """Rebuild holding shares/cost_price from FIFO ledger."""
     actions = await get_position_actions(stock_code, limit=500)
     h = await get_holding(stock_code)
-    c_rate, c_min = await _broker_stock_fee((h or {}).get("broker"))
+    hb = (h or {}).get("broker")
+    resolve = await _attach_auto_fees(actions, stock_code, hb)   # 每笔按各自券商费率
+    c_rate, c_min = resolve(hb)
     state = compute_position_state(actions, stock_code=stock_code,
                                    commission_rate=c_rate, commission_min=c_min)
     if state["shares"] > 0:
@@ -88,14 +142,20 @@ async def list_holdings() -> list[HoldingResponse]:
         code = h["stock_code"]
         # 现算 shares/cost_price (而非读 holdings 表存的值): 综合成本法按"持仓段"
         # 计算, 清仓后复活会重置成本, 存量值可能是旧算法写的, 现算保证一致。
+        broker_display = h.get("broker")
         try:
             _acts = await get_position_actions(code, limit=500)
             if _acts:
-                c_rate, c_min = await _broker_stock_fee(h.get("broker"))
+                resolve = await _attach_auto_fees(_acts, code, h.get("broker"))  # 每笔按各自券商费率
+                c_rate, c_min = resolve(h.get("broker"))
                 _st = compute_position_state(_acts, stock_code=code,
                                              commission_rate=c_rate, commission_min=c_min)
                 h["shares"] = _st["shares"]
                 h["cost_price"] = _st["cost_price"]
+                # 主行券商: 显示当前持仓段实际用的(单一→该券商, 多个→"多券商"), 而非陈旧持仓标签
+                brs = _current_segment_brokers(_acts, h.get("broker"))
+                if brs:
+                    broker_display = brs[0] if len(brs) == 1 else "多券商"
         except Exception:
             pass
         q = quotes.get(code)
@@ -149,7 +209,7 @@ async def list_holdings() -> list[HoldingResponse]:
             cost_value=cost_value,
             market_value=market_value,
             sector=sector_map.get(code),
-            broker=h.get("broker"),
+            broker=broker_display,
         ))
 
     return result
@@ -1009,6 +1069,7 @@ async def create_holding(data: HoldingCreate):
         note="re-entry (auto)" if existing else "initial (auto)",
         trade_date=data.trade_date,
         trade_time=(data.trade_time or None),
+        broker=(data.broker or None),
     )
     await _recompute_holding(stock_code)
     return {"message": "添加成功", "stock_code": stock_code, "stock_name": name}
@@ -1055,14 +1116,19 @@ async def list_actions(stock_code: str):
     """
     stock_code = normalize_stock_code(stock_code)
     from services.position_ledger import estimate_trade_fee
-    actions = await get_position_actions(stock_code, limit=500)
     from database import resolve_action_time
+    actions = await get_position_actions(stock_code, limit=500)
     is_a = stock_code and not stock_code.upper().startswith(("HK.", "US."))
+    h = await get_holding(stock_code)
+    hb = (h or {}).get("broker")              # 持仓默认券商(流水未指定时回退到它)
+    resolve = await _broker_fee_resolver()
     for a in actions:
         a["at_time"] = resolve_action_time(a)    # 成交时刻(供分时图打点)
+        a["broker_effective"] = a.get("broker") or hb   # 本笔实际券商(展示用)
         if is_a:
+            r, m = resolve(a.get("broker") or hb)         # 每笔按各自券商费率
             est = estimate_trade_fee(a.get("action_type", ""), float(a.get("price") or 0),
-                                     int(a.get("shares") or 0), stock_code)
+                                     int(a.get("shares") or 0), stock_code, r, m)
             a["fee_auto"] = round(est, 2)
             a["fee_effective"] = round(float(a["fee"]) if a.get("fee") is not None else est, 2)
         else:
@@ -1132,6 +1198,7 @@ async def create_action(stock_code: str, data: ActionCreate):
         tranche_id=(matched["id"] if matched else None),
         fee=data.fee,
         trade_time=(data.trade_time or None),
+        broker=(data.broker or None),
     )
     await _recompute_holding(stock_code)
     return {
@@ -1154,6 +1221,7 @@ async def modify_action(action_id: int, data: ActionUpdate):
         fee=data.fee,
         fee_explicit=data.fee_set,
         trade_time=data.trade_time,
+        broker=data.broker,
     )
     # Find the stock_code for recomputation
     from database import get_db

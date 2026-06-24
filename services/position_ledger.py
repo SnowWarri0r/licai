@@ -92,12 +92,16 @@ def compute_position_state(
     sorted_actions = sorted(actions, key=sort_key)
 
     def _fee_of(a, t, price, shares):
-        # action.fee 非 NULL = 用户手填覆盖, 否则按券商费率自动估。无 stock_code 不计费。
+        # action.fee 非 NULL = 用户手填覆盖; 否则用调用方按每笔 broker 预算的 _auto_fee;
+        # 都没有再用单一费率兜底。无 stock_code 不计费。
         if not stock_code:
             return 0.0
         override = a.get("fee")
-        return float(override) if override is not None else estimate_trade_fee(
-            t, price, shares, stock_code, commission_rate, commission_min)
+        if override is not None:
+            return float(override)
+        if a.get("_auto_fee") is not None:
+            return float(a["_auto_fee"])
+        return estimate_trade_fee(t, price, shares, stock_code, commission_rate, commission_min)
 
     # 单次按时间顺序遍历: 同时跑 FIFO + 按"持仓段"算综合成本。
     # 一段持仓 = 从份数 0→正 到再次归 0。完全清仓后再买入会开启全新一段,
