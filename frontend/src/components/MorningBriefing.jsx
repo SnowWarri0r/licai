@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { fetchJSON } from '../hooks/useApi'
+import SkeletonCard from './Skeleton'
 
 // 信息倾向(描述, 非操作指令)。A股 红=暖/绿=冷。
 const SIGNAL_META = {
@@ -39,9 +40,7 @@ export default function MorningBriefing() {
     finally { setRefreshing(false) }
   }
 
-  if (loading && !data) {
-    return <div className="text-center py-4 text-text-dim text-[12px]">加载早盘简报...</div>
-  }
+  if (loading && !data) return <SkeletonCard rows={3} label="早盘简报生成中" />
   if (!data || !data.briefings || data.briefings.length === 0) {
     return (
       <section className="rounded-xl border border-border bg-surface/60 px-3 md:px-5 py-4">
