@@ -201,10 +201,10 @@ CLAUDE_CODE_HEADERS = {
     "anthropic-version": "2023-06-01",
     "anthropic-beta": "claude-code-20250219,oauth-2025-04-20",
     "anthropic-dangerous-direct-browser-access": "true",
-    "User-Agent": "claude-cli/2.1.97 (external, cli)",
+    "User-Agent": "claude-cli/2.1.193 (external, cli)",
     "x-app": "cli",
     "X-Stainless-Lang": "js",
-    "X-Stainless-Package-Version": "0.81.0",
+    "X-Stainless-Package-Version": "0.94.0",
     "X-Stainless-Runtime": "node",
 }
 
