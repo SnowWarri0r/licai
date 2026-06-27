@@ -247,7 +247,7 @@ async def sector_why(data: WhyIn):
         heads = []
     news_block = "\n".join(f"- {h}" for h in heads if h) or "(近期无可用快讯)"
     try:
-        holdings = await get_all_holdings()
+        holdings = [h for h in await get_all_holdings() if float(h.get("shares") or 0) > 0]
         hold_desc = ", ".join(f"{h['stock_code']}({h.get('stock_name','')})" for h in holdings) or "(无持仓信息)"
     except Exception:
         hold_desc = "(无持仓信息)"
