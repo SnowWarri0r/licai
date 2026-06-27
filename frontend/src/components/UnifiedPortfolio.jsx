@@ -633,6 +633,19 @@ function RowActions({ row, visible, onEdit, onHistory, onRemove, onAddLot, onRed
     actions.push({ short: '史', label: '历史', fn: () => onHistory?.(row._raw) })
     actions.push({ short: '改', label: '编辑', fn: () => onEdit?.(row) })
   } else {
+    // 场内 ETF/LOF (沪 5xxxxx / 深 1xxxxx): 有实时行情, 给 K 线详情页入口.
+    // 场外基金 (净值 T+1, 无分时/盘口) 不给. holding 字段映射成 modal 期望的口径.
+    if (row.type === 'F' && isOnchainEtf(row.code)) {
+      const r = row._raw || {}
+      const sh = Number(r.shares) || 0
+      actions.push({ short: '线', label: 'K 线', fn: () => onKline?.({
+        stock_code: row.code,
+        stock_name: row.name,
+        cost_price: sh > 0 ? (Number(r.cost_amount) || 0) / sh : 0,
+        current_price: r.quote?.nav ?? null,
+        price_change_pct: row.today,
+      }) })
+    }
     if (row.type === 'F' || row.type === 'C' || row.type === 'W' || row.type === 'M') {
       actions.push({ short: '加', label: '加仓', fn: () => onAddLot?.(row) })
       actions.push({ short: '减', label: '减仓', fn: () => onReduceLot?.(row) })
