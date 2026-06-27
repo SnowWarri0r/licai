@@ -95,7 +95,8 @@ async def portfolio_news(limit_per_code: int = 5):
     if cached and time.time() - cached[1] < _TTL:
         return cached[0]
 
-    holdings = await get_all_holdings()
+    # 只拉当前在持(shares>0)的票的新闻; 已清仓的不算"持仓新闻"
+    holdings = [h for h in await get_all_holdings() if float(h.get("shares") or 0) > 0]
     codes = [h["stock_code"] for h in holdings if _is_a_share(h["stock_code"])]
     name_by_code = {h["stock_code"]: h.get("stock_name") or "" for h in holdings}
 
@@ -318,7 +319,7 @@ async def news_digest(force: bool = False, max_items: int = 80):
     # 1) 准备素材: 持仓新闻 + 市场要闻 合并 (持仓优先)
     portfolio = await portfolio_news()
     market = await market_news()
-    holdings = await get_all_holdings()
+    holdings = [h for h in await get_all_holdings() if float(h.get("shares") or 0) > 0]
     codes = [h["stock_code"] for h in holdings if _is_a_share(h["stock_code"])]
     name_by_code = {h["stock_code"]: h.get("stock_name") or "" for h in holdings}
 
@@ -607,7 +608,7 @@ async def interpret_news(data: InterpretIn):
     if key in _INTERPRET_CACHE:
         return {**_INTERPRET_CACHE[key], "cached": True}
     try:
-        holdings = await get_all_holdings()
+        holdings = [h for h in await get_all_holdings() if float(h.get("shares") or 0) > 0]
         hold_desc = ", ".join(f"{h['stock_code']}({h.get('stock_name','')})" for h in holdings) or "(无持仓信息)"
     except Exception:
         hold_desc = "(无持仓信息)"

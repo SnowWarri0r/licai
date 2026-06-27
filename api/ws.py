@@ -256,7 +256,8 @@ async def premarket_push_loop():
                     and today != _premarket_sent_date
                     and feishu_notify.is_enabled()):
 
-                holdings = await get_all_holdings()
+                # 只推当前在持(shares>0)的解套重点; 已清仓的不进每日推送
+                holdings = [h for h in await get_all_holdings() if float(h.get("shares") or 0) > 0]
                 if holdings:
                     codes = [h["stock_code"] for h in holdings]
                     quotes = await get_realtime_quotes(codes)
