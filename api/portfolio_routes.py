@@ -35,6 +35,7 @@ class ActionCreate(BaseModel):
     price: float
     shares: int
     trade_date: Optional[str] = None  # YYYY-MM-DD
+    trade_time: Optional[str] = None  # HH:MM 成交时刻(可选, 留空则用录入时间)
     note: Optional[str] = ""
     fee: Optional[float] = None    # CNY override; None 让后端按券商费率自动算
 
@@ -1053,8 +1054,10 @@ async def list_actions(stock_code: str):
     stock_code = normalize_stock_code(stock_code)
     from services.position_ledger import estimate_trade_fee
     actions = await get_position_actions(stock_code, limit=500)
+    from database import resolve_action_time
     is_a = stock_code and not stock_code.upper().startswith(("HK.", "US."))
     for a in actions:
+        a["at_time"] = resolve_action_time(a)    # 成交时刻(供分时图打点)
         if is_a:
             est = estimate_trade_fee(a.get("action_type", ""), float(a.get("price") or 0),
                                      int(a.get("shares") or 0), stock_code)
@@ -1126,6 +1129,7 @@ async def create_action(stock_code: str, data: ActionCreate):
         note=data.note or "",
         tranche_id=(matched["id"] if matched else None),
         fee=data.fee,
+        trade_time=(data.trade_time or None),
     )
     await _recompute_holding(stock_code)
     return {
