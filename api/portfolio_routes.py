@@ -9,6 +9,7 @@ from database import (
     get_all_holdings, get_holding, add_holding, update_holding, delete_holding,
     get_position_actions, add_position_action, update_position_action, delete_position_action,
     get_unwind_plan, get_tranches, mark_tranche_executed, list_brokers,
+    get_thesis, list_theses, set_thesis, delete_thesis,
 )
 from services.market_data import (
     get_realtime_quotes, get_stock_name, get_stock_sector, get_stock_sector_detail,
@@ -1261,3 +1262,33 @@ async def remove_action(action_id: int):
     if row:
         await _recompute_holding(row["stock_code"])
     return {"message": "已删除"}
+
+
+# ── 持仓逻辑 (thesis-tracker) ──
+class ThesisIn(BaseModel):
+    thesis: str
+    name: str = ""
+
+
+@router.get("/thesis")
+async def list_all_theses():
+    """所有持仓逻辑记录(code→thesis), 前端一次拉全用于标记哪些已写。"""
+    return await list_theses()
+
+
+@router.get("/thesis/{code}")
+async def read_thesis(code: str):
+    bare = code.split(".")[-1]
+    t = await get_thesis(bare)
+    return t or {"code": bare, "thesis": "", "name": ""}
+
+
+@router.put("/thesis/{code}")
+async def write_thesis(code: str, data: ThesisIn):
+    bare = code.split(".")[-1]
+    text = (data.thesis or "").strip()
+    if not text:
+        await delete_thesis(bare)
+        return {"message": "已清空"}
+    await set_thesis(bare, text, data.name or "")
+    return {"message": "已保存"}
