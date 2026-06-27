@@ -379,6 +379,51 @@ def _fetch_history_sina(stock_code: str, days: int) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _em_secid(stock_code: str) -> str:
+    """东财 secid: 沪(6/9/5) → 1.code, 深(0/2/3/1) → 0.code。"""
+    code = split_stock_code(stock_code)[1]
+    return f"1.{code}" if code[:1] in ("6", "9", "5") else f"0.{code}"
+
+
+def _fetch_history_em(stock_code: str, days: int) -> pd.DataFrame:
+    """东财 push2his 日K, 前复权(fqt=1)。历史序列连续 — 除权/份额折算不再断崖。
+    股票/ETF 通用。Sina 的 getKLineData 是不复权, ETF 拆分日会劈一刀, 故改用这条做主源。"""
+    secid = _em_secid(stock_code)
+    # push2his 偶发 RemoteDisconnected(掐首连), 故重试多次; 在 host 间轮换提高命中.
+    # 失败到底才退回兜底(不复权), 故重试要够厚, 否则除权/拆分票偶发回到断崖图.
+    hosts = ["push2his.eastmoney.com", "push2.eastmoney.com"] * 4
+    import json as _json
+    j = None
+    last_err = None
+    for h in hosts:
+        url = (f"https://{h}/api/qt/stock/kline/get"
+               f"?secid={secid}&fields1=f1&fields2=f51,f52,f53,f54,f55,f56,f57"
+               f"&klt=101&fqt=1&end=20500101&lmt={max(int(days), 1)}")
+        try:
+            resp = _requests.get(url, headers={"Referer": "https://quote.eastmoney.com/"}, timeout=15)
+            j = _json.loads(resp.text)
+            if ((j or {}).get("data") or {}).get("klines"):
+                break
+        except Exception as e:
+            last_err = e
+            continue
+    if j is None and last_err is not None:
+        raise last_err
+    kl = ((j or {}).get("data") or {}).get("klines") or []
+    rows = []
+    for ln in kl:
+        p = ln.split(",")          # 日期,开,收,高,低,量,额
+        if len(p) < 6:
+            continue
+        rows.append({
+            "日期": p[0], "开盘": float(p[1]), "收盘": float(p[2]),
+            "最高": float(p[3]), "最低": float(p[4]), "成交量": float(p[5]),
+            "成交额": float(p[6]) if len(p) > 6 else 0,
+            "振幅": 0, "涨跌幅": 0, "涨跌额": 0, "换手率": 0,
+        })
+    return pd.DataFrame(rows)
+
+
 async def get_historical_data(stock_code: str, days: int = 60) -> pd.DataFrame:
     """Get historical daily OHLCV data.
     Layer 1: In-memory cache (5 min TTL)
@@ -395,6 +440,20 @@ async def get_historical_data(stock_code: str, days: int = 60) -> pd.DataFrame:
     df = _cache_get(cache_key, config.history_cache_ttl)
     if df is not None:
         return df
+
+    # 主源: 东财前复权 (fqt=1) — 历史连续, 除权/份额折算不断崖 (Sina/SQLite 是不复权, ETF
+    # 拆分日会断崖). 成功即返回, 绕开可能被不复权数据污染的 SQLite 缓存. 失败再走下面兜底.
+    try:
+        df = await asyncio.to_thread(_fetch_history_em, stock_code, max(days, 250))
+        if df is not None and not df.empty:
+            # 前复权结果写回 SQLite(INSERT OR REPLACE)→ 覆盖历史不复权污染行, 缓存自愈;
+            # 即便下次 EM 抽风失败, 兜底也是连续的前复权数据. 除权再发生时下次成功抓取会重新覆盖.
+            await save_klines(stock_code, df.to_dict("records"))
+            df = df.tail(days)
+            _cache_set(cache_key, df)
+            return df
+    except Exception as e:
+        print(f"[market_data] EM qfq history failed for {stock_code}: {e}")
 
     # Check if SQLite cache is fresh enough (has today or yesterday's data)
     today = datetime.now().strftime("%Y-%m-%d")
