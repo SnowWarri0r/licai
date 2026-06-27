@@ -186,7 +186,7 @@ function CandleChart({ series, cost, actions }) {
         <line x1={P.l} y1={volTop + volH} x2={W - P.r} y2={volTop + volH} stroke="var(--color-border-subtle)" strokeWidth="1" />
         {sub === 'vol' && points.map(p => {
           const h = ((Number(p.volume) || 0) / volMax) * volH
-          return <rect key={'v' + p.i} x={p.x - candleW / 2} y={volTop + volH - h} width={candleW} height={Math.max(0.5, h)} fill={p.close >= p.open ? UP : DOWN} opacity="0.5" />
+          return <rect key={'v' + p.i} x={p.x - candleW / 2} y={volTop + volH - h} width={candleW} height={Math.max(0.5, h)} fill={p.close >= p.open ? UP : DOWN} opacity="0.85" />
         })}
         {sub === 'macd' && (() => {
           const idx = points.map(p => p.i)
@@ -196,7 +196,7 @@ function CandleChart({ series, cost, actions }) {
           return (
             <g>
               <line x1={P.l} y1={zeroY} x2={W - P.r} y2={zeroY} stroke="var(--color-border-subtle)" strokeWidth="0.5" strokeDasharray="2 3" />
-              {points.map(p => { const v = indic.hist[p.i]; return <rect key={'m' + p.i} x={p.x - candleW / 2} y={v >= 0 ? zeroY - v * sc : zeroY} width={candleW} height={Math.max(0.4, Math.abs(v * sc))} fill={v >= 0 ? UP : DOWN} opacity="0.6" /> })}
+              {points.map(p => { const v = indic.hist[p.i]; return <rect key={'m' + p.i} x={p.x - candleW / 2} y={v >= 0 ? zeroY - v * sc : zeroY} width={candleW} height={Math.max(0.4, Math.abs(v * sc))} fill={v >= 0 ? UP : DOWN} opacity="0.85" /> })}
               <polyline points={line(indic.dif)} fill="none" stroke="#e8e0cf" strokeWidth="1" />
               <polyline points={line(indic.dea)} fill="none" stroke="#c8a876" strokeWidth="1" />
               {subLegend([{ c: '#e8e0cf', t: `DIF ${fmtVal(indic.dif[lastI])}` }, { c: '#c8a876', t: `DEA ${fmtVal(indic.dea[lastI])}` }, { c: indic.hist[lastI] >= 0 ? UP : DOWN, t: `MACD ${fmtVal(indic.hist[lastI])}` }])}
@@ -351,7 +351,7 @@ function MinuteChart({ points, prevClose }) {
         {/* 分时成交量 */}
         {rows.map(r => {
           const h = (r.vol / volMax) * volH
-          return <rect key={'mv' + r.i} x={r.x - 1} y={volTop + volH - h} width="1.6" height={Math.max(0.4, h)} fill={r.price >= prevClose ? UP : DOWN} opacity="0.5" />
+          return <rect key={'mv' + r.i} x={r.x - 1} y={volTop + volH - h} width="1.6" height={Math.max(0.4, h)} fill={r.price >= prevClose ? UP : DOWN} opacity="0.8" />
         })}
         <line x1={P.l} y1={volTop + volH} x2={W - P.r} y2={volTop + volH} stroke="var(--color-border-subtle)" strokeWidth="1" />
         <polyline points={avgLine} fill="none" stroke="#c8a876" strokeWidth="1" opacity="0.85" />
