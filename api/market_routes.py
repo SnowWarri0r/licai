@@ -15,6 +15,59 @@ from services.market_data import (
 router = APIRouter(prefix="/api/market", tags=["market"])
 
 
+# --- TDX 高级行情(可插拔, 仅 A 股; 未启用/连不上则 enabled=false 或 None, 前端隐藏对应 tab) ---
+
+def _tdx_bare(stock_code: str) -> str | None:
+    bare = normalize_stock_code(stock_code).split(".")[-1]
+    return bare if (len(bare) == 6 and bare.isdigit()) else None
+
+
+@router.get("/tdx/status")
+async def tdx_status():
+    import services.tdx_client as _tdx
+    return {"enabled": _tdx.is_enabled()}
+
+
+@router.get("/tdx/orderbook/{stock_code}")
+async def tdx_orderbook(stock_code: str):
+    """五档盘口 + 内外盘(TDX)。"""
+    import services.tdx_client as _tdx
+    bare = _tdx_bare(stock_code)
+    if not _tdx.is_enabled() or not bare:
+        return {"enabled": _tdx.is_enabled(), "data": None}
+    return {"enabled": True, "data": await _tdx.quote(bare)}
+
+
+@router.get("/tdx/minute/{stock_code}")
+async def tdx_minute(stock_code: str):
+    """当日分时(TDX, 至多 240 点)。"""
+    import services.tdx_client as _tdx
+    bare = _tdx_bare(stock_code)
+    if not _tdx.is_enabled() or not bare:
+        return {"enabled": _tdx.is_enabled(), "data": None}
+    return {"enabled": True, "data": await _tdx.minute(bare)}
+
+
+@router.get("/tdx/kline/{stock_code}")
+async def tdx_kline(stock_code: str, type: str = "day", limit: int = 200):
+    """多周期 K 线(TDX): type=day/week/month/hour/minute1/5/15/30。"""
+    import services.tdx_client as _tdx
+    bare = _tdx_bare(stock_code)
+    if not _tdx.is_enabled() or not bare:
+        return {"enabled": _tdx.is_enabled(), "data": None}
+    return {"enabled": True, "data": await _tdx.kline(bare, type, limit)}
+
+
+@router.get("/tdx/trade/{stock_code}")
+async def tdx_trade(stock_code: str, limit: int = 60):
+    """当日逐笔成交(TDX)。"""
+    import services.tdx_client as _tdx
+    bare = _tdx_bare(stock_code)
+    if not _tdx.is_enabled() or not bare:
+        return {"enabled": _tdx.is_enabled(), "data": None}
+    return {"enabled": True, "data": await _tdx.trade(bare, limit)}
+
+
 @router.get("/trading-day")
 async def trading_day_status():
     """Whether today (CST) is an A-share trading day. Excludes weekends + 法定假日.
