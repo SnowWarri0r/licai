@@ -72,7 +72,7 @@ async def lifespan(app: FastAPI):
 
     # 可插拔数据源: 通达信 TDX REST 服务 (env TDX_BASE_URL > DB config > config.py)
     from services import tdx_client
-    tdx_url = os.environ.get("TDX_BASE_URL") or (await get_config("tdx_base_url")) or config.tdx_base_url or ""
+    tdx_url = os.environ.get("TDX_BASE_URL") or (await get_config("tdx_base_url")) or getattr(config, "tdx_base_url", "") or ""
     tdx_client.configure(tdx_url)
     if tdx_url:
         print(f"TDX 数据源已启用: {tdx_url}")
