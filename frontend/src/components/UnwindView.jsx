@@ -16,9 +16,10 @@ import AITradeReview from './AITradeReview'
 import StockAsk from './StockAsk'
 
 const TABS = [
+  { key: 'ask',      label: '问市',   desc: '个股 / 市场风格 / 资金主线 AI 问答' },
   { key: 'sector',   label: '板块',   desc: '动量 / 资金流 / 早盘速览' },
   { key: 'macro',    label: '宏观',   desc: '指数 / 汇率 / 商品' },
-  { key: 'news',     label: '资讯',   desc: '问个股 / 收盘复盘 / 持仓新闻' },
+  { key: 'news',     label: '资讯',   desc: '收盘复盘 / 持仓新闻' },
   { key: 'config',   label: '复盘',   desc: '交易复盘 / 现金流 / 跑赢基准' },
 ]
 const TAB_KEYS = TABS.map(t => t.key)
@@ -34,6 +35,10 @@ export default function UnwindView() {
   return (
     <div className="space-y-4">
       <TabBar tab={tab} onPick={pickTab} />
+
+      {tab === 'ask' && (
+        <StockAsk page />
+      )}
 
       {tab === 'sector' && (
         <>
@@ -52,7 +57,6 @@ export default function UnwindView() {
 
       {tab === 'news' && (
         <div className="space-y-4">
-          <StockAsk />
           <DailyReview />
           <PortfolioNews />
         </div>
