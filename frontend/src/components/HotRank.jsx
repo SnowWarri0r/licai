@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { fetchJSON } from '../hooks/useApi'
+import SkeletonCard from './Skeleton'
 
 const pctColor = (v) => v == null ? 'text-text-dim' : v > 0 ? 'text-bear-bright' : v < 0 ? 'text-bull-bright' : 'text-text-dim'
 
@@ -12,7 +13,7 @@ export default function HotRank() {
     fetchJSON('/api/market/hot-rank?top=30').then(setD).catch(() => {}).finally(() => setLoading(false))
   }, [])
 
-  if (loading) return <div className="text-center py-4 text-text-dim text-[12px]">资金热度榜加载中…</div>
+  if (loading) return <SkeletonCard rows={6} label="热度榜加载中" />
   if (!d || !d.count) return null
 
   const items = expanded ? d.items : d.items.slice(0, 10)

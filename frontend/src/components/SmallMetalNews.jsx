@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { fetchJSON } from '../hooks/useApi'
+import SkeletonCard from './Skeleton'
 
 // "2026-06-11 10:49:41" → "今天 10:49" / "昨天 10:49" / "06-10 10:49"
 function fmtTime(s) {
@@ -21,7 +22,7 @@ export default function SmallMetalNews() {
     fetchJSON('/api/news/small-metal?limit=30').then(setD).catch(() => {}).finally(() => setLoading(false))
   }, [])
 
-  if (loading) return <div className="text-center py-4 text-text-dim text-[12px]">小金属资讯加载中…</div>
+  if (loading) return <SkeletonCard rows={4} label="小金属资讯加载中" />
   if (!d || !d.count) return null
 
   const items = expanded ? d.items : d.items.slice(0, 6)

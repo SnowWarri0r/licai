@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { fetchJSON } from '../hooks/useApi'
+import SkeletonCard from './Skeleton'
 import SentimentDetailModal from './SentimentDetailModal'
 
 // 情绪 → 色温 (A股 红暖绿冷)
@@ -30,7 +31,7 @@ export default function SentimentThermometer() {
     loadAi()
   }, [])
 
-  if (loading) return <div className="text-center py-4 text-text-dim text-[12px]">市场情绪加载中…</div>
+  if (loading) return <SkeletonCard rows={3} label="情绪加载中" />
   if (!d || !d.n_zt) return null
   const c = MOOD_COLOR[d.mood] || '#85a0b4'
   const v = d.volume || {}
