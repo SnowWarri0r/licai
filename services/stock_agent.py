@@ -164,7 +164,7 @@ async def _tool_get_news(code: str) -> dict:
     bare = raw.split(".")[-1] if "." in raw else raw
     items = await asyncio.to_thread(_fetch_stock_news_em_sync, bare)
     if not items:
-        return {"news": [], "note": "无个股新闻 (东财仅 A 股)"}
+        return {"news": [], "note": "暂无个股新闻"}
     return {"news": [{"title": it["title"], "summary": it["content"][:140],
                       "time": it["time"], "source": it["source"]} for it in items[:10]]}
 
@@ -439,11 +439,69 @@ def _fetch_financials_sync(code: str) -> dict:
     return out
 
 
+def _fetch_hkus_fundamentals_sync(market: str, symbol: str) -> dict:
+    """港股/美股基本面(东财, akshare em 指标): 营收/净利及同比、毛利率/净利率/ROE/负债率/EPS。金额→亿(原币种)。"""
+    import time as _t
+    ck = f"fin_{market}_{symbol}"
+    c = _fin_cache.get(ck)
+    if c and _t.time() - c[1] < 3600:
+        return c[0]
+    import os
+    for k in list(os.environ):
+        if "proxy" in k.lower():
+            os.environ.pop(k, None)
+    import akshare as ak
+    try:
+        if market == "HK":
+            df = ak.stock_financial_hk_analysis_indicator_em(symbol=symbol.zfill(5), indicator="报告期")
+            profit_key, profit_yoy = "HOLDER_PROFIT", "HOLDER_PROFIT_YOY"
+            roe_key = "ROE_YEARLY"
+        else:
+            df = ak.stock_financial_us_analysis_indicator_em(symbol=symbol.upper(), indicator="年报")
+            profit_key, profit_yoy = "PARENT_HOLDER_NETPROFIT", "PARENT_HOLDER_NETPROFIT_YOY"
+            roe_key = "ROE_AVG"
+    except Exception as e:
+        return {"error": f"港美股财务源不可达: {e}"}
+    if df is None or df.empty:
+        return {}
+    r = df.iloc[0].to_dict()
+
+    def f(k, nd=2):
+        v = r.get(k)
+        try:
+            return round(float(v), nd)
+        except (ValueError, TypeError):
+            return None
+
+    def yi(k):
+        v = r.get(k)
+        try:
+            return round(float(v) / 1e8, 2)
+        except (ValueError, TypeError):
+            return None
+    cur = r.get("CURRENCY") or r.get("CURRENCY_ABBR") or ("HKD" if market == "HK" else "USD")
+    out = {"valuation": {"币种": cur, "EPS": f("BASIC_EPS", 3), "每股净资产BPS": f("BPS", 2),
+                         "note": "港美股 PE/PB 未直出, 如需用 get_quote 现价 / EPS、/ BPS 估算"},
+           "financials": {"报告期": str(r.get("REPORT_DATE") or "")[:10],
+                          "营业收入亿": yi("OPERATE_INCOME"), "营收同比增长%": f("OPERATE_INCOME_YOY", 1),
+                          "归母净利润亿": yi(profit_key), "净利同比增长%": f(profit_yoy, 1),
+                          "毛利率%": f("GROSS_PROFIT_RATIO", 1), "净利率%": f("NET_PROFIT_RATIO", 1),
+                          "ROE%": f(roe_key, 2), "资产负债率%": f("DEBT_ASSET_RATIO", 1)},
+           "note": f"金额单位亿{cur}; 港股取最近报告期, 美股取最近年报; 同比为 YoY。"}
+    _fin_cache[ck] = (out, _t.time())
+    return out
+
+
 async def _tool_fundamentals(code: str) -> dict:
-    """个股基本面+估值: 营收/净利及同比、ROE/毛利率/净利率、资产负债率、EPS, 以及 PE/PB/总市值/行业。仅 A 股。"""
-    from services.market_data import normalize_stock_code, is_a_share
-    if not is_a_share(normalize_stock_code(_norm_code(code))):
-        return {"error": "基本面仅支持 A 股"}
+    """个股基本面+估值: 营收/净利及同比、ROE/毛利率/净利率、资产负债率、EPS, A股另含 PE/PB/总市值/行业。支持 A/港/美股。"""
+    from services.market_data import normalize_stock_code, is_a_share, split_stock_code
+    raw = normalize_stock_code(_norm_code(code))
+    if not is_a_share(raw):
+        market, symbol = split_stock_code(raw)
+        if market in ("HK", "US"):
+            out = await asyncio.to_thread(_fetch_hkus_fundamentals_sync, market, symbol)
+            return out if out else {"error": "港美股基本面暂不可达"}
+        return {"error": "基本面暂不支持该市场"}
     bare = _norm_code(code)
     val, fin = await asyncio.gather(
         asyncio.to_thread(_fetch_valuation_sync, bare),
@@ -622,6 +680,51 @@ async def _tool_shareholders(code: str) -> dict:
         return {"error": f"股东数据获取失败: {e}"}
 
 
+_ann_cache: dict = {}
+# 值得重点标注的公告类型(资金/事件驱动)
+_ANN_KEY_TYPES = ["分红", "回购", "增持", "减持", "业绩", "预增", "预减", "重组", "收购", "中标",
+                  "股权激励", "定增", "并购", "重大资产", "股份转让", "实控人", "破产", "退市", "问询", "立案"]
+
+
+def _fetch_announcements_sync(code: str, limit: int = 12) -> dict:
+    """个股公告(东财 np-anotice-stock): 标题/日期/类型。结构化, 比新闻更权威(分红回购/业绩/重组/股权激励等)。"""
+    import requests as _rq
+    import time as _t
+    ck = f"ann_{code}"
+    c = _ann_cache.get(ck)
+    if c and _t.time() - c[1] < 1800:
+        return c[0]
+    try:
+        j = _rq.get("https://np-anotice-stock.eastmoney.com/api/security/ann",
+                    params={"sr": "-1", "page_size": str(max(limit, 15)), "page_index": "1",
+                            "ann_type": "A", "client_source": "web", "stock_list": code},
+                    timeout=8, headers={"User-Agent": "Mozilla/5.0", "Referer": "https://data.eastmoney.com/"}).json()
+    except Exception:
+        return {"error": "公告源不可达"}
+    rows = (j.get("data") or {}).get("list") or []
+    if not rows:
+        return {"announcements": [], "note": "近期无公告"}
+    out = []
+    for a in rows[:limit]:
+        types = [c.get("column_name") for c in (a.get("columns") or []) if c.get("column_name")]
+        title = a.get("title") or ""
+        key = any(any(kt in (t or "") for kt in _ANN_KEY_TYPES) for t in types) or any(kt in title for kt in _ANN_KEY_TYPES)
+        out.append({"date": str(a.get("notice_date") or "")[:10], "title": title,
+                    "类型": types, "key": key})
+    res = {"announcements": out,
+           "note": "结构化公告; key=true 是分红/回购/增减持/业绩/重组/股权激励等资金或事件驱动型, 优先看。"}
+    _ann_cache[ck] = (res, _t.time())
+    return res
+
+
+async def _tool_announcements(code: str) -> dict:
+    """个股公告(分红/回购/增减持/业绩/重组/股权激励/关联交易等), 比新闻权威。看公司层面有没有实质事件。仅 A 股。"""
+    from services.market_data import normalize_stock_code, is_a_share
+    if not is_a_share(normalize_stock_code(_norm_code(code))):
+        return {"error": "公告仅支持 A 股(港美股可用 get_news 看回购等动态)"}
+    return await asyncio.to_thread(_fetch_announcements_sync, _norm_code(code))
+
+
 async def _tool_get_holdings() -> dict:
     from database import get_all_holdings
     try:
@@ -753,7 +856,9 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_trend", "description": "查个股近 N 个交易日走势: 累计涨跌/逐日涨跌/上涨天数。支持 A 股/港股/美股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}, "days": {"type": "integer", "description": "默认20"}}, "required": ["code"]}},
-    {"name": "get_news", "description": "查个股最近新闻(标题+摘要+时间), 用来找涨跌的消息面原因。仅 A 股(东财)。",
+    {"name": "get_news", "description": "查个股最近新闻(标题+摘要+时间), 用来找涨跌的消息面原因。支持 A股/港股/美股(东财)。",
+     "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
+    {"name": "get_announcements", "description": "查个股公告(分红/回购/增减持/业绩预告/重组/股权激励/关联交易等), 结构化且比新闻权威。看公司层面有没有实质事件驱动。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_fund_flow", "description": "查个股主力资金流(谁在买/卖): 今日主力/超大单/大单/中单/小单净额(亿) + 近几日主力净流入趋势。回答'为什么涨/跌、是不是主力在拉、资金进还是出'的关键。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
@@ -790,6 +895,7 @@ _EXECUTORS = {
     "get_quote": lambda a: _tool_get_quote(a.get("code", "")),
     "get_trend": lambda a: _tool_get_trend(a.get("code", ""), a.get("days", 20)),
     "get_news": lambda a: _tool_get_news(a.get("code", "")),
+    "get_announcements": lambda a: _tool_announcements(a.get("code", "")),
     "get_fund_flow": lambda a: _tool_fund_flow(a.get("code", "")),
     "get_lhb": lambda a: _tool_lhb(a.get("code", "")),
     "get_stock_concepts": lambda a: _tool_stock_concepts(a.get("code", "")),
@@ -825,7 +931,7 @@ _SYSTEM = (
     "get_holdings(用户持仓)、get_market_sentiment(大盘打板情绪)、get_sector_momentum(板块趋势矩阵:动量/退潮/资金流)、"
     "get_hot_concepts(热门概念榜)、get_hot_rank(资金人气榜)、get_market_news(政策面)。\n"
     "【个股问题】先 resolve_stock 拿代码, 再 get_quote+get_trend; 找涨跌原因务必看 get_fund_flow(主力资金是进是出、谁在拉)"
-    "+get_news(消息面), 异动明显时 get_lhb(有没有上龙虎榜、游资还是机构在打); 用 get_stock_concepts 看它属于哪个概念, "
+    "+get_news(消息面)+get_announcements(公司公告: 分红回购/业绩预告/重组/股权激励等实质事件, 比新闻权威), 异动明显时 get_lhb(有没有上龙虎榜、游资还是机构在打); 用 get_stock_concepts 看它属于哪个概念, "
     "再与 get_hot_concepts/get_sector_momentum 交叉看是不是踩在当下资金主线上; 需要时 get_market_sentiment 判断个股事件还是大盘普涨跌; "
     "若该票/所属板块对政策敏感(有色/小金属/地产/半导体/医药/军工/新能源/平台经济等), 还要调 get_market_news 看有没有政策催化或调控压制。\n"
     "【基本面/估值】问'贵不贵、业绩好不好、盈利质地、有没有业绩拐点'时调 get_fundamentals"
@@ -833,7 +939,7 @@ _SYSTEM = (
     "有色/资源股涨跌还可调 get_commodity 看对应金属期货价(铜铝金锌镍锡)是不是同步驱动。\n"
     "【同行对比】问'同业里贵不贵、谁是龙头、资金更偏好谁、相对估值'时调 get_peers(同行业 PE/PB/涨幅/主力净流入对照), 配合 get_fundamentals 判断相对位置。\n"
     "【筹码面】问'谁在持股、控股股东/国家队/北向在加减仓、有没有解禁抛压'时调 get_shareholders(十大流通股东增减+北向变动+未来解禁)。\n"
-    "(get_fund_flow/get_lhb/get_stock_concepts/get_fundamentals/get_commodity/get_peers/get_shareholders 仅 A 股; 港美股有 get_quote+get_trend, 其余查不到就如实说。)\n"
+    "(港美股可用 get_quote+get_trend+get_news+get_fundamentals; 资金流/龙虎榜/概念/同行/筹码/商品/公告 这些仅 A 股, 港美股查不到就如实说。)\n"
     "【'能不能进/明天怎么样/还能拿吗'这类问题】不要直接拒绝了事。照样把客观分析做全"
     "(为什么涨跌、消息面、政策面、走势位置、跟持仓关系、双向风险都摆出来), 只是【不给买卖结论】——"
     "结尾一句'方向性的进出/仓位得你自己定, 我只给客观信息'。决策依据给足, 但不替用户拍板。\n"
@@ -869,7 +975,7 @@ _SYSTEM = (
 
 _TOOL_CN = {
     "resolve_stock": "解析代码", "get_quote": "查行情", "get_trend": "查走势",
-    "get_news": "查新闻", "get_fund_flow": "查资金流", "get_lhb": "查龙虎榜",
+    "get_news": "查新闻", "get_announcements": "查公告", "get_fund_flow": "查资金流", "get_lhb": "查龙虎榜",
     "get_stock_concepts": "查所属概念", "get_fundamentals": "查基本面", "get_commodity": "查商品价",
     "get_peers": "同行对比", "get_shareholders": "查股东解禁",
     "get_holdings": "看持仓", "get_market_sentiment": "看大盘情绪",
