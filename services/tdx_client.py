@@ -107,6 +107,54 @@ async def minute(code: str) -> dict | None:
     return {"date": data.get("date"), "points": pts}
 
 
+_KTYPES = {"minute1", "minute5", "minute15", "minute30", "hour", "day", "week", "month"}
+
+
+async def kline(code: str, ktype: str = "day", limit: int = 200) -> dict | None:
+    """多周期 K 线(TDX /api/kline-history)。ktype: day/week/month/hour/minute1/5/15/30。
+    返回 {type, bars:[{date, open, high, low, close, volume手, amount元}]} 或 None。"""
+    if not _BASE_URL:
+        return None
+    kt = ktype if ktype in _KTYPES else "day"
+    data = await asyncio.to_thread(_get_sync, "/api/kline-history",
+                                   {"code": code, "type": kt, "limit": str(int(limit or 200))})
+    rows = (data or {}).get("List") if isinstance(data, dict) else None
+    if not rows:
+        return None
+    bars = []
+    for k in rows:
+        c = _f(k.get("Close"))
+        if c is None:
+            continue
+        bars.append({"date": str(k.get("Time") or "")[:19].replace("T", " "),
+                     "open": _f(k.get("Open")), "high": _f(k.get("High")),
+                     "low": _f(k.get("Low")), "close": c,
+                     "volume": k.get("Volume"), "amount": _f(k.get("Amount"))})
+    return {"type": kt, "bars": bars} if bars else None
+
+
+async def trade(code: str, limit: int = 60) -> dict | None:
+    """当日逐笔成交(TDX /api/trade)。返回 {ticks:[{time, price, 手, dir}]}(最近在前) 或 None。
+    dir: 买/卖/中性 (Status 0/1/2)。"""
+    if not _BASE_URL:
+        return None
+    data = await asyncio.to_thread(_get_sync, "/api/trade", {"code": code})
+    rows = (data or {}).get("List") if isinstance(data, dict) else None
+    if not rows:
+        return None
+    dirs = {0: "买", 1: "卖", 2: "中性"}
+    ticks = []
+    for x in rows:
+        p = _f(x.get("Price"))
+        if p is None:
+            continue
+        t = str(x.get("Time") or "")
+        ticks.append({"time": t[11:19] if "T" in t else t, "price": p,
+                      "手": x.get("Volume"), "dir": dirs.get(x.get("Status"), "")})
+    ticks = ticks[::-1][:int(limit or 60)]   # 最近在前
+    return {"ticks": ticks} if ticks else None
+
+
 async def test_connection(base_url: str = "") -> dict:
     """连通性自检(给 settings 用): 试拉一只票的 quote。"""
     global _BASE_URL
