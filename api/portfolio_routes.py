@@ -53,6 +53,13 @@ class ActionUpdate(BaseModel):
     broker: Optional[str] = None    # 本笔券商; None=不动, ""=清空(回退持仓默认), 名称=设值
 
 
+async def _default_broker_name():
+    """配置里的默认券商名(is_default), 没有则第一个。用于显示回退(选"默认券商"时也能打 tag)。"""
+    brokers = await list_brokers()
+    d = next((x for x in brokers if x.get("is_default")), None) or (brokers[0] if brokers else None)
+    return d["name"] if d else None
+
+
 async def _broker_fee_resolver():
     """一次性读券商表, 返回 (name)->(rate,min) 解析器(找不到→默认券商), 避免每笔查库。"""
     brokers = await list_brokers()
@@ -137,23 +144,27 @@ async def list_holdings() -> list[HoldingResponse]:
     for code, sec in zip(codes, sector_results):
         sector_map[code] = sec if (isinstance(sec, str) and sec) else None
 
+    fee_resolve = await _broker_fee_resolver()       # 券商费率解析器(一次性, 全持仓共用)
+    default_broker_name = await _default_broker_name()
+
     result = []
     for h in holdings:
         code = h["stock_code"]
         # 现算 shares/cost_price (而非读 holdings 表存的值): 综合成本法按"持仓段"
         # 计算, 清仓后复活会重置成本, 存量值可能是旧算法写的, 现算保证一致。
-        broker_display = h.get("broker")
+        hb = h.get("broker") or default_broker_name   # 持仓未设则回退配置默认, 让"默认券商"也有 tag
+        broker_display = hb
         try:
             _acts = await get_position_actions(code, limit=500)
             if _acts:
-                resolve = await _attach_auto_fees(_acts, code, h.get("broker"))  # 每笔按各自券商费率
-                c_rate, c_min = resolve(h.get("broker"))
+                await _attach_auto_fees(_acts, code, hb, resolve=fee_resolve)  # 每笔按各自券商费率
+                c_rate, c_min = fee_resolve(hb)
                 _st = compute_position_state(_acts, stock_code=code,
                                              commission_rate=c_rate, commission_min=c_min)
                 h["shares"] = _st["shares"]
                 h["cost_price"] = _st["cost_price"]
-                # 主行券商: 显示当前持仓段实际用的(单一→该券商, 多个→"多券商"), 而非陈旧持仓标签
-                brs = _current_segment_brokers(_acts, h.get("broker"))
+                # 主行券商: 显示当前持仓段实际用的(单一→该券商, 多个→"多券商")
+                brs = _current_segment_brokers(_acts, hb)
                 if brs:
                     broker_display = brs[0] if len(brs) == 1 else "多券商"
         except Exception:
@@ -1120,7 +1131,7 @@ async def list_actions(stock_code: str):
     actions = await get_position_actions(stock_code, limit=500)
     is_a = stock_code and not stock_code.upper().startswith(("HK.", "US."))
     h = await get_holding(stock_code)
-    hb = (h or {}).get("broker")              # 持仓默认券商(流水未指定时回退到它)
+    hb = (h or {}).get("broker") or await _default_broker_name()   # 未指定→持仓→配置默认, 让默认也有 tag
     resolve = await _broker_fee_resolver()
     for a in actions:
         a["at_time"] = resolve_action_time(a)    # 成交时刻(供分时图打点)
