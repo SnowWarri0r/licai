@@ -148,7 +148,7 @@ export default function StockAsk({ page = false }) {
         </div>
       )}
 
-      <div ref={scrollBox} onScroll={onScroll} className={`space-y-3 mb-3 ${history.length ? `${page ? 'max-h-[70vh]' : 'max-h-[58vh]'} overflow-y-auto pr-1` : ''}`}>
+      <div ref={scrollBox} onScroll={onScroll} className={`space-y-3 mb-3 ${history.length ? `${page ? 'max-h-[82vh] min-h-[60vh]' : 'max-h-[58vh]'} overflow-y-auto pr-1` : ''}`}>
         {history.map((it, i) => (
           <div key={i}>
             <div className="text-[12px] text-text-bright bg-surface-3 rounded-lg px-3 py-1.5 inline-block">{it.q}</div>
