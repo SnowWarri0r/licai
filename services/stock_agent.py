@@ -757,6 +757,61 @@ async def _tool_announcements(code: str) -> dict:
     return await asyncio.to_thread(_fetch_announcements_sync, _norm_code(code))
 
 
+_ACTION_CN = {"BUY": "买入", "ADD": "加仓", "SELL": "卖出", "REDUCE": "减仓",
+              "BONUS": "送转股", "DIVIDEND": "现金分红"}
+
+
+async def _tool_trades(code: str = "") -> dict:
+    """成交记录: 传 code→该票全部买卖/加减仓/分红流水 + 当前持仓状态(综合成本/已实现盈亏/持有天数);
+    不传→最近全部成交。仅 A 股(成交账本里只有 A 股)。"""
+    from database import get_position_actions, get_all_holdings
+    from services.position_ledger import compute_position_state
+    from api.portfolio_routes import _broker_stock_fee
+
+    def fmt(a: dict) -> dict:
+        amt = float(a.get("price") or 0) * float(a.get("shares") or 0)
+        return {"date": (a.get("trade_date") or str(a.get("created_at") or ""))[:10],
+                "动作": _ACTION_CN.get(a.get("action_type"), a.get("action_type")),
+                "price": a.get("price"), "shares": a.get("shares"),
+                "金额": round(amt, 2) if amt else None,
+                "fee": a.get("fee"), "note": a.get("note") or ""}
+
+    if code:
+        bare = _norm_code(code)
+        acts = await get_position_actions(bare, limit=500)
+        if not acts:
+            return {"code": bare, "trades": [], "note": "该票无成交记录"}
+        # 名称
+        name = ""
+        for h in await get_all_holdings():
+            if h.get("stock_code") == bare:
+                name = h.get("stock_name") or ""
+                break
+        recs = sorted([fmt(a) for a in acts], key=lambda x: x["date"])
+        summary = {}
+        try:
+            rate, mn = await _broker_stock_fee(None)
+            st = compute_position_state(acts, stock_code=bare, commission_rate=rate, commission_min=mn)
+            # 已实现盈亏用 realized_carry(已平仓段+分红, 不含浮动)。注意 realized_pnl 与 carry
+            # 在清仓后是同一笔, 不能相加; 当前持仓段的浮盈在 综合成本 里体现, 不算"已实现"。
+            summary = {"当前持股": st.get("shares"), "综合成本": st.get("cost_price"),
+                       "已实现盈亏": round(float(st.get("realized_carry") or 0), 2),
+                       "其中累计分红": st.get("income_realized"), "加权持有天数": st.get("weighted_days"),
+                       "累计手续费": st.get("total_fees")}
+        except Exception:
+            pass
+        return {"code": bare, "name": name, "trades": recs, "position": summary,
+                "note": "trades=按日期升序的成交流水(含手续费); position=综合成本法算的当前状态。同日有买有卖=做T。已实现盈亏含已平仓段+分红。"}
+
+    # 无 code: 最近全部成交
+    acts = await get_position_actions(None, limit=40)
+    if not acts:
+        return {"trades": [], "note": "无成交记录"}
+    name_by = {h.get("stock_code"): h.get("stock_name") for h in await get_all_holdings()}
+    recs = [{**fmt(a), "code": a.get("stock_code"), "name": name_by.get(a.get("stock_code"), "")} for a in acts]
+    return {"recent_trades": recs, "note": "最近 40 笔成交(时间倒序), 跨全部标的。看某只票完整流水请带 code 再调一次。"}
+
+
 async def _tool_get_holdings() -> dict:
     try:
         hs = await _active_holdings()
@@ -912,6 +967,8 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_holdings", "description": "查用户当前持仓列表(代码/名称/股数), 用于回答跟用户持仓的关系。",
      "input_schema": {"type": "object", "properties": {}}},
+    {"name": "get_trades", "description": "查用户成交记录: 传 code→该票买卖/加减仓/分红流水 + 综合成本/已实现盈亏/持有天数(同日有买有卖=做T); 不传→最近40笔全部成交。回答'我什么时候买的、成本多少、做过几次T、这票赚没赚、持有多久'时用。仅 A 股。",
+     "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选; 留空看最近全部成交"}}}},
     {"name": "get_market_sentiment", "description": "查大盘打板情绪(涨停数/连板高度/炸板率/赚钱效应/热点板块), 判断是个股原因还是大盘普涨普跌; 也用于判断市场风格(打板赚钱效应高=追涨/动量有效; 炸板率高+亏钱效应=高位分歧/反转)。",
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_sector_momentum", "description": "板块趋势矩阵: 各行业近N日累计涨跌/连涨动能/净流入。看哪些板块在持续走强(动量延续)、哪些冲高回落(退潮), 判断市场是动量风格还是高低切/轮动, 资金主线在哪。days 默认10。",
@@ -940,6 +997,7 @@ _EXECUTORS = {
     "get_peers": lambda a: _tool_peers(a.get("code", "")),
     "get_shareholders": lambda a: _tool_shareholders(a.get("code", "")),
     "get_holdings": lambda a: _tool_get_holdings(),
+    "get_trades": lambda a: _tool_trades(a.get("code", "")),
     "get_market_sentiment": lambda a: _tool_market_sentiment(),
     "get_sector_momentum": lambda a: _tool_sector_momentum(a.get("days", 10)),
     "get_hot_rank": lambda a: _tool_hot_rank(),
@@ -975,6 +1033,8 @@ _SYSTEM = (
     "有色/资源股涨跌还可调 get_commodity 看对应金属期货价(铜铝金锌镍锡)是不是同步驱动。\n"
     "【同行对比】问'同业里贵不贵、谁是龙头、资金更偏好谁、相对估值'时调 get_peers(同行业 PE/PB/涨幅/主力净流入对照), 配合 get_fundamentals 判断相对位置。\n"
     "【筹码面】问'谁在持股、控股股东/国家队/北向在加减仓、有没有解禁抛压'时调 get_shareholders(十大流通股东增减+北向变动+未来解禁)。\n"
+    "【我的成交/持仓盈亏】问'我什么时候买的/成本多少/做过几次T/这票我赚没赚/持有多久/最近交易了啥'时调 get_trades"
+    "(带 code 看该票流水+综合成本+已实现盈亏; 不带看最近全部成交), 把分析跟用户自己的成交结合(如'你均价X、现价Y')。\n"
     "(港美股可用 get_quote+get_trend+get_news+get_fundamentals; 资金流/龙虎榜/概念/同行/筹码/商品/公告 这些仅 A 股, 港美股查不到就如实说。)\n"
     "【'能不能进/明天怎么样/还能拿吗'这类问题】不要直接拒绝了事。照样把客观分析做全"
     "(为什么涨跌、消息面、政策面、走势位置、跟持仓关系、双向风险都摆出来), 只是【不给买卖结论】——"
@@ -1014,7 +1074,7 @@ _TOOL_CN = {
     "get_news": "查新闻", "get_announcements": "查公告", "get_fund_flow": "查资金流", "get_lhb": "查龙虎榜",
     "get_stock_concepts": "查所属概念", "get_fundamentals": "查基本面", "get_commodity": "查商品价",
     "get_peers": "同行对比", "get_shareholders": "查股东解禁",
-    "get_holdings": "看持仓", "get_market_sentiment": "看大盘情绪",
+    "get_holdings": "看持仓", "get_trades": "查成交记录", "get_market_sentiment": "看大盘情绪",
     "get_sector_momentum": "看板块动量", "get_hot_rank": "看资金热度",
     "get_hot_concepts": "看热门概念", "get_market_news": "看政策快讯", "web_search": "联网搜索",
 }
