@@ -26,55 +26,84 @@ export default function StockAsk() {
   const [loading, setLoading] = useState(false)
   const [history, setHistory] = useState([])   // [{q, steps, thought, answer, typed, done, err}]
   const [holdings, setHoldings] = useState([])
-  const esRef = useRef(null)
+  const abortRef = useRef(null)
   const typer = useRef(null)
   const scrollBox = useRef(null)
+  const follow = useRef(true)   // 是否跟随滚到底; 用户往上拖就关掉, 拖回底部再开
 
   useEffect(() => {
     fetchJSON('/api/portfolio').then(d => {
       const hs = Array.isArray(d) ? d : (d.holdings || d.positions || [])
       setHoldings(hs.filter(h => (h.stock_name || h.stock_code)).slice(0, 8))
     }).catch(() => {})
-    return () => { esRef.current?.close(); clearInterval(typer.current) }
+    return () => { abortRef.current?.abort(); clearInterval(typer.current) }
   }, [])
 
   const patchLast = (fn) => setHistory(h => h.map((it, i) => i === h.length - 1 ? fn(it) : it))
-  // 只在面板内部滚动容器里滚, 不动整个页面; 且仅当用户已贴近底部时才跟随(没在往上翻看就不抢)
-  const scrollDown = () => setTimeout(() => {
+
+  // 用户手动滚动: 贴近底部(<48px)就重新开启跟随, 往上拖就停跟随
+  const onScroll = () => {
     const el = scrollBox.current
     if (!el) return
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60
-    if (nearBottom) el.scrollTop = el.scrollHeight
-  }, 30)
+    follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48
+  }
+  // 每次内容变化(打字机每跳一下也会触发)后, 若处于跟随态就贴到底
+  useEffect(() => {
+    const el = scrollBox.current
+    if (el && follow.current) el.scrollTop = el.scrollHeight
+  }, [history])
 
   const typewriter = (full) => {
     clearInterval(typer.current)
     let n = 0
     typer.current = setInterval(() => {
       n = Math.min(full.length, n + 3)   // 每 tick 3 字
-      patchLast(it => ({ ...it, typed: full.slice(0, n) }))
-      if (n >= full.length) { clearInterval(typer.current); patchLast(it => ({ ...it, done: true })); scrollDown() }
+      patchLast(it => ({ ...it, typed: full.slice(0, n) }))   // history 变 → 上面 effect 跟随滚动
+      if (n >= full.length) { clearInterval(typer.current); patchLast(it => ({ ...it, done: true })) }
     }, 16)
   }
 
-  const ask = (question) => {
+  const handleEv = (ev) => {
+    if (ev.type === 'step') patchLast(it => ({ ...it, steps: [...it.steps, { label: ev.label, arg: ev.arg }] }))
+    else if (ev.type === 'thought') patchLast(it => ({ ...it, thought: ev.text }))
+    else if (ev.type === 'answer') { patchLast(it => ({ ...it, answer: ev.text })); typewriter(ev.text || '') }
+    else if (ev.type === 'error') patchLast(it => ({ ...it, err: ev.error, done: true }))
+  }
+
+  const ask = async (question) => {
     const text = (question ?? q).trim()
     if (!text || loading) return
+    // 把已完成的历史轮次(最近4轮)作为上下文带给后端, 支持追问("它/明天呢")
+    const hist = history.filter(it => it.answer && !it.err).slice(-4)
+      .flatMap(it => [{ role: 'user', content: it.q }, { role: 'assistant', content: it.answer }])
     setQ(''); setLoading(true)
+    follow.current = true
     setHistory(h => [...h, { q: text, steps: [], thought: '', answer: null, typed: '', done: false }])
-    scrollDown()
-    esRef.current?.close()
-    const es = new EventSource(`/api/ask/stock/stream?question=${encodeURIComponent(text)}`)
-    esRef.current = es
-    es.onmessage = (e) => {
-      let ev; try { ev = JSON.parse(e.data) } catch { return }
-      if (ev.type === 'step') { patchLast(it => ({ ...it, steps: [...it.steps, { label: ev.label, arg: ev.arg }] })); scrollDown() }
-      else if (ev.type === 'thought') patchLast(it => ({ ...it, thought: ev.text }))
-      else if (ev.type === 'answer') { patchLast(it => ({ ...it, answer: ev.text })); typewriter(ev.text || '') }
-      else if (ev.type === 'error') { patchLast(it => ({ ...it, err: ev.error, done: true })); es.close(); setLoading(false) }
-      else if (ev.type === 'done') { es.close(); setLoading(false) }
+    abortRef.current?.abort()
+    const ctrl = new AbortController(); abortRef.current = ctrl
+    try {
+      const resp = await fetch('/api/ask/stock/stream', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: text, history: hist }), signal: ctrl.signal,
+      })
+      const reader = resp.body.getReader(); const dec = new TextDecoder()
+      let buf = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += dec.decode(value, { stream: true })
+        const parts = buf.split('\n\n'); buf = parts.pop()   // 留下不完整的最后一段
+        for (const p of parts) {
+          const line = p.split('\n').find(l => l.startsWith('data: '))
+          if (!line) continue
+          try { handleEv(JSON.parse(line.slice(6))) } catch { /* skip */ }
+        }
+      }
+    } catch (e) {
+      if (e.name !== 'AbortError') patchLast(it => it.answer == null ? { ...it, err: '连接中断', done: true } : it)
+    } finally {
+      setLoading(false)
     }
-    es.onerror = () => { es.close(); setLoading(false); patchLast(it => it.answer == null ? { ...it, err: '连接中断', done: true } : it) }
   }
 
   return (
@@ -95,7 +124,7 @@ export default function StockAsk() {
         </div>
       )}
 
-      <div ref={scrollBox} className={`space-y-3 mb-3 ${history.length ? 'max-h-[58vh] overflow-y-auto pr-1' : ''}`}>
+      <div ref={scrollBox} onScroll={onScroll} className={`space-y-3 mb-3 ${history.length ? 'max-h-[58vh] overflow-y-auto pr-1' : ''}`}>
         {history.map((it, i) => (
           <div key={i}>
             <div className="text-[12px] text-text-bright bg-surface-3 rounded-lg px-3 py-1.5 inline-block">{it.q}</div>
