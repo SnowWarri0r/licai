@@ -126,6 +126,13 @@ def is_a_share(stock_code: str) -> bool:
     return market == "A" and len(symbol) == 6 and symbol.isdigit()
 
 
+def _is_etf_lof(stock_code: str) -> bool:
+    """场内 ETF/LOF: 深 1[56]xxxx (159xxx ETF / 16xxxx LOF), 沪 5[0-8]xxxx (51x/56x/58x ETF, 50x LOF)。
+    这类会做份额折算/拆分, 不复权数据会断崖 → 只能用前复权源。"""
+    code = split_stock_code(stock_code)[1]
+    return bool(re.match(r"^(1[56]|5[0-8])\d{4}$", code))
+
+
 def _sina_symbol(stock_code: str) -> str:
     """Convert stock code to Sina symbol format (sh/sz prefix)."""
     stock_code = split_stock_code(stock_code)[1]
@@ -455,12 +462,16 @@ async def get_historical_data(stock_code: str, days: int = 60) -> pd.DataFrame:
     except Exception as e:
         print(f"[market_data] EM qfq history failed for {stock_code}: {e}")
 
+    is_etf = _is_etf_lof(stock_code)
+
     # Check if SQLite cache is fresh enough (has today or yesterday's data)
     today = datetime.now().strftime("%Y-%m-%d")
     latest = await get_cached_latest_date(stock_code)
     need_fetch = not latest or latest < today
 
-    if not need_fetch:
+    # 场内 ETF 跳过即时服务 SQLite 缓存: 历史上可能被新浪不复权数据污染过(断崖),
+    # 宁可继续往下走前复权源(akshare qfq), 也不服务可能脏的缓存。
+    if not need_fetch and not is_etf:
         # SQLite cache is up-to-date, use it
         rows = await get_cached_klines(stock_code, days)
         if rows:
@@ -474,19 +485,20 @@ async def get_historical_data(stock_code: str, days: int = 60) -> pd.DataFrame:
             _cache_set(cache_key, df)
             return df
 
-    # Fetch fresh data from Sina
-    try:
-        # Fetch more than needed so we accumulate history
-        fetch_days = max(days, 120)
-        df = await asyncio.to_thread(_fetch_history_sina, stock_code, fetch_days)
-        if df is not None and not df.empty:
-            # Save all fetched data to SQLite
-            await save_klines(stock_code, df.to_dict("records"))
-            df = df.tail(days)
-            _cache_set(cache_key, df)
-            return df
-    except Exception as e:
-        print(f"[market_data] Sina history failed for {stock_code}: {e}")
+    # Fetch fresh data from Sina (不复权: ETF 份额折算/拆分会断崖 → ETF 跳过, 只用前复权源)
+    if not is_etf:
+        try:
+            # Fetch more than needed so we accumulate history
+            fetch_days = max(days, 120)
+            df = await asyncio.to_thread(_fetch_history_sina, stock_code, fetch_days)
+            if df is not None and not df.empty:
+                # Save all fetched data to SQLite
+                await save_klines(stock_code, df.to_dict("records"))
+                df = df.tail(days)
+                _cache_set(cache_key, df)
+                return df
+        except Exception as e:
+            print(f"[market_data] Sina history failed for {stock_code}: {e}")
 
     # Fallback to AKShare
     end_date = datetime.now().strftime("%Y%m%d")
@@ -497,6 +509,9 @@ async def get_historical_data(stock_code: str, days: int = 60) -> pd.DataFrame:
             start_date=start_date, end_date=end_date, adjust="qfq",
         )
         if df is not None and not df.empty:
+            # akshare 也是前复权 → ETF 回写自愈缓存(覆盖历史不复权污染行), 即便 EM 抽风也连续
+            if is_etf:
+                await save_klines(stock_code, df.to_dict("records"))
             df = df.tail(days)
             _cache_set(cache_key, df)
             return df
