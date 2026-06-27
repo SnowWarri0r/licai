@@ -226,7 +226,7 @@ async def _tool_intraday(code: str) -> dict:
 
 
 def _us_daily_k_sync(symbol: str, datalen: int) -> list:
-    """美股个股日K(新浪 US_MinKService, 裸 symbol 如 AAPL; 返回升序, 取末尾 N 条)。"""
+    """美股个股日K(新浪 US_MinKService, 裸 symbol 如 AAPL; 返回升序 [{date,close}], 取末尾 N 条)。"""
     import requests as _rq
     url = (f"http://stock.finance.sina.com.cn/usstock/api/jsonp.php/var%20t=/"
            f"US_MinKService.getDailyK?symbol={symbol.upper()}&num={max(datalen + 5, 30)}")
@@ -239,7 +239,10 @@ def _us_daily_k_sync(symbol: str, datalen: int) -> list:
         arr = _json.loads(txt[s + 2:end if end > 0 else None])
     except Exception:
         return []
-    return [float(d["c"]) for d in arr[-(datalen + 1):] if d.get("c")] if isinstance(arr, list) else []
+    if not isinstance(arr, list):
+        return []
+    return [{"date": str(d.get("d") or ""), "close": float(d["c"])}
+            for d in arr[-(datalen + 1):] if d.get("c")]
 
 
 async def _tool_get_trend(code: str, days: int = 20) -> dict:
@@ -249,30 +252,39 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
     raw = normalize_stock_code(_norm_code(code))
     days = max(5, min(int(days or 20), 60))
     market, symbol = split_stock_code(raw)
-    closes: list = []
+    bars: list = []  # [(date_str, close)] 升序; date 可能为空(数据源缺)
     if is_a_share(raw):
         df = await get_historical_data(raw, days + 5)
         if df is None or df.empty:
             return {"error": "无历史数据"}
-        closes = [float(x) for x in df["收盘"].tolist()][-(days + 1):]
+        dcol = df["日期"].tolist() if "日期" in df.columns else [""] * len(df)
+        bars = [(str(d)[:10], float(c)) for d, c in zip(dcol, df["收盘"].tolist())]
     elif market == "HK":
         rows = await asyncio.to_thread(_kline_tencent_hk, f"hk{symbol.zfill(5)}", days + 5)
-        closes = [float(r["close"]) for r in (rows or []) if r.get("close")][-(days + 1):]
+        bars = [(str(r.get("date") or "")[:10], float(r["close"]))
+                for r in (rows or []) if r.get("close")]
     elif market == "US":
-        closes = await asyncio.to_thread(_us_daily_k_sync, symbol, days)
+        rows = await asyncio.to_thread(_us_daily_k_sync, symbol, days)
+        bars = [(str(r.get("date") or "")[:10], float(r["close"]))
+                for r in (rows or []) if r.get("close")]
     else:
         return {"error": "走势暂不支持该市场"}
-    if len(closes) < 2:
+    bars = bars[-(days + 1):]
+    if len(bars) < 2:
         return {"error": "无历史数据"}
     code = raw
-    daily = [round((closes[i] / closes[i - 1] - 1) * 100, 2) for i in range(1, len(closes))]
+    closes = [c for _, c in bars]
+    # 每条逐日涨跌挂上当天真实日期, 避免 LLM 自己猜日期猜错位
+    daily = [{"date": bars[i][0], "pct": round((closes[i] / closes[i - 1] - 1) * 100, 2)}
+             for i in range(1, len(bars))]
     cum = round((closes[-1] / closes[0] - 1) * 100, 2)
-    up = sum(1 for d in daily if d > 0)
+    up = sum(1 for d in daily if d["pct"] > 0)
     return {
         "code": code, "days": len(daily),
         "cum_pct": cum, "up_days": up, "down_days": len(daily) - up,
-        "last_close": round(closes[-1], 3),
-        "daily_pct": daily[-min(10, len(daily)):],  # 最近 10 日逐日涨跌
+        "last_date": bars[-1][0], "last_close": round(closes[-1], 3),
+        # 最近 10 日逐日涨跌, 每条带 date(YYYY-MM-DD)。最后一条即最新交易日。
+        "daily_pct": daily[-min(10, len(daily)):],
     }
 
 
@@ -1199,7 +1211,7 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"query": {"type": "string", "description": "股票名字或代码"}}, "required": ["query"]}},
     {"name": "get_quote", "description": "查个股实时行情: 现价/当日涨跌幅/开高低/成交额/换手。code 直接用 resolve_stock 返回的 code 原样传(A股是裸6位如 600667 / 000657; 港美股 HK.00700 / US.AAPL), 不要自己加 sh/sz 前缀。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
-    {"name": "get_trend", "description": "查个股近 N 个交易日走势: 累计涨跌/逐日涨跌/上涨天数。支持 A 股/港股/美股。",
+    {"name": "get_trend", "description": "查个股近 N 个交易日走势: 累计涨跌/逐日涨跌/上涨天数。支持 A 股/港股/美股。daily_pct 每条是 {date, pct}, date 是该日真实交易日(YYYY-MM-DD), 最后一条即 last_date(最新交易日)。引用某天涨跌时, 日期以这里的 date 字段为准。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}, "days": {"type": "integer", "description": "默认20"}}, "required": ["code"]}},
     {"name": "get_intraday", "description": "当日分时走势(开盘/最高及时间/最低及时间/现价 + 冲高回落幅度 + 路径采样): 判断盘中是不是冲高回落/炸板/尾盘拉升时用, 比日K细。需启用 TDX 数据源, 仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
@@ -1298,6 +1310,8 @@ _SYSTEM = (
     "问'这周/本月/6月/上个月/最近三天'这类时间范围时, 用下方给的今天日期换算成 start/end(YYYY-MM-DD)传入筛选)。\n"
     "  · 【复盘成交不能只列流水】梳理用户买卖后, 必须对涉及的个股再调 get_quote(拿现价/今日涨跌幅/盘口: 封涨停/炸板/冲高回落), "
     "需要时 get_trend 看近日走势, 把'你卖的X今天还在涨/你买的Y冲涨停又炸板了/现价较你成本X%'这种当下对照讲出来。只罗列成交日期价格是不够的。\n"
+    "  · 【历史涨跌的日期以工具返回值为准】说'X月X日涨了多少'时, 日期取 get_trend.daily_pct 里那条的 date 字段, 或 get_quote/get_intraday 的当天数据。"
+    "daily_pct 已按真实交易日标好(周末/节假日自然断档), 照抄即可; 某条对应哪天不明确时, 只说涨跌幅度。\n"
     "(港美股可用 get_quote+get_trend+get_news+get_fundamentals; 资金流/龙虎榜/概念/同行/筹码/商品/公告 这些仅 A 股, 港美股查不到就如实说。)\n"
     "【'能不能进/明天怎么样/还能拿吗'这类问题】不要直接拒绝了事。照样把客观分析做全"
     "(为什么涨跌、消息面、政策面、走势位置、跟持仓关系、双向风险都摆出来), 只是【不给买卖结论】——"
