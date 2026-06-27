@@ -1239,8 +1239,20 @@ async def _tool_get_thesis(code: str) -> dict:
     t = await get_thesis(bare)
     if not t:
         return {"code": bare, "thesis": None, "note": "用户没记这只的买入逻辑。可提示他在持仓里补一句, 以后好复盘。"}
-    return {"code": bare, "name": t.get("name"), "thesis": t.get("thesis"), "recorded_at": t.get("updated_at"),
-            "note": "这是用户当初记的买入逻辑; 对照现价/基本面/消息/红线客观说每条理由还成不成立, 别替他下买卖结论。"}
+    # 算"记于多久之前", 让复盘能锚定时间(几个月前的逻辑 vs 昨天刚记的, 复盘意义不同)
+    days_since = None
+    created = (t.get("created_at") or "")[:10]
+    try:
+        import datetime as _dt
+        if created:
+            today = (_dt.datetime.utcnow() + _dt.timedelta(hours=8)).date()
+            days_since = (today - _dt.date.fromisoformat(created)).days
+    except Exception:
+        pass
+    return {"code": bare, "name": t.get("name"), "thesis": t.get("thesis"),
+            "recorded_at": created, "updated_at": (t.get("updated_at") or "")[:10], "days_since": days_since,
+            "note": "thesis=用户记的买入逻辑; recorded_at=当初记下的日期, days_since=距今天数。"
+                    "复盘时先点明'这是你X天前/X个月前记的逻辑', 再逐条对照现价/基本面/消息/红线客观说每条还成不成立, 别替他下买卖结论。"}
 
 
 async def _tool_get_holdings() -> dict:
