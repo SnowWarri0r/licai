@@ -1227,6 +1227,22 @@ async def _tool_trades(code: str = "", start: str = "", end: str = "") -> dict:
         return {"recent_trades": recs, "note": "最近成交(仅个股, 基金账本读取失败)。"}
 
 
+async def _tool_get_thesis(code: str) -> dict:
+    """读用户当初记的买入逻辑(thesis-tracker), 用于复盘'当初为什么买、逻辑还成不成立'。不带 code 看全部。"""
+    from database import get_thesis, list_theses
+    from services.market_data import normalize_stock_code
+    if not code:
+        ts = await list_theses()
+        return {"theses": ts, "note": "用户记录的各持仓买入逻辑; 复盘时对照现状看逻辑是否还成立。"}
+    raw = normalize_stock_code(_norm_code(code))
+    bare = raw.split(".")[-1] if "." in raw else raw
+    t = await get_thesis(bare)
+    if not t:
+        return {"code": bare, "thesis": None, "note": "用户没记这只的买入逻辑。可提示他在持仓里补一句, 以后好复盘。"}
+    return {"code": bare, "name": t.get("name"), "thesis": t.get("thesis"), "recorded_at": t.get("updated_at"),
+            "note": "这是用户当初记的买入逻辑; 对照现价/基本面/消息/红线客观说每条理由还成不成立, 别替他下买卖结论。"}
+
+
 async def _tool_get_holdings() -> dict:
     try:
         hs = await _active_holdings()
@@ -1542,6 +1558,8 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_holdings", "description": "查用户当前持仓列表(代码/名称/股数), 用于回答跟用户持仓的关系。",
      "input_schema": {"type": "object", "properties": {}}},
+    {"name": "get_thesis", "description": "读用户当初记录的买入逻辑(为什么买这只)。回答'我当初为什么买X、X的逻辑还成立吗、帮我复盘X'时用: 拿到 thesis 后对照现价/基本面/消息/红线, 客观说每条理由还成不成立。不传 code 看全部持仓的逻辑。仅当用户记过才有。",
+     "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选, 留空看全部"}}}},
     {"name": "get_asset_allocation", "description": "查用户全量资产配置: 各大类(股票/现金/理财/基金/加密/机器人)市值+占比 + 现金与理财逐笔明细(金额/年化/持有天数)。回答'现金/理财怎么分配、应急金够不够、资产结构合不合理、流动性够不够'这类资产配置问题时用。不涉及个股买卖。",
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_trades", "description": "查用户成交记录(含个股/场内ETF/场外基金): 传 code→该标的买卖/加减仓/分红或申赎流水(A股另给综合成本/已实现盈亏/持有天数, 同日有买有卖=做T); 不传→最近全部成交(三类合并)。可用 start/end(YYYY-MM-DD)按成交日期筛区间('这周/6月/上个月'自己换算成日期传)。回答'我什么时候买的、成本多少、做过几次T、这票赚没赚、持有多久、最近/某段时间交易了啥'时用。",
@@ -1579,6 +1597,7 @@ _EXECUTORS = {
     "get_peers": lambda a: _tool_peers(a.get("code", "")),
     "get_shareholders": lambda a: _tool_shareholders(a.get("code", "")),
     "get_holdings": lambda a: _tool_get_holdings(),
+    "get_thesis": lambda a: _tool_get_thesis(a.get("code", "")),
     "get_asset_allocation": lambda a: _tool_asset_allocation(),
     "get_trades": lambda a: _tool_trades(a.get("code", ""), a.get("start", ""), a.get("end", "")),
     "get_market_sentiment": lambda a: _tool_market_sentiment(),
@@ -1645,6 +1664,9 @@ _SYSTEM = (
     "'扛跌/防御/长期持有'这类叙事只用在持有天数确实较长、真经历过下跌的仓上, 用前先看持有天数确认。\n"
     "  · 【复盘成交不能只列流水】梳理用户买卖后, 必须对涉及的个股再调 get_quote(拿现价/今日涨跌幅/盘口: 封涨停/炸板/冲高回落), "
     "需要时 get_trend 看近日走势, 把'你卖的X今天还在涨/你买的Y冲涨停又炸板了/现价较你成本X%'这种当下对照讲出来。只罗列成交日期价格是不够的。\n"
+    "  · 【买入逻辑还成不成立·thesis 复盘】用户问'我当初为什么买X/X的逻辑还在吗/帮我复盘X'时, 先 get_thesis 拿他记的买入逻辑, "
+    "把里面每条理由逐条对照现状(get_quote/get_fundamentals/get_news/get_red_flags), 客观说'这条还成立/这条已经变了(给依据)'。"
+    "用户没记 thesis 就提示他在持仓里补一句买入逻辑, 以后好复盘。这是复盘客观事实, 逻辑变没变如实讲, 但买卖决策仍交给他。\n"
     "  · 【历史涨跌的日期以工具返回值为准】说'X月X日涨了多少'时, 日期取 get_trend.daily_pct 里那条的 date 字段, 或 get_quote/get_intraday 的当天数据。"
     "daily_pct 已按真实交易日标好(周末/节假日自然断档), 照抄即可; 某条对应哪天不明确时, 只说涨跌幅度。\n"
     "(港美股可用 get_quote+get_trend+get_news+get_fundamentals; 资金流/龙虎榜/概念/同行/筹码/商品/公告 这些仅 A 股, 港美股查不到就如实说。)\n"
@@ -1713,7 +1735,7 @@ _TOOL_CN = {
     "get_news": "查新闻", "get_intraday": "查分时", "get_announcements": "查公告", "get_fund_flow": "查资金流", "get_lhb": "查龙虎榜",
     "get_company_profile": "查公司主营", "get_red_flags": "查红线风险", "get_stock_concepts": "查所属概念", "get_fundamentals": "查基本面", "get_commodity": "查商品价",
     "get_peers": "同行对比", "get_shareholders": "查股东解禁",
-    "get_holdings": "看持仓", "get_asset_allocation": "看资产配置", "get_trades": "查成交记录", "get_market_sentiment": "看大盘情绪",
+    "get_holdings": "看持仓", "get_thesis": "看买入逻辑", "get_asset_allocation": "看资产配置", "get_trades": "查成交记录", "get_market_sentiment": "看大盘情绪",
     "get_sector_momentum": "看板块动量", "get_hot_rank": "看资金热度",
     "get_hot_concepts": "看热门概念", "get_board_stocks": "查板块龙头", "get_market_news": "看政策快讯", "web_search": "联网搜索",
 }
