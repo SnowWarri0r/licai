@@ -1053,6 +1053,67 @@ async def _tool_get_holdings() -> dict:
         return {"error": str(e)}
 
 
+_ASSET_CLASS_CN = {"CASH": "现金", "WEALTH": "理财", "FUND": "基金",
+                   "CRYPTO": "加密", "BOT": "量化机器人"}
+
+
+async def _tool_asset_allocation() -> dict:
+    """全量资产配置快照: 各大类(股票/现金/理财/基金/加密/机器人)市值+占比 + 现金/理财逐笔明细(金额/年化/持有天数)。
+    供'现金理财怎么分/应急金够不够/结构合不合理'这类资产配置讨论, 不涉及个股买卖。单位元(CNY)。"""
+    from api.assets_routes import list_assets
+    from services.market_data import get_realtime_quotes
+    try:
+        data = await list_assets()
+    except Exception as e:
+        return {"error": f"读资产失败: {e}"}
+    by_type = (data.get("summary") or {}).get("by_type") or {}
+    assets = data.get("assets") or []
+
+    classes: dict[str, float] = {}
+    for t, v in by_type.items():
+        cn = _ASSET_CLASS_CN.get(t, t)
+        classes[cn] = round(classes.get(cn, 0.0) + float(v.get("value") or 0), 2)
+
+    # A股/港美股市值(CNY)
+    try:
+        hs = await _active_holdings()
+        if hs:
+            codes = [h["stock_code"] for h in hs]
+            quotes = await get_realtime_quotes(codes)
+            stock_val = 0.0
+            for h in hs:
+                q = quotes.get(h["stock_code"]) or {}
+                px = q.get("price") or 0
+                fx = q.get("fx_rate") or 1
+                stock_val += px * float(h.get("shares") or 0) * fx
+            if stock_val > 0:
+                classes["股票"] = round(stock_val, 2)
+    except Exception:
+        pass
+
+    total = round(sum(classes.values()), 2)
+    breakdown = [{"类别": k, "金额": v, "占比%": round(v / total * 100, 1) if total > 0 else 0}
+                 for k, v in sorted(classes.items(), key=lambda kv: -kv[1])]
+
+    # 现金 + 理财 逐笔明细(配置讨论的重点: 流动性 & 收益)
+    liquid = []
+    for a in assets:
+        if a.get("asset_type") not in ("CASH", "WEALTH"):
+            continue
+        q = a.get("quote") or {}
+        liquid.append({
+            "名称": a.get("name"), "类别": _ASSET_CLASS_CN.get(a.get("asset_type")),
+            "金额": round(a.get("current_value") or 0, 2),
+            "年化%": round((a.get("annual_yield_rate") or q.get("annual_yield_rate") or 0) * 100, 2) or None,
+            "持有天数": q.get("days_held"),
+        })
+
+    return {"unit": "元(CNY)", "total_asset": total, "breakdown": breakdown,
+            "cash_and_wealth_detail": liquid,
+            "note": "breakdown=各大类市值与占比; cash_and_wealth_detail=现金/理财逐笔(流动性与收益)。"
+                    "据此可分析流动性分层/应急金/收益-期限权衡, 但具体怎么分由用户自己决定。"}
+
+
 async def _tool_sector_momentum(days: int = 10) -> dict:
     """板块趋势矩阵: 各行业近 N 日累计涨跌/连涨动能/净流入 → 看动量是否延续(动量风格) 还是冲高回落(退潮/反转)。"""
     try:
@@ -1291,6 +1352,8 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_holdings", "description": "查用户当前持仓列表(代码/名称/股数), 用于回答跟用户持仓的关系。",
      "input_schema": {"type": "object", "properties": {}}},
+    {"name": "get_asset_allocation", "description": "查用户全量资产配置: 各大类(股票/现金/理财/基金/加密/机器人)市值+占比 + 现金与理财逐笔明细(金额/年化/持有天数)。回答'现金/理财怎么分配、应急金够不够、资产结构合不合理、流动性够不够'这类资产配置问题时用。不涉及个股买卖。",
+     "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_trades", "description": "查用户成交记录(含个股/场内ETF/场外基金): 传 code→该标的买卖/加减仓/分红或申赎流水(A股另给综合成本/已实现盈亏/持有天数, 同日有买有卖=做T); 不传→最近全部成交(三类合并)。可用 start/end(YYYY-MM-DD)按成交日期筛区间('这周/6月/上个月'自己换算成日期传)。回答'我什么时候买的、成本多少、做过几次T、这票赚没赚、持有多久、最近/某段时间交易了啥'时用。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选; 留空看全部"}, "start": {"type": "string", "description": "可选, 起始日 YYYY-MM-DD"}, "end": {"type": "string", "description": "可选, 截止日 YYYY-MM-DD"}}}},
     {"name": "get_market_sentiment", "description": "查大盘打板情绪(涨停数/连板高度/炸板率/赚钱效应/热点板块), 判断是个股原因还是大盘普涨普跌; 也用于判断市场风格(打板赚钱效应高=追涨/动量有效; 炸板率高+亏钱效应=高位分歧/反转)。",
@@ -1324,6 +1387,7 @@ _EXECUTORS = {
     "get_peers": lambda a: _tool_peers(a.get("code", "")),
     "get_shareholders": lambda a: _tool_shareholders(a.get("code", "")),
     "get_holdings": lambda a: _tool_get_holdings(),
+    "get_asset_allocation": lambda a: _tool_asset_allocation(),
     "get_trades": lambda a: _tool_trades(a.get("code", ""), a.get("start", ""), a.get("end", "")),
     "get_market_sentiment": lambda a: _tool_market_sentiment(),
     "get_sector_momentum": lambda a: _tool_sector_momentum(a.get("days", 10)),
@@ -1345,8 +1409,9 @@ def _active_tools() -> list:
     return [t for t in _TOOLS if t.get("type") != "web_search_20250305"]
 
 _SYSTEM = (
-    "你是市场&个股解读助手。用户自由提问: 个股为什么涨跌/消息面/跟持仓关系, 以及【市场风格】类问题"
-    "(这周市场在奖励什么打法、是动量追涨还是低吸反转、是题材轮动还是抱团、高低切迹象、资金主线在哪、情绪处在什么周期)。\n"
+    "你是市场&个股解读 + 理财规划助手。用户自由提问: 个股为什么涨跌/消息面/跟持仓关系, 【市场风格】类问题"
+    "(这周市场在奖励什么打法、是动量追涨还是低吸反转、是题材轮动还是抱团、高低切迹象、资金主线在哪、情绪处在什么周期), "
+    "以及【资产配置/现金理财】类问题(现金和理财怎么分、应急金够不够、流动性够不够、整体结构合不合理)。\n"
     "工具: resolve_stock(名字转代码)、get_quote(个股实时行情)、get_trend(个股近N日走势)、get_news(个股新闻)、"
     "get_fund_flow(个股主力资金流:谁在买卖)、get_lhb(龙虎榜:游资/机构席位)、get_stock_concepts(个股所属概念板块)、"
     "get_fundamentals(基本面+估值:营收净利/ROE/PE/PB)、get_commodity(关联金属期货价)、"
@@ -1371,6 +1436,11 @@ _SYSTEM = (
     "  · 【历史涨跌的日期以工具返回值为准】说'X月X日涨了多少'时, 日期取 get_trend.daily_pct 里那条的 date 字段, 或 get_quote/get_intraday 的当天数据。"
     "daily_pct 已按真实交易日标好(周末/节假日自然断档), 照抄即可; 某条对应哪天不明确时, 只说涨跌幅度。\n"
     "(港美股可用 get_quote+get_trend+get_news+get_fundamentals; 资金流/龙虎榜/概念/同行/筹码/商品/公告 这些仅 A 股, 港美股查不到就如实说。)\n"
+    "【资产配置/现金理财——可以给框架和分析, 别一刀切拒答】问'现金/理财怎么分、应急金够不够、流动性够不够、结构合不合理'时, "
+    "调 get_asset_allocation 看全量结构(各大类占比 + 现金/理财逐笔金额/年化/持有天数), 然后给:① 流动性分层框架(活期应急金 / 短期可取理财 / 长期增值, 一般应急金覆盖 3-6 个月支出)、"
+    "② 货币基金 vs 银行理财 vs 国债逆回购 vs 定期存款 的收益-流动性-期限权衡(各自适合放哪一层)、③ 点出用户当前结构的具体问题(如现金占比过高在贬值、理财全是活期没拿长期溢价、应急金不足、过度集中某一类)。"
+    "这是理财规划框架 + 现状分析, 属于允许范围。**收尾点明: 我给的是通用框架和你当前结构的分析, 不是持牌投顾建议, 具体怎么分、买哪只产品由你自己定。** "
+    "不要替用户拍板'就买这只货基/这款理财'这种具体产品择时, 框架和现状问题可以讲透。\n"
     "【'能不能进/明天怎么样/还能拿吗'这类问题】不要直接拒绝了事。照样把客观分析做全"
     "(为什么涨跌、消息面、政策面、走势位置、跟持仓关系、双向风险都摆出来), 只是【不给买卖结论】——"
     "结尾一句'方向性的进出/仓位得你自己定, 我只给客观信息'。决策依据给足, 但不替用户拍板。\n"
@@ -1394,9 +1464,10 @@ _SYSTEM = (
     "  · 数据粒度: get_hot_concepts 给到概念级(今日榜), get_sector_momentum 给行业级近N日动量, 配合用。"
     "概念榜是当日快照, '这几天怎么切'的多日轨迹要结合行业动量推断; 概念榜偶发不可达(东财抖动)时就退回行业级, 并说明。绝不硬编榜上没有的概念名。\n"
     "每个结论都要有工具数据支撑。\n"
-    "【硬规则】只做客观解读与市场逻辑分析(市场在奖励什么/为什么动/什么消息), 严禁任何面向用户的操作建议: "
-    "不许出现 你该买/该卖/该用XX策略去操作/加仓/减仓/能不能追/还能不能拿/目标价/止损/现在适合。"
+    "【硬规则·个股层面】个股/场内标的只做客观解读与市场逻辑分析(市场在奖励什么/为什么动/什么消息), 严禁面向用户的个股操作建议: "
+    "不许出现 你该买/该卖/该用XX策略去操作/加仓/减仓/能不能追/还能不能拿/目标价/止损/现在适合(这条针对个股买卖择时)。"
     "描述'市场在奖励动量'可以, 但不许说'所以你该追涨'。料不足就直说不确定, 绝不编造新闻或数字。\n"
+    "(注: 资产配置/现金理财层面的通用框架 + 现状分析不在此禁令内, 见上方【资产配置/现金理财】, 但同样不点名具体产品择时。)\n"
     "【知识边界·先搜再答, 别嘴硬】你的训练知识有截止日、可能已过期(尤其海外公司是否上市/最新IPO/重组/政策/某公司近况)。"
     "碰到本地工具(行情/板块/概念)查不到、或时效性强、或你不确定的事实, 不许凭记忆下肯定结论——先用 web_search 联网核实; "
     "搜到结果就以搜到的为准(并可在文中标明来源/日期), 若搜到该标的有代码就再用 get_quote 查实时行情。"
@@ -1420,7 +1491,7 @@ _TOOL_CN = {
     "get_news": "查新闻", "get_intraday": "查分时", "get_announcements": "查公告", "get_fund_flow": "查资金流", "get_lhb": "查龙虎榜",
     "get_stock_concepts": "查所属概念", "get_fundamentals": "查基本面", "get_commodity": "查商品价",
     "get_peers": "同行对比", "get_shareholders": "查股东解禁",
-    "get_holdings": "看持仓", "get_trades": "查成交记录", "get_market_sentiment": "看大盘情绪",
+    "get_holdings": "看持仓", "get_asset_allocation": "看资产配置", "get_trades": "查成交记录", "get_market_sentiment": "看大盘情绪",
     "get_sector_momentum": "看板块动量", "get_hot_rank": "看资金热度",
     "get_hot_concepts": "看热门概念", "get_board_stocks": "查板块龙头", "get_market_news": "看政策快讯", "web_search": "联网搜索",
 }
