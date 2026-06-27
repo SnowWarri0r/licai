@@ -1,17 +1,10 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { api, fetchJSON } from '../hooks/useApi'
-import { clearBrokersCache } from '../helpers'
 
 export default function Settings({ onClose }) {
   const [url, setUrl] = useState('')
   const [status, setStatus] = useState({ text: '', ok: null })
   const [saving, setSaving] = useState(false)
-
-  // LLM proxy
-  const [proxyUrl, setProxyUrl] = useState('')
-  const [proxySaving, setProxySaving] = useState(false)
-  const [proxyStatus, setProxyStatus] = useState({ text: '', ok: null })
-  const [proxyEnvOverride, setProxyEnvOverride] = useState(false)
 
   // OKX credentials
   const [okxStatus, setOkxStatus] = useState(null)
@@ -20,39 +13,6 @@ export default function Settings({ onClose }) {
   const [okxPassphrase, setOkxPassphrase] = useState('')
   const [okxStatusText, setOkxStatusText] = useState({ text: '', ok: null })
   const [okxSaving, setOkxSaving] = useState(false)
-
-  // 刷新基金名 (按天天基金官方全称回填)
-  const [refreshMsg, setRefreshMsg] = useState('')
-  const [refreshing, setRefreshing] = useState(false)
-  const refreshFundNames = async () => {
-    setRefreshing(true); setRefreshMsg('')
-    try {
-      const r = await fetch('/api/assets/refresh-names', { method: 'POST' })
-      const d = await r.json()
-      setRefreshMsg(d.updated > 0 ? `已更新 ${d.updated} 只基金名` : '都已是官方全称, 无需更新')
-    } catch { setRefreshMsg('失败, 稍后再试') }
-    finally { setRefreshing(false) }
-  }
-
-  // 券商费率
-  const [brokers, setBrokers] = useState([])
-  const saveTimers = useRef({})
-  const pendingPatch = useRef({})
-  const reloadBrokers = () => fetch('/api/brokers').then(r => r.json()).then(setBrokers).catch(() => {})
-  useEffect(() => { reloadBrokers() }, [])
-  const editBroker = (id, field, val) => {
-    setBrokers(bs => bs.map(b => b.id === id ? { ...b, [field]: val } : b))
-    pendingPatch.current[id] = { ...(pendingPatch.current[id] || {}), [field]: val }
-    clearTimeout(saveTimers.current[id])
-    saveTimers.current[id] = setTimeout(() => {
-      const patch = pendingPatch.current[id]; pendingPatch.current[id] = {}
-      fetch(`/api/brokers/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) })
-        .then(() => clearBrokersCache())
-    }, 600)
-  }
-  const setDefaultBroker = (id) => fetch(`/api/brokers/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_default: true }) }).then(() => { clearBrokersCache(); reloadBrokers() })
-  const delBroker = (id) => { if (confirm('删除该券商？')) fetch(`/api/brokers/${id}`, { method: 'DELETE' }).then(r => r.json()).then(d => { if (d.detail) alert(d.detail); clearBrokersCache(); reloadBrokers() }) }
-  const addBroker = () => fetch('/api/brokers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: '新券商', stock_rate: 0.0001854, stock_min: 5, etf_rate: 0.0001854, etf_min: 5 }) }).then(() => { clearBrokersCache(); reloadBrokers() })
 
   const loadOkxStatus = async () => {
     try { setOkxStatus(await fetchJSON('/api/assets/okx/status')) } catch {}
@@ -64,10 +24,6 @@ export default function Settings({ onClose }) {
       if (d.enabled) setStatus({ text: '已启用', ok: true })
     })
     loadOkxStatus()
-    fetchJSON('/api/settings/llm').then(d => {
-      setProxyUrl(d.proxy_url || '')
-      setProxyEnvOverride(d.env_override || false)
-    }).catch(() => {})
   }, [])
 
   const saveOkx = async () => {
@@ -105,22 +61,6 @@ export default function Settings({ onClose }) {
       setOkxStatusText({ text: '已清除', ok: true })
       await loadOkxStatus()
     } catch {}
-  }
-
-  const saveProxy = async () => {
-    setProxySaving(true)
-    setProxyStatus({ text: '', ok: null })
-    try {
-      await fetchJSON('/api/settings/llm', {
-        method: 'POST',
-        body: JSON.stringify({ proxy_url: proxyUrl.trim() }),
-      })
-      setProxyStatus({ text: proxyUrl.trim() ? '已保存并启用' : '已清除，走直连', ok: true })
-    } catch {
-      setProxyStatus({ text: '保存失败', ok: false })
-    } finally {
-      setProxySaving(false)
-    }
   }
 
   const handleSave = async () => {
@@ -181,35 +121,6 @@ export default function Settings({ onClose }) {
               {status.text}
             </span>
           )}
-        </div>
-
-        {/* LLM 代理配置 */}
-        <div className="mt-2 pt-4 border-t border-border">
-          <label className="text-[12px] text-text-dim font-semibold block mb-1">LLM 代理地址（早盘简报）</label>
-          <p className="text-[11px] text-text-muted mb-2 leading-relaxed">
-            访问 Anthropic API 的本地代理，留空则直连。
-          </p>
-          {proxyEnvOverride && (
-            <p className="text-[11px] text-warn mb-2">当前由环境变量 LLM_PROXY 覆盖，UI 配置不生效</p>
-          )}
-          <input
-            className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] text-text font-mono outline-none focus:border-accent transition-colors disabled:opacity-50"
-            placeholder="留空直连，或填入代理地址如 http://127.0.0.1:1082"
-            value={proxyUrl}
-            onChange={e => setProxyUrl(e.target.value)}
-            disabled={proxyEnvOverride}
-          />
-          <div className="flex items-center gap-3 mt-2">
-            <button onClick={saveProxy} disabled={proxySaving || proxyEnvOverride}
-              className="px-4 py-1.5 rounded-md bg-accent text-bg font-medium text-[13px] hover:opacity-90 disabled:opacity-50 cursor-pointer">
-              {proxySaving ? '保存中...' : '保存'}
-            </button>
-            {proxyStatus.text && (
-              <span className={`text-[12px] font-medium ${proxyStatus.ok ? 'text-bull' : 'text-bear'}`}>
-                {proxyStatus.text}
-              </span>
-            )}
-          </div>
         </div>
 
         {/* OKX API 凭证 */}
@@ -273,140 +184,165 @@ export default function Settings({ onClose }) {
           )}
         </div>
 
-        <DataExportImport />
-
-        {/* 券商费率管理 */}
-        <section className="rounded-xl border border-accent/20 bg-surface-2/80 overflow-hidden mt-4">
-          <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-            <h2 className="text-[13px] font-medium text-accent tracking-wide">券商费率</h2>
-            <button onClick={addBroker} className="text-[11px] px-2 py-1 rounded border border-accent/40 text-accent hover:bg-accent/10 cursor-pointer">+ 新增券商</button>
-          </div>
-          <div className="p-3 space-y-2">
-            <div className="grid grid-cols-[1fr_auto_auto_auto_auto_auto] gap-2 text-[10px] text-text-dim px-1">
-              <div>券商</div><div className="w-20 text-center">股票(万)</div><div className="w-16 text-center">股票起¥</div><div className="w-20 text-center">ETF(万)</div><div className="w-16 text-center">ETF起¥</div><div className="w-[72px]"></div>
-            </div>
-            {brokers.map(b => (
-              <div key={b.id} className="grid grid-cols-[1fr_auto_auto_auto_auto_auto] gap-2 items-center text-[12px]">
-                <input value={b.name} onChange={e => editBroker(b.id, 'name', e.target.value)} className="bg-bg border border-border rounded px-2 py-1 text-text" placeholder="券商名" />
-                <input type="number" step="0.0001" value={+(b.stock_rate * 10000).toFixed(4)} onChange={e => editBroker(b.id, 'stock_rate', parseFloat(e.target.value) / 10000)} className="w-20 bg-bg border border-border rounded px-2 py-1 text-text" />
-                <input type="number" step="0.1" value={b.stock_min} onChange={e => editBroker(b.id, 'stock_min', parseFloat(e.target.value))} className="w-16 bg-bg border border-border rounded px-2 py-1 text-text" />
-                <input type="number" step="0.0001" value={+(b.etf_rate * 10000).toFixed(4)} onChange={e => editBroker(b.id, 'etf_rate', parseFloat(e.target.value) / 10000)} className="w-20 bg-bg border border-border rounded px-2 py-1 text-text" />
-                <input type="number" step="0.1" value={b.etf_min} onChange={e => editBroker(b.id, 'etf_min', parseFloat(e.target.value))} className="w-16 bg-bg border border-border rounded px-2 py-1 text-text" />
-                <div className="flex gap-1">
-                  <button onClick={() => setDefaultBroker(b.id)} className={`text-[10px] px-1.5 py-1 rounded border cursor-pointer ${b.is_default ? 'border-accent text-accent bg-accent/10' : 'border-border text-text-dim'}`}>{b.is_default ? '默认' : '设默认'}</button>
-                  {!b.is_default && <button onClick={() => delBroker(b.id)} className="text-[10px] px-1.5 py-1 rounded border border-bear/40 text-bear cursor-pointer">删</button>}
-                </div>
-              </div>
-            ))}
-            <div className="text-[10px] text-text-muted">费率单位「万」(如 1.854 = 万1.854)；起¥ 为每笔最低收费。改完自动保存。</div>
-          </div>
-        </section>
-
-        {/* 数据维护 */}
-        <section className="rounded-xl border border-accent/20 bg-surface-2/80 overflow-hidden mt-4">
-          <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-            <h2 className="text-[13px] font-medium text-accent tracking-wide">数据维护</h2>
-          </div>
-          <div className="p-3 flex items-center gap-3 flex-wrap">
-            <button onClick={refreshFundNames} disabled={refreshing}
-              className="text-[12px] px-3 py-1.5 rounded border border-accent/40 text-accent hover:bg-accent/10 cursor-pointer disabled:opacity-50">
-              {refreshing ? '刷新中…' : '刷新基金名'}
-            </button>
-            <span className="text-[11px] text-text-dim">{refreshMsg || '按天天基金官方全称回填(场内 ETF 行情接口给的是简称)'}</span>
-          </div>
-        </section>
+        {/* LLM 配置 */}
+        <div className="mt-2 pt-4 border-t border-border">
+          <LLMConfigSection />
+        </div>
       </div>
     </section>
   )
 }
 
-function DataExportImport() {
-  const [importing, setImporting] = useState(false)
-  const [importResult, setImportResult] = useState(null)
-  const [importMode, setImportMode] = useState('replace')
+function LLMConfigSection() {
+  const [baseUrl, setBaseUrl] = useState('')
+  const [apiKey, setApiKey] = useState('')
+  const [apiKeyHeader, setApiKeyHeader] = useState('x-api-key')
+  const [apiKeyPrefix, setApiKeyPrefix] = useState('')
+  const [proxy, setProxy] = useState('')
+  const [modelMap, setModelMap] = useState('')
+  const [status, setStatus] = useState({ text: '', ok: null })
+  const [saving, setSaving] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [dbHasKey, setDbHasKey] = useState(false)
 
-  const handleExport = () => {
-    // 直链下载, 让浏览器原生触发 Save As
-    window.location.href = '/api/data/export'
+  useEffect(() => {
+    api.getLLMConfig().then(d => {
+      setBaseUrl(d.db_base_url || '')
+      setDbHasKey(d.has_api_key)
+      setApiKeyHeader(d.db_api_key_header || 'x-api-key')
+      setApiKeyPrefix(d.db_api_key_prefix || '')
+      setProxy(d.db_proxy || '')
+      setModelMap(d.db_model_map && Object.keys(d.db_model_map).length ? JSON.stringify(d.db_model_map, null, 2) : '')
+    }).catch(() => {})
+  }, [])
+
+  const handleSave = async () => {
+    setSaving(true)
+    try {
+      let modelMapObj = {}
+      if (modelMap.trim()) {
+        try { modelMapObj = JSON.parse(modelMap) } catch {
+          setStatus({ text: '模型映射 JSON 格式错误', ok: false })
+          setSaving(false)
+          return
+        }
+      }
+      await api.saveLLMConfig({
+        base_url: baseUrl.trim(),
+        api_key: apiKey.trim() || (dbHasKey ? '****' : ''),
+        api_key_header: apiKeyHeader.trim() || 'x-api-key',
+        api_key_prefix: apiKeyPrefix.trim(),
+        proxy: proxy.trim(),
+        model_map: modelMapObj,
+        update_api_key: apiKey.trim().length > 0,
+      })
+      setStatus({ text: '已保存', ok: true })
+      if (apiKey.trim()) setDbHasKey(true)
+      setApiKey('')
+    } catch (e) {
+      setStatus({ text: '保存失败: ' + (e.message || e), ok: false })
+    }
+    setSaving(false)
   }
 
-  const handleImport = async (e) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    if (!confirm(`确定从「${file.name}」${importMode === 'replace' ? '覆盖导入' : '合并导入'}？\n当前 DB 会先自动备份到 backups/。`)) {
-      e.target.value = ''
-      return
-    }
-    setImporting(true)
-    setImportResult(null)
+  const handleTest = async () => {
+    setTesting(true)
+    setStatus({ text: '测试中...', ok: null })
     try {
-      const fd = new FormData()
-      fd.append('file', file)
-      const res = await fetch(`/api/data/import?mode=${importMode}`, {
-        method: 'POST',
-        body: fd,
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || '导入失败')
-      setImportResult({ ok: true, ...data })
-      setTimeout(() => window.location.reload(), 1500)
-    } catch (err) {
-      setImportResult({ ok: false, message: err.message })
-    } finally {
-      setImporting(false)
-      e.target.value = ''
+      const r = await api.testLLM()
+      if (r.ok) {
+        setStatus({ text: `连接成功 · ${r.model} · ${r.latency_ms}ms`, ok: true })
+      } else {
+        setStatus({ text: `失败: ${r.error}`, ok: false })
+      }
+    } catch (e) {
+      setStatus({ text: '测试失败: ' + (e.message || e), ok: false })
     }
+    setTesting(false)
   }
 
   return (
-    <div className="mt-2 pt-4 border-t border-border">
-      <label className="text-[12px] text-text-dim font-semibold block mb-1">数据导出 / 导入</label>
+    <>
+      <label className="text-[12px] text-text-dim font-semibold">LLM 配置</label>
       <p className="text-[11px] text-text-muted mb-2 leading-relaxed">
-        导出为单个 JSON 文件，包含持仓、资产、交易记录、解套计划、提醒、月度现金流和应用设置。换设备时上传此文件还原。
+        支持 Anthropic 协议兼容的 API 端点（DeepSeek / 硅基流动 / OpenRouter 等）。
+        不配置则走原有 Anthropic 官方 + Keychain OAuth。
       </p>
-      <div className="flex flex-wrap gap-2 items-center mb-2">
-        <button onClick={handleExport}
-          className="px-3 py-1.5 rounded-md text-[12px] border border-accent text-accent hover:bg-accent/10 cursor-pointer">
-          导出全部数据
-        </button>
-        <span className="w-px h-4 bg-border mx-1" />
-        <span className="text-[11px] text-text-muted">导入模式</span>
-        {[
-          ['replace', '覆盖（清空再导入）'],
-          ['merge', '合并（仅新增/更新）'],
-        ].map(([k, l]) => (
-          <label key={k} className="text-[11px] text-text-dim flex items-center gap-1 cursor-pointer">
-            <input type="radio" name="importMode" value={k}
-              checked={importMode === k} onChange={() => setImportMode(k)} />
-            {l}
-          </label>
-        ))}
-      </div>
-      <label className="inline-block">
-        <input type="file" accept="application/json,.json" onChange={handleImport}
-          disabled={importing} className="hidden" />
-        <span className={`px-3 py-1.5 rounded-md text-[12px] border border-border-med text-text-dim hover:text-text hover:border-text-muted cursor-pointer inline-block ${importing ? 'opacity-50 pointer-events-none' : ''}`}>
-          {importing ? '导入中...' : '选择 JSON 导入'}
-        </span>
-      </label>
-      {importResult && (
-        <div className={`mt-2 text-[11.5px] p-2 rounded ${importResult.ok ? 'bg-bull/10 text-bull' : 'bg-bear/10 text-bear'}`}>
-          {importResult.ok ? (
-            <>
-              <div className="font-semibold mb-1">✓ {importResult.message}</div>
-              <div className="text-text-dim font-mono text-[10.5px]">
-                pre-import 备份: {importResult.pre_import_backup}
-              </div>
-              <div className="text-text-dim text-[10.5px] mt-1">
-                {Object.entries(importResult.imported).map(([t, n]) => `${t}: ${n}`).join(' · ')}
-              </div>
-              <div className="text-[11px] mt-1.5 text-text">页面将自动刷新...</div>
-            </>
-          ) : (
-            <div className="font-semibold">✗ {importResult.message}</div>
-          )}
+
+      <div className="grid grid-cols-1 gap-2 mb-2">
+        <div>
+          <label className="text-[11px] text-text-muted">API Base URL</label>
+          <input
+            className="w-full bg-bg border border-border rounded px-3 py-1.5 text-[12px] text-text font-mono outline-none focus:border-accent"
+            placeholder="https://api.anthropic.com"
+            value={baseUrl} onChange={e => setBaseUrl(e.target.value)}
+          />
         </div>
-      )}
-    </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="text-[11px] text-text-muted">API Key Header</label>
+            <input
+              className="w-full bg-bg border border-border rounded px-3 py-1.5 text-[12px] text-text font-mono outline-none focus:border-accent"
+              placeholder="x-api-key"
+              value={apiKeyHeader} onChange={e => setApiKeyHeader(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="text-[11px] text-text-muted">API Key Prefix（如 Bearer）</label>
+            <input
+              className="w-full bg-bg border border-border rounded px-3 py-1.5 text-[12px] text-text font-mono outline-none focus:border-accent"
+              placeholder="留空或填 Bearer"
+              value={apiKeyPrefix} onChange={e => setApiKeyPrefix(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div>
+          <label className="text-[11px] text-text-muted">API Key {dbHasKey && <span className="text-bull">（已保存，留空则不动）</span>}</label>
+          <input type="password"
+            className="w-full bg-bg border border-border rounded px-3 py-1.5 text-[12px] text-text font-mono outline-none focus:border-accent"
+            placeholder={dbHasKey ? '输入新 key 覆盖，留空保持原 key' : 'sk-...'}
+            value={apiKey} onChange={e => setApiKey(e.target.value)}
+          />
+        </div>
+
+        <div>
+          <label className="text-[11px] text-text-muted">HTTP 代理（可选）</label>
+          <input
+            className="w-full bg-bg border border-border rounded px-3 py-1.5 text-[12px] text-text font-mono outline-none focus:border-accent"
+            placeholder="http://127.0.0.1:7890"
+            value={proxy} onChange={e => setProxy(e.target.value)}
+          />
+        </div>
+
+        <div>
+          <label className="text-[11px] text-text-muted">模型别名映射（JSON，可选）</label>
+          <textarea rows={3}
+            className="w-full bg-bg border border-border rounded px-3 py-1.5 text-[12px] text-text font-mono outline-none focus:border-accent resize-none"
+            placeholder='{"smart":"deepseek-chat","balanced":"deepseek-chat","fast":"deepseek-chat"}'
+            value={modelMap} onChange={e => setModelMap(e.target.value)}
+          />
+          <p className="text-[10px] text-text-muted mt-0.5">逻辑名: smart / balanced / fast → 实际模型名</p>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3">
+        <button onClick={handleSave} disabled={saving}
+          className="px-4 py-1.5 rounded-md bg-accent text-bg font-medium text-[13px] hover:opacity-90 disabled:opacity-50 cursor-pointer">
+          {saving ? '保存中...' : '保存'}
+        </button>
+        <button onClick={handleTest} disabled={testing}
+          className="px-4 py-1.5 rounded-md border border-border text-text-dim text-[13px] hover:text-text transition-colors cursor-pointer">
+          {testing ? '测试中...' : '测试连接'}
+        </button>
+        {status.text && (
+          <span className={`text-[12px] font-medium break-all
+            ${status.ok === true ? 'text-bull' : status.ok === false ? 'text-bear' : 'text-text-dim'}`}>
+            {status.text}
+          </span>
+        )}
+      </div>
+    </>
   )
 }

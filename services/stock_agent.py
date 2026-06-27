@@ -304,6 +304,17 @@ _EXECUTORS = {
     "get_market_news": lambda a: _tool_market_news(a.get("limit", 40)),
 }
 
+
+def _active_tools() -> list:
+    """web_search 是 Anthropic 服务端工具, 只有官方端点支持; 若切到 DeepSeek/硅基流动等
+    非 Anthropic 厂商, 必须去掉它, 否则请求会被对方拒绝。其余自定义工具各厂商通用。"""
+    try:
+        if _llm._is_anthropic_official():
+            return _TOOLS
+    except Exception:
+        pass
+    return [t for t in _TOOLS if t.get("type") != "web_search_20250305"]
+
 _SYSTEM = (
     "你是市场&个股解读助手。用户自由提问: 个股为什么涨跌/消息面/跟持仓关系, 以及【市场风格】类问题"
     "(这周市场在奖励什么打法、是动量追涨还是低吸反转、是题材轮动还是抱团、高低切迹象、资金主线在哪、情绪处在什么周期)。\n"
@@ -358,7 +369,7 @@ async def ask_stock_stream(question: str):
     for rnd in range(_MAX_ROUNDS):
         try:
             resp = await asyncio.to_thread(
-                _llm.call_claude_messages, messages, _SYSTEM, _MODEL, 2048, _TOOLS)
+                _llm.call_claude_messages, messages, _SYSTEM, _MODEL, 2048, _active_tools())
         except Exception as e:
             yield {"type": "error", "error": str(e)}
             return
@@ -407,7 +418,7 @@ async def ask_stock(question: str) -> dict:
     for rnd in range(_MAX_ROUNDS):
         try:
             resp = await asyncio.to_thread(
-                _llm.call_claude_messages, messages, _SYSTEM, _MODEL, 2048, _TOOLS)
+                _llm.call_claude_messages, messages, _SYSTEM, _MODEL, 2048, _active_tools())
         except Exception as e:
             return {"answer": "", "error": str(e), "tools_used": tools_used, "rounds": rnd}
         content = resp.get("content", [])
