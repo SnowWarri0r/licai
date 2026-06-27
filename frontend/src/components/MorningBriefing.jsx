@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
 import { fetchJSON } from '../hooks/useApi'
 
-const VERDICT_META = {
-  lock_all: { label: '锁档', color: '#e58a8a', bg: '#e58a8a18', icon: '🔒' },
-  hold:     { label: '观望', color: '#a8a39a', bg: '#a8a39a18', icon: '⏸' },
-  raise:    { label: '上调', color: '#5fa86c', bg: '#5fa86c18', icon: '↗' },
-  lower:    { label: '下调', color: '#d4a05c', bg: '#d4a05c18', icon: '↘' },
-  add_now:  { label: '可加仓', color: '#c8a876', bg: '#c8a87618', icon: '✅' },
+// 信息倾向(描述, 非操作指令)。A股 红=暖/绿=冷。
+const SIGNAL_META = {
+  偏暖: { label: '偏暖', color: '#cf5c5c', bg: '#cf5c5c18', icon: '🔥' },
+  中性: { label: '中性', color: '#a8a39a', bg: '#a8a39a18', icon: '•' },
+  偏冷: { label: '偏冷', color: '#5fa86c', bg: '#5fa86c18', icon: '❄' },
+  警惕: { label: '警惕', color: '#d4a05c', bg: '#d4a05c18', icon: '⚠' },
 }
 const CONFIDENCE_META = {
   high: { label: '高', color: '#5fa86c' },
@@ -48,7 +48,7 @@ export default function MorningBriefing() {
         <div className="flex items-center justify-between">
           <div>
             <h3 className="text-[13px] font-semibold text-text-bright m-0">早盘简报</h3>
-            <p className="text-[11px] text-text-dim mt-1 mb-0">每日 9:00 自动生成 · 由 LLM 综合新闻 + 行情产出</p>
+            <p className="text-[11px] text-text-dim mt-1 mb-0">每日 9:00 自动生成 · 客观信息摘要 + 风险提示，不含操作建议</p>
           </div>
           <button onClick={refresh} disabled={refreshing}
             className="px-3 py-1 rounded-md text-[11px] border border-accent/40 bg-accent/10 text-accent hover:bg-accent/20 transition-colors cursor-pointer disabled:opacity-50">
@@ -79,8 +79,9 @@ export default function MorningBriefing() {
 
       <div className="divide-y divide-border-subtle">
         {data.briefings.map(b => {
-          const meta = VERDICT_META[b.verdict] || VERDICT_META.hold
+          const meta = SIGNAL_META[b.signal] || SIGNAL_META.中性
           const conf = CONFIDENCE_META[b.confidence] || CONFIDENCE_META.med
+          const hasDetail = (b.points && b.points.length > 0) || b.risk
           const isExp = expanded[b.stock_code]
           return (
             <div key={b.stock_code} className="px-3 md:px-5 py-3"
@@ -108,28 +109,21 @@ export default function MorningBriefing() {
                   {b.error && (
                     <p className="text-[11px] text-bear-bright mt-1 mb-0">{b.error}</p>
                   )}
-                  {(b.reasoning || (b.key_news && b.key_news.length > 0)) && (
+                  {b.risk && (
+                    <p className="text-[11px] mt-1 mb-0 flex items-start gap-1" style={{ color: '#d4a05c' }}>
+                      <span>⚠</span><span>{b.risk}</span>
+                    </p>
+                  )}
+                  {hasDetail && (
                     <button onClick={() => setExpanded(e => ({ ...e, [b.stock_code]: !e[b.stock_code] }))}
                       className="text-[11px] text-accent hover:underline mt-1 cursor-pointer">
-                      {isExp ? '收起 ▴' : '详情 ▾'}
+                      {isExp ? '收起 ▴' : '要点 ▾'}
                     </button>
                   )}
-                  {isExp && (
-                    <div className="mt-2 pt-2 border-t border-border-subtle space-y-1.5">
-                      {b.reasoning && (
-                        <p className="text-[11.5px] text-text-dim m-0 leading-relaxed">{b.reasoning}</p>
-                      )}
-                      {b.key_news && b.key_news.length > 0 && (
-                        <ul className="text-[11px] text-text-muted m-0 pl-4 list-disc space-y-0.5">
-                          {b.key_news.map((n, i) => <li key={i}>{n}</li>)}
-                        </ul>
-                      )}
-                      {b.tranche_action && (
-                        <div className="text-[11px] text-text-dim">
-                          建议动作: <span className="text-text" style={{ color: meta.color }}>{b.tranche_action}</span>
-                        </div>
-                      )}
-                    </div>
+                  {isExp && b.points && b.points.length > 0 && (
+                    <ul className="mt-2 pt-2 border-t border-border-subtle text-[11.5px] text-text-dim m-0 pl-4 list-disc space-y-0.5 leading-relaxed">
+                      {b.points.map((p, i) => <li key={i}>{p}</li>)}
+                    </ul>
                   )}
                 </div>
               </div>
