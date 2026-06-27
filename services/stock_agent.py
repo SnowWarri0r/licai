@@ -252,20 +252,30 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
     raw = normalize_stock_code(_norm_code(code))
     days = max(5, min(int(days or 20), 60))
     market, symbol = split_stock_code(raw)
-    bars: list = []  # [(date_str, close)] 升序; date 可能为空(数据源缺)
+    def _ff(v):
+        try:
+            f = float(v)
+            return f if f > 0 else None
+        except (TypeError, ValueError):
+            return None
+    bars: list = []  # [(date_str, close, high|None, low|None)] 升序; date 可能为空(数据源缺)
     if is_a_share(raw):
         df = await get_historical_data(raw, days + 5)
         if df is None or df.empty:
             return {"error": "无历史数据"}
-        dcol = df["日期"].tolist() if "日期" in df.columns else [""] * len(df)
-        bars = [(str(d)[:10], float(c)) for d, c in zip(dcol, df["收盘"].tolist())]
+        n = len(df)
+        dcol = df["日期"].tolist() if "日期" in df.columns else [""] * n
+        hcol = df["最高"].tolist() if "最高" in df.columns else [None] * n
+        lcol = df["最低"].tolist() if "最低" in df.columns else [None] * n
+        bars = [(str(d)[:10], float(c), _ff(h), _ff(l))
+                for d, c, h, l in zip(dcol, df["收盘"].tolist(), hcol, lcol)]
     elif market == "HK":
         rows = await asyncio.to_thread(_kline_tencent_hk, f"hk{symbol.zfill(5)}", days + 5)
-        bars = [(str(r.get("date") or "")[:10], float(r["close"]))
+        bars = [(str(r.get("date") or "")[:10], float(r["close"]), _ff(r.get("high")), _ff(r.get("low")))
                 for r in (rows or []) if r.get("close")]
     elif market == "US":
         rows = await asyncio.to_thread(_us_daily_k_sync, symbol, days)
-        bars = [(str(r.get("date") or "")[:10], float(r["close"]))
+        bars = [(str(r.get("date") or "")[:10], float(r["close"]), _ff(r.get("high")), _ff(r.get("low")))
                 for r in (rows or []) if r.get("close")]
     else:
         return {"error": "走势暂不支持该市场"}
@@ -273,17 +283,25 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
     if len(bars) < 2:
         return {"error": "无历史数据"}
     code = raw
-    closes = [c for _, c in bars]
-    # 每条逐日涨跌挂上当天真实日期, 避免 LLM 自己猜日期猜错位
-    daily = [{"date": bars[i][0], "pct": round((closes[i] / closes[i - 1] - 1) * 100, 2)}
-             for i in range(1, len(bars))]
+    closes = [b[1] for b in bars]
+    # 每条逐日涨跌挂真实日期 + 当天最高/最低相对昨收的幅度(看历史某天日内摸没摸到涨停/封板还是冲高回落, 无需分时)
+    daily = []
+    for i in range(1, len(bars)):
+        pc = closes[i - 1]
+        e = {"date": bars[i][0], "pct": round((closes[i] / pc - 1) * 100, 2)}
+        h, l = bars[i][2], bars[i][3]
+        if h and pc > 0:
+            e["high_pct"] = round((h / pc - 1) * 100, 2)
+        if l and pc > 0:
+            e["low_pct"] = round((l / pc - 1) * 100, 2)
+        daily.append(e)
     cum = round((closes[-1] / closes[0] - 1) * 100, 2)
     up = sum(1 for d in daily if d["pct"] > 0)
     return {
         "code": code, "days": len(daily),
         "cum_pct": cum, "up_days": up, "down_days": len(daily) - up,
         "last_date": bars[-1][0], "last_close": round(closes[-1], 3),
-        # 最近 10 日逐日涨跌, 每条带 date(YYYY-MM-DD)。最后一条即最新交易日。
+        # 最近 10 日逐日涨跌, 每条带 date(YYYY-MM-DD) + high_pct/low_pct(当日最高/最低相对昨收)。最后一条即最新交易日。
         "daily_pct": daily[-min(10, len(daily)):],
     }
 
@@ -1211,7 +1229,7 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"query": {"type": "string", "description": "股票名字或代码"}}, "required": ["query"]}},
     {"name": "get_quote", "description": "查个股实时行情: 现价/当日涨跌幅/开高低/成交额/换手。code 直接用 resolve_stock 返回的 code 原样传(A股是裸6位如 600667 / 000657; 港美股 HK.00700 / US.AAPL), 不要自己加 sh/sz 前缀。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
-    {"name": "get_trend", "description": "查个股近 N 个交易日走势: 累计涨跌/逐日涨跌/上涨天数。支持 A 股/港股/美股。daily_pct 每条是 {date, pct}, date 是该日真实交易日(YYYY-MM-DD), 最后一条即 last_date(最新交易日)。引用某天涨跌时, 日期以这里的 date 字段为准。",
+    {"name": "get_trend", "description": "查个股近 N 个交易日走势: 累计涨跌/逐日涨跌/上涨天数。支持 A 股/港股/美股。daily_pct 每条是 {date, pct, high_pct, low_pct}: date 是该日真实交易日(YYYY-MM-DD), pct 是收盘涨跌, high_pct/low_pct 是当日最高/最低相对昨收的幅度。最后一条即 last_date(最新交易日)。引用某天涨跌时日期以 date 字段为准。判断历史某天日内有没有摸到涨停/封板还是冲高回落: 看 high_pct——high_pct≈涨停幅度(主板10/创业板科创20)且 pct=high_pct 即收在涨停(封板), high_pct 到了涨停而 pct 明显更低即日内触板后回落。这样无需分时即可还原历史某天盘中。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}, "days": {"type": "integer", "description": "默认20"}}, "required": ["code"]}},
     {"name": "get_intraday", "description": "当日分时走势(开盘/最高及时间/最低及时间/现价 + 冲高回落幅度 + 路径采样): 判断盘中是不是冲高回落/炸板/尾盘拉升时用, 比日K细。需启用 TDX 数据源, 仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
