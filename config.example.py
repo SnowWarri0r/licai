@@ -48,5 +48,10 @@ class Config:
     host: str = "0.0.0.0"
     port: int = 8888
 
+    # --- 可插拔数据源: 通达信(TDX) REST 服务 (https://github.com/oficcejo/tdx-api) ---
+    # 空 = 禁用(默认走东财/新浪)。跑起那个 Go 服务后填 base_url(如 http://localhost:8080),
+    # agent 的盘口/分时会用它(五档盘口 + 当日分时)。也可用环境变量 TDX_BASE_URL 覆盖。
+    tdx_base_url: str = ""
+
 
 config = Config()
