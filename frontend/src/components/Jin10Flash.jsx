@@ -1,11 +1,13 @@
 import { useState, useEffect, useRef } from 'react'
 import { fetchJSON } from '../hooks/useApi'
+import NewsDetailModal from './NewsDetailModal'
 
 // 金十快讯滚动流: 全球宏观/地缘/央行实时快讯。重要高亮 + 关联持仓标记 + 筛选。30s 自动刷新。
 export default function Jin10Flash() {
   const [items, setItems] = useState([])
   const [updated, setUpdated] = useState('')
   const [filter, setFilter] = useState('all')   // all | important | related
+  const [sel, setSel] = useState(null)          // 点开解读的快讯
   const timer = useRef(null)
 
   const load = () => {
@@ -53,7 +55,7 @@ export default function Jin10Flash() {
     <div className="bg-surface-2 border border-border rounded-xl p-4 md:p-5">
       <div className="flex items-baseline gap-2 mb-2">
         <h3 className="text-[14px] font-semibold text-text-bright m-0">金十快讯</h3>
-        <span className="text-[10.5px] text-text-muted">全球宏观 / 地缘 / 央行实时 · 30s 刷新</span>
+        <span className="text-[10.5px] text-text-muted">点快讯看 AI 解读 · 30s 刷新</span>
         {updated && <span className="text-[10px] text-text-muted ml-auto">更新 {updated}</span>}
       </div>
       <div className="flex gap-1.5 mb-3">
@@ -85,7 +87,8 @@ export default function Jin10Flash() {
                       {it.related && <span className="text-[9.5px] px-1 rounded" style={{ background: 'var(--color-up)18', color: 'var(--color-up)', border: '1px solid var(--color-up)50' }}>关联</span>}
                       {it.url && <a href={it.url} target="_blank" rel="noreferrer" className="text-[9.5px] text-text-muted hover:text-accent">原文↗</a>}
                     </div>
-                    <div className={`text-[12px] leading-relaxed mt-0.5 ${it.important ? 'text-text-bright font-medium' : it.related ? 'text-text' : 'text-text-dim'}`}>
+                    <div onClick={() => setSel({ title: it.title, content: '', source: '金十', time: it.time, url: it.url })}
+                      className={`text-[12px] leading-relaxed mt-0.5 cursor-pointer hover:text-accent transition-colors ${it.important ? 'text-text-bright font-medium' : it.related ? 'text-text' : 'text-text-dim'}`}>
                       {it.title}
                     </div>
                   </div>
@@ -98,6 +101,7 @@ export default function Jin10Flash() {
       <div className="text-[10px] text-text-muted pt-2.5 mt-2 border-t border-border-subtle">
         来源 金十数据 · 仅供参考, 不构成任何买卖建议
       </div>
+      {sel && <NewsDetailModal item={sel} onClose={() => setSel(null)} />}
     </div>
   )
 }
