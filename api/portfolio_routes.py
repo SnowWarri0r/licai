@@ -1008,6 +1008,7 @@ async def create_holding(data: HoldingCreate):
         stock_code, "BUY", data.cost_price, data.shares,
         note="re-entry (auto)" if existing else "initial (auto)",
         trade_date=data.trade_date,
+        trade_time=(data.trade_time or None),
     )
     await _recompute_holding(stock_code)
     return {"message": "添加成功", "stock_code": stock_code, "stock_name": name}

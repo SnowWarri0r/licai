@@ -1582,6 +1582,7 @@ function AddAShareForm({ initialMarket = 'A', onDone, onCancel, brokers = [] }) 
   const [form, setForm] = useState({
     code: '', name: '', shares: '', cost: '',
     tradeDate: new Date().toISOString().slice(0, 10),
+    tradeTime: '',
   })
   const [market, setMarket] = useState(initialMarket)
   const [submitting, setSubmitting] = useState(false)
@@ -1614,6 +1615,7 @@ function AddAShareForm({ initialMarket = 'A', onDone, onCancel, brokers = [] }) 
         stock_code: stockCode, stock_name: form.name,
         shares: parseInt(form.shares), cost_price: parseFloat(form.cost),
         trade_date: form.tradeDate || undefined,
+        trade_time: (market === 'A' && form.tradeTime) ? form.tradeTime : undefined,
         broker: broker || null,
       })
       if (res.message) onDone?.()
@@ -1673,6 +1675,15 @@ function AddAShareForm({ initialMarket = 'A', onDone, onCancel, brokers = [] }) 
           value={form.tradeDate}
           onChange={e => setForm({ ...form, tradeDate: e.target.value })} />
       </div>
+      {market === 'A' && (
+        <div className="flex flex-col gap-1">
+          <label className="text-[11px] text-text-dim">时刻 <span className="text-text-muted text-[10px]">可空</span></label>
+          <input type="time" className={`${inp} w-28 font-mono text-text-dim`}
+            value={form.tradeTime}
+            onChange={e => setForm({ ...form, tradeTime: e.target.value })}
+            title="成交时刻(可选), 留空用录入时间, 供分时图打点" />
+        </div>
+      )}
       <div className="flex flex-col gap-1">
         <label className="text-[11px] text-text-dim">券商</label>
         <select className={`${inp} w-28`} value={broker} onChange={e => setBroker(e.target.value)}>
