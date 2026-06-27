@@ -6,9 +6,39 @@ from pydantic import BaseModel, field_validator
 from typing import Optional
 
 from database import get_config, set_config, get_custom_alerts, add_custom_alert, delete_custom_alert
-from services import feishu_notify, llm_client
+from services import feishu_notify, llm_client, tdx_client
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
+
+
+class TDXConfig(BaseModel):
+    base_url: str = ""
+
+    @field_validator("base_url")
+    @classmethod
+    def _v(cls, v: str) -> str:
+        if v and not v.startswith(("http://", "https://")):
+            raise ValueError("base_url 必须以 http:// 或 https:// 开头")
+        return v.rstrip("/")
+
+
+@router.get("/tdx")
+async def get_tdx_config():
+    """TDX 可插拔数据源配置 + 当前是否启用。"""
+    return {"base_url": tdx_client._BASE_URL, "enabled": tdx_client.is_enabled()}
+
+
+@router.post("/tdx")
+async def set_tdx_config(data: TDXConfig):
+    await set_config("tdx_base_url", data.base_url)
+    tdx_client.configure(data.base_url)
+    return {"message": "saved", "enabled": tdx_client.is_enabled()}
+
+
+@router.post("/tdx/test")
+async def test_tdx_config(data: TDXConfig):
+    """连通性自检: 不改保存值, 用传入(或当前)地址试拉一只票。"""
+    return await tdx_client.test_connection(data.base_url or tdx_client._BASE_URL)
 
 
 class FeishuConfig(BaseModel):
