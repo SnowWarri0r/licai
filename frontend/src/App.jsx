@@ -5,7 +5,6 @@ import Header from './components/Header'
 import Dashboard from './components/Dashboard'
 import RiskBanner from './components/RiskBanner'
 import UnifiedPortfolio from './components/UnifiedPortfolio'
-import AlertFeed from './components/AlertFeed'
 import Settings from './components/Settings'
 import EditModal from './components/EditModal'
 import UnwindView from './components/UnwindView'
@@ -14,7 +13,6 @@ import TransactionHistory from './components/TransactionHistory'
 export default function App() {
   const [holdings, setHoldings] = useState([])
   const [marketOpen, setMarketOpen] = useState(false)
-  const [alerts, setAlerts] = useState([])
   const [showSettings, setShowSettings] = useState(false)
   const [editTarget, setEditTarget] = useState(null)
   const [historyTarget, setHistoryTarget] = useState(null)
@@ -56,26 +54,6 @@ export default function App() {
           market_value: Math.round(originalMarketValue * fxRate * 100) / 100,
         }
       }))
-    } else if (msg.type === 'alert') {
-      setAlerts(prev => [{ ...msg.data, id: Date.now(), time: new Date() }, ...prev].slice(0, 50))
-      const notifyOn = localStorage.getItem('notifyEnabled') !== 'false'
-      const soundOn = localStorage.getItem('notifySound') !== 'false'
-      if (!notifyOn) return
-      if ('Notification' in window && Notification.permission === 'granted') {
-        new Notification(`持仓提醒: ${msg.data.stock_name}`, { body: msg.data.message })
-      }
-      if (soundOn) {
-        try {
-          const ctx = new (window.AudioContext || window.webkitAudioContext)()
-          const osc = ctx.createOscillator()
-          const gain = ctx.createGain()
-          osc.connect(gain).connect(ctx.destination)
-          osc.frequency.value = 880
-          gain.gain.value = 0.2
-          osc.start()
-          osc.stop(ctx.currentTime + 0.12)
-        } catch {}
-      }
     }
   }, [])
 
@@ -110,8 +88,6 @@ export default function App() {
         />
 
         <UnwindView />
-
-        <AlertFeed alerts={alerts} onClear={() => setAlerts([])} holdings={holdings} />
       </main>
 
       {editTarget && (

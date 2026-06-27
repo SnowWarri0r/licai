@@ -5,8 +5,8 @@ import json
 import time
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from database import get_all_holdings, get_custom_alerts, mark_alert_triggered
-from services.market_data import get_realtime_quotes, is_market_hours, is_trading_day_active, is_a_share
+from database import get_all_holdings
+from services.market_data import get_realtime_quotes, is_market_hours, is_trading_day_active
 from services import feishu_notify
 from config import config
 
@@ -76,45 +76,6 @@ async def price_monitor_loop():
                 "data": quotes,
                 "market_open": is_trading_day_active(),
             })
-
-            # Only check alerts during active trading hours (9:30-11:30, 13:00-15:00)
-            if not is_market_hours():
-                await asyncio.sleep(interval)
-                continue
-
-            # Check custom price alerts
-            try:
-                custom_alerts = await get_custom_alerts()
-                for ca in custom_alerts:
-                    q = quotes.get(ca["stock_code"])
-                    if not q or q["price"] <= 0:
-                        continue
-                    price = q["price"]
-                    triggered = False
-                    if ca["alert_type"] == "price_below" and price <= ca["price"]:
-                        triggered = True
-                    elif ca["alert_type"] == "price_above" and price >= ca["price"]:
-                        triggered = True
-                    elif ca["alert_type"] == "stop_loss" and price <= ca["price"]:
-                        triggered = True
-
-                    if triggered:
-                        msg = ca["message"] or f"{'跌破' if 'below' in ca['alert_type'] or 'stop' in ca['alert_type'] else '突破'} {ca['price']:.2f}"
-                        alert_data = {
-                            "stock_code": ca["stock_code"],
-                            "stock_name": q.get("stock_name", ca["stock_code"]),
-                            "alert_type": "CUSTOM_" + ca["alert_type"].upper(),
-                            "price": price,
-                            "message": msg,
-                        }
-                        await broadcast({"type": "alert", "data": alert_data})
-                        if feishu_notify.is_enabled():
-                            await feishu_notify.send_text(
-                                f"⚠️ 自定义告警: {q.get('stock_name', '')}({ca['stock_code']}) {msg}，当前价 {price:.2f}"
-                            )
-                        await mark_alert_triggered(ca["id"])
-            except Exception as e:
-                print(f"[custom_alert] Error: {e}")
 
             await asyncio.sleep(interval)
         except Exception as e:
@@ -189,20 +150,14 @@ async def briefing_loop():
                     results = await generate_all_briefings()
                     _briefing_done_date = today
                     print(f"[briefing] Done: {len(results)} briefings saved")
-                    # Push a one-line summary to feishu
+                    # Push a one-line summary to feishu (signal 模型: 客观信息倾向, 非操作建议)
                     if feishu_notify.is_enabled() and results:
                         lines = [f"📋 {today} 早盘简报"]
                         for b in results:
-                            v = b.get("verdict", "hold")
-                            tag = {
-                                "lock_all": "🔒 锁档",
-                                "hold": "⏸ 观望",
-                                "raise": "↗ 上调",
-                                "lower": "↘ 下调",
-                                "add_now": "✅ 加仓",
-                            }.get(v, v)
+                            sig = b.get("signal", "中性")
+                            icon = {"偏暖": "🔥", "中性": "•", "偏冷": "❄", "警惕": "⚠"}.get(sig, "•")
                             lines.append(
-                                f"【{b.get('stock_name')}】{tag} — {b.get('summary', '')}"
+                                f"【{b.get('stock_name')}】{icon} {sig} — {b.get('summary', '')}"
                             )
                         await feishu_notify.send_text("\n".join(lines))
                 except Exception as e:
