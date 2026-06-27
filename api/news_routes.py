@@ -202,6 +202,39 @@ def _fetch_global_ths() -> list[dict]:
     return out
 
 
+def _fetch_global_jin10() -> list[dict]:
+    """金十数据全球快讯 (flash-api 直连, 偏全球宏观/地缘/央行/能源, 比 akshare 源更快). 保留 important 重要标记。"""
+    import re
+    import requests
+    s = requests.Session()
+    s.trust_env = False  # 绕开 macOS 系统代理
+    try:
+        r = s.get("https://flash-api.jin10.com/get_flash_list",
+                  params={"channel": "-8200", "vip": "1"},
+                  headers={"x-app-id": "bVBF4FyRTn5NJF5n", "x-version": "1.0.0",
+                           "User-Agent": "Mozilla/5.0", "Referer": "https://www.jin10.com/"},
+                  timeout=7)
+        data = r.json().get("data") or []
+    except Exception:
+        return []
+    out = []
+    for x in data:
+        if x.get("type") not in (0, None):   # 只要文本快讯, 跳过图片/视频/数据型
+            continue
+        d = x.get("data") or {}
+        raw = d.get("content") or d.get("title") or ""
+        text = re.sub(r"<[^>]+>", " ", raw)          # 去 HTML 标签
+        text = re.sub(r"\s+", " ", text).strip()
+        if not text:
+            continue
+        title = (d.get("title") or "").strip() or text[:60]
+        it = _item("金十", title, text, str(x.get("time") or ""), d.get("source_link") or "")
+        if it:
+            it["important"] = bool(x.get("important"))
+            out.append(it)
+    return out
+
+
 # 单源超时: 任一源(如同花顺/财联社)卡死也不拖累整体, 最坏冷启动 ≈ 该超时值
 _SOURCE_TIMEOUT = 8.0
 
@@ -261,19 +294,20 @@ async def small_metal_news(limit: int = 30):
 
 @router.get("/market")
 async def market_news():
-    """全市场要闻 (东财 + 财联社 + 同花顺). 三源并发 + 单源超时, 5min 缓存."""
+    """全市场要闻 (东财 + 财联社 + 同花顺 + 金十). 四源并发 + 单源超时, 5min 缓存."""
     cache_key = "market_news"
     cached = _cache.get(cache_key)
     if cached and time.time() - cached[1] < _TTL:
         return cached[0]
     _strip_proxy_env()
-    # 三源并发拉取, 任一源超时/失败只丢自己, 不阻塞其余
+    # 四源并发拉取, 任一源超时/失败只丢自己, 不阻塞其余
     results = await asyncio.gather(
         _fetch_source(_fetch_global_em),
         _fetch_source(_fetch_global_cls),
         _fetch_source(_fetch_global_ths),
+        _fetch_source(_fetch_global_jin10),
     )
-    # 合并去重 (按 title; 顺序 em→cls→ths 决定保留优先级), 时间倒序
+    # 合并去重 (按 title; 顺序 em→cls→ths→金十 决定保留优先级), 时间倒序
     out, seen = [], set()
     for lst in results:
         for it in lst:
