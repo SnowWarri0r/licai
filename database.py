@@ -825,9 +825,10 @@ async def add_position_action(stock_code: str, action_type: str, price: float, s
 
 async def update_position_action(action_id: int, action_type: str = None, price: float = None,
                                   shares: int = None, trade_date: str = None, note: str = None,
-                                  fee: float | None = None, fee_explicit: bool = False):
+                                  fee: float | None = None, fee_explicit: bool = False,
+                                  trade_time: str = None):
     """Update fields. fee_explicit=True 表示明确想改 fee (即使传 None 也写入 NULL).
-    fee 默认 None + fee_explicit=False 不动 fee 列."""
+    fee 默认 None + fee_explicit=False 不动 fee 列。trade_time 传空串 "" 可清空。"""
     db = await get_db()
     try:
         sets, vals = [], []
@@ -836,6 +837,9 @@ async def update_position_action(action_id: int, action_type: str = None, price:
             if v is not None:
                 sets.append(f"{k} = ?")
                 vals.append(v)
+        if trade_time is not None:        # "" → 清空(NULL), "HH:MM" → 设值
+            sets.append("trade_time = ?")
+            vals.append(trade_time or None)
         if fee_explicit:
             sets.append("fee = ?")
             vals.append(fee)

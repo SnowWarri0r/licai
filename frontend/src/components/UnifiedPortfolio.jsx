@@ -2465,6 +2465,7 @@ function AddLotRow({ asset, onDone, onCancel, brokers = [] }) {
   const [fee, setFee] = useState('')              // FUND/CRYPTO: 手续费 ¥ (场内 ETF / 加密 taker fee)
   const [feeTouched, setFeeTouched] = useState(false)
   const [lotStartDate, setLotStartDate] = useState(new Date().toISOString().slice(0, 10))
+  const [lotTime, setLotTime] = useState('')     // 成交时刻 HH:MM (可选, 供分时图打点)
   const [lotYield, setLotYield] = useState('')   // WEALTH: 加投年化 %
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
@@ -2607,6 +2608,7 @@ function AddLotRow({ asset, onDone, onCancel, brokers = [] }) {
     }
     // 所有类型都把日期透传 (后端 lot_start_date 会写到 action.trade_date)
     if (lotStartDate && !body.lot_start_date) body.lot_start_date = lotStartDate
+    if (lotTime) body.trade_time = lotTime
     setBusy(true)
     try {
       const r = await fetchJSON(`/api/assets/${asset.id}/add-lot`, {
@@ -2692,6 +2694,11 @@ function AddLotRow({ asset, onDone, onCancel, brokers = [] }) {
             <label className="text-[11.5px] text-text-dim block mb-1">{isWealth ? '本笔起投日' : '日期'}</label>
             <input type="date" value={lotStartDate} onChange={e => setLotStartDate(e.target.value)}
               className="bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent w-full" />
+            {isShareBased && (
+              <input type="time" value={lotTime} onChange={e => setLotTime(e.target.value)}
+                title="成交时刻(可选), 留空用录入时间, 供分时图打点"
+                className="bg-bg border border-border rounded-lg px-3 py-1.5 text-[12px] font-mono outline-none focus:border-accent w-full mt-1.5 text-text-dim" />
+            )}
           </div>
           {isWealth && (
             <div>
@@ -2750,6 +2757,7 @@ function ReduceLotRow({ asset, onDone, onCancel }) {
   const [shares, setShares] = React.useState('')
   const [unitPrice, setUnitPrice] = React.useState('')
   const [tradeDate, setTradeDate] = React.useState(() => new Date().toISOString().slice(0, 10))
+  const [tradeTime, setTradeTime] = React.useState('')         // 成交时刻 HH:MM (可选, 供分时图打点)
   const [interestPart, setInterestPart] = React.useState('')   // WEALTH/CASH: 其中利息部分
   const [busy, setBusy] = React.useState(false)
   const [err, setErr] = React.useState('')
@@ -2809,6 +2817,7 @@ function ReduceLotRow({ asset, onDone, onCancel }) {
     setBusy(true)
     try {
       const body = { trade_date: tradeDate }
+      if (isShareBased && tradeTime) body.trade_time = tradeTime
       if (isOtcFund) {
         body.amount = 0
         body.shares = finalShares
@@ -2911,9 +2920,16 @@ function ReduceLotRow({ asset, onDone, onCancel }) {
         )}
 
         <div>
-          <label className="text-[11.5px] text-text-dim block mb-1">日期</label>
-          <input type="date" value={tradeDate} onChange={e => setTradeDate(e.target.value)}
-            className="bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent" />
+          <label className="text-[11.5px] text-text-dim block mb-1">日期{isShareBased && <span className="text-text-muted text-[10px]"> · 时刻可空</span>}</label>
+          <div className="flex gap-2">
+            <input type="date" value={tradeDate} onChange={e => setTradeDate(e.target.value)}
+              className="bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent" />
+            {isShareBased && (
+              <input type="time" value={tradeTime} onChange={e => setTradeTime(e.target.value)}
+                title="成交时刻(可选), 留空用录入时间, 供分时图打点"
+                className="bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent text-text-dim" />
+            )}
+          </div>
         </div>
 
         {estRealized && (
@@ -3143,6 +3159,7 @@ function EditActionModal({ asset, action, onClose, onDone }) {
   const [unitPrice, setUnitPrice] = React.useState(action.unit_price != null ? String(action.unit_price) : '')
   const [fee, setFee] = React.useState(action.fee != null ? String(action.fee) : '')
   const [tradeDate, setTradeDate] = React.useState((action.trade_date || (action.created_at || '').slice(0, 10) || '').slice(0, 10))
+  const [tradeTime, setTradeTime] = React.useState((action.trade_time || '').slice(0, 5))   // 成交时刻 HH:MM
   const [lastEdit, setLastEdit] = React.useState(null)  // 'amount' | 'shares' | 'unitPrice'
   const [busy, setBusy] = React.useState(false)
   const [err, setErr] = React.useState('')
@@ -3199,6 +3216,8 @@ function EditActionModal({ asset, action, onClose, onDone }) {
     if (!isNaN(f) && f !== (action.fee ?? 0)) body.fee = f
     const origDate = (action.trade_date || (action.created_at || '').slice(0, 10) || '').slice(0, 10)
     if (tradeDate && tradeDate !== origDate) body.trade_date = tradeDate
+    const origTime = (action.trade_time || '').slice(0, 5)
+    if (tradeTime !== origTime) body.trade_time = tradeTime   // "" → 清空回退录入时间
     if (Object.keys(body).length === 0) { onClose(); return }
     setBusy(true)
     try {
@@ -3227,10 +3246,18 @@ function EditActionModal({ asset, action, onClose, onDone }) {
           改完后端会按新值重算资产 cost / shares
         </div>
 
-        <div>
-          <label className="text-[11.5px] text-text-dim block mb-1">日期</label>
-          <input type="date" value={tradeDate} onChange={e => setTradeDate(e.target.value)}
-            className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent" />
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="text-[11.5px] text-text-dim block mb-1">日期</label>
+            <input type="date" value={tradeDate} onChange={e => setTradeDate(e.target.value)}
+              className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent" />
+          </div>
+          <div>
+            <label className="text-[11.5px] text-text-dim block mb-1">时刻 <span className="text-text-muted text-[10px]">可空</span></label>
+            <input type="time" value={tradeTime} onChange={e => setTradeTime(e.target.value)}
+              title="成交时刻(可选), 留空用录入时间, 供分时图打点"
+              className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent text-text-dim" />
+          </div>
         </div>
 
         <div>
