@@ -320,7 +320,12 @@ _SYSTEM = (
     "(这周市场在奖励什么打法、是动量追涨还是低吸反转、是题材轮动还是抱团、高低切迹象、资金主线在哪、情绪处在什么周期)。\n"
     "工具: resolve_stock(名字转代码)、get_quote(个股实时行情)、get_trend(个股近N日走势)、get_news(个股新闻)、"
     "get_holdings(用户持仓)、get_market_sentiment(大盘打板情绪)、get_sector_momentum(板块趋势矩阵:动量/退潮/资金流)、get_hot_rank(资金人气榜)。\n"
-    "【个股问题】先 resolve_stock 拿代码, 再 get_quote+get_trend+get_news, 需要时 get_market_sentiment 判断个股事件还是大盘普涨跌。\n"
+    "【个股问题】先 resolve_stock 拿代码, 再 get_quote+get_trend+get_news, 需要时 get_market_sentiment 判断个股事件还是大盘普涨跌; "
+    "若该票/所属板块对政策敏感(有色/小金属/地产/半导体/医药/军工/新能源/平台经济等), 还要调 get_market_news 看有没有政策催化或调控压制。\n"
+    "【'能不能进/明天怎么样/还能拿吗'这类问题】不要直接拒绝了事。照样把客观分析做全"
+    "(为什么涨跌、消息面、政策面、走势位置、跟持仓关系、双向风险都摆出来), 只是【不给买卖结论】——"
+    "结尾一句'方向性的进出/仓位得你自己定, 我只给客观信息'。决策依据给足, 但不替用户拍板。\n"
+    "【多轮追问】对话可能有上文(前面聊过某只票/某个板块)。用户说'它/这只/明天呢'这类指代时, 顺着上文的标的继续, 别重新问是哪只。\n"
     "【市场风格问题】用 get_market_sentiment(打板赚钱效应高=追涨/动量有效; 炸板率高+亏钱效应=高位分歧/反转占优) + "
     "get_sector_momentum(连涨板块多=动量延续; 普遍冲高回落=退潮/高低切) + get_hot_concepts(概念主攻) + get_hot_rank(资金主线/抱团) 综合判断, "
     "用具体数字描述'市场这周在奖励什么行为、惩罚什么行为、资金往哪走'。这是客观的市场逻辑分析, 不是策略推荐。\n"
@@ -358,14 +363,27 @@ _TOOL_CN = {
 }
 
 
-async def ask_stock_stream(question: str):
+def _seed_messages(question: str, history: list | None) -> list:
+    """把前端传来的多轮历史(只含 role+text 的简化对话)接到当前问题前面, 让 agent 有上下文。"""
+    msgs = []
+    for h in (history or [])[-8:]:           # 最多带最近 8 条, 控制 token
+        role = h.get("role")
+        content = (h.get("content") or "").strip()
+        if role in ("user", "assistant") and content:
+            msgs.append({"role": role, "content": content[:4000]})
+    msgs.append({"role": "user", "content": question})
+    return msgs
+
+
+async def ask_stock_stream(question: str, history: list | None = None):
     """流式版: 边跑边 yield 事件 (step/answer/done/error), 供 SSE 推给前端。
-    每轮 LLM 调用之间 yield 工具步骤, 步骤实时出现; 末轮文本作为答案。"""
+    每轮 LLM 调用之间 yield 工具步骤, 步骤实时出现; 末轮文本作为答案。
+    history: 前端传的多轮对话历史 [{role, content}], 让 agent 有上下文(支持追问)。"""
     question = (question or "").strip()
     if not question:
         yield {"type": "error", "error": "空问题"}
         return
-    messages = [{"role": "user", "content": question}]
+    messages = _seed_messages(question, history)
     for rnd in range(_MAX_ROUNDS):
         try:
             resp = await asyncio.to_thread(
@@ -408,12 +426,12 @@ async def ask_stock_stream(question: str):
     yield {"type": "done"}
 
 
-async def ask_stock(question: str) -> dict:
+async def ask_stock(question: str, history: list | None = None) -> dict:
     """跑 agent loop, 返回 {answer, tools_used, rounds}。"""
     question = (question or "").strip()
     if not question:
         return {"answer": "", "error": "空问题"}
-    messages = [{"role": "user", "content": question}]
+    messages = _seed_messages(question, history)
     tools_used: list[str] = []
     for rnd in range(_MAX_ROUNDS):
         try:
