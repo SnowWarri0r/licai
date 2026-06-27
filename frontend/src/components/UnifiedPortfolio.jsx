@@ -1713,6 +1713,7 @@ function AddAssetForm({ typeKey, onDone, onCancel, brokers = [] }) {
   const [fee, setFee] = useState('')
   const [feeTouched, setFeeTouched] = useState(false)
   const [note, setNote] = useState('')
+  const [tradeTime, setTradeTime] = useState('')     // 成交时刻 HH:MM (场内 ETF/加密, 可选)
   const [feeRatePct, setFeeRatePct] = useState('')   // FUND 申购费率 %, C 类填 0
   const [lookingUp, setLookingUp] = useState(false)
   const [hint, setHint] = useState('')
@@ -1826,6 +1827,7 @@ function AddAssetForm({ typeKey, onDone, onCancel, brokers = [] }) {
           ? parseFloat(annualYield) / 100  // user inputs %, store as decimal
           : null,
         start_date: isYieldType ? (startDate || null) : null,
+        trade_time: ((assetType === 'FUND' && isOnchainEtf(code)) || assetType === 'CRYPTO') && tradeTime ? tradeTime : null,
         purchase_fee_rate: assetType === 'FUND' && !isOnchainEtf(code) && feeRatePct !== '' ? parseFloat(feeRatePct) / 100 : null,
         broker: assetType === 'FUND' && isOnchainEtf(code) && selectedBroker ? selectedBroker : null,
         // 手续费单独透传 (cost 已含它), 后端单存到初始流水的 fee 字段, 避免在流水里"消失"
@@ -2007,6 +2009,13 @@ function AddAssetForm({ typeKey, onDone, onCancel, brokers = [] }) {
             <input type="number" step="0.01" value={fee}
               onChange={e => { setFee(e.target.value); setFeeTouched(true) }}
               className={`${inp} w-24 font-mono`} placeholder="5.00" />
+          </div>
+        )}
+        {((assetType === 'FUND' && isOnchainEtf(code)) || assetType === 'CRYPTO') && (
+          <div className="flex flex-col gap-1">
+            <label className="text-[11px] text-text-dim">成交时刻 <span className="text-text-muted text-[10px]">可空</span></label>
+            <input type="time" value={tradeTime} onChange={e => setTradeTime(e.target.value)}
+              className={`${inp} w-28 font-mono text-text-dim`} title="今日建仓的成交时刻(可选), 留空用录入时间, 供分时图打点" />
           </div>
         )}
         {assetType === 'FUND' && !isOnchainEtf(code) && (
