@@ -580,9 +580,33 @@ def _fetch_company_profile_sync(bare: str) -> dict:
             out["report_date"] = str((rows[0].get("REPORT_DATE") or ""))[:10]
     except Exception:
         pass
+    # 3) 控股/实控背景(判断国资/央企/地方国企/中科院系/民营/外资 等性质)
+    try:
+        d3 = _rq.get(f"https://emweb.eastmoney.com/PC_HSF10/ShareholderResearch/PageAjax?code={pfx}{bare}",
+                     timeout=9, headers=hdr).json()
+        sj = (d3.get("sjkzr") or [{}])[0]
+        ctrl = (sj.get("HOLDER_NAME") or "").strip()
+        if ctrl and ctrl != "None":
+            out["controller"] = ctrl
+        sdgd = d3.get("sdgd") or []
+        if sdgd:
+            latest = max(str(r.get("END_DATE") or "") for r in sdgd)
+            top = []
+            for r in [x for x in sdgd if str(x.get("END_DATE") or "") == latest][:3]:
+                nm = (r.get("HOLDER_NAME") or "").strip()
+                if not nm or nm == "None":
+                    continue
+                ratio = r.get("HOLD_NUM_RATIO")
+                top.append({"股东": nm,
+                            "持股%": round(float(ratio), 2) if ratio not in (None, "", "None") else None})
+            if top:
+                out["top_holders"] = top
+    except Exception:
+        pass
     if not out.get("profile") and not out.get("main_business"):
         return {"error": "公司简介暂不可达(东财F10抖动)"}
-    out["note"] = "profile=公司简介(做什么); industry=细分行业; main_business=主营构成(收入占比+毛利率)。仅 A 股。"
+    out["note"] = ("profile=公司简介(做什么); industry=细分行业; main_business=主营构成(收入占比+毛利率); "
+                   "controller=实际控制人, top_holders=第一/前三大股东(据股东名判断国资/央企/地方国企/中科院系/民营/外资等公司性质)。仅 A 股。")
     _profile_cache[ck] = (out, _t.time())
     return out
 
@@ -1415,7 +1439,7 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_lhb", "description": "龙虎榜: 传 code→该股近期是否上榜及净买额/机构还是游资席位/上榜原因(看是谁在拉); 不传 code→最近交易日资金净买额榜(主力/游资当天在打哪些票, 看资金主线)。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选; 留空看全市场榜"}}}},
-    {"name": "get_company_profile", "description": "查公司是做什么的: 公司简介(主营业务描述) + 细分行业 + 主营构成(各产品/地区的收入占比和毛利率)。回答'这家公司主营什么、靠什么赚钱、和同行业务差异'时必用。仅 A 股。",
+    {"name": "get_company_profile", "description": "查公司是做什么的 + 什么背景: 公司简介(主营业务) + 细分行业 + 主营构成(各产品/地区收入占比和毛利率) + 控股/实际控制人/前三大股东(判断国资/央企/地方国企/中科院系/民营/外资性质)。回答'这家公司主营什么、靠什么赚钱、谁控股、什么背景、和同行业务差异'时必用。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_stock_concepts", "description": "查个股所属行业/概念板块 + 核心题材。判断'这只票属于哪个概念、有没有踩在当下资金主线/热门概念上'时用; 可与 get_hot_concepts 交叉印证。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
@@ -1509,8 +1533,9 @@ _SYSTEM = (
     "【个股问题】先 resolve_stock 拿代码, 再 get_quote+get_trend; 找涨跌原因务必看 get_fund_flow(主力资金是进是出、谁在拉)"
     "+get_news(消息面)+get_announcements(公司公告: 分红回购/业绩预告/重组/股权激励等实质事件, 比新闻权威), 异动明显时 get_lhb(有没有上龙虎榜、游资还是机构在打); 用 get_stock_concepts 看它属于哪个概念, "
     "再与 get_hot_concepts/get_sector_momentum 交叉看是不是踩在当下资金主线上; 需要时 get_market_sentiment 判断个股事件还是大盘普涨跌; "
-    "  · 【讲清楚公司是做什么的】只要问题涉及某只票(尤其'为什么涨/两只票对比/值不值得关注'), 必调 get_company_profile 拿主营业务+细分行业+主营构成, "
-    "一句话说清它靠什么赚钱、和同行的业务差异(如'中芯=大陆晶圆代工龙头、先进制程为主'对'华虹=特色工艺代工、功率器件/8寸为主'), 别只报代码和涨跌。\n"
+    "  · 【讲清楚公司是做什么的 + 什么背景】只要问题涉及某只票(尤其'为什么涨/两只票对比/值不值得关注'), 必调 get_company_profile 拿主营业务+细分行业+主营构成+控股/实控背景, "
+    "一句话说清它靠什么赚钱、和同行的业务差异(如'中芯=大陆晶圆代工龙头、先进制程为主'对'华虹=特色工艺代工、功率器件/8寸为主'); "
+    "并据 controller/top_holders 的股东名点明公司性质——是国资/央企/地方国企/中科院系院所背景/民营/外资(如第一大股东'北京中科算源'=中科院计算所系国企)。别只报代码和涨跌。\n"
     "  · 【讲清楚市场在追捧什么】涨跌/对比类问题要落到驱动题材: 用 get_stock_concepts(它挂在哪些概念)+get_hot_concepts(这几天资金在冲哪个概念)+get_news/get_market_news(有没有催化: 政策/涨价/新品/业绩/事件)交叉, "
     "明确说出'这波资金在追的是 XX 题材/催化是 XX'(如国产替代、存储涨价、算力、设备验证突破), 而不是只说'踩在主线上'这种空话。\n"
     "若该票/所属板块对政策敏感(有色/小金属/地产/半导体/医药/军工/新能源/平台经济等), 还要调 get_market_news 看有没有政策催化或调控压制。\n"
