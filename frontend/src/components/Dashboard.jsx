@@ -22,7 +22,6 @@ function fxSourceLabel(source) {
 
 export default function Dashboard({ holdings }) {
   const [indices, setIndices] = useState([])
-  const [unwindStats, setUnwindStats] = useState(null)
   const [external, setExternal] = useState(null)
   const [tradingDay, setTradingDay] = useState(null)
   const [realized, setRealized] = useState({ stock: 0, asset: 0 })
@@ -63,23 +62,6 @@ export default function Dashboard({ holdings }) {
     return () => clearInterval(t)
   }, [])
 
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const plans = await fetchJSON('/api/unwind/plans')
-        const totalBudget = plans.reduce((s, p) => s + (p.total_budget || 0), 0)
-        const usedBudget = plans.reduce((s, p) => s + (p.used_budget || 0), 0)
-        const pendingCount = plans.reduce(
-          (s, p) => s + (p.tranches || []).filter(t => t.status === 'pending').length, 0
-        )
-        const dailyOpp = plans.reduce((s, p) => s + (p.daily_opportunity_cost || 0), 0)
-        setUnwindStats({ totalBudget, usedBudget, pendingCount, dailyOpp })
-      } catch {}
-    }
-    load()
-    const t = setInterval(load, 60000)
-    return () => clearInterval(t)
-  }, [])
 
   useEffect(() => {
     const load = async () => {

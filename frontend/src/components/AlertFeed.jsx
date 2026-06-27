@@ -162,16 +162,9 @@ export default function AlertFeed({ alerts, onClear, holdings }) {
           <div className="py-8 text-center text-text-dim text-[13px]">暂无提醒</div>
         ) : alerts.map((a) => {
           const isCustom = a.alert_type?.startsWith('CUSTOM')
-          const isUnwind = a.alert_type === 'TRANCHE_TRIGGERED'
-            || a.alert_type === 'TRANCHE_LOCKED'
-            || a.alert_type === 'HEALTH_DEGRADED'
 
           let channelTag, chipClass, rowClass
-          if (isUnwind) {
-            channelTag = '解套'
-            chipClass = 'bg-accent/15 text-accent border-accent/40'
-            rowClass = 'bg-accent/5 border-l-accent'
-          } else if (isCustom) {
+          if (isCustom) {
             channelTag = '条件单'
             chipClass = 'bg-[var(--color-signal-moderate)]/15 text-[var(--color-signal-moderate)] border-[var(--color-signal-moderate)]/40'
             rowClass = 'bg-[var(--color-signal-moderate)]/5 border-l-[var(--color-signal-moderate)]'
