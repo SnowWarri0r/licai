@@ -68,16 +68,21 @@ async def _active_holdings() -> list[dict]:
     for h in await get_all_holdings():
         code = h.get("stock_code")
         shares = float(h.get("shares") or 0)
+        hold_days = open_date = None
         try:
             acts = await get_position_actions(code, limit=500)
             if acts:
                 rate, mn = await _broker_stock_fee(h.get("broker"))
                 st = compute_position_state(acts, stock_code=code, commission_rate=rate, commission_min=mn)
                 shares = float(st.get("shares") or 0)
+                hold_days = st.get("weighted_days")
+                lots = st.get("lots") or []
+                if lots:
+                    open_date = min(l["trade_date"] for l in lots)  # 当前段最早一笔=开仓日
         except Exception:
             pass  # ledger 算不出就退回表里的 shares
         if shares > 0:
-            out.append({**h, "shares": shares})
+            out.append({**h, "shares": shares, "hold_days": hold_days, "open_date": open_date})
     return out
 
 
@@ -1146,8 +1151,10 @@ async def _tool_get_holdings() -> dict:
     try:
         hs = await _active_holdings()
         return {"holdings": [{"code": h.get("stock_code"), "name": h.get("stock_name"),
-                              "shares": h.get("shares")} for h in hs],
-                "note": "仅当前在持(已清仓的票不在此列, 按综合成本法现算 shares>0)。"}
+                              "shares": h.get("shares"),
+                              "持有天数": h.get("hold_days"), "开仓日": h.get("open_date")} for h in hs],
+                "note": "仅当前在持(已清仓的票不在此列, 按综合成本法现算 shares>0)。"
+                        "持有天数=资金加权持有天数(0=今天才开/加的仓); 开仓日=当前持仓段最早一笔买入日(=今天则是今日新开仓)。"}
     except Exception as e:
         return {"error": str(e)}
 
@@ -1549,6 +1556,8 @@ _SYSTEM = (
     "【我的成交/持仓盈亏】问'我什么时候买的/成本多少/做过几次T/这票我赚没赚/持有多久/最近交易了啥'时调 get_trades"
     "(含个股+场内ETF+场外基金; 带 code 看该标的流水, A股另给综合成本+已实现盈亏; 不带看最近全部成交; "
     "问'这周/本月/6月/上个月/最近三天'这类时间范围时, 用下方给的今天日期换算成 start/end(YYYY-MM-DD)传入筛选)。\n"
+    "  · 【分清今日新开仓 vs 长期持仓】get_holdings/get_trades 带每只票的持有天数和开仓日。持有天数=0 或开仓日=今天的, 是用户今天才开/加的仓, "
+    "别说成'一直拿着的防御白马在帮你扛''长期持有'这类——今天才买的票没'扛'过任何下跌, 如实说'今天新开的仓, 现价较成本X%'即可。\n"
     "  · 【复盘成交不能只列流水】梳理用户买卖后, 必须对涉及的个股再调 get_quote(拿现价/今日涨跌幅/盘口: 封涨停/炸板/冲高回落), "
     "需要时 get_trend 看近日走势, 把'你卖的X今天还在涨/你买的Y冲涨停又炸板了/现价较你成本X%'这种当下对照讲出来。只罗列成交日期价格是不够的。\n"
     "  · 【历史涨跌的日期以工具返回值为准】说'X月X日涨了多少'时, 日期取 get_trend.daily_pct 里那条的 date 字段, 或 get_quote/get_intraday 的当天数据。"
