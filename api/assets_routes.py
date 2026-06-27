@@ -416,13 +416,13 @@ async def create_asset(data: AssetCreate):
     )
 
     # 自动合并: FUND/CRYPTO 且 code 命中已有持仓 (同类型 + 同 code + 同券商) → 追加流水, 不新建重复。
-    # 券商不同 = 不同账户, 不合并; 已清仓(shares=0)但有历史的也合并 (等于复活续上同一条流水)。
+    # 同一只基金/ETF(同 code)一律合并到已有记录, 不因券商不同而新建(避免同名重复多条);
+    # 已清仓(shares=0)但有历史的也合并(等于复活续上同一条流水)。合并后沿用原记录的券商(场内ETF券商记在资产行上)。
     merge_target = None
     if data.asset_type in ("FUND", "CRYPTO") and data.code:
         for ex in (await list_external_assets()):
             if (ex.get("asset_type") == data.asset_type
-                    and (ex.get("code") or "") == data.code
-                    and (ex.get("broker") or "") == (data.broker or "")):
+                    and (ex.get("code") or "") == data.code):
                 merge_target = ex
                 break
 
