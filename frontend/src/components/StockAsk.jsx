@@ -1,17 +1,42 @@
 import { useState, useEffect, useRef } from 'react'
 import { fetchJSON } from '../hooks/useApi'
 
-// 每个数据工具配一个图标, 让步骤条一眼能读出 agent 在取什么
-const TOOL_ICON = {
-  resolve_stock: '🔎', get_quote: '📈', get_trend: '📊', get_intraday: '⏱',
-  get_news: '📰', get_announcements: '📑', get_fund_flow: '💰', get_lhb: '🐉',
-  get_stock_concepts: '🏷', get_fundamentals: '📋', get_commodity: '🛢',
-  get_peers: '⚖️', get_shareholders: '👥', get_holdings: '💼',
-  get_asset_allocation: '🧮', get_trades: '🧾', get_market_sentiment: '🌡',
-  get_sector_momentum: '🗺', get_hot_rank: '🔥', get_hot_concepts: '💡',
-  get_board_stocks: '🏆', get_market_news: '📢', web_search: '🌐',
+// 每个数据工具一套线性 SVG 图标(描边跟随 currentColor, 贴合暖金深色主题)
+const TOOL_ICONS = {
+  resolve_stock: <><circle cx="10.5" cy="10.5" r="6.5" /><path d="M19.5 19.5l-4.2-4.2" /></>,
+  get_quote: <><rect x="5.5" y="8" width="4" height="7" rx="1" /><path d="M7.5 5v3M7.5 15v4" /><rect x="14.5" y="7" width="4" height="6" rx="1" /><path d="M16.5 4v3M16.5 13v4" /></>,
+  get_trend: <><path d="M4 4v16h16" /><path d="M7 14l3-3 3 2 4-6" /><path d="M15.5 7H18v2.5" /></>,
+  get_intraday: <><circle cx="12" cy="12" r="8" /><path d="M12 8v4l3 2" /></>,
+  get_news: <><rect x="5" y="4" width="14" height="16" rx="2" /><path d="M8 9h8M8 12h8M8 15h5" /></>,
+  get_announcements: <><path d="M4 10v4l10 5V5l-10 5z" /><path d="M14 9.5a3 3 0 010 5" /></>,
+  get_fund_flow: <><circle cx="12" cy="12" r="8" /><path d="M9 8l3 3.5L15 8M12 11.5V16M9.5 12.5h5M9.5 14.5h5" /></>,
+  get_lhb: <><path d="M8 4h8v4a4 4 0 01-8 0z" /><path d="M8 5H5v1a3 3 0 003 3M16 5h3v1a3 3 0 01-3 3M10 15h4M9 19.5h6M12 15v4.5" /></>,
+  get_stock_concepts: <><path d="M11 3H4v7l9 9 7-7z" /><circle cx="7.5" cy="7.5" r="1.3" /></>,
+  get_fundamentals: <><rect x="5" y="4" width="14" height="16" rx="2" /><path d="M9 14v3M12 10.5v6.5M15 13v4" /></>,
+  get_commodity: <><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z" /><path d="M12 12v9M4 7.5l8 4.5 8-4.5" /></>,
+  get_peers: <><path d="M12 5v15M7 20h10M5 8l7-2 7 2" /><path d="M5 8l-2 5a3 3 0 006 0zM19 8l2 5a3 3 0 01-6 0z" /></>,
+  get_shareholders: <><circle cx="9" cy="8" r="3" /><path d="M3.5 19a5.5 5 0 0111 0" /><path d="M16 6a3 3 0 010 6M20.5 19a5.5 5 0 00-4-5" /></>,
+  get_holdings: <><rect x="4" y="8" width="16" height="11" rx="2" /><path d="M9 8V6a2 2 0 012-2h2a2 2 0 012 2v2M4 13h16" /></>,
+  get_asset_allocation: <><circle cx="12" cy="12" r="8" /><path d="M12 12V4M12 12l7 3.5" /></>,
+  get_trades: <><path d="M4 9h12M13 6l3 3-3 3" /><path d="M20 15H8M11 12l-3 3 3 3" /></>,
+  get_market_sentiment: <><path d="M4 16a8 8 0 0116 0" /><path d="M12 16l4.5-4" /><circle cx="12" cy="16" r="1" /></>,
+  get_sector_momentum: <><rect x="4" y="4" width="7" height="7" rx="1" /><rect x="13" y="4" width="7" height="7" rx="1" /><rect x="4" y="13" width="7" height="7" rx="1" /><rect x="13" y="13" width="7" height="7" rx="1" /></>,
+  get_hot_rank: <><path d="M12 3c.5 3 3.5 4 3.5 8a3.5 3.5 0 01-7 0c0-1.5 1-2.5 1.5-3 .3 1.5 2 1 2-5z" /></>,
+  get_hot_concepts: <><path d="M9.5 18h5M10.5 21h3" /><path d="M12 3a6 6 0 00-3.5 10.8c.6.5.9 1.2 1 2.2h5c.1-1 .4-1.7 1-2.2A6 6 0 0012 3z" /></>,
+  get_board_stocks: <><path d="M4 8l3.5 9h9L20 8l-5 4-3-6-3 6z" /></>,
+  get_market_news: <><path d="M4 20h16M6 20V8l6-4 6 4v12M10 20v-5h4v5" /></>,
+  web_search: <><circle cx="12" cy="12" r="8" /><path d="M4 12h16M12 4c2.5 2.4 2.5 13.6 0 16M12 4c-2.5 2.4-2.5 13.6 0 16" /></>,
 }
-const toolIcon = (t) => TOOL_ICON[t] || '🔧'
+const DEFAULT_ICON = <><circle cx="12" cy="12" r="2.6" /><path d="M12 4v2.5M12 17.5V20M4 12h2.5M17.5 12H20M6.3 6.3l1.8 1.8M15.9 15.9l1.8 1.8M17.7 6.3l-1.8 1.8M8.1 15.9l-1.8 1.8" /></>
+
+function ToolIcon({ tool }) {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+      {TOOL_ICONS[tool] || DEFAULT_ICON}
+    </svg>
+  )
+}
 
 // 极简 markdown 渲染 (## 标题 / **粗** / - 列表 / 段落), 不引依赖
 function renderInline(text, kp) {
@@ -208,7 +233,11 @@ export default function StockAsk({ page = false }) {
                 return (
                   <div className="mb-2">
                     <div className="flex items-center gap-1.5 mb-1.5 text-[10px] text-text-muted">
-                      <span>{settled ? '🔧 调用了' : '🔧 正在取数据'}</span>
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+                        <path d="M14.5 4.5a4 4 0 00-5 5L4 15v5h5l5.5-5.5a4 4 0 005-5l-3 3-2.5-2.5z" />
+                      </svg>
+                      <span>{settled ? '调用了' : '正在取数据'}</span>
                       <span className="font-mono text-text-dim">{it.steps.length}</span>
                       <span>个工具</span>
                       {!settled && <span className="flex gap-0.5 ml-0.5">
@@ -225,10 +254,12 @@ export default function StockAsk({ page = false }) {
                             settled
                               ? 'bg-accent/8 border-accent/25 text-text-dim'
                               : 'bg-accent/12 border-accent/40 text-text'}`}>
-                          <span className="text-[11px] leading-none">{toolIcon(s.tool)}</span>
+                          <ToolIcon tool={s.tool} />
                           <span>{s.label}</span>
                           {s.arg ? <span className="font-mono text-text-muted">{s.arg}</span> : null}
-                          <span className={settled ? 'text-bull' : 'text-accent/60'}>{settled ? '✓' : '·'}</span>
+                          {settled
+                            ? <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="text-bull shrink-0"><path d="M5 12.5l4.5 4.5L19 7" /></svg>
+                            : <span className="text-accent/50 leading-none">·</span>}
                         </span>
                       ))}
                     </div>
