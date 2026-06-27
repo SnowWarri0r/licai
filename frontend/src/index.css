@@ -113,6 +113,23 @@ body::after {
   to   { opacity: 1; }
 }
 
+/* 骨架屏: 板块加载占位, 高度统一、不塌成一行字 */
+@keyframes skel-shimmer { 100% { transform: translateX(100%); } }
+.skel {
+  position: relative;
+  overflow: hidden;
+  background: var(--color-surface-3);
+  border-radius: 6px;
+}
+.skel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.05), transparent);
+  animation: skel-shimmer 1.4s infinite;
+}
+
 /* ========================================================
  * Responsive table grids
  * Mobile: 5-column compact (name | mv | pnl | today | actions)

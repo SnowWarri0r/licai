@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { fetchJSON } from '../hooks/useApi'
+import SkeletonCard from './Skeleton'
 
 // A股 涨红跌绿: pct → 背景色(强度按幅度), 文字色
 function cellBg(pct) {
@@ -38,7 +39,7 @@ export default function SectorMatrix() {
 
   useEffect(() => { load(days) }, [days, load])
 
-  if (loading && !m) return <div className="bg-surface-2 border border-border rounded-xl p-5 text-center text-text-dim text-[12px]">板块矩阵计算中…<span className="text-text-muted">（首次约 20–40 秒）</span></div>
+  if (loading && !m) return <SkeletonCard rows={6} label="板块矩阵计算中(首次约20-40秒)" />
   if (!m || !(m.rows || []).length) return null
 
   return (

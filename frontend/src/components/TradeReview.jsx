@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { fetchJSON } from '../hooks/useApi'
+import SkeletonCard from './Skeleton'
 import { fmtMoney } from '../helpers'
 
 const pnlColor = (v) => v == null || v === 0 ? 'text-text-dim' : v > 0 ? 'text-bear-bright' : 'text-bull-bright'
@@ -13,7 +14,7 @@ export default function TradeReview() {
     fetchJSON('/api/portfolio/trade-review').then(setD).catch(() => {}).finally(() => setLoading(false))
   }, [])
 
-  if (loading) return <div className="text-center py-6 text-text-dim text-[12px]">复盘计算中…</div>
+  if (loading) return <SkeletonCard rows={5} label="复盘计算中" />
   if (!d || !d.overview?.n_stocks) return null
   const o = d.overview
 
