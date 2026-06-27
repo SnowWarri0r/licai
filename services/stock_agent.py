@@ -105,19 +105,46 @@ async def _tool_get_quote(code: str) -> dict:
     }
 
 
+def _us_daily_k_sync(symbol: str, datalen: int) -> list:
+    """美股个股日K(新浪 US_MinKService, 裸 symbol 如 AAPL; 返回升序, 取末尾 N 条)。"""
+    import requests as _rq
+    url = (f"http://stock.finance.sina.com.cn/usstock/api/jsonp.php/var%20t=/"
+           f"US_MinKService.getDailyK?symbol={symbol.upper()}&num={max(datalen + 5, 30)}")
+    txt = _rq.get(url, headers={"Referer": "https://finance.sina.com.cn/stock/usstock/"}, timeout=6).text
+    s = txt.find("=(")
+    if s < 0:
+        return []
+    try:
+        end = txt.rfind(");")
+        arr = _json.loads(txt[s + 2:end if end > 0 else None])
+    except Exception:
+        return []
+    return [float(d["c"]) for d in arr[-(datalen + 1):] if d.get("c")] if isinstance(arr, list) else []
+
+
 async def _tool_get_trend(code: str, days: int = 20) -> dict:
-    """近 N 日走势: 每日涨跌幅 + 累计。仅 A 股(走新浪历史)。"""
-    from services.market_data import get_historical_data, normalize_stock_code, is_a_share
-    code = normalize_stock_code(_norm_code(code))
-    if not is_a_share(code):
-        return {"error": "走势仅支持 A 股"}
+    """近 N 日走势: 每日涨跌幅 + 累计。A 股走新浪历史; 港股走腾讯日K; 美股走新浪 US 日K。"""
+    from services.market_data import (get_historical_data, normalize_stock_code, is_a_share,
+                                       split_stock_code, _kline_tencent_hk)
+    raw = normalize_stock_code(_norm_code(code))
     days = max(5, min(int(days or 20), 60))
-    df = await get_historical_data(code, days + 5)
-    if df is None or df.empty:
-        return {"error": "无历史数据"}
-    closes = [float(x) for x in df["收盘"].tolist()][-(days + 1):]
+    market, symbol = split_stock_code(raw)
+    closes: list = []
+    if is_a_share(raw):
+        df = await get_historical_data(raw, days + 5)
+        if df is None or df.empty:
+            return {"error": "无历史数据"}
+        closes = [float(x) for x in df["收盘"].tolist()][-(days + 1):]
+    elif market == "HK":
+        rows = await asyncio.to_thread(_kline_tencent_hk, f"hk{symbol.zfill(5)}", days + 5)
+        closes = [float(r["close"]) for r in (rows or []) if r.get("close")][-(days + 1):]
+    elif market == "US":
+        closes = await asyncio.to_thread(_us_daily_k_sync, symbol, days)
+    else:
+        return {"error": "走势暂不支持该市场"}
     if len(closes) < 2:
-        return {"error": "数据不足"}
+        return {"error": "无历史数据"}
+    code = raw
     daily = [round((closes[i] / closes[i - 1] - 1) * 100, 2) for i in range(1, len(closes))]
     cum = round((closes[-1] / closes[0] - 1) * 100, 2)
     up = sum(1 for d in daily if d > 0)
@@ -140,6 +167,179 @@ async def _tool_get_news(code: str) -> dict:
         return {"news": [], "note": "无个股新闻 (东财仅 A 股)"}
     return {"news": [{"title": it["title"], "summary": it["content"][:140],
                       "time": it["time"], "source": it["source"]} for it in items[:10]]}
+
+
+def _em_secid(code: str) -> str:
+    """A 股 6 位代码 → 东财 secid。沪(6/9/5)=1., 深(0/2/3/1)=0.。"""
+    code = _norm_code(code)
+    return ("1." if code[:1] in ("6", "9", "5") else "0.") + code
+
+
+_fflow_cache: dict = {}
+
+
+def _fetch_fund_flow_sync(code: str) -> dict:
+    """个股主力资金流(东财 fflow/kline 日线): 近几日主力净流入趋势 + 今日各单类拆解。
+    klines 每行: 日期,主力净,小单净,中单净,大单净,超大单净 (单位元)。直连 push2his/push2delay, 死分片 79.push2 不走。"""
+    import requests as _rq
+    import time as _t
+    ck = f"ff_{code}"
+    c = _fflow_cache.get(ck)
+    if c and _t.time() - c[1] < 300:
+        return c[0]
+    secid = _em_secid(code)
+    params = {"lmt": "8", "klt": "101", "secid": secid,
+              "fields1": "f1,f2,f3,f7", "fields2": "f51,f52,f53,f54,f55,f56"}
+    hosts = ["push2his.eastmoney.com", "push2.eastmoney.com", "push2delay.eastmoney.com"]
+    for i in range(9):
+        host = hosts[i % len(hosts)]
+        try:
+            r = _rq.get(f"https://{host}/api/qt/stock/fflow/kline/get", params=params, timeout=7,
+                        headers={"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"})
+            kl = (r.json().get("data") or {}).get("klines")
+            if kl:
+                rows = []
+                for ln in kl[-6:]:
+                    p = ln.split(",")
+                    if len(p) < 6:
+                        continue
+                    rows.append({"date": p[0], "main": round(float(p[1]) / 1e8, 2),
+                                 "small": round(float(p[2]) / 1e8, 2), "mid": round(float(p[3]) / 1e8, 2),
+                                 "big": round(float(p[4]) / 1e8, 2), "xlarge": round(float(p[5]) / 1e8, 2)})
+                if rows:
+                    out = {"unit": "亿元", "today": rows[-1],
+                           "main_net_series": [{"date": r["date"], "主力净流入亿": r["main"]} for r in rows]}
+                    _fflow_cache[ck] = (out, _t.time())
+                    return out
+        except Exception:
+            _t.sleep(0.3)
+    return {"error": "资金流暂不可达(东财源抖动)"}
+
+
+async def _tool_fund_flow(code: str) -> dict:
+    """个股主力资金流: 今日主力/超大单/大单/中单/小单净额 + 近几日主力净流入趋势(判断谁在买/在卖)。仅 A 股。"""
+    from services.market_data import normalize_stock_code, is_a_share
+    raw = normalize_stock_code(_norm_code(code))
+    if not is_a_share(raw):
+        return {"error": "资金流仅支持 A 股"}
+    out = await asyncio.to_thread(_fetch_fund_flow_sync, raw)
+    if "error" not in out:
+        t = out["today"]
+        out["note"] = (f"今日主力净{'流入' if t['main'] >= 0 else '流出'}{abs(t['main'])}亿"
+                       f"(超大单{t['xlarge']}/大单{t['big']}/中单{t['mid']}/小单{t['small']}亿); "
+                       "主力=超大单+大单, 正=资金净买入。")
+    return out
+
+
+_lhb_cache: dict = {}
+
+
+def _fetch_lhb_sync(code: str = "", days: int = 12) -> dict:
+    """龙虎榜(东财, akshare stock_lhb_detail_em): 近 N 日上榜明细。
+    code 给定→该股上榜记录; 否则→最近交易日净买额排序(游资/机构在打哪些票)。"""
+    import time as _t
+    import datetime as _dt
+    ck = f"lhb_{code}_{days}"
+    c = _lhb_cache.get(ck)
+    if c and _t.time() - c[1] < 1800:
+        return c[0]
+    import os
+    for k in list(os.environ):
+        if "proxy" in k.lower():
+            os.environ.pop(k, None)
+    import akshare as ak
+    end = _dt.date.today()
+    start = end - _dt.timedelta(days=days)
+    df = ak.stock_lhb_detail_em(start_date=start.strftime("%Y%m%d"), end_date=end.strftime("%Y%m%d"))
+    if df is None or df.empty:
+        return {"error": "近期无龙虎榜数据"}
+    bare = _norm_code(code)
+    if bare:
+        df = df[df["代码"].astype(str) == bare]
+        if df.empty:
+            return {"code": bare, "on_list": False, "note": f"{bare} 近{days}日未上龙虎榜"}
+    else:
+        # 市场视图: 取最近上榜日, 按净买额绝对值排序的活跃票
+        df = df.sort_values("上榜日", ascending=False)
+        latest = df["上榜日"].iloc[0]
+        df = df[df["上榜日"] == latest].copy()
+        df["_abs"] = df["龙虎榜净买额"].abs()
+        df = df.sort_values("_abs", ascending=False).head(15)
+
+    def row(r):
+        return {"code": str(r["代码"]), "name": r["名称"], "date": str(r["上榜日"]),
+                "change_pct": round(float(r["涨跌幅"]), 2) if r["涨跌幅"] == r["涨跌幅"] else None,
+                "净买额亿": round(float(r["龙虎榜净买额"]) / 1e8, 2) if r["龙虎榜净买额"] == r["龙虎榜净买额"] else None,
+                "解读": r.get("解读"), "上榜原因": r.get("上榜原因")}
+    recs = [row(r) for _, r in df.iterrows()]
+    out = ({"code": bare, "on_list": True, "records": recs} if bare
+           else {"latest_date": recs[0]["date"] if recs else None, "top_by_net_buy": recs,
+                 "note": "净买额正=游资/机构净买入(资金做多), 负=净卖出; 看解读/上榜原因辨别机构席位还是游资。"})
+    _lhb_cache[ck] = (out, _t.time())
+    return out
+
+
+async def _tool_lhb(code: str = "") -> dict:
+    """龙虎榜: code 给定→该股近期上榜(谁买谁卖/机构还是游资); 不给→最近交易日资金净买额榜(主力在打哪些票)。仅 A 股。"""
+    if code:
+        from services.market_data import normalize_stock_code, is_a_share
+        if not is_a_share(normalize_stock_code(_norm_code(code))):
+            return {"error": "龙虎榜仅支持 A 股"}
+    try:
+        return await asyncio.to_thread(_fetch_lhb_sync, code or "", 12)
+    except Exception as e:
+        return {"error": f"龙虎榜获取失败: {e}"}
+
+
+# ssbk 里混了一堆"市场状态/指数成分"标签, 不是真正的行业/概念, 过滤掉
+_SSBK_NOISE = {
+    "题材股", "趋势股", "融资融券", "沪股通", "深股通", "标准普尔", "富时罗素", "机构重仓",
+    "小盘成长", "小盘股", "中盘股", "大盘股", "白马股", "绩优股", "预盈预增", "MSCI中国",
+    "上证180", "上证380", "上证50", "沪深300", "中证500", "创业板综", "深证成指",
+    "东方财富热股", "央企改革", "国企改革", "央国企改革",
+}
+_SSBK_NOISE_KW = ["板块", "新高", "新低", "涨停", "跌停", "首板", "多板", "振幅", "换手", "昨日", "今日", "近期", "连板"]
+_concepts_cache: dict = {}
+
+
+def _fetch_stock_concepts_sync(code: str) -> dict:
+    """个股所属板块/概念 + 核心题材(东财 F10 CoreConception)。code=裸6位 → SZ/SH 前缀。"""
+    import requests as _rq
+    import time as _t
+    bare = _norm_code(code)
+    ck = f"cc_{bare}"
+    c = _concepts_cache.get(ck)
+    if c and _t.time() - c[1] < 86400:
+        return c[0]
+    em_code = ("SH" if bare[:1] in ("6", "9", "5") else "SZ") + bare
+    try:
+        j = _rq.get("https://emweb.securities.eastmoney.com/PC_HSF10/CoreConception/PageAjax",
+                    params={"code": em_code}, timeout=8, headers={"User-Agent": "Mozilla/5.0"}).json()
+    except Exception:
+        return {"error": "所属概念暂不可达"}
+    boards = []
+    for b in (j.get("ssbk") or []):
+        nm = (b.get("BOARD_NAME") or "").strip()
+        if not nm or nm in _SSBK_NOISE or any(k in nm for k in _SSBK_NOISE_KW):
+            continue
+        boards.append(nm)
+    themes = []
+    for t in (j.get("hxtc") or []):
+        kw = (t.get("KEYWORD") or "").strip()
+        if kw and kw != "经营范围" and kw not in themes:
+            themes.append(kw)
+    out = {"code": bare, "boards": boards[:20], "core_themes": themes[:8],
+           "note": "boards=所属行业/概念板块(已滤掉指数成分等噪声标签); core_themes=核心题材/主营。可与热门概念榜交叉看是不是踩在资金主线上。"}
+    _concepts_cache[ck] = (out, _t.time())
+    return out
+
+
+async def _tool_stock_concepts(code: str) -> dict:
+    """个股所属行业/概念板块 + 核心题材。回答'这只票属于哪个概念、是不是踩在资金主线上'时用。仅 A 股。"""
+    from services.market_data import normalize_stock_code, is_a_share
+    if not is_a_share(normalize_stock_code(_norm_code(code))):
+        return {"error": "所属概念仅支持 A 股"}
+    return await asyncio.to_thread(_fetch_stock_concepts_sync, code)
 
 
 async def _tool_get_holdings() -> dict:
@@ -271,9 +471,15 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"query": {"type": "string", "description": "股票名字或代码"}}, "required": ["query"]}},
     {"name": "get_quote", "description": "查个股实时行情: 现价/当日涨跌幅/开高低/成交额/换手。code 直接用 resolve_stock 返回的 code 原样传(A股是裸6位如 600667 / 000657; 港美股 HK.00700 / US.AAPL), 不要自己加 sh/sz 前缀。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
-    {"name": "get_trend", "description": "查个股近 N 个交易日走势: 累计涨跌/逐日涨跌/上涨天数。仅 A 股。",
+    {"name": "get_trend", "description": "查个股近 N 个交易日走势: 累计涨跌/逐日涨跌/上涨天数。支持 A 股/港股/美股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}, "days": {"type": "integer", "description": "默认20"}}, "required": ["code"]}},
     {"name": "get_news", "description": "查个股最近新闻(标题+摘要+时间), 用来找涨跌的消息面原因。仅 A 股(东财)。",
+     "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
+    {"name": "get_fund_flow", "description": "查个股主力资金流(谁在买/卖): 今日主力/超大单/大单/中单/小单净额(亿) + 近几日主力净流入趋势。回答'为什么涨/跌、是不是主力在拉、资金进还是出'的关键。仅 A 股。",
+     "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
+    {"name": "get_lhb", "description": "龙虎榜: 传 code→该股近期是否上榜及净买额/机构还是游资席位/上榜原因(看是谁在拉); 不传 code→最近交易日资金净买额榜(主力/游资当天在打哪些票, 看资金主线)。仅 A 股。",
+     "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选; 留空看全市场榜"}}}},
+    {"name": "get_stock_concepts", "description": "查个股所属行业/概念板块 + 核心题材。判断'这只票属于哪个概念、有没有踩在当下资金主线/热门概念上'时用; 可与 get_hot_concepts 交叉印证。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_holdings", "description": "查用户当前持仓列表(代码/名称/股数), 用于回答跟用户持仓的关系。",
      "input_schema": {"type": "object", "properties": {}}},
@@ -296,6 +502,9 @@ _EXECUTORS = {
     "get_quote": lambda a: _tool_get_quote(a.get("code", "")),
     "get_trend": lambda a: _tool_get_trend(a.get("code", ""), a.get("days", 20)),
     "get_news": lambda a: _tool_get_news(a.get("code", "")),
+    "get_fund_flow": lambda a: _tool_fund_flow(a.get("code", "")),
+    "get_lhb": lambda a: _tool_lhb(a.get("code", "")),
+    "get_stock_concepts": lambda a: _tool_stock_concepts(a.get("code", "")),
     "get_holdings": lambda a: _tool_get_holdings(),
     "get_market_sentiment": lambda a: _tool_market_sentiment(),
     "get_sector_momentum": lambda a: _tool_sector_momentum(a.get("days", 10)),
@@ -319,9 +528,14 @@ _SYSTEM = (
     "你是市场&个股解读助手。用户自由提问: 个股为什么涨跌/消息面/跟持仓关系, 以及【市场风格】类问题"
     "(这周市场在奖励什么打法、是动量追涨还是低吸反转、是题材轮动还是抱团、高低切迹象、资金主线在哪、情绪处在什么周期)。\n"
     "工具: resolve_stock(名字转代码)、get_quote(个股实时行情)、get_trend(个股近N日走势)、get_news(个股新闻)、"
-    "get_holdings(用户持仓)、get_market_sentiment(大盘打板情绪)、get_sector_momentum(板块趋势矩阵:动量/退潮/资金流)、get_hot_rank(资金人气榜)。\n"
-    "【个股问题】先 resolve_stock 拿代码, 再 get_quote+get_trend+get_news, 需要时 get_market_sentiment 判断个股事件还是大盘普涨跌; "
-    "若该票/所属板块对政策敏感(有色/小金属/地产/半导体/医药/军工/新能源/平台经济等), 还要调 get_market_news 看有没有政策催化或调控压制。\n"
+    "get_fund_flow(个股主力资金流:谁在买卖)、get_lhb(龙虎榜:游资/机构席位)、get_stock_concepts(个股所属概念板块)、"
+    "get_holdings(用户持仓)、get_market_sentiment(大盘打板情绪)、get_sector_momentum(板块趋势矩阵:动量/退潮/资金流)、"
+    "get_hot_concepts(热门概念榜)、get_hot_rank(资金人气榜)、get_market_news(政策面)。\n"
+    "【个股问题】先 resolve_stock 拿代码, 再 get_quote+get_trend; 找涨跌原因务必看 get_fund_flow(主力资金是进是出、谁在拉)"
+    "+get_news(消息面), 异动明显时 get_lhb(有没有上龙虎榜、游资还是机构在打); 用 get_stock_concepts 看它属于哪个概念, "
+    "再与 get_hot_concepts/get_sector_momentum 交叉看是不是踩在当下资金主线上; 需要时 get_market_sentiment 判断个股事件还是大盘普涨跌; "
+    "若该票/所属板块对政策敏感(有色/小金属/地产/半导体/医药/军工/新能源/平台经济等), 还要调 get_market_news 看有没有政策催化或调控压制。"
+    "(get_fund_flow/get_lhb/get_stock_concepts 仅 A 股; 港美股有 get_quote+get_trend, 资金流/龙虎榜/概念查不到就如实说。)\n"
     "【'能不能进/明天怎么样/还能拿吗'这类问题】不要直接拒绝了事。照样把客观分析做全"
     "(为什么涨跌、消息面、政策面、走势位置、跟持仓关系、双向风险都摆出来), 只是【不给买卖结论】——"
     "结尾一句'方向性的进出/仓位得你自己定, 我只给客观信息'。决策依据给足, 但不替用户拍板。\n"
@@ -357,7 +571,8 @@ _SYSTEM = (
 
 _TOOL_CN = {
     "resolve_stock": "解析代码", "get_quote": "查行情", "get_trend": "查走势",
-    "get_news": "查新闻", "get_holdings": "看持仓", "get_market_sentiment": "看大盘情绪",
+    "get_news": "查新闻", "get_fund_flow": "查资金流", "get_lhb": "查龙虎榜",
+    "get_stock_concepts": "查所属概念", "get_holdings": "看持仓", "get_market_sentiment": "看大盘情绪",
     "get_sector_momentum": "看板块动量", "get_hot_rank": "看资金热度",
     "get_hot_concepts": "看热门概念", "get_market_news": "看政策快讯", "web_search": "联网搜索",
 }
