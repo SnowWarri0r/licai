@@ -91,16 +91,24 @@ function FxHint({ extra, children }) {
   )
 }
 
-// Fund subcategory: derived from name keywords. Order = render order.
+// Fund subcategory: derived from name keywords. 顺序即匹配优先级 —— 具体主题在前,
+// 宽基在后(否则 "创业板人工智能ETF" 会被 "创业板" 抢成宽基)。
 const FUND_CATEGORIES = [
   { id: 'gold',     label: '黄金',     match: /黄金|金ETF/ },
   { id: 'silver',   label: '白银',     match: /白银|银ETF/ },
-  { id: 'overseas', label: '海外股票', match: /QDII|纳斯达克|纳指|标普|美股|港股|恒生|中概|海外/ },
-  { id: 'commodity',label: '大宗商品', match: /原油|能源|有色|铜|铁矿|豆粕|商品/ },
-  { id: 'bond',     label: '债券',     match: /债|利率/ },
+  { id: 'bond',     label: '债券',     match: /债券|利率债|国债|信用债|可转债|纯债/ },
   { id: 'cash',     label: '货币',     match: /货币|活期|现金/ },
-  { id: 'aindex',   label: 'A股宽基', match: /沪深300|中证500|中证1000|上证50|创业板|科创50|A股/ },
-  { id: 'asector',  label: 'A股行业', match: /消费|医药|科技|新能源|半导体|军工|银行|证券|地产|周期/ },
+  { id: 'overseas', label: '海外股票', match: /QDII|纳斯达克|纳指|标普|道琼斯|美股|港股|恒生|中概|海外|日经|德国|法国|全球|港美/ },
+  { id: 'semi',     label: '半导体',   match: /半导体|芯片|集成电路|存储/ },
+  { id: 'ai',       label: '人工智能', match: /人工智能|智能|算力|机器人|AI/ },
+  { id: 'tmt',      label: '科技TMT',  match: /通信|信息|数字经济|科技|计算机|软件|传媒|游戏|电子|互联|云计算|大数据/ },
+  { id: 'newenergy',label: '新能源',   match: /新能源|光伏|锂电|储能|电池|风电|绿电|高端制造/ },
+  { id: 'military', label: '军工',     match: /军工|国防|航天|航空/ },
+  { id: 'medical',  label: '医药',     match: /医药|生物|医疗|疫苗|创新药|医疗器械|CXO/ },
+  { id: 'consumer', label: '消费',     match: /消费|食品|白酒|酒|家电|零售|养殖|农业|旅游/ },
+  { id: 'finance',  label: '金融',     match: /证券|券商|银行|保险|金融|地产/ },
+  { id: 'commodity',label: '大宗商品', match: /原油|能源|煤炭|有色|铜|铁矿|豆粕|商品/ },
+  { id: 'aindex',   label: 'A股宽基',  match: /沪深300|中证500|中证1000|中证2000|上证50|创业板|科创50|科创100|科创板|双创|A股|中证|国证|MSCI|价值|红利|低波/ },
 ]
 function fundCategoryOf(name = '') {
   for (const c of FUND_CATEGORIES) if (c.match.test(name)) return c
@@ -123,10 +131,11 @@ const A_SECTORS = [
   { id: 'machinery', label: '机械',     match: /机械|装备|工程|重工|军工|国防/ },
 ]
 function aShareCategoryOf(name = '', sector = '') {
-  // 优先用后端从东方财富拉的真实行业（如 "有色金属-二次资源利用-钴"），
-  // 没有时回退到从股票名 regex 推断（兜底）。
-  const probe = sector || name
-  for (const c of A_SECTORS) if (c.match.test(probe)) return c
+  // 优先直接用后端东财真实一级行业(如 "有色金属"/"电子设备"/"电气设备")当分类 ——
+  // 这是权威数据, 比粗分桶准。后端拿不到(网络失败)才回退按股票名 regex 兜底。
+  const s = String(sector || '').split('-')[0].trim()
+  if (s) return { id: s, label: s }
+  for (const c of A_SECTORS) if (c.match.test(name)) return c
   return { id: 'other', label: '其他' }
 }
 
