@@ -230,6 +230,30 @@ async def _tool_hot_rank() -> dict:
         return {"error": str(e)}
 
 
+_POLICY_KW = [
+    "央行", "降准", "降息", "逆回购", "MLF", "LPR", "国债", "专项债", "财政", "货币政策",
+    "证监会", "银保监", "金融监管", "国常会", "国务院", "政治局", "发改委", "工信部", "部委",
+    "政策", "监管", "调控", "刺激", "新政", "出口管制", "关税", "制裁", "实体清单",
+    "反垄断", "反内卷", "供给侧", "去产能", "收储", "汇率", "稳增长", "会议", "规划", "意见",
+]
+
+
+async def _tool_market_news(limit: int = 40) -> dict:
+    """全市场财经快讯(东财+财联社+同花顺), 含政策面/国家调控。用来把宏观政策、监管动向、
+    产业政策、央行财政、重要会议等市场背景因素纳入分析。policy_news 是按关键词筛出的政策相关条目。"""
+    try:
+        from api.news_routes import market_news
+        mn = await market_news()
+        items = (mn.get("items") or [])[:max(limit, 40)]
+        def is_pol(t):
+            return any(k in (t or "") for k in _POLICY_KW)
+        heads = [{"title": it.get("title"), "time": it.get("time"), "source": it.get("source")} for it in items]
+        policy = [h for h in heads if is_pol(h["title"])]
+        return {"policy_news": policy[:18], "headlines": heads[:limit], "note": "policy_news=政策/调控相关筛选; headlines=全部要闻(时间倒序)"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 async def _tool_market_sentiment() -> dict:
     try:
         from api.market_routes import market_sentiment
@@ -261,6 +285,8 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_hot_concepts", "description": "今日热门概念板块榜(概念粒度, 比行业更细, 如 CPO/HBM/先进封装/玻璃基板/固态电池等): 涨幅+主力净流入。回答'量化/资金这几天在冲哪个具体概念、概念怎么切'时用它。",
      "input_schema": {"type": "object", "properties": {"top": {"type": "integer", "description": "默认15"}}}},
+    {"name": "get_market_news", "description": "全市场财经快讯(含政策面/国家调控: 货币财政、央行、证监会/部委监管、产业政策、行业调控、出口管制/关税、国常会/政治局等重要会议)。分析市场背景、判断政策驱动/调控影响时必看; policy_news 是政策相关筛选。",
+     "input_schema": {"type": "object", "properties": {"limit": {"type": "integer", "description": "默认40"}}}},
     # Anthropic 服务端联网搜索: 碰到本地工具查不到/可能过期的事实(海外公司是否上市/IPO/代码/政策/最新消息)用它核实, 不要凭记忆嘴硬。
     {"type": "web_search_20250305", "name": "web_search", "max_uses": 4},
 ]
@@ -275,6 +301,7 @@ _EXECUTORS = {
     "get_sector_momentum": lambda a: _tool_sector_momentum(a.get("days", 10)),
     "get_hot_rank": lambda a: _tool_hot_rank(),
     "get_hot_concepts": lambda a: _tool_hot_concepts(a.get("top", 15)),
+    "get_market_news": lambda a: _tool_market_news(a.get("limit", 40)),
 }
 
 _SYSTEM = (
@@ -284,8 +311,12 @@ _SYSTEM = (
     "get_holdings(用户持仓)、get_market_sentiment(大盘打板情绪)、get_sector_momentum(板块趋势矩阵:动量/退潮/资金流)、get_hot_rank(资金人气榜)。\n"
     "【个股问题】先 resolve_stock 拿代码, 再 get_quote+get_trend+get_news, 需要时 get_market_sentiment 判断个股事件还是大盘普涨跌。\n"
     "【市场风格问题】用 get_market_sentiment(打板赚钱效应高=追涨/动量有效; 炸板率高+亏钱效应=高位分歧/反转占优) + "
-    "get_sector_momentum(连涨板块多=动量延续; 普遍冲高回落=退潮/高低切) + get_hot_rank(资金主线/抱团方向) 综合判断, "
+    "get_sector_momentum(连涨板块多=动量延续; 普遍冲高回落=退潮/高低切) + get_hot_concepts(概念主攻) + get_hot_rank(资金主线/抱团) 综合判断, "
     "用具体数字描述'市场这周在奖励什么行为、惩罚什么行为、资金往哪走'。这是客观的市场逻辑分析, 不是策略推荐。\n"
+    "【政策面/国家调控——市场背景必看】分析市场背景、或个股/板块异动疑似政策驱动时, 必须调 get_market_news 看政策面"
+    "(货币/财政: 降准降息/LPR/逆回购/专项债; 监管: 证监会/部委/反垄断/平台经济; 产业政策与行业调控: 收储/去产能/反内卷/限价/补贴; "
+    "地缘: 出口管制/关税/制裁/实体清单; 重要会议: 国常会/政治局/发改委部署), 必要时再 web_search 补最新政策细节。"
+    "要点出'这波行情/这个板块背后有没有政策催化或调控压制'(如 收储拉动有色、AI/算力产业政策、地产/化债/反内卷、关税扰动出口链), 用快讯标题/日期举证。\n"
     "【分析框架·一线打板资金视角】(客观套用, 不点名出处, 不据此给操作建议):\n"
     "  · 量化/游资以【板块/概念】为维度运作, 不是单票。判断市场=判断资金这几天在冲哪个板块概念、节奏多快"
     "(概念可能一两天就切, 如从 A 概念直接换到 B 概念)。要找出资金主线板块 + 有没有概念轮动切换。\n"
@@ -312,7 +343,7 @@ _TOOL_CN = {
     "resolve_stock": "解析代码", "get_quote": "查行情", "get_trend": "查走势",
     "get_news": "查新闻", "get_holdings": "看持仓", "get_market_sentiment": "看大盘情绪",
     "get_sector_momentum": "看板块动量", "get_hot_rank": "看资金热度",
-    "get_hot_concepts": "看热门概念", "web_search": "联网搜索",
+    "get_hot_concepts": "看热门概念", "get_market_news": "看政策快讯", "web_search": "联网搜索",
 }
 
 
