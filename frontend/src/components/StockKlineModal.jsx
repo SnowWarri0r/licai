@@ -285,6 +285,19 @@ function CandleChart({ series, cost, actions, warmup = [] }) {
 // ---------------------------------------------------------------------------
 // 分时图 (TDX) — 价格线 + 均价线 + 昨收基准, 上方红下方绿
 // ---------------------------------------------------------------------------
+// 分时时刻 → 固定 240 分钟交易网格的槽位 [0,240]。9:30-11:30=0~120, 13:00-15:00=120~240。
+// 让点按真实时刻落位(没出满则右侧留白), 而非按索引铺满整宽导致时间轴错位。
+function _minuteSlot(t) {
+  const parts = String(t || '').split(':')
+  const mins = (Number(parts[0]) || 0) * 60 + (Number(parts[1]) || 0)
+  const amS = 570, amE = 690, pmS = 780, pmE = 900   // 9:30 / 11:30 / 13:00 / 15:00
+  if (mins <= amS) return 0
+  if (mins <= amE) return mins - amS
+  if (mins < pmS) return 120
+  if (mins <= pmE) return 120 + (mins - pmS)
+  return 240
+}
+
 function MinuteChart({ points, prevClose }) {
   const [hover, setHover] = useState(null)
   const svgRef = useRef(null)
@@ -306,7 +319,7 @@ function MinuteChart({ points, prevClose }) {
       const v = Number(p['手']) || 0
       cumPV += p.price * v; cumV += v
       const avg = cumV > 0 ? cumPV / cumV : p.price
-      const x = P.l + (i / Math.max(1, points.length - 1)) * innerW
+      const x = P.l + (_minuteSlot(p.time) / 240) * innerW   // 按真实时刻落位, 非按索引铺满
       const yOf = (val) => P.t + priceH - ((val - rMin) / rng) * priceH
       return { ...p, avg, vol: v, x, y: yOf(p.price), yAvg: yOf(avg), i }
     })
@@ -331,8 +344,10 @@ function MinuteChart({ points, prevClose }) {
     if (!svgRef.current || !rows.length) return
     const rect = svgRef.current.getBoundingClientRect()
     const cx = ((e.clientX - rect.left) / rect.width) * W
-    const i = Math.round(((cx - P.l) / innerW) * (rows.length - 1))
-    setHover(rows[Math.max(0, Math.min(rows.length - 1, i))])
+    // x 已按真实时刻分布(非均匀), 取 x 最近的点
+    let best = rows[0], bd = Infinity
+    for (const r of rows) { const d = Math.abs(r.x - cx); if (d < bd) { bd = d; best = r } }
+    setHover(best)
   }
 
   if (rows.length < 2) return <div className="h-[360px] flex items-center justify-center text-text-dim text-[12px]">暂无分时(非交易时段或 TDX 无数据)</div>
