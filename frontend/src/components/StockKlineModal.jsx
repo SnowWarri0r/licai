@@ -314,14 +314,17 @@ function MinuteChart({ points, prevClose, actions = [], day }) {
     const maxDev = Math.max(...prices.map(p => Math.abs(p - prevClose)), prevClose * 0.001)
     const rMin = prevClose - maxDev, rng = maxDev * 2 || 1
     const vMax = Math.max(1, ...points.map(p => Number(p['手']) || 0))
-    let cumPV = 0, cumV = 0
+    let cumPV = 0, cumV = 0, prevPx = prevClose, lastUp = true
     const rs = points.map((p, i) => {
       const v = Number(p['手']) || 0
       cumPV += p.price * v; cumV += v
       const avg = cumV > 0 ? cumPV / cumV : p.price
       const x = P.l + (_minuteSlot(p.time) / 240) * innerW   // 按真实时刻落位, 非按索引铺满
       const yOf = (val) => P.t + priceH - ((val - rMin) / rng) * priceH
-      return { ...p, avg, vol: v, x, y: yOf(p.price), yAvg: yOf(avg), i }
+      // 量柱买卖方向: tick 规则 — 比上一分钟涨=主动买(红), 跌=主动卖(绿), 平=延续
+      const up = p.price > prevPx ? true : p.price < prevPx ? false : lastUp
+      lastUp = up; prevPx = p.price
+      return { ...p, avg, vol: v, x, y: yOf(p.price), yAvg: yOf(avg), i, up }
     })
     return { rows: rs, rangeMin: rMin, range: rng, volMax: vMax }
   }, [points, prevClose, priceH, innerW])
@@ -390,9 +393,12 @@ function MinuteChart({ points, prevClose, actions = [], day }) {
           <text key={i} x={P.l + (i / 2) * innerW} y={H - 8} fontSize="10" fill="var(--color-text-dim)" textAnchor={i === 0 ? 'start' : i === 2 ? 'end' : 'middle'} fontFamily="monospace">{lbl}</text>
         ))}
         {/* 分时成交量 */}
+        <text x={P.l} y={volTop - 3} fontSize="9" fill="var(--color-text-muted)" fontFamily="monospace">
+          量 <tspan fill={UP}>红买</tspan>/<tspan fill={DOWN}>绿卖</tspan>
+        </text>
         {rows.map(r => {
           const h = (r.vol / volMax) * volH
-          return <rect key={'mv' + r.i} x={r.x - 1} y={volTop + volH - h} width="1.6" height={Math.max(0.4, h)} fill={r.price >= prevClose ? UP : DOWN} opacity="0.8" />
+          return <rect key={'mv' + r.i} x={r.x - 1} y={volTop + volH - h} width="1.6" height={Math.max(0.4, h)} fill={r.up ? UP : DOWN} opacity="0.8" />
         })}
         <line x1={P.l} y1={volTop + volH} x2={W - P.r} y2={volTop + volH} stroke="var(--color-border-subtle)" strokeWidth="1" />
         <polyline points={avgLine} fill="none" stroke="#c8a876" strokeWidth="1" opacity="0.85" />
