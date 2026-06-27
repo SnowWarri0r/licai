@@ -819,6 +819,10 @@ async def _tool_trades(code: str = "", start: str = "", end: str = "") -> dict:
             return False
         return True
 
+    def act_date(x) -> str:
+        # trade_date 缺失时回退 created_at(同步/导入生成的 initial/add-lot 只有 created_at), 对齐前端口径
+        return (x.get("trade_date") or str(x.get("created_at") or ""))[:10]
+
     def fmt(a: dict) -> dict:
         amt = float(a.get("price") or 0) * float(a.get("shares") or 0)
         return {"date": (a.get("trade_date") or str(a.get("created_at") or ""))[:10],
@@ -840,13 +844,17 @@ async def _tool_trades(code: str = "", start: str = "", end: str = "") -> dict:
                     if a.get("asset_type") == "FUND" and (q == ac or q in an or q == bare):
                         fa = {"BUY": "申购", "ADD": "加仓", "REDEEM": "赎回",
                               "DEPOSIT": "转入", "WITHDRAW": "转出"}
-                        recs = [{"date": (x.get("trade_date") or "")[:10],
+                        recs = []
+                        for x in await list_external_actions(a["id"]):
+                            if not in_range(act_date(x)):
+                                continue
+                            r = {"date": act_date(x),
                                  "动作": fa.get((x.get("action_type") or "").upper(), x.get("action_type")),
                                  "price": x.get("unit_price"), "shares": x.get("shares"),
                                  "金额": x.get("amount"), "note": x.get("note") or ""}
-                                for x in await list_external_actions(a["id"])
-                                if (x.get("status") or "confirmed") == "confirmed"
-                                and in_range(x.get("trade_date") or "")]
+                            if (x.get("status") or "confirmed") != "confirmed":
+                                r["状态"] = "待确认(T+1未出净值)"
+                            recs.append(r)
                         return {"code": ac, "name": an, "asset_class": "基金/ETF", "trades": recs,
                                 "range": {"start": s or None, "end": e or None},
                                 "note": "基金/ETF 申赎流水(外部资产账本); 综合成本/盈亏请用看板。"}
@@ -877,19 +885,42 @@ async def _tool_trades(code: str = "", start: str = "", end: str = "") -> dict:
                 "range": {"start": s or None, "end": e or None},
                 "note": "trades=区间内成交流水(含手续费,按日期升序); position=按全历史算的当前状态(不受区间影响)。同日有买有卖=做T。已实现盈亏含已平仓段+分红。"}
 
-    # 无 code: 最近全部成交 —— 复用 trade_journal 的合并账本(个股 + 场内ETF + 场外基金)
+    # 无 code: 最近全部成交 —— 自己组装(个股 + 场内ETF + 场外基金), 含 pending(T+1待确认)申购, 标出来
     try:
-        from api.portfolio_routes import trade_journal
-        # 带区间时多取一些再筛, 避免 limit 在筛选前就截断
-        j = await trade_journal(limit=300 if (s or e) else 50)
-        cls_cn = {"stock": "个股", "etf": "场内ETF", "fund": "场外基金"}
-        recs = [{"date": t.get("date"), "code": t.get("code"), "name": t.get("name"),
-                 "动作": {"buy": "买入", "sell": "卖出"}.get(t.get("kind"), t.get("kind")),
-                 "类型": cls_cn.get(t.get("asset_class"), t.get("asset_class")),
-                 "price": t.get("price"), "shares": t.get("shares"), "金额": t.get("amount")}
-                for t in (j.get("trades") or []) if in_range(t.get("date"))]
-        return {"recent_trades": recs[:80], "range": {"start": s or None, "end": e or None},
-                "note": "成交(时间倒序), 含个股/场内ETF/场外基金三类; 已按区间筛选。看某只票完整流水+综合成本请带 code 再调一次。"}
+        merged = []
+        name_by = {h.get("stock_code"): h.get("stock_name") for h in await get_all_holdings()}
+        # A 股个股
+        for a in await get_position_actions(None, limit=200):
+            d = (a.get("trade_date") or str(a.get("created_at") or ""))[:10]
+            if not in_range(d):
+                continue
+            amt = float(a.get("price") or 0) * float(a.get("shares") or 0)
+            merged.append({"date": d, "code": a.get("stock_code"), "name": name_by.get(a.get("stock_code"), ""),
+                           "动作": _ACTION_CN.get(a.get("action_type"), a.get("action_type")), "类型": "个股",
+                           "price": a.get("price"), "shares": a.get("shares"), "金额": round(amt, 2) if amt else None})
+        # 场内ETF / 场外基金 (含待确认)
+        from database import list_external_assets, list_external_actions
+        from services.external_assets import _is_onchain_etf
+        fa = {"BUY": "买入", "ADD": "买入", "REDEEM": "卖出"}
+        for a in await list_external_assets():
+            if a.get("asset_type") != "FUND":
+                continue
+            cls = "场内ETF" if _is_onchain_etf(str(a.get("code") or "")) else "场外基金"
+            for x in await list_external_actions(a["id"]):
+                act = fa.get((x.get("action_type") or "").upper())
+                d = act_date(x)
+                if not act or not in_range(d):
+                    continue
+                pend = (x.get("status") or "confirmed") != "confirmed"
+                rec = {"date": d, "code": str(a.get("code") or ""),
+                       "name": a.get("name") or "", "动作": act, "类型": cls, "price": x.get("unit_price"),
+                       "shares": x.get("shares"), "金额": x.get("amount")}
+                if pend:
+                    rec["状态"] = "待确认(T+1未出净值)"
+                merged.append(rec)
+        merged.sort(key=lambda x: x["date"], reverse=True)
+        return {"recent_trades": merged[:80], "range": {"start": s or None, "end": e or None},
+                "note": "成交(时间倒序), 含个股/场内ETF/场外基金三类; 含待确认申购(状态=待确认)。日期缺失的成交按录入时间(created_at)归日。"}
     except Exception:
         acts = await get_position_actions(None, limit=40)
         name_by = {h.get("stock_code"): h.get("stock_name") for h in await get_all_holdings()}
