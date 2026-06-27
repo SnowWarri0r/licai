@@ -174,9 +174,20 @@ async def trade(code: str, limit: int = 60) -> dict | None:
             continue
         t = str(x.get("Time") or "")
         ticks.append({"time": t[11:19] if "T" in t else t, "price": p,
-                      "手": x.get("Volume"), "dir": dirs.get(x.get("Status"), "")})
-    ticks = ticks[::-1][:int(limit or 60)]   # 最近在前
-    return {"ticks": ticks} if ticks else None
+                      "手": x.get("Volume") or 0, "dir": dirs.get(x.get("Status"), "")})
+    ticks = ticks[::-1]   # 最近在前
+    # 聚类: TDX 给的是分钟级逐笔, 同一分钟会拆成多条, 把同(时刻+价+方向)的归并、手数求和,
+    # 否则同价分好几行。按首次出现顺序保留。
+    merged, idx = [], {}
+    for t in ticks:
+        key = (t["time"], t["price"], t["dir"])
+        if key in idx:
+            merged[idx[key]]["手"] += (t["手"] or 0)
+        else:
+            idx[key] = len(merged)
+            merged.append(dict(t))
+    merged = merged[:int(limit or 60)]
+    return {"ticks": merged} if merged else None
 
 
 async def test_connection(base_url: str = "") -> dict:
