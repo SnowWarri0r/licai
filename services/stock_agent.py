@@ -762,8 +762,8 @@ _ACTION_CN = {"BUY": "买入", "ADD": "加仓", "SELL": "卖出", "REDUCE": "减
 
 
 async def _tool_trades(code: str = "") -> dict:
-    """成交记录: 传 code→该票全部买卖/加减仓/分红流水 + 当前持仓状态(综合成本/已实现盈亏/持有天数);
-    不传→最近全部成交。仅 A 股(成交账本里只有 A 股)。"""
+    """成交记录(含个股/场内ETF/场外基金): 传 code→该标的流水 + (A股)持仓状态(综合成本/已实现盈亏/持有天数);
+    不传→最近全部成交(三类合并)。"""
     from database import get_position_actions, get_all_holdings
     from services.position_ledger import compute_position_state
     from api.portfolio_routes import _broker_stock_fee
@@ -780,7 +780,26 @@ async def _tool_trades(code: str = "") -> dict:
         bare = _norm_code(code)
         acts = await get_position_actions(bare, limit=500)
         if not acts:
-            return {"code": bare, "trades": [], "note": "该票无成交记录"}
+            # 不在个股账本 → 可能是基金/ETF(外部资产账本)
+            try:
+                from database import list_external_assets, list_external_actions
+                q = (code or "").strip()
+                for a in await list_external_assets():
+                    ac, an = str(a.get("code") or ""), (a.get("name") or "")
+                    if a.get("asset_type") == "FUND" and (q == ac or q in an or q == bare):
+                        fa = {"BUY": "申购", "ADD": "加仓", "REDEEM": "赎回",
+                              "DEPOSIT": "转入", "WITHDRAW": "转出"}
+                        recs = [{"date": (x.get("trade_date") or "")[:10],
+                                 "动作": fa.get((x.get("action_type") or "").upper(), x.get("action_type")),
+                                 "price": x.get("unit_price"), "shares": x.get("shares"),
+                                 "金额": x.get("amount"), "note": x.get("note") or ""}
+                                for x in await list_external_actions(a["id"])
+                                if (x.get("status") or "confirmed") == "confirmed"]
+                        return {"code": ac, "name": an, "asset_class": "基金/ETF", "trades": recs,
+                                "note": "基金/ETF 申赎流水(外部资产账本); 综合成本/盈亏请用看板。"}
+            except Exception:
+                pass
+            return {"code": bare, "trades": [], "note": "该标的无成交记录"}
         # 名称
         name = ""
         for h in await get_all_holdings():
@@ -803,13 +822,23 @@ async def _tool_trades(code: str = "") -> dict:
         return {"code": bare, "name": name, "trades": recs, "position": summary,
                 "note": "trades=按日期升序的成交流水(含手续费); position=综合成本法算的当前状态。同日有买有卖=做T。已实现盈亏含已平仓段+分红。"}
 
-    # 无 code: 最近全部成交
-    acts = await get_position_actions(None, limit=40)
-    if not acts:
-        return {"trades": [], "note": "无成交记录"}
-    name_by = {h.get("stock_code"): h.get("stock_name") for h in await get_all_holdings()}
-    recs = [{**fmt(a), "code": a.get("stock_code"), "name": name_by.get(a.get("stock_code"), "")} for a in acts]
-    return {"recent_trades": recs, "note": "最近 40 笔成交(时间倒序), 跨全部标的。看某只票完整流水请带 code 再调一次。"}
+    # 无 code: 最近全部成交 —— 复用 trade_journal 的合并账本(个股 + 场内ETF + 场外基金)
+    try:
+        from api.portfolio_routes import trade_journal
+        j = await trade_journal(limit=50)
+        cls_cn = {"stock": "个股", "etf": "场内ETF", "fund": "场外基金"}
+        recs = [{"date": t.get("date"), "code": t.get("code"), "name": t.get("name"),
+                 "动作": {"buy": "买入", "sell": "卖出"}.get(t.get("kind"), t.get("kind")),
+                 "类型": cls_cn.get(t.get("asset_class"), t.get("asset_class")),
+                 "price": t.get("price"), "shares": t.get("shares"), "金额": t.get("amount")}
+                for t in (j.get("trades") or [])]
+        return {"recent_trades": recs,
+                "note": "最近成交(时间倒序), 含个股/场内ETF/场外基金三类。看某只票完整流水+综合成本请带 code 再调一次。"}
+    except Exception:
+        acts = await get_position_actions(None, limit=40)
+        name_by = {h.get("stock_code"): h.get("stock_name") for h in await get_all_holdings()}
+        recs = [{**fmt(a), "code": a.get("stock_code"), "name": name_by.get(a.get("stock_code"), "")} for a in acts]
+        return {"recent_trades": recs, "note": "最近成交(仅个股, 基金账本读取失败)。"}
 
 
 async def _tool_get_holdings() -> dict:
@@ -967,7 +996,7 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_holdings", "description": "查用户当前持仓列表(代码/名称/股数), 用于回答跟用户持仓的关系。",
      "input_schema": {"type": "object", "properties": {}}},
-    {"name": "get_trades", "description": "查用户成交记录: 传 code→该票买卖/加减仓/分红流水 + 综合成本/已实现盈亏/持有天数(同日有买有卖=做T); 不传→最近40笔全部成交。回答'我什么时候买的、成本多少、做过几次T、这票赚没赚、持有多久'时用。仅 A 股。",
+    {"name": "get_trades", "description": "查用户成交记录(含个股/场内ETF/场外基金): 传 code→该标的买卖/加减仓/分红或申赎流水(A股另给综合成本/已实现盈亏/持有天数, 同日有买有卖=做T); 不传→最近全部成交(三类合并)。回答'我什么时候买的、成本多少、做过几次T、这票赚没赚、持有多久、最近交易了啥'时用。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选; 留空看最近全部成交"}}}},
     {"name": "get_market_sentiment", "description": "查大盘打板情绪(涨停数/连板高度/炸板率/赚钱效应/热点板块), 判断是个股原因还是大盘普涨普跌; 也用于判断市场风格(打板赚钱效应高=追涨/动量有效; 炸板率高+亏钱效应=高位分歧/反转)。",
      "input_schema": {"type": "object", "properties": {}}},
@@ -1034,7 +1063,7 @@ _SYSTEM = (
     "【同行对比】问'同业里贵不贵、谁是龙头、资金更偏好谁、相对估值'时调 get_peers(同行业 PE/PB/涨幅/主力净流入对照), 配合 get_fundamentals 判断相对位置。\n"
     "【筹码面】问'谁在持股、控股股东/国家队/北向在加减仓、有没有解禁抛压'时调 get_shareholders(十大流通股东增减+北向变动+未来解禁)。\n"
     "【我的成交/持仓盈亏】问'我什么时候买的/成本多少/做过几次T/这票我赚没赚/持有多久/最近交易了啥'时调 get_trades"
-    "(带 code 看该票流水+综合成本+已实现盈亏; 不带看最近全部成交), 把分析跟用户自己的成交结合(如'你均价X、现价Y')。\n"
+    "(含个股+场内ETF+场外基金; 带 code 看该标的流水, A股另给综合成本+已实现盈亏; 不带看最近全部成交), 把分析跟用户自己的成交结合(如'你均价X、现价Y')。\n"
     "(港美股可用 get_quote+get_trend+get_news+get_fundamentals; 资金流/龙虎榜/概念/同行/筹码/商品/公告 这些仅 A 股, 港美股查不到就如实说。)\n"
     "【'能不能进/明天怎么样/还能拿吗'这类问题】不要直接拒绝了事。照样把客观分析做全"
     "(为什么涨跌、消息面、政策面、走势位置、跟持仓关系、双向风险都摆出来), 只是【不给买卖结论】——"
