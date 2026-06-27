@@ -84,6 +84,7 @@ export default function TransactionHistory({ stockCode, stockName, onClose, onCh
     shares: '',
     fee: '',
     trade_date: new Date().toISOString().slice(0, 10),
+    trade_time: '',     // 可选 HH:MM 成交时刻; 留空走录入时间, 供分时图打点
     note: '',
   })
 
@@ -116,7 +117,7 @@ export default function TransactionHistory({ stockCode, stockName, onClose, onCh
       body: JSON.stringify(body),
     })
     setAdding(false)
-    setNewAction({ action_type: 'BUY', price: '', shares: '', trade_date: new Date().toISOString().slice(0, 10), note: '', fee: '' })
+    setNewAction({ action_type: 'BUY', price: '', shares: '', trade_date: new Date().toISOString().slice(0, 10), trade_time: '', note: '', fee: '' })
     await load()
     onChange?.()
   }
@@ -194,7 +195,10 @@ export default function TransactionHistory({ stockCode, stockName, onClose, onCh
 
                 {adding && (
                   <tr className="border-t border-border-subtle bg-bull-bg">
-                    <td className="py-1.5 px-2"><input type="date" className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-32" value={newAction.trade_date} onChange={e => setNewAction({ ...newAction, trade_date: e.target.value })} /></td>
+                    <td className="py-1.5 px-2">
+                      <input type="date" className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-32" value={newAction.trade_date} onChange={e => setNewAction({ ...newAction, trade_date: e.target.value })} />
+                      <input type="time" className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-24 mt-1 block text-text-dim" value={newAction.trade_time} onChange={e => setNewAction({ ...newAction, trade_time: e.target.value })} title="成交时刻(可选), 留空用录入时间, 供分时图打点" />
+                    </td>
                     <td className="py-1.5 px-2">
                       <select className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px]" value={newAction.action_type} onChange={e => setNewAction({ ...newAction, action_type: e.target.value })}>
                         {ACTION_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}

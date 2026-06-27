@@ -1103,6 +1103,9 @@ async def list_actions(asset_id: int):
     if not asset:
         raise HTTPException(404, "asset not found")
     actions = await list_external_actions(asset_id)
+    from database import resolve_action_time
+    for a in actions:
+        a["at_time"] = resolve_action_time(a)    # 成交时刻(供分时图打点)
     state = compute_external_state(actions, asset["asset_type"])
     return {"actions": actions, "state": state}
 

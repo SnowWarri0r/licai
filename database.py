@@ -3,6 +3,23 @@ from __future__ import annotations
 import aiosqlite
 from config import config
 
+
+def resolve_action_time(action: dict) -> str:
+    """成交时刻: trade_time(HH:MM, 用户手填)优先; 否则用 created_at(存的是 UTC)转北京
+    时间取 HH:MM:SS。供分时图按真实时刻打 B/S 点。拿不到返回 ""。"""
+    tt = (action.get("trade_time") or "").strip()
+    if tt:
+        return tt
+    ca = action.get("created_at")
+    if ca:
+        try:
+            from datetime import datetime, timedelta
+            dt = datetime.fromisoformat(str(ca).replace("T", " ").split(".")[0])
+            return (dt + timedelta(hours=8)).strftime("%H:%M:%S")
+        except Exception:
+            pass
+    return ""
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS holdings (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -186,6 +203,14 @@ async def init_db():
         if "fee" not in cols:
             # NULL = 用 estimate_trade_fee 自动算; 非 NULL = 用户手填覆盖
             await db.execute("ALTER TABLE position_actions ADD COLUMN fee REAL")
+        if "trade_time" not in cols:
+            # 成交时刻 HH:MM (可选); NULL → 用 created_at(转北京时间)推断, 供分时图精准打 B/S 点
+            await db.execute("ALTER TABLE position_actions ADD COLUMN trade_time TEXT")
+        # Migration: add trade_time to external_asset_actions
+        cursor = await db.execute("PRAGMA table_info(external_asset_actions)")
+        eaa_cols = {row[1] for row in await cursor.fetchall()}
+        if "trade_time" not in eaa_cols:
+            await db.execute("ALTER TABLE external_asset_actions ADD COLUMN trade_time TEXT")
         # Migration: add purchase_date to holdings if missing (reserved for future)
         cursor = await db.execute("PRAGMA table_info(holdings)")
         cols = {row[1] for row in await cursor.fetchall()}
@@ -782,15 +807,15 @@ async def get_position_actions(stock_code: str = None, limit: int = 200) -> list
 
 async def add_position_action(stock_code: str, action_type: str, price: float, shares: int,
                                trade_date: str = None, note: str = "", tranche_id: int = None,
-                               fee: float | None = None) -> int:
+                               fee: float | None = None, trade_time: str | None = None) -> int:
     """Insert a new action. Returns the new action id."""
     db = await get_db()
     try:
         cursor = await db.execute(
             """INSERT INTO position_actions
-               (stock_code, action_type, price, shares, trade_date, note, tranche_id, fee)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (stock_code, action_type, price, shares, trade_date, note, tranche_id, fee),
+               (stock_code, action_type, price, shares, trade_date, note, tranche_id, fee, trade_time)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (stock_code, action_type, price, shares, trade_date, note, tranche_id, fee, trade_time),
         )
         await db.commit()
         return cursor.lastrowid
@@ -952,19 +977,20 @@ async def add_external_action(asset_id: int, action_type: str, amount: float = 0
                               trade_date: str | None = None, note: str = "",
                               status: str = "confirmed",
                               interest_part: float | None = None,
-                              fee: float | None = None) -> int:
+                              fee: float | None = None,
+                              trade_time: str | None = None) -> int:
     db = await get_db()
     try:
         cursor = await db.execute(
             """INSERT INTO external_asset_actions
-               (asset_id, action_type, amount, shares, unit_price, trade_date, status, note, interest_part, fee)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (asset_id, action_type, amount, shares, unit_price, trade_date, status, note, interest_part, fee, trade_time)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (asset_id, action_type, float(amount or 0),
              float(shares) if shares is not None else None,
              float(unit_price) if unit_price is not None else None,
              trade_date, status, note or "",
              float(interest_part) if interest_part is not None else None,
-             float(fee) if fee is not None else None),
+             float(fee) if fee is not None else None, trade_time),
         )
         await db.commit()
         return cursor.lastrowid
