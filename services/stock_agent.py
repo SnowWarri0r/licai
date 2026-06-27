@@ -479,6 +479,149 @@ async def _tool_commodity(code: str) -> dict:
             "note": f"{c.get('label')}期货(上期所连续合约)现价; 有色股价常与对应金属价同步, 可佐证涨跌驱动。"}
 
 
+_peers_cache: dict = {}
+
+
+def _fetch_peers_sync(code: str) -> dict:
+    """同行横向对比(东财): 先取个股主行业板块(f198=BKxxxx), 再拉该板块成分股的涨幅/PE/PB/主力净流入。"""
+    import requests as _rq
+    import time as _t
+    ck = f"peers_{code}"
+    c = _peers_cache.get(ck)
+    if c and _t.time() - c[1] < 300:
+        return c[0]
+    secid = _em_secid(code)
+    hdr = {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
+    hosts = ["push2delay.eastmoney.com", "push2.eastmoney.com", "1.push2.eastmoney.com"]
+    bk = ind = None
+    for i in range(6):
+        try:
+            d = _rq.get(f"https://{hosts[i % len(hosts)]}/api/qt/stock/get", timeout=7, headers=hdr,
+                        params={"secid": secid, "fields": "f127,f198"}).json().get("data")
+            if d and d.get("f198"):
+                bk = d.get("f198"); ind = d.get("f127"); break
+        except Exception:
+            _t.sleep(0.3)
+    if not bk:
+        return {"error": "拿不到所属行业板块"}
+    params = {"pn": "1", "pz": "30", "po": "1", "np": "1", "fltt": "2", "invt": "2", "fid": "f62",
+              "fs": f"b:{bk}", "fields": "f12,f14,f3,f9,f23,f62"}
+    for i in range(9):
+        try:
+            diff = (_rq.get(f"https://{hosts[i % len(hosts)]}/api/qt/clist/get", params=params, timeout=7,
+                            headers=hdr).json().get("data") or {}).get("diff")
+            if diff:
+                rows = []
+                for x in diff:
+                    try:
+                        rows.append({"code": x.get("f12"), "name": x.get("f14"),
+                                     "涨跌幅": x.get("f3"),
+                                     "PE": x.get("f9") if isinstance(x.get("f9"), (int, float)) and x.get("f9") not in (0, "-") else None,
+                                     "PB": x.get("f23") if isinstance(x.get("f23"), (int, float)) and x.get("f23") not in (0, "-") else None,
+                                     "主力净流入亿": round(float(x.get("f62") or 0) / 1e8, 2)})
+                    except (ValueError, TypeError):
+                        continue
+                # 按主力净流入排序, 取前12, 但确保目标票在内
+                rows.sort(key=lambda r: (r["主力净流入亿"] or -999), reverse=True)
+                top = rows[:12]
+                if code not in [r["code"] for r in top]:
+                    me = [r for r in rows if r["code"] == code]
+                    top = (top[:11] + me) if me else top
+                out = {"行业": ind, "板块": bk, "peers": top,
+                       "note": f"同属【{ind}】板块, 按今日主力净流入排序; PE/PB 横向比可看谁贵谁便宜, 涨跌幅看谁领涨。"}
+                _peers_cache[ck] = (out, _t.time())
+                return out
+        except Exception:
+            _t.sleep(0.3)
+    return {"error": "板块成分暂不可达"}
+
+
+async def _tool_peers(code: str) -> dict:
+    """同行横向对比: 同行业板块成分股的涨跌幅/PE/PB/主力净流入对照, 看目标票在同业里贵不贵、强不强、资金偏好谁。仅 A 股。"""
+    from services.market_data import normalize_stock_code, is_a_share
+    if not is_a_share(normalize_stock_code(_norm_code(code))):
+        return {"error": "同行对比仅支持 A 股"}
+    return await asyncio.to_thread(_fetch_peers_sync, _norm_code(code))
+
+
+_holders_cache: dict = {}
+
+
+def _fetch_shareholders_sync(code: str) -> dict:
+    """十大流通股东(akshare, 最近报告期) + 北向(香港中央结算)持股变动 + 未来解禁。"""
+    import time as _t
+    import datetime as _dt
+    ck = f"hold_{code}"
+    c = _holders_cache.get(ck)
+    if c and _t.time() - c[1] < 86400:
+        return c[0]
+    import os
+    for k in list(os.environ):
+        if "proxy" in k.lower():
+            os.environ.pop(k, None)
+    import akshare as ak
+    sym = ("sh" if code[:1] in ("6", "9", "5") else "sz") + code
+    # 找最近一个有数据的报告期(往回试 5 个季度末)
+    today = _dt.date.today()
+    cands = []
+    y = today.year
+    for yy in (y, y - 1):
+        for md in ("1231", "0930", "0630", "0331"):
+            d = f"{yy}{md}"
+            if d <= today.strftime("%Y%m%d"):
+                cands.append(d)
+    cands = sorted(set(cands), reverse=True)[:5]
+    holders, rdate, north = [], None, None
+    for d in cands:
+        try:
+            df = ak.stock_gdfx_free_top_10_em(symbol=sym, date=d)
+            if df is not None and not df.empty:
+                rdate = d
+                for _, r in df.iterrows():
+                    nm = str(r.get("股东名称") or "")
+                    rec = {"name": nm, "type": r.get("股东性质"),
+                           "占流通股%": round(float(r.get("占总流通股本持股比例") or 0), 2),
+                           "增减": r.get("增减"), "变动比率%": round(float(r.get("变动比率")), 2) if r.get("变动比率") == r.get("变动比率") else None}
+                    holders.append(rec)
+                    if "香港中央结算" in nm:
+                        north = rec
+                break
+        except Exception:
+            continue
+    # 未来解禁
+    unlock = []
+    try:
+        dfq = ak.stock_restricted_release_queue_em(symbol=code)
+        if dfq is not None and not dfq.empty:
+            for _, r in dfq.iterrows():
+                dt = r.get("解禁时间")
+                if dt and hasattr(dt, "strftime") and dt >= today:
+                    unlock.append({"date": dt.strftime("%Y-%m-%d"),
+                                   "类型": r.get("限售股类型"),
+                                   "占流通市值%": round(float(r.get("占流通市值比例") or 0) * 100, 2),
+                                   "解禁数量万股": round(float(r.get("实际解禁数量") or 0) / 1e4, 1)})
+            unlock.sort(key=lambda x: x["date"])
+    except Exception:
+        pass
+    out = {"报告期": rdate, "top10_circulating": holders[:10],
+           "north_bound": north or {"note": "前十大流通股东无北向(香港中央结算)身影"},
+           "upcoming_unlock": unlock[:5] if unlock else {"note": "未来无限售解禁(基本全流通)"},
+           "note": "增减看主要股东在加仓还是减持; 北向=香港中央结算; 解禁占流通市值比越大、时间越近, 潜在抛压越大。"}
+    _holders_cache[ck] = (out, _t.time())
+    return out
+
+
+async def _tool_shareholders(code: str) -> dict:
+    """筹码面: 十大流通股东及增减、北向(香港中央结算)持股变动、未来限售解禁(抛压)。仅 A 股。"""
+    from services.market_data import normalize_stock_code, is_a_share
+    if not is_a_share(normalize_stock_code(_norm_code(code))):
+        return {"error": "股东/解禁仅支持 A 股"}
+    try:
+        return await asyncio.to_thread(_fetch_shareholders_sync, _norm_code(code))
+    except Exception as e:
+        return {"error": f"股东数据获取失败: {e}"}
+
+
 async def _tool_get_holdings() -> dict:
     from database import get_all_holdings
     try:
@@ -622,6 +765,10 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_commodity", "description": "查个股关联的大宗商品期货价(有色金属股: 铜/铝/金/锌/镍/锡 走上期所连续合约)。判断有色股涨跌是不是金属价驱动时用; 钨/锑/稀土/锂等小金属无交易所合约会返回不可得。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
+    {"name": "get_peers", "description": "同行横向对比: 同行业板块成分股的涨跌幅/PE/PB/主力净流入对照表。回答'同业里它贵不贵、谁领涨、资金更偏好谁、龙头是谁'时用; 可配合 get_fundamentals 看相对估值。仅 A 股。",
+     "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
+    {"name": "get_shareholders", "description": "筹码面: 十大流通股东及增减持、北向(香港中央结算)持股变动、未来限售解禁(抛压)。回答'谁在持股、控股股东/国家队/北向在加还是减、有没有解禁压力'时用。仅 A 股。",
+     "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_holdings", "description": "查用户当前持仓列表(代码/名称/股数), 用于回答跟用户持仓的关系。",
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_market_sentiment", "description": "查大盘打板情绪(涨停数/连板高度/炸板率/赚钱效应/热点板块), 判断是个股原因还是大盘普涨普跌; 也用于判断市场风格(打板赚钱效应高=追涨/动量有效; 炸板率高+亏钱效应=高位分歧/反转)。",
@@ -648,6 +795,8 @@ _EXECUTORS = {
     "get_stock_concepts": lambda a: _tool_stock_concepts(a.get("code", "")),
     "get_fundamentals": lambda a: _tool_fundamentals(a.get("code", "")),
     "get_commodity": lambda a: _tool_commodity(a.get("code", "")),
+    "get_peers": lambda a: _tool_peers(a.get("code", "")),
+    "get_shareholders": lambda a: _tool_shareholders(a.get("code", "")),
     "get_holdings": lambda a: _tool_get_holdings(),
     "get_market_sentiment": lambda a: _tool_market_sentiment(),
     "get_sector_momentum": lambda a: _tool_sector_momentum(a.get("days", 10)),
@@ -682,7 +831,9 @@ _SYSTEM = (
     "【基本面/估值】问'贵不贵、业绩好不好、盈利质地、有没有业绩拐点'时调 get_fundamentals"
     "(营收/净利及同比、ROE/毛利率/净利率、资产负债率、PE/PB/总市值); 即便只问涨跌, 涉及'涨这么多还能不能撑、估值高不高'也该看一眼基本面对照位置。"
     "有色/资源股涨跌还可调 get_commodity 看对应金属期货价(铜铝金锌镍锡)是不是同步驱动。\n"
-    "(get_fund_flow/get_lhb/get_stock_concepts/get_fundamentals/get_commodity 仅 A 股; 港美股有 get_quote+get_trend, 其余查不到就如实说。)\n"
+    "【同行对比】问'同业里贵不贵、谁是龙头、资金更偏好谁、相对估值'时调 get_peers(同行业 PE/PB/涨幅/主力净流入对照), 配合 get_fundamentals 判断相对位置。\n"
+    "【筹码面】问'谁在持股、控股股东/国家队/北向在加减仓、有没有解禁抛压'时调 get_shareholders(十大流通股东增减+北向变动+未来解禁)。\n"
+    "(get_fund_flow/get_lhb/get_stock_concepts/get_fundamentals/get_commodity/get_peers/get_shareholders 仅 A 股; 港美股有 get_quote+get_trend, 其余查不到就如实说。)\n"
     "【'能不能进/明天怎么样/还能拿吗'这类问题】不要直接拒绝了事。照样把客观分析做全"
     "(为什么涨跌、消息面、政策面、走势位置、跟持仓关系、双向风险都摆出来), 只是【不给买卖结论】——"
     "结尾一句'方向性的进出/仓位得你自己定, 我只给客观信息'。决策依据给足, 但不替用户拍板。\n"
@@ -720,6 +871,7 @@ _TOOL_CN = {
     "resolve_stock": "解析代码", "get_quote": "查行情", "get_trend": "查走势",
     "get_news": "查新闻", "get_fund_flow": "查资金流", "get_lhb": "查龙虎榜",
     "get_stock_concepts": "查所属概念", "get_fundamentals": "查基本面", "get_commodity": "查商品价",
+    "get_peers": "同行对比", "get_shareholders": "查股东解禁",
     "get_holdings": "看持仓", "get_market_sentiment": "看大盘情绪",
     "get_sector_momentum": "看板块动量", "get_hot_rank": "看资金热度",
     "get_hot_concepts": "看热门概念", "get_market_news": "看政策快讯", "web_search": "联网搜索",
