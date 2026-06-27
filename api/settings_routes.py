@@ -6,7 +6,7 @@ from pydantic import BaseModel, field_validator
 from typing import Optional
 
 from database import get_config, set_config, get_custom_alerts, add_custom_alert, delete_custom_alert
-from services import feishu_notify, llm_client, tdx_client
+from services import feishu_notify, llm_client, tdx_client, proxy_config
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -62,6 +62,56 @@ async def set_tdx_config(data: TDXConfig):
 async def test_tdx_config(data: TDXConfig):
     """连通性自检: 不改保存值, 用传入(或当前)地址试拉一只票。"""
     return await tdx_client.test_connection(data.base_url or tdx_client._BASE_URL)
+
+
+# ── 本地代理 (OKX / 外发统一; 东财/新浪直连不受影响) ──────────────
+class ProxyConfig(BaseModel):
+    proxy: str = ""
+
+    @field_validator("proxy")
+    @classmethod
+    def _v(cls, v: str) -> str:
+        v = (v or "").strip()
+        if v and not v.startswith(("http://", "https://", "socks5://", "socks5h://")):
+            raise ValueError("代理地址须以 http(s):// 或 socks5:// 开头")
+        return v
+
+
+@router.get("/proxy")
+async def get_proxy_config():
+    """当前生效代理 + DB 存储值。"""
+    return {"proxy": proxy_config.get_proxy(), "db_proxy": (await get_config("network_proxy")) or ""}
+
+
+@router.post("/proxy")
+async def set_proxy_config(data: ProxyConfig):
+    """保存代理到 DB 并即时应用(通知 OKX/外发 session 更新)。"""
+    import asyncio
+    await set_config("network_proxy", data.proxy)
+    proxy_config.configure(data.proxy)
+    ok = await asyncio.to_thread(proxy_config._probe, data.proxy) if data.proxy else False
+    return {"message": "saved", "proxy": proxy_config.get_proxy(), "ok": ok}
+
+
+@router.post("/proxy/detect")
+async def detect_proxy_config():
+    """自动探测本机可用代理(扫在听端口 + 常见端口, 挑能够到 OKX 的); 命中即应用并存库。"""
+    import asyncio
+    found = await asyncio.to_thread(proxy_config.auto_detect)
+    if found:
+        await set_config("network_proxy", found)
+        proxy_config.configure(found)
+        return {"ok": True, "proxy": found}
+    return {"ok": False, "proxy": "", "error": "未探测到可用代理(确认本地代理已开启)"}
+
+
+@router.post("/proxy/test")
+async def test_proxy_config(data: ProxyConfig):
+    """连通性自检: 用传入(或当前)代理探一次 OKX, 不改存储值。"""
+    import asyncio
+    url = data.proxy or proxy_config.get_proxy()
+    ok = await asyncio.to_thread(proxy_config._probe, url)
+    return {"ok": ok, "proxy": url, "error": "" if ok else "代理连不上或够不到外部接口"}
 
 
 class FeishuConfig(BaseModel):

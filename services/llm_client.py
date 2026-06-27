@@ -61,14 +61,17 @@ _direct_session.trust_env = False
 
 
 def _apply_proxy():
-    """Apply current _proxy_url to _llm_session."""
-    if _proxy_url:
-        _llm_session.proxies = {"http": _proxy_url, "https": _proxy_url}
-    else:
-        _llm_session.proxies = {}
+    """Apply proxy to _llm_session. LLM 自己的 _proxy_url 优先; 留空则回退到统一的
+    本地代理(proxy_config), 这样面板里设一个代理 OKX/LLM 都能用。"""
+    from services import proxy_config
+    url = _proxy_url or proxy_config.get_proxy()
+    _llm_session.proxies = {"http": url, "https": url} if url else {}
 
 
 _apply_proxy()
+# 统一代理变化时, 若 LLM 没设自己的代理, 跟着更新
+from services import proxy_config as _pc
+_pc.on_change(lambda _url: _apply_proxy())
 
 
 # ── 模型别名映射 ───────────────────────────────────────
@@ -110,13 +113,24 @@ _RETRYABLE_EXC = (
 )
 
 
+# 逻辑别名默认映射: 用户没配自定义 model_map 时, smart/balanced/fast 兜底到真实
+# Anthropic 模型, 否则"fast"会原样发出去被 404(测试连接/默认调用都受影响)。
+_DEFAULT_ALIASES = {
+    "smart": "claude-opus-4-8",
+    "balanced": "claude-sonnet-4-6",
+    "fast": "claude-sonnet-4-6",   # 不用 haiku, 最低也走 sonnet
+}
+
+
 def resolve_model(model: str) -> str:
     """Resolve a model name through the alias map.
 
     If model is a known alias (smart/balanced/fast), return the mapped value.
-    Otherwise return as-is (direct model name, backward compatible).
+    优先用户自定义 map, 再默认别名, 最后原样返回(直接模型名, 向后兼容)。
     """
-    return _model_map.get(model, model)
+    if model in _model_map:
+        return _model_map[model]
+    return _DEFAULT_ALIASES.get(model, model)
 
 
 def get_model_map() -> dict[str, str]:
@@ -446,7 +460,7 @@ def _retry_on_oauth_401(
 def call_claude(
     user_prompt: str,
     system: str | None = None,
-    model: str = "claude-sonnet-4-6-20250514",
+    model: str = "claude-sonnet-4-6",
     max_tokens: int = 2048,
 ) -> str:
     """Call LLM API (Anthropic-协议兼容). Returns text response.
@@ -488,7 +502,7 @@ def call_claude(
 def call_claude_messages(
     messages: list,
     system: str | None = None,
-    model: str = "claude-opus-4-8-20250514",
+    model: str = "claude-opus-4-8",
     max_tokens: int = 2048,
     tools: list | None = None,
 ) -> dict:
@@ -527,18 +541,19 @@ def test_connection() -> dict:
     import time
 
     model = resolve_model("fast")
-    token, is_oauth = _resolve_auth()
-    headers = _build_headers(token, is_oauth)
-    system_blocks = _build_system("Reply with just 'ok'.", is_oauth)
-    payload = {
-        "model": model,
-        "max_tokens": 10,
-        "messages": [{"role": "user", "content": "Say ok"}],
-        "system": system_blocks,
-    }
-
     t0 = time.time()
     try:
+        # _resolve_auth 在未配置任何凭证时会 raise(无 LLM_API_KEY/ANTHROPIC_API_KEY/OAuth)。
+        # 放进 try 里, 让"未配置"返回优雅的 {ok:false, error:...} 而不是抛出 500。
+        token, is_oauth = _resolve_auth()
+        headers = _build_headers(token, is_oauth)
+        system_blocks = _build_system("Reply with just 'ok'.", is_oauth)
+        payload = {
+            "model": model,
+            "max_tokens": 10,
+            "messages": [{"role": "user", "content": "Say ok"}],
+            "system": system_blocks,
+        }
         resp = _post_with_retry(headers, payload)
         elapsed_ms = round((time.time() - t0) * 1000)
         if resp.ok:

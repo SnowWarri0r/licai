@@ -13,11 +13,12 @@ import os
 import requests as _requests
 
 # Dedicated session for crypto exchanges (OKX/Binance often blocked without proxy).
-# Respects CRYPTO_PROXY env var; defaults to local Clash port if running.
-_CRYPTO_PROXY = os.environ.get("CRYPTO_PROXY", "http://127.0.0.1:7890")
+# 代理地址由 proxy_config 统一管理(设置面板/自动探测), 端口漂移时回调自动更新。
+from services import proxy_config
 _crypto_session = _requests.Session()
 _crypto_session.trust_env = False
-_crypto_session.proxies = {"http": _CRYPTO_PROXY, "https": _CRYPTO_PROXY}
+proxy_config.on_change(lambda url: setattr(
+    _crypto_session, "proxies", {"http": url, "https": url} if url else {}))
 
 
 _FUND_TTL = 120  # 2 min — NAV estimates update every minute during trading
