@@ -324,6 +324,20 @@ async def market_news():
     return result
 
 
+@router.get("/jin10")
+async def jin10_flash(limit: int = 30):
+    """金十快讯独立流: 全球宏观/地缘/央行实时快讯, important 重要标记。60s 缓存。"""
+    ck = "jin10_flash"
+    cached = _cache.get(ck)
+    if cached and time.time() - cached[1] < 60:
+        return {"items": cached[0][:limit], "count": len(cached[0])}
+    _strip_proxy_env()
+    items = await _fetch_source(_fetch_global_jin10)
+    if items:
+        _cache[ck] = (items, time.time())
+    return {"items": items[:limit], "count": len(items)}
+
+
 async def news_prewarm_loop():
     """后台预热 market_news 缓存, 让 sector/why、digest 等读到的永远是热缓存,
     用户点击不再吃冷启动的几秒。每 4 分钟刷一次 (< 5min TTL, 始终保鲜)。"""
