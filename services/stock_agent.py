@@ -342,6 +342,143 @@ async def _tool_stock_concepts(code: str) -> dict:
     return await asyncio.to_thread(_fetch_stock_concepts_sync, code)
 
 
+_val_cache: dict = {}
+
+
+def _fetch_valuation_sync(code: str) -> dict:
+    """估值快照(东财 stock/get): PE(TTM)/PB/总市值/流通市值/行业。f162=PE×100, f167=PB×100, f116=总市值元。"""
+    import requests as _rq
+    import time as _t
+    ck = f"val_{code}"
+    c = _val_cache.get(ck)
+    if c and _t.time() - c[1] < 600:
+        return c[0]
+    secid = _em_secid(code)
+    hosts = ["push2delay.eastmoney.com", "push2.eastmoney.com", "1.push2.eastmoney.com"]
+    for i in range(9):
+        host = hosts[i % len(hosts)]
+        try:
+            d = _rq.get(f"https://{host}/api/qt/stock/get", timeout=7,
+                        params={"secid": secid, "fields": "f58,f43,f162,f167,f116,f117,f127"},
+                        headers={"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}).json().get("data")
+            if d and d.get("f58"):
+                pe = d.get("f162"); pb = d.get("f167"); mcap = d.get("f116")
+                out = {"行业": d.get("f127"),
+                       "PE_TTM": round(pe / 100, 2) if isinstance(pe, (int, float)) and pe not in (0, None) else None,
+                       "PB": round(pb / 100, 2) if isinstance(pb, (int, float)) and pb not in (0, None) else None,
+                       "总市值亿": round(mcap / 1e8, 1) if isinstance(mcap, (int, float)) and mcap else None,
+                       "流通市值亿": round(d.get("f117") / 1e8, 1) if isinstance(d.get("f117"), (int, float)) and d.get("f117") else None}
+                _val_cache[ck] = (out, _t.time())
+                return out
+        except Exception:
+            _t.sleep(0.3)
+    return {}
+
+
+_fin_cache: dict = {}
+
+
+def _fetch_financials_sync(code: str) -> dict:
+    """财务摘要(东财, akshare stock_financial_abstract): 取最新报告期的关键指标。"""
+    import time as _t
+    ck = f"fin_{code}"
+    c = _fin_cache.get(ck)
+    if c and _t.time() - c[1] < 3600:
+        return c[0]
+    import os
+    for k in list(os.environ):
+        if "proxy" in k.lower():
+            os.environ.pop(k, None)
+    import akshare as ak
+    df = ak.stock_financial_abstract(symbol=code)
+    if df is None or df.empty:
+        return {}
+    date_cols = [c for c in df.columns if str(c).isdigit() and len(str(c)) == 8]
+    date_cols.sort(reverse=True)  # 最新在前
+    by_ind = {}
+    for _, r in df.iterrows():
+        by_ind[str(r["指标"]).strip()] = r
+
+    def latest(ind):
+        row = by_ind.get(ind)
+        if row is None:
+            return None, None
+        for dc in date_cols:
+            v = row.get(dc)
+            if v is not None and v == v and str(v) != "":  # 非 NaN 非空
+                try:
+                    return float(v), dc
+                except (ValueError, TypeError):
+                    return None, None
+        return None, None
+
+    def yi(ind):  # 元 → 亿
+        v, dt = latest(ind)
+        return (round(v / 1e8, 2) if v is not None else None), dt
+
+    rev, rdt = yi("营业总收入")
+    profit, _ = yi("归母净利润")
+    rev_g, _ = latest("营业总收入增长率")
+    profit_g, _ = latest("归属母公司净利润增长率")
+    roe, _ = latest("净资产收益率(ROE)")
+    gross, _ = latest("毛利率")
+    netm, _ = latest("销售净利率")
+    debt, _ = latest("资产负债率")
+    eps, _ = latest("基本每股收益")
+    bvps, _ = latest("每股净资产")
+    out = {"报告期": rdt,
+           "营业总收入亿": rev, "营收同比增长%": round(rev_g, 1) if rev_g is not None else None,
+           "归母净利润亿": profit, "净利同比增长%": round(profit_g, 1) if profit_g is not None else None,
+           "ROE%": round(roe, 2) if roe is not None else None,
+           "毛利率%": round(gross, 1) if gross is not None else None,
+           "净利率%": round(netm, 1) if netm is not None else None,
+           "资产负债率%": round(debt, 1) if debt is not None else None,
+           "每股收益元": round(eps, 3) if eps is not None else None,
+           "每股净资产元": round(bvps, 2) if bvps is not None else None}
+    _fin_cache[ck] = (out, _t.time())
+    return out
+
+
+async def _tool_fundamentals(code: str) -> dict:
+    """个股基本面+估值: 营收/净利及同比、ROE/毛利率/净利率、资产负债率、EPS, 以及 PE/PB/总市值/行业。仅 A 股。"""
+    from services.market_data import normalize_stock_code, is_a_share
+    if not is_a_share(normalize_stock_code(_norm_code(code))):
+        return {"error": "基本面仅支持 A 股"}
+    bare = _norm_code(code)
+    val, fin = await asyncio.gather(
+        asyncio.to_thread(_fetch_valuation_sync, bare),
+        asyncio.to_thread(_fetch_financials_sync, bare),
+        return_exceptions=True,
+    )
+    val = val if isinstance(val, dict) else {}
+    fin = fin if isinstance(fin, dict) else {}
+    if not val and not fin:
+        return {"error": "基本面暂不可达(数据源抖动)"}
+    return {"valuation": val, "financials": fin,
+            "note": "营收/净利为报告期累计值, 同比增长是 YoY; PE_TTM/PB 为当前估值, 已是真实倍数(非百分比)。"}
+
+
+_COMMODITY_CN = {"沪金": "黄金", "沪银": "白银", "沪铜": "铜", "沪铝": "铝", "沪锌": "锌",
+                 "沪铅": "铅", "沪镍": "镍", "沪锡": "锡"}
+
+
+async def _tool_commodity(code: str) -> dict:
+    """个股关联的大宗商品期货价(有色: 铜/铝/金/锌/镍/锡 等走上期所连续合约)。看商品价能否解释有色股涨跌。"""
+    from services.market_data import normalize_stock_code, is_a_share, get_commodity_for_stock
+    raw = normalize_stock_code(_norm_code(code))
+    if not is_a_share(raw):
+        return {"error": "商品价仅支持 A 股"}
+    try:
+        c = await get_commodity_for_stock(raw)
+    except Exception as e:
+        return {"error": str(e)}
+    if not c:
+        return {"mapped": False, "note": "该票无对应交易所期货(钨/锑/稀土/锂等小金属无连续合约), 商品价不可得; 看现货价请结合新闻/板块。"}
+    return {"mapped": True, "commodity": c.get("label"), "price": c.get("price"),
+            "change_pct": c.get("change_pct"), "prev": c.get("prev"),
+            "note": f"{c.get('label')}期货(上期所连续合约)现价; 有色股价常与对应金属价同步, 可佐证涨跌驱动。"}
+
+
 async def _tool_get_holdings() -> dict:
     from database import get_all_holdings
     try:
@@ -481,6 +618,10 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选; 留空看全市场榜"}}}},
     {"name": "get_stock_concepts", "description": "查个股所属行业/概念板块 + 核心题材。判断'这只票属于哪个概念、有没有踩在当下资金主线/热门概念上'时用; 可与 get_hot_concepts 交叉印证。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
+    {"name": "get_fundamentals", "description": "查个股基本面+估值: 营收/净利及同比增速、ROE/毛利率/净利率、资产负债率、每股收益, 以及 PE(TTM)/PB/总市值/行业。回答'这票贵不贵、业绩好不好、盈利质地、有没有业绩拐点'时用。仅 A 股。",
+     "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
+    {"name": "get_commodity", "description": "查个股关联的大宗商品期货价(有色金属股: 铜/铝/金/锌/镍/锡 走上期所连续合约)。判断有色股涨跌是不是金属价驱动时用; 钨/锑/稀土/锂等小金属无交易所合约会返回不可得。仅 A 股。",
+     "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_holdings", "description": "查用户当前持仓列表(代码/名称/股数), 用于回答跟用户持仓的关系。",
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_market_sentiment", "description": "查大盘打板情绪(涨停数/连板高度/炸板率/赚钱效应/热点板块), 判断是个股原因还是大盘普涨普跌; 也用于判断市场风格(打板赚钱效应高=追涨/动量有效; 炸板率高+亏钱效应=高位分歧/反转)。",
@@ -505,6 +646,8 @@ _EXECUTORS = {
     "get_fund_flow": lambda a: _tool_fund_flow(a.get("code", "")),
     "get_lhb": lambda a: _tool_lhb(a.get("code", "")),
     "get_stock_concepts": lambda a: _tool_stock_concepts(a.get("code", "")),
+    "get_fundamentals": lambda a: _tool_fundamentals(a.get("code", "")),
+    "get_commodity": lambda a: _tool_commodity(a.get("code", "")),
     "get_holdings": lambda a: _tool_get_holdings(),
     "get_market_sentiment": lambda a: _tool_market_sentiment(),
     "get_sector_momentum": lambda a: _tool_sector_momentum(a.get("days", 10)),
@@ -529,13 +672,17 @@ _SYSTEM = (
     "(这周市场在奖励什么打法、是动量追涨还是低吸反转、是题材轮动还是抱团、高低切迹象、资金主线在哪、情绪处在什么周期)。\n"
     "工具: resolve_stock(名字转代码)、get_quote(个股实时行情)、get_trend(个股近N日走势)、get_news(个股新闻)、"
     "get_fund_flow(个股主力资金流:谁在买卖)、get_lhb(龙虎榜:游资/机构席位)、get_stock_concepts(个股所属概念板块)、"
+    "get_fundamentals(基本面+估值:营收净利/ROE/PE/PB)、get_commodity(关联金属期货价)、"
     "get_holdings(用户持仓)、get_market_sentiment(大盘打板情绪)、get_sector_momentum(板块趋势矩阵:动量/退潮/资金流)、"
     "get_hot_concepts(热门概念榜)、get_hot_rank(资金人气榜)、get_market_news(政策面)。\n"
     "【个股问题】先 resolve_stock 拿代码, 再 get_quote+get_trend; 找涨跌原因务必看 get_fund_flow(主力资金是进是出、谁在拉)"
     "+get_news(消息面), 异动明显时 get_lhb(有没有上龙虎榜、游资还是机构在打); 用 get_stock_concepts 看它属于哪个概念, "
     "再与 get_hot_concepts/get_sector_momentum 交叉看是不是踩在当下资金主线上; 需要时 get_market_sentiment 判断个股事件还是大盘普涨跌; "
-    "若该票/所属板块对政策敏感(有色/小金属/地产/半导体/医药/军工/新能源/平台经济等), 还要调 get_market_news 看有没有政策催化或调控压制。"
-    "(get_fund_flow/get_lhb/get_stock_concepts 仅 A 股; 港美股有 get_quote+get_trend, 资金流/龙虎榜/概念查不到就如实说。)\n"
+    "若该票/所属板块对政策敏感(有色/小金属/地产/半导体/医药/军工/新能源/平台经济等), 还要调 get_market_news 看有没有政策催化或调控压制。\n"
+    "【基本面/估值】问'贵不贵、业绩好不好、盈利质地、有没有业绩拐点'时调 get_fundamentals"
+    "(营收/净利及同比、ROE/毛利率/净利率、资产负债率、PE/PB/总市值); 即便只问涨跌, 涉及'涨这么多还能不能撑、估值高不高'也该看一眼基本面对照位置。"
+    "有色/资源股涨跌还可调 get_commodity 看对应金属期货价(铜铝金锌镍锡)是不是同步驱动。\n"
+    "(get_fund_flow/get_lhb/get_stock_concepts/get_fundamentals/get_commodity 仅 A 股; 港美股有 get_quote+get_trend, 其余查不到就如实说。)\n"
     "【'能不能进/明天怎么样/还能拿吗'这类问题】不要直接拒绝了事。照样把客观分析做全"
     "(为什么涨跌、消息面、政策面、走势位置、跟持仓关系、双向风险都摆出来), 只是【不给买卖结论】——"
     "结尾一句'方向性的进出/仓位得你自己定, 我只给客观信息'。决策依据给足, 但不替用户拍板。\n"
@@ -572,7 +719,8 @@ _SYSTEM = (
 _TOOL_CN = {
     "resolve_stock": "解析代码", "get_quote": "查行情", "get_trend": "查走势",
     "get_news": "查新闻", "get_fund_flow": "查资金流", "get_lhb": "查龙虎榜",
-    "get_stock_concepts": "查所属概念", "get_holdings": "看持仓", "get_market_sentiment": "看大盘情绪",
+    "get_stock_concepts": "查所属概念", "get_fundamentals": "查基本面", "get_commodity": "查商品价",
+    "get_holdings": "看持仓", "get_market_sentiment": "看大盘情绪",
     "get_sector_momentum": "看板块动量", "get_hot_rank": "看资金热度",
     "get_hot_concepts": "看热门概念", "get_market_news": "看政策快讯", "web_search": "联网搜索",
 }
