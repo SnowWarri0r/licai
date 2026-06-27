@@ -175,7 +175,54 @@ async def _tool_get_quote(code: str) -> dict:
         else:
             out["盘口"] = "未触及涨跌停"
         out["日内振幅%"] = round((high - low) / prev * 100, 2) if high and low else None
+    # TDX 数据源(可插拔)启用时, 补五档盘口 + 内外盘; 没配/连不上就跳过, 不影响主流程
+    try:
+        import services.tdx_client as _tdx
+        if _tdx.is_enabled() and len(bare) == 6 and bare.isdigit():
+            t = await _tdx.quote(bare)
+            if t:
+                out["五档"] = {"买盘": t.get("bids"), "卖盘": t.get("asks"),
+                              "内盘手": t.get("内盘手"), "外盘手": t.get("外盘手")}
+                # 封板时给出封单量(买一挂单)
+                if out.get("盘口") == "当前封涨停" and t.get("bids"):
+                    b1 = t["bids"][0]
+                    out["盘口"] = f"当前封涨停, 封单 买一 {b1.get('手')}手@{b1.get('price')}"
+                elif out.get("盘口") == "当前封跌停" and t.get("asks"):
+                    a1 = t["asks"][0]
+                    out["盘口"] = f"当前封跌停, 卖一砸单 {a1.get('手')}手@{a1.get('price')}"
+                out["数据源"] = "盘口含TDX五档"
+    except Exception:
+        pass
     return out
+
+
+async def _tool_intraday(code: str) -> dict:
+    """当日分时(TDX): 开盘/最高(及时间)/最低(及时间)/现价 + 是否冲高回落 + 关键点。需启用 TDX 数据源, 仅 A 股。"""
+    import services.tdx_client as _tdx
+    from services.market_data import normalize_stock_code
+    if not _tdx.is_enabled():
+        return {"error": "分时需启用 TDX 数据源(设置→TDX base_url), 当前未配置"}
+    bare = normalize_stock_code(_norm_code(code)).split(".")[-1]
+    if not (len(bare) == 6 and bare.isdigit()):
+        return {"error": "分时仅支持 A 股"}
+    m = await _tdx.minute(bare)
+    if not m or not m.get("points"):
+        return {"error": "分时暂不可达(TDX 连不上或非交易日)"}
+    pts = m["points"]
+    prices = [(p["price"], p["time"]) for p in pts if p.get("price")]
+    if not prices:
+        return {"error": "分时无有效数据"}
+    hi = max(prices, key=lambda x: x[0])
+    lo = min(prices, key=lambda x: x[0])
+    open_p, last_p = prices[0][0], prices[-1][0]
+    # 每 ~30 分钟取一个采样点, 给 LLM 看大致路径(避免 240 点刷屏)
+    step = max(1, len(pts) // 8)
+    path = [{"time": pts[i]["time"], "price": pts[i]["price"]} for i in range(0, len(pts), step)]
+    return {"date": m.get("date"), "开盘": open_p, "现价/收盘": last_p,
+            "最高": {"price": hi[0], "time": hi[1]}, "最低": {"price": lo[0], "time": lo[1]},
+            "较最高回落%": round((hi[0] - last_p) / hi[0] * 100, 2) if hi[0] else None,
+            "路径采样": path,
+            "note": "分时路径采样(约每30分钟一个点) + 高低点带时间; '较最高回落'大=冲高回落/炸板特征。"}
 
 
 def _us_daily_k_sync(symbol: str, datalen: int) -> list:
@@ -1154,6 +1201,8 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_trend", "description": "查个股近 N 个交易日走势: 累计涨跌/逐日涨跌/上涨天数。支持 A 股/港股/美股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}, "days": {"type": "integer", "description": "默认20"}}, "required": ["code"]}},
+    {"name": "get_intraday", "description": "当日分时走势(开盘/最高及时间/最低及时间/现价 + 冲高回落幅度 + 路径采样): 判断盘中是不是冲高回落/炸板/尾盘拉升时用, 比日K细。需启用 TDX 数据源, 仅 A 股。",
+     "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_news", "description": "查个股最近新闻(标题+摘要+时间), 用来找涨跌的消息面原因。支持 A股/港股/美股(东财)。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_announcements", "description": "查个股公告(分红/回购/增减持/业绩预告/重组/股权激励/关联交易等), 结构化且比新闻权威。看公司层面有没有实质事件驱动。仅 A 股。",
@@ -1196,6 +1245,7 @@ _EXECUTORS = {
     "resolve_stock": lambda a: _tool_resolve_stock(a.get("query", "")),
     "get_quote": lambda a: _tool_get_quote(a.get("code", "")),
     "get_trend": lambda a: _tool_get_trend(a.get("code", ""), a.get("days", 20)),
+    "get_intraday": lambda a: _tool_intraday(a.get("code", "")),
     "get_news": lambda a: _tool_get_news(a.get("code", "")),
     "get_announcements": lambda a: _tool_announcements(a.get("code", "")),
     "get_fund_flow": lambda a: _tool_fund_flow(a.get("code", "")),
@@ -1295,7 +1345,7 @@ def _system() -> str:
 
 _TOOL_CN = {
     "resolve_stock": "解析代码", "get_quote": "查行情", "get_trend": "查走势",
-    "get_news": "查新闻", "get_announcements": "查公告", "get_fund_flow": "查资金流", "get_lhb": "查龙虎榜",
+    "get_news": "查新闻", "get_intraday": "查分时", "get_announcements": "查公告", "get_fund_flow": "查资金流", "get_lhb": "查龙虎榜",
     "get_stock_concepts": "查所属概念", "get_fundamentals": "查基本面", "get_commodity": "查商品价",
     "get_peers": "同行对比", "get_shareholders": "查股东解禁",
     "get_holdings": "看持仓", "get_trades": "查成交记录", "get_market_sentiment": "看大盘情绪",

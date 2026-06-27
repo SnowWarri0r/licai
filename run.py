@@ -70,6 +70,13 @@ async def lifespan(app: FastAPI):
         model_map=llm_model_map,
     )
 
+    # 可插拔数据源: 通达信 TDX REST 服务 (env TDX_BASE_URL > DB config > config.py)
+    from services import tdx_client
+    tdx_url = os.environ.get("TDX_BASE_URL") or (await get_config("tdx_base_url")) or config.tdx_base_url or ""
+    tdx_client.configure(tdx_url)
+    if tdx_url:
+        print(f"TDX 数据源已启用: {tdx_url}")
+
     # Restore saved feishu webhook config + 静音状态
     url = await get_config("feishu_webhook_url")
     if url:
