@@ -429,9 +429,10 @@ const colorPctHex = (v) => v >= 0 ? UP : DOWN
 // ---------------------------------------------------------------------------
 // 五档盘口
 // ---------------------------------------------------------------------------
-function OrderBook({ data, prevClose }) {
+function OrderBook({ data, prevClose, decimals = 2 }) {
   if (!data) return null
-  const px = (p) => p == null ? '--' : <span className={colorPct(prevClose ? ((p / prevClose) - 1) * 100 : 0)}>{fmtVal(p)}</span>
+  // 五档按标的精度显示(A股 2 位 / ETF 3 位), 否则 178.28/178.29 会被压成同一个 178.3, 看着像没聚类
+  const px = (p) => p == null ? '--' : <span className={colorPct(prevClose ? ((p / prevClose) - 1) * 100 : 0)}>{p.toFixed(decimals)}</span>
   const maxVol = Math.max(1, ...[...(data.bids || []), ...(data.asks || [])].map(l => Number(l['手']) || 0))
   const Row = ({ lvl, side, idx }) => (
     <div className="relative flex justify-between items-center px-1.5 py-[3px] text-[11px] font-mono">
@@ -458,7 +459,7 @@ function OrderBook({ data, prevClose }) {
 // ---------------------------------------------------------------------------
 // 逐笔成交
 // ---------------------------------------------------------------------------
-function Ticks({ ticks }) {
+function Ticks({ ticks, decimals = 2 }) {
   if (!ticks?.length) return null
   const vols = ticks.map(t => Number(t['手']) || 0)
   const avg = vols.reduce((a, b) => a + b, 0) / (vols.length || 1)
@@ -475,7 +476,7 @@ function Ticks({ ticks }) {
             <div key={i} className="flex justify-between items-center text-[10.5px] font-mono py-[2px]"
               style={big ? { background: t.dir === '买' ? 'rgba(207,92,92,.12)' : t.dir === '卖' ? 'rgba(95,168,108,.12)' : 'transparent', borderRadius: 3 } : undefined}>
               <span className="text-text-muted px-1">{t.time}</span>
-              <span className={big ? 'text-text-bright' : 'text-text'}>{fmtVal(t.price)}</span>
+              <span className={big ? 'text-text-bright' : 'text-text'}>{t.price.toFixed(decimals)}</span>
               <span className="px-1" style={{ color: dc, fontWeight: big ? 700 : 400 }}>{v}{t.dir === '买' ? '↑' : t.dir === '卖' ? '↓' : ''}</span>
             </div>
           )
@@ -622,9 +623,9 @@ export default function StockKlineModal({ holding, onClose }) {
           {/* 侧栏: 五档 + 逐笔 (TDX) */}
           {hasSide && (
             <div className="w-[200px] shrink-0 bg-surface-3 rounded-md p-2.5 space-y-3">
-              <OrderBook data={book} prevClose={prevClose} />
+              <OrderBook data={book} prevClose={prevClose} decimals={/^[15]\d{5}$/.test(String(code)) ? 3 : 2} />
               <div className="border-t border-border-subtle" />
-              <Ticks ticks={ticks} />
+              <Ticks ticks={ticks} decimals={/^[15]\d{5}$/.test(String(code)) ? 3 : 2} />
             </div>
           )}
         </div>
