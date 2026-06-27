@@ -16,32 +16,27 @@ from datetime import datetime, timezone, timedelta
 from typing import Any
 
 
-SYSTEM_PROMPT = """你是一个 A 股持仓诊断助手。每天开盘前，根据用户某只持仓的新闻 + 近期 K 线 + 当前分批加仓档位，给出当日操作建议。
+SYSTEM_PROMPT = """你是 A 股持仓盘前信息助手。每天开盘前，基于某只持仓近期的新闻 / 公告 / K 线 / 基本面健康度，做一份**客观信息摘要 + 风险提示**。
 
-输出**严格 JSON**（不要有多余文本，不要 markdown 包裹）。结构如下：
+**最重要的规则：只做信息汇总和风险提示，绝不给出买入 / 卖出 / 加仓 / 减仓 / 调档位 / 抄底 / 止盈止损等任何操作建议或价位指令。** 用户自己做决策，你只负责把今天该知道的事讲清楚。
+
+输出**严格 JSON**（无多余文本，不要 markdown 包裹）：
 {
-  "verdict": "lock_all | hold | raise | lower | add_now",
-  "summary": "一句话不超过 30 字",
-  "reasoning": "2-3 句解释，说人话不要客套",
-  "key_news": ["最关键 1-2 条头条原文"],
-  "tranche_action": "锁档 / 持有观望 / 上调档位 / 下调档位 / 立即加仓",
+  "signal": "偏暖 | 中性 | 偏冷 | 警惕",
+  "summary": "一句话点出今天这只票最该知道的事，≤40 字，客观陈述不要套话",
+  "points": ["2-4 条客观要点，每条 ≤30 字。来自新闻/公告/基本面/技术位，是事实不是建议"],
+  "risk": "若有明确风险（业绩雷/监管处罚/板块利空/重要股东减持/技术明显破位）用一句话点出，否则空串",
   "confidence": "high | med | low"
 }
 
-verdict 含义:
-- lock_all: 板块/个股利空明显，所有 pending 档位先冻结，等止跌
-- hold: 没明显信号，按原档位等触发
-- raise: 信号偏暖，可以把档位上移（更早触发）
-- lower: 跌势但没崩盘，把档位下移（更深位置接）
-- add_now: 强信号支撑当前价就值得加仓
+signal 仅描述消息面/基本面**倾向**（不是操作指令）:
+- 偏暖: 近期消息面/基本面偏正面
+- 中性: 无明显信号，平稳
+- 偏冷: 偏负面但未到风险级别
+- 警惕: 有明确利空或风险需要注意
 
-判断准则:
-- 利空新闻（监管/业绩雷/板块崩盘）→ lock_all
-- 价格已跌破近 20 日最低 + 无利好 → lock_all
-- 价格震荡无方向 + 新闻中性 → hold
-- 板块回暖 + 个股跟涨 → raise 或 add_now
-- 持续阴跌但基本面未恶化 → lower（档位下挪等更深的低点）
-"""
+要点写法: 具体、可核对。好例:"Q3 净利同比 -38%，低于预期"、"控股股东拟减持不超 2%"、"现价已跌破 20 日线"。
+避免:"建议观望""可逢低布局""注意控制仓位"这类空话和操作暗示。"""
 
 
 def _kline_summary(df) -> dict:
@@ -74,13 +69,13 @@ def _kline_summary(df) -> dict:
 
 
 def _build_user_prompt(*, stock_code: str, stock_name: str, current_price: float,
-                       cost_price: float, shares: int, pnl_pct: float,
+                       cost_price: float, shares: int, pnl_pct: float, sector: str,
                        kline_stats: dict, news: list[dict], sector_news: list[dict],
-                       tranches: list[dict], health: dict | None) -> str:
+                       announcements: list[dict], health: dict | None) -> str:
     parts = [
-        f"## 标的\n{stock_name}({stock_code})",
+        f"## 标的\n{stock_name}({stock_code}) · 行业: {sector or '未知'}",
         f"\n## 当前持仓\n成本 ¥{cost_price:.2f} × {shares} 股 = ¥{cost_price*shares:,.0f}\n"
-        f"现价 ¥{current_price:.2f} | 浮亏 {pnl_pct:+.2f}%",
+        f"现价 ¥{current_price:.2f} | 浮动盈亏 {pnl_pct:+.2f}%",
     ]
     if kline_stats:
         parts.append(f"\n## K线摘要\n" + "\n".join(f"- {k}: {v}" for k, v in kline_stats.items()))
@@ -88,16 +83,14 @@ def _build_user_prompt(*, stock_code: str, stock_name: str, current_price: float
         parts.append(
             f"\n## 基本面健康度\n等级: {health.get('level')} | 评分: {health.get('score', 0):+.2f}"
         )
-    if tranches:
-        pending = [t for t in tranches if t.get("status") == "pending"]
-        if pending:
-            lines = ["\n## 当前 pending 档位"]
-            for t in pending:
-                lines.append(
-                    f"- 档{t.get('idx')}: 触发价 ¥{t.get('trigger_price'):.2f} → +{t.get('shares')}股 "
-                    f"(需健康度 {t.get('requires_health', 'any')})"
-                )
-            parts.append("\n".join(lines))
+    if announcements:
+        parts.append(
+            f"\n## 近期公告 (最权威, 优先看)\n"
+            + "\n".join(
+                f"- [{(a.get('date') or a.get('time') or '')[:10]}] {a.get('title', '')}"
+                for a in announcements[:8]
+            )
+        )
     if news:
         parts.append(
             f"\n## 个股新闻 (最近 7 天)\n"
@@ -108,11 +101,12 @@ def _build_user_prompt(*, stock_code: str, stock_name: str, current_price: float
         )
     if sector_news:
         parts.append(
-            f"\n## 板块新闻 (最近 7 天)\n"
+            f"\n## {sector or '板块'}行业新闻 (最近 7 天)\n"
             + "\n".join(f"- {n.get('title', '')}" for n in sector_news[:5])
         )
     parts.append(
-        "\n## 任务\n基于以上，给出今日 verdict + tranche_action。严格 JSON。"
+        "\n## 任务\n基于以上，输出今日 signal + summary + points + risk。"
+        "只汇总客观信息和风险，不给任何操作建议。严格 JSON。"
     )
     return "\n".join(parts)
 
@@ -127,44 +121,49 @@ async def generate_briefing_for_stock(stock_code: str, stock_name: str,
                                       cost_price: float, shares: int,
                                       current_price: float) -> dict:
     """Build briefing for one stock. Returns dict with verdict + metadata."""
-    from services.market_data import get_historical_data
-    from services.news import get_stock_news, get_sector_news
+    from services.market_data import get_historical_data, get_stock_sector
+    from services.news import get_stock_news, get_sector_news, get_stock_announcements
     from services.fundamental_score import fetch_health_snapshot
-    from database import get_tranches
     from services.llm_client import call_claude
+
+    # 先拿真实行业(修掉硬编码"有色金属"), 再据此拉对应行业新闻
+    try:
+        sector = await get_stock_sector(stock_code)
+    except Exception:
+        sector = ""
 
     # Gather inputs concurrently
     hist_task = get_historical_data(stock_code)
     news_task = get_stock_news(stock_code, limit=10)
-    sector_task = get_sector_news("有色金属", limit=5)
+    sector_task = get_sector_news(sector or "大盘", limit=5)
     health_task = fetch_health_snapshot(stock_code, stock_name)
-    tranches_task = get_tranches(stock_code)
-    hist_df, news, sector_news, health, tranches = await asyncio.gather(
-        hist_task, news_task, sector_task, health_task, tranches_task,
+    ann_task = get_stock_announcements(stock_code, limit=10)
+    hist_df, news, sector_news, health, announcements = await asyncio.gather(
+        hist_task, news_task, sector_task, health_task, ann_task,
         return_exceptions=True,
     )
     # Tolerate any single failure
     if isinstance(hist_df, Exception): hist_df = None
+    if isinstance(announcements, Exception): announcements = []
     if isinstance(news, Exception): news = []
     if isinstance(sector_news, Exception): sector_news = []
     if isinstance(health, Exception): health = None
-    if isinstance(tranches, Exception): tranches = []
 
     pnl_pct = (current_price - cost_price) / cost_price * 100 if cost_price > 0 else 0
     kline_stats = _kline_summary(hist_df)
 
     user_prompt = _build_user_prompt(
-        stock_code=stock_code, stock_name=stock_name,
+        stock_code=stock_code, stock_name=stock_name, sector=sector,
         current_price=current_price, cost_price=cost_price, shares=shares,
         pnl_pct=pnl_pct, kline_stats=kline_stats,
         news=news or [], sector_news=sector_news or [],
-        tranches=tranches or [], health=health,
+        announcements=announcements or [], health=health,
     )
 
     try:
         raw = await asyncio.to_thread(
             call_claude, user_prompt, SYSTEM_PROMPT,
-            "claude-sonnet-4-6", 600,
+            "claude-sonnet-4-6", 1200,
         )
         parsed = json.loads(_strip_to_json(raw))
     except Exception as e:
@@ -172,11 +171,10 @@ async def generate_briefing_for_stock(stock_code: str, stock_name: str,
             "stock_code": stock_code,
             "stock_name": stock_name,
             "error": f"生成失败: {type(e).__name__}: {str(e)[:100]}",
-            "verdict": "hold",
-            "summary": "LLM 调用失败,默认观望",
-            "reasoning": "",
-            "key_news": [],
-            "tranche_action": "持有观望",
+            "signal": "中性",
+            "summary": "LLM 调用失败",
+            "points": [],
+            "risk": "",
             "confidence": "low",
         }
 
@@ -186,11 +184,11 @@ async def generate_briefing_for_stock(stock_code: str, stock_name: str,
         "current_price": current_price,
         "cost_price": cost_price,
         "pnl_pct": round(pnl_pct, 2),
-        "verdict": parsed.get("verdict", "hold"),
+        "sector": sector,
+        "signal": parsed.get("signal", "中性"),
         "summary": parsed.get("summary", ""),
-        "reasoning": parsed.get("reasoning", ""),
-        "key_news": parsed.get("key_news", []),
-        "tranche_action": parsed.get("tranche_action", ""),
+        "points": parsed.get("points", []),
+        "risk": parsed.get("risk", ""),
         "confidence": parsed.get("confidence", "med"),
         "kline_stats": kline_stats,
         "health_level": (health or {}).get("level"),
