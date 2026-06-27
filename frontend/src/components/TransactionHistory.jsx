@@ -25,7 +25,9 @@ function ActionRow({ action, editing, onSave, onCancel, onEdit, onDelete }) {
     const feeOverride = action.fee != null   // 用户手填了 override
     return (
       <tr className="border-t border-border-subtle hover:bg-surface-2/30">
-        <td className="py-1.5 px-2 text-text-muted">{action.trade_date || '--'}</td>
+        <td className="py-1.5 px-2 text-text-muted">{action.trade_date || '--'}
+          {action.at_time && <span className="block text-[10px] text-text-dim font-mono">{String(action.at_time).slice(0, 5)}{!action.trade_time && <span title="按录入时间推断">~</span>}</span>}
+        </td>
         <td className={`py-1.5 px-2 text-[11px] ${isAcquire ? 'text-bull' : 'text-bear'}`}>{typeLabel}</td>
         <td className="py-1.5 px-2 text-right font-mono">{fmtPrice(action.price)}</td>
         <td className="py-1.5 px-2 text-right font-mono">{action.shares}</td>
@@ -49,7 +51,10 @@ function ActionRow({ action, editing, onSave, onCancel, onEdit, onDelete }) {
 
   return (
     <tr className="border-t border-border-subtle bg-surface-3/40">
-      <td className="py-1.5 px-2"><input type="date" className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-32" value={draft.trade_date || ''} onChange={e => setDraft({ ...draft, trade_date: e.target.value })} /></td>
+      <td className="py-1.5 px-2">
+        <input type="date" className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-32" value={draft.trade_date || ''} onChange={e => setDraft({ ...draft, trade_date: e.target.value })} />
+        <input type="time" className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-24 mt-1 block text-text-dim" value={draft.trade_time || ''} onChange={e => setDraft({ ...draft, trade_time: e.target.value })} title="成交时刻(可选), 留空用录入时间, 供分时图打点" />
+      </td>
       <td className="py-1.5 px-2">
         <select className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px]" value={draft.action_type} onChange={e => setDraft({ ...draft, action_type: e.target.value })}>
           {ACTION_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
@@ -128,6 +133,7 @@ export default function TransactionHistory({ stockCode, stockName, onClose, onCh
       price: parseFloat(draft.price),
       shares: parseInt(draft.shares),
       trade_date: draft.trade_date,
+      trade_time: draft.trade_time || '',   // "" → 清空回退录入时间
       note: draft.note || '',
     }
     // 用户改了 fee (fee_set 标记): 显式传 fee (null=清空回退自动估)
