@@ -1645,11 +1645,13 @@ function ThesisModal({ row, onClose, onSaved }) {
   useEffect(() => {
     let alive = true
     fetchJSON(`/api/portfolio/thesis/${encodeURIComponent(code)}`)
-      .then(d => { if (alive) { setText(d?.thesis || ''); setMeta(d?.updated_at || null) } })
+      .then(d => { if (alive) { setText(d?.thesis || ''); setMeta(d || null) } })
       .catch(() => {})
       .finally(() => { if (alive) setLoading(false) })
     return () => { alive = false }
   }, [code])
+  const created = (meta?.created_at || '').slice(0, 10)
+  const updated = (meta?.updated_at || '').slice(0, 10)
   const save = async () => {
     setSaving(true)
     try {
@@ -1674,7 +1676,7 @@ function ThesisModal({ row, onClose, onSaved }) {
           placeholder={loading ? '加载中…' : '例: 国产算力龙头, 中科院系国资背景; 看好 AI 数据中心需求; 等存储涨价兑现到业绩'}
           className="w-full text-[12px] px-3 py-2 rounded-lg bg-surface-3 border border-border text-text placeholder:text-text-muted focus:border-accent/50 outline-none resize-y" />
         <div className="flex items-center gap-2 mt-3">
-          {meta && <span className="text-[10px] text-text-muted">上次更新 {String(meta).slice(0, 10)}</span>}
+          {created && <span className="text-[10px] text-text-muted">记于 {created}{updated && updated !== created ? ` · 改于 ${updated}` : ''}</span>}
           <button onClick={save} disabled={saving || loading}
             className="ml-auto text-[12px] px-3.5 py-1.5 rounded-lg bg-accent/20 text-accent border border-accent/40 hover:bg-accent/30 transition-colors cursor-pointer disabled:opacity-40">
             {saving ? '保存中…' : '保存'}
