@@ -45,6 +45,7 @@ class ActionUpdate(BaseModel):
     price: Optional[float] = None
     shares: Optional[int] = None
     trade_date: Optional[str] = None
+    trade_time: Optional[str] = None   # 成交时刻 HH:MM; None=不动, ""=清空, "HH:MM"=设值
     note: Optional[str] = None
     fee: Optional[float] = None
     fee_set: bool = False           # 显式标记"我要改 fee" (用于区分 fee=None=清空 还是 不动)
@@ -1151,6 +1152,7 @@ async def modify_action(action_id: int, data: ActionUpdate):
         note=data.note,
         fee=data.fee,
         fee_explicit=data.fee_set,
+        trade_time=data.trade_time,
     )
     # Find the stock_code for recomputation
     from database import get_db

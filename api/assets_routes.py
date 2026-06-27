@@ -51,6 +51,7 @@ class AssetCreate(BaseModel):
     okx_bot_type: Optional[str] = None
     annual_yield_rate: Optional[float] = None  # WEALTH 年化收益率, e.g. 0.025 = 2.5%
     start_date: Optional[str] = None           # 起投日 YYYY-MM-DD
+    trade_time: Optional[str] = None           # 成交时刻 HH:MM (可选, 供分时图打点)
     pending_amount: Optional[float] = None     # FUND/CRYPTO 待确认金额 (份额未结算)
     bot_budget_override_usdt: Optional[float] = None   # OKX 马丁实际总预算 (USDT), 覆盖算法反推
     purchase_fee_rate: Optional[float] = None   # FUND 申购费率 (小数, 0.0015=0.15%); C 类填 0
@@ -99,6 +100,7 @@ class LotAdd(BaseModel):
     fee: Optional[float] = None             # 手续费 ¥ (含在 principal 内, 单存便于流水展示/编辑)
     lot_start_date: Optional[str] = None    # WEALTH 加投起投日 (default: today)
     lot_yield_rate: Optional[float] = None  # WEALTH 加投年化 (default: keep existing)
+    trade_time: Optional[str] = None        # 成交时刻 HH:MM (可选, 供分时图打点)
 
 
 async def _enrich(asset: dict) -> dict:
@@ -458,6 +460,7 @@ async def create_asset(data: AssetCreate):
             note=(f"{_tag} (pending: 份额待确认)" if is_pending_fund else _tag),
             status="pending" if is_pending_fund else "confirmed",
             fee=seed_fee if seed_fee > 0 else None,
+            trade_time=(data.trade_time or None),
         )
 
     # 合并: 追加流水后按全部 action 重算已有持仓的 cost/shares (新建已由 add_external_asset 设好)
@@ -708,6 +711,7 @@ async def add_lot(asset_id: int, data: LotAdd):
         note="add-lot",
         status=status,
         fee=fee if fee > 0 else None,
+        trade_time=(data.trade_time or None),
     )
     return {"message": "lot added", "new_state": payload, "status": status}
 
@@ -723,6 +727,7 @@ class LotReduce(BaseModel):
     shares: Optional[float] = None             # FUND/CRYPTO 赎回份额
     unit_price: Optional[float] = None         # FUND/CRYPTO 当时净值
     trade_date: Optional[str] = None           # YYYY-MM-DD
+    trade_time: Optional[str] = None           # 成交时刻 HH:MM (可选, 供分时图打点)
     note: Optional[str] = ""
     interest_part: Optional[float] = None      # WEALTH/CASH: 本笔到账中的利息部分 (CNY)
 
@@ -787,6 +792,7 @@ async def reduce_lot(asset_id: int, data: LotReduce):
             if (t in ("WEALTH", "CASH") and data.interest_part is not None)
             else None
         ),
+        trade_time=(data.trade_time or None),
     )
 
     # 只有 confirmed 才同步缓存
@@ -1030,6 +1036,7 @@ class ActionPatch(BaseModel):
     unit_price: Optional[float] = None
     fee: Optional[float] = None
     trade_date: Optional[str] = None
+    trade_time: Optional[str] = None   # 成交时刻 HH:MM; ""=清空, None=不动
 
 
 @router.patch("/{asset_id}/actions/{action_id}")
@@ -1073,13 +1080,15 @@ async def patch_action(asset_id: int, action_id: int, data: ActionPatch):
         except ValueError:
             raise HTTPException(400, "trade_date 格式应为 YYYY-MM-DD")
         payload["trade_date"] = td
+    if data.trade_time is not None:
+        payload["trade_time"] = data.trade_time or None   # ""→NULL
     if not payload:
         raise HTTPException(400, "没有可修改的字段")
 
     if status == "pending":
-        # pending 只允许改 amount / trade_date (改日期影响结算取哪天净值, 安全);
+        # pending 只允许改 amount / trade_date / trade_time (安全, 不动 ledger 数字);
         # shares/unit_price 这些得先点 '确认' 入账, 防 ledger 状态混乱
-        if set(payload.keys()) - {"amount", "trade_date"}:
+        if set(payload.keys()) - {"amount", "trade_date", "trade_time"}:
             raise HTTPException(400, "pending 流水只能改 amount / 日期, 其他字段请先点 '确认' 入账")
 
     from database import update_external_action
