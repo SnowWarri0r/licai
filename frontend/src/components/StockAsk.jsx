@@ -8,16 +8,51 @@ function renderInline(text, kp) {
       ? <strong key={`${kp}-${i}`} className="text-text-bright">{p.slice(2, -2)}</strong>
       : <span key={`${kp}-${i}`}>{p}</span>)
 }
+// 表格行: 以 | 开头/结尾且含分隔; 分隔行: |---|:--|... (全是 - 和 : 和 |)
+const isTableRow = (t) => t.startsWith('|') && t.indexOf('|', 1) > 0
+const isTableSep = (t) => /^\|?[\s:|-]+\|[\s:|-]*$/.test(t) && t.includes('-')
+const splitCells = (t) => t.replace(/^\||\|$/g, '').split('|').map(c => c.trim())
+
 function MiniMarkdown({ text }) {
+  const lines = (text || '').split('\n')
   const out = []
-  ;(text || '').split('\n').forEach((ln, i) => {
-    const t = ln.trim()
-    if (!t) { out.push(<div key={i} className="h-1.5" />); return }
-    if (t.startsWith('## ')) out.push(<div key={i} className="text-[12.5px] font-semibold text-accent mt-2 mb-0.5">{renderInline(t.slice(3), i)}</div>)
+  let i = 0
+  while (i < lines.length) {
+    const t = lines[i].trim()
+    // 表格: 连续的 | 行 (第二行是分隔行)
+    if (isTableRow(t) && i + 1 < lines.length && isTableSep(lines[i + 1].trim())) {
+      const header = splitCells(t)
+      const rows = []
+      let j = i + 2
+      while (j < lines.length && isTableRow(lines[j].trim())) { rows.push(splitCells(lines[j].trim())); j++ }
+      out.push(
+        <div key={i} className="my-2 overflow-x-auto">
+          <table className="text-[11.5px] border-collapse w-full">
+            <thead><tr>{header.map((h, k) => (
+              <th key={k} className="text-left font-semibold text-text-bright px-2 py-1 border-b border-border bg-surface-3 whitespace-nowrap">{renderInline(h, `h${i}-${k}`)}</th>
+            ))}</tr></thead>
+            <tbody>{rows.map((r, ri) => (
+              <tr key={ri} className="border-b border-border-subtle">{r.map((c, k) => (
+                <td key={k} className="px-2 py-1 text-text-dim whitespace-nowrap">{renderInline(c, `c${i}-${ri}-${k}`)}</td>
+              ))}</tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )
+      i = j
+      continue
+    }
+    if (!t) { out.push(<div key={i} className="h-1.5" />) }
+    else if (/^(-{3,}|\*{3,}|_{3,})$/.test(t)) out.push(<hr key={i} className="my-2.5 border-0 border-t border-border-subtle" />)
+    else if (t.startsWith('## ')) out.push(<div key={i} className="text-[12.5px] font-semibold text-accent mt-2 mb-0.5">{renderInline(t.slice(3), i)}</div>)
     else if (t.startsWith('### ')) out.push(<div key={i} className="text-[12px] font-semibold text-text-bright mt-1.5">{renderInline(t.slice(4), i)}</div>)
-    else if (t.startsWith('- ') || t.startsWith('• ')) out.push(<div key={i} className="flex gap-1.5 text-[12px] leading-relaxed"><span className="text-accent shrink-0">·</span><span className="text-text-dim">{renderInline(t.slice(2), i)}</span></div>)
+    else if (t.startsWith('# ')) out.push(<div key={i} className="text-[13px] font-semibold text-accent mt-2 mb-0.5">{renderInline(t.slice(2), i)}</div>)
+    else if (t.startsWith('> ')) out.push(<div key={i} className="text-[12px] text-text-muted border-l-2 border-accent/40 pl-2 my-1 italic">{renderInline(t.slice(2), i)}</div>)
+    else if (t.startsWith('- ') || t.startsWith('• ') || t.startsWith('* ')) out.push(<div key={i} className="flex gap-1.5 text-[12px] leading-relaxed"><span className="text-accent shrink-0">·</span><span className="text-text-dim">{renderInline(t.slice(2), i)}</span></div>)
+    else if (/^\d+\.\s/.test(t)) { const m = t.match(/^(\d+)\.\s+(.*)$/); out.push(<div key={i} className="flex gap-1.5 text-[12px] leading-relaxed"><span className="text-accent shrink-0 font-medium">{m[1]}.</span><span className="text-text-dim">{renderInline(m[2], i)}</span></div>) }
     else out.push(<div key={i} className="text-[12px] text-text-dim leading-relaxed">{renderInline(t, i)}</div>)
-  })
+    i++
+  }
   return <div>{out}</div>
 }
 
