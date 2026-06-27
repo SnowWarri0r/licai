@@ -67,7 +67,7 @@ function CandleChart({ series, cost, actions }) {
       const p = points[idx]
       const isBuy = ACQUIRE.has(a.action_type)
       const yPrice = (a.price != null && range > 0) ? P.t + innerH - ((a.price - rangeMin) / range) * innerH : (isBuy ? p.yLow : p.yHigh)
-      out.push({ id: a.id, x: p.x, yPrice, date: td, price: a.price, shares: a.shares, type: a.action_type, isBuy })
+      out.push({ id: a.id, x: p.x, yPrice, yHigh: p.yHigh, yLow: p.yLow, date: td, price: a.price, shares: a.shares, type: a.action_type, isBuy })
     }
     return out
   }, [points, actions, rangeMin, range, innerH])
@@ -120,10 +120,15 @@ function CandleChart({ series, cost, actions }) {
         )}
         {bsMarkers.map((m, idx) => {
           const color = m.isBuy ? BUY_COLOR : SELL_COLOR
-          const tipY = m.yPrice, baseY = m.isBuy ? m.yPrice + 11 : m.yPrice - 11, labelY = m.isBuy ? baseY + 10 : baseY - 3
+          const gap = 7, tri = 9
+          // 标记移到影线外侧(B 在最低点下方 / S 在最高点上方), 竖直虚线 + 价位点连回真实成交价
+          const tipY = m.isBuy ? m.yLow + gap : m.yHigh - gap
+          const baseY = m.isBuy ? tipY + tri : tipY - tri
+          const labelY = m.isBuy ? baseY + 9 : baseY - 4
           return (
             <g key={m.id || idx}>
-              <line x1={m.x - candleW} y1={m.yPrice} x2={m.x + candleW} y2={m.yPrice} stroke={color} strokeWidth="0.75" strokeDasharray="2 2" opacity="0.6" />
+              <line x1={m.x} y1={m.yPrice} x2={m.x} y2={tipY} stroke={color} strokeWidth="0.75" strokeDasharray="2 2" opacity="0.7" />
+              <circle cx={m.x} cy={m.yPrice} r="1.7" fill={color} />
               <polygon points={`${m.x},${tipY} ${m.x - 5},${baseY} ${m.x + 5},${baseY}`} fill={color} stroke="var(--color-bg)" strokeWidth="0.5" />
               <text x={m.x} y={labelY} fontSize="9" fill={color} textAnchor="middle" fontFamily="monospace" fontWeight="600">{m.isBuy ? 'B' : 'S'}</text>
             </g>
