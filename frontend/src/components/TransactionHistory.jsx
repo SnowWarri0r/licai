@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { fetchJSON } from '../hooks/useApi'
-import { fmtPrice } from '../helpers'
+import { fmtPrice, loadBrokers } from '../helpers'
 
 const enc = (value) => encodeURIComponent(value)
 
@@ -15,7 +15,7 @@ const ACTION_TYPES = [
 
 const ACQUIRE_TYPES = new Set(['BUY', 'ADD', 'BONUS'])
 
-function ActionRow({ action, editing, onSave, onCancel, onEdit, onDelete }) {
+function ActionRow({ action, editing, onSave, onCancel, onEdit, onDelete, brokers = [] }) {
   const [draft, setDraft] = useState(action)
   useEffect(() => { setDraft(action) }, [action])
 
@@ -28,7 +28,9 @@ function ActionRow({ action, editing, onSave, onCancel, onEdit, onDelete }) {
         <td className="py-1.5 px-2 text-text-muted">{action.trade_date || '--'}
           {action.at_time && <span className="block text-[10px] text-text-dim font-mono">{String(action.at_time).slice(0, 5)}{!action.trade_time && <span title="按录入时间推断">~</span>}</span>}
         </td>
-        <td className={`py-1.5 px-2 text-[11px] ${isAcquire ? 'text-bull' : 'text-bear'}`}>{typeLabel}</td>
+        <td className={`py-1.5 px-2 text-[11px] ${isAcquire ? 'text-bull' : 'text-bear'}`}>{typeLabel}
+          {action.broker_effective && <span className="block text-[10px] text-text-dim">{action.broker_effective}{!action.broker && <span title="用持仓默认券商">~</span>}</span>}
+        </td>
         <td className="py-1.5 px-2 text-right font-mono">{fmtPrice(action.price)}</td>
         <td className="py-1.5 px-2 text-right font-mono">{action.shares}</td>
         <td className="py-1.5 px-2 text-right font-mono text-[11px]"
@@ -59,6 +61,10 @@ function ActionRow({ action, editing, onSave, onCancel, onEdit, onDelete }) {
         <select className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px]" value={draft.action_type} onChange={e => setDraft({ ...draft, action_type: e.target.value })}>
           {ACTION_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
         </select>
+        <select className="bg-bg border border-border rounded px-1.5 py-0.5 text-[11px] mt-1 block text-text-dim w-full" value={draft.broker || ''} onChange={e => setDraft({ ...draft, broker: e.target.value })} title="本笔券商, 留空用持仓默认">
+          <option value="">默认券商</option>
+          {brokers.map(b => <option key={b.id} value={b.name}>{b.name}</option>)}
+        </select>
       </td>
       <td className="py-1.5 px-2"><input type="number" step="0.0001" className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-20 text-right font-mono" value={draft.price} onChange={e => setDraft({ ...draft, price: parseFloat(e.target.value) || 0 })} /></td>
       <td className="py-1.5 px-2"><input type="number" step="100" min="100" className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-20 text-right font-mono" value={draft.shares} onChange={e => setDraft({ ...draft, shares: parseInt(e.target.value) || 0 })} /></td>
@@ -83,8 +89,11 @@ export default function TransactionHistory({ stockCode, stockName, onClose, onCh
   const [loading, setLoading] = useState(true)
   const [editingId, setEditingId] = useState(null)
   const [adding, setAdding] = useState(false)
+  const [brokers, setBrokers] = useState([])
+  useEffect(() => { loadBrokers().then(setBrokers) }, [])
   const [newAction, setNewAction] = useState({
     action_type: 'BUY',
+    broker: '',
     price: '',
     shares: '',
     fee: '',
@@ -122,7 +131,7 @@ export default function TransactionHistory({ stockCode, stockName, onClose, onCh
       body: JSON.stringify(body),
     })
     setAdding(false)
-    setNewAction({ action_type: 'BUY', price: '', shares: '', trade_date: new Date().toISOString().slice(0, 10), trade_time: '', note: '', fee: '' })
+    setNewAction({ action_type: 'BUY', broker: '', price: '', shares: '', trade_date: new Date().toISOString().slice(0, 10), trade_time: '', note: '', fee: '' })
     await load()
     onChange?.()
   }
@@ -134,6 +143,7 @@ export default function TransactionHistory({ stockCode, stockName, onClose, onCh
       shares: parseInt(draft.shares),
       trade_date: draft.trade_date,
       trade_time: draft.trade_time || '',   // "" → 清空回退录入时间
+      broker: draft.broker || '',           // "" → 用持仓默认券商
       note: draft.note || '',
     }
     // 用户改了 fee (fee_set 标记): 显式传 fee (null=清空回退自动估)
@@ -196,6 +206,7 @@ export default function TransactionHistory({ stockCode, stockName, onClose, onCh
                     onCancel={() => setEditingId(null)}
                     onEdit={() => setEditingId(a.id)}
                     onDelete={() => handleDelete(a.id)}
+                    brokers={brokers}
                   />
                 ))}
 
@@ -208,6 +219,10 @@ export default function TransactionHistory({ stockCode, stockName, onClose, onCh
                     <td className="py-1.5 px-2">
                       <select className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px]" value={newAction.action_type} onChange={e => setNewAction({ ...newAction, action_type: e.target.value })}>
                         {ACTION_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                      </select>
+                      <select className="bg-bg border border-border rounded px-1.5 py-0.5 text-[11px] mt-1 block text-text-dim w-full" value={newAction.broker} onChange={e => setNewAction({ ...newAction, broker: e.target.value })} title="本笔券商, 留空用持仓默认">
+                        <option value="">默认券商</option>
+                        {brokers.map(b => <option key={b.id} value={b.name}>{b.name}</option>)}
                       </select>
                     </td>
                     <td className="py-1.5 px-2"><input type="number" step="0.0001" className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-20 text-right font-mono" placeholder="价格" value={newAction.price} onChange={e => setNewAction({ ...newAction, price: e.target.value })} /></td>

@@ -206,6 +206,9 @@ async def init_db():
         if "trade_time" not in cols:
             # 成交时刻 HH:MM (可选); NULL → 用 created_at(转北京时间)推断, 供分时图精准打 B/S 点
             await db.execute("ALTER TABLE position_actions ADD COLUMN trade_time TEXT")
+        if "broker" not in cols:
+            # 本笔成交的券商 (可选); NULL → 用持仓默认券商。支持同股跨券商, 手续费按各自费率
+            await db.execute("ALTER TABLE position_actions ADD COLUMN broker TEXT")
         # Migration: add trade_time to external_asset_actions
         cursor = await db.execute("PRAGMA table_info(external_asset_actions)")
         eaa_cols = {row[1] for row in await cursor.fetchall()}
@@ -807,15 +810,16 @@ async def get_position_actions(stock_code: str = None, limit: int = 200) -> list
 
 async def add_position_action(stock_code: str, action_type: str, price: float, shares: int,
                                trade_date: str = None, note: str = "", tranche_id: int = None,
-                               fee: float | None = None, trade_time: str | None = None) -> int:
+                               fee: float | None = None, trade_time: str | None = None,
+                               broker: str | None = None) -> int:
     """Insert a new action. Returns the new action id."""
     db = await get_db()
     try:
         cursor = await db.execute(
             """INSERT INTO position_actions
-               (stock_code, action_type, price, shares, trade_date, note, tranche_id, fee, trade_time)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (stock_code, action_type, price, shares, trade_date, note, tranche_id, fee, trade_time),
+               (stock_code, action_type, price, shares, trade_date, note, tranche_id, fee, trade_time, broker)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (stock_code, action_type, price, shares, trade_date, note, tranche_id, fee, trade_time, broker),
         )
         await db.commit()
         return cursor.lastrowid
@@ -826,9 +830,9 @@ async def add_position_action(stock_code: str, action_type: str, price: float, s
 async def update_position_action(action_id: int, action_type: str = None, price: float = None,
                                   shares: int = None, trade_date: str = None, note: str = None,
                                   fee: float | None = None, fee_explicit: bool = False,
-                                  trade_time: str = None):
+                                  trade_time: str = None, broker: str = None):
     """Update fields. fee_explicit=True 表示明确想改 fee (即使传 None 也写入 NULL).
-    fee 默认 None + fee_explicit=False 不动 fee 列。trade_time 传空串 "" 可清空。"""
+    fee 默认 None + fee_explicit=False 不动 fee 列。trade_time/broker 传空串 "" 可清空。"""
     db = await get_db()
     try:
         sets, vals = [], []
@@ -840,6 +844,9 @@ async def update_position_action(action_id: int, action_type: str = None, price:
         if trade_time is not None:        # "" → 清空(NULL), "HH:MM" → 设值
             sets.append("trade_time = ?")
             vals.append(trade_time or None)
+        if broker is not None:            # "" → 清空(回退持仓默认), 券商名 → 设值
+            sets.append("broker = ?")
+            vals.append(broker or None)
         if fee_explicit:
             sets.append("fee = ?")
             vals.append(fee)
