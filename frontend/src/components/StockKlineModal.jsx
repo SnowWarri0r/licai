@@ -141,7 +141,8 @@ function CandleChart({ series, cost, actions }) {
 
   return (
     <div className="relative">
-      <div className="absolute top-1 right-1 z-10 flex gap-1">
+      {/* 副图切换钮: 贴在它所控制的底部副图(量/MACD/KDJ)右上角 */}
+      <div className="absolute right-1 z-10 flex gap-1" style={{ top: `${(volTop / H * 100).toFixed(1)}%` }}>
         {[['vol', '量'], ['macd', 'MACD'], ['kdj', 'KDJ']].map(([k, lbl]) => (
           <button key={k} onClick={() => setSub(k)} className="px-1.5 py-[1px] rounded text-[9.5px] font-mono cursor-pointer"
             style={{ border: '1px solid', borderColor: sub === k ? 'var(--color-accent)' : 'var(--color-border-med)', color: sub === k ? 'var(--color-accent)' : 'var(--color-text-muted)', background: sub === k ? 'rgba(200,168,118,.1)' : 'rgba(26,25,35,.7)' }}>{lbl}</button>
