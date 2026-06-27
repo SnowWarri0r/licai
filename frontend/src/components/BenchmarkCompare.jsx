@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { fetchJSON } from '../hooks/useApi'
+import SkeletonCard from './Skeleton'
 import { fmtMoney } from '../helpers'
 
 const SYMBOLS = [
@@ -41,13 +42,7 @@ export default function BenchmarkCompare() {
   const pickSymbol = (v) => { setSymbol(v); localStorage.setItem('benchSymbol', v) }
   const pickWindow = (v) => { setWindowDays(v); localStorage.setItem('benchWindow', String(v)) }
 
-  if (loading) {
-    return (
-      <section className="rounded-xl border border-border bg-surface/60 px-3 md:px-5 py-3 text-[12px] text-text-dim">
-        基准对照加载中…
-      </section>
-    )
-  }
+  if (loading) return <SkeletonCard rows={4} label="基准对照加载中" />
   if (err) {
     return (
       <section className="rounded-xl border border-border bg-surface/60 px-3 md:px-5 py-3 text-[12px] text-bear">

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { fetchJSON } from '../hooks/useApi'
+import SkeletonCard from './Skeleton'
 
 // 收盘 AI 复盘日报: 持仓今日归因 + 板块 + 全球大事 + 明日关注
 const pctColor = (s) => {
@@ -42,7 +43,7 @@ export default function DailyReview() {
         </button>
       </div>
 
-      {loading && !data && <div className="text-center py-6 text-text-dim text-[12px]">AI 复盘生成中…（约几秒）</div>}
+      {loading && !data && <SkeletonCard bare rows={5} label="AI 复盘生成中" />}
       {err && <div className="text-center py-4 text-bear text-[12px]">{err}</div>}
 
       {has && (
