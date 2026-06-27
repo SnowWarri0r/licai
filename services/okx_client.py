@@ -22,11 +22,13 @@ OKX_BASE = "https://www.okx.com"
 KEYCHAIN_SERVICE = "okx-trading-api"
 KEYCHAIN_ACCOUNT = "default"
 
-# Session with CN-compatible proxy (same config as crypto quote fetcher)
-_CRYPTO_PROXY = os.environ.get("CRYPTO_PROXY", "http://127.0.0.1:7890")
+# Session with CN-compatible proxy. 代理地址由 proxy_config 统一管理(设置面板/自动探测),
+# 端口漂移时回调自动更新, 不再读死 env。
+from services import proxy_config
 _okx_session = _requests.Session()
 _okx_session.trust_env = False
-_okx_session.proxies = {"http": _CRYPTO_PROXY, "https": _CRYPTO_PROXY}
+proxy_config.on_change(lambda url: setattr(
+    _okx_session, "proxies", {"http": url, "https": url} if url else {}))
 # 直连兜底: 代理挂掉时, 很多网络其实能直连 www.okx.com。
 # 代理优先(CN 被墙时必需), 代理报错再直连, 避免 OKX 同步整个失效退回过时 manual_value。
 _okx_direct_session = _requests.Session()

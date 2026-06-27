@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 
 from config import config
-from database import init_db, get_config
+from database import init_db, get_config, set_config
 from services import llm_client
 from api.portfolio_routes import router as portfolio_router
 from api.market_routes import router as market_router
@@ -69,6 +69,17 @@ async def lifespan(app: FastAPI):
         proxy=llm_proxy or "",
         model_map=llm_model_map,
     )
+
+    # 本地代理(OKX/外发统一): env CRYPTO_PROXY > DB network_proxy > 自动探测。
+    # 代理软件端口漂移时自动探测命中, 不用手改 env(OKX 同步反复失效的根因)。
+    from services import proxy_config
+    stored_proxy = (await get_config("network_proxy")) or ""
+    pr = await asyncio.to_thread(proxy_config.resolve_and_apply, stored_proxy)
+    if pr.get("proxy"):
+        tag = "自动探测" if pr.get("source") == "auto" else "配置"
+        print(f"本地代理({tag}{'·可用' if pr.get('ok') else '·不通'}): {pr['proxy']}")
+        if pr.get("source") == "auto" and pr.get("ok"):
+            await set_config("network_proxy", pr["proxy"])   # 探测到的回存, 下次直接用
 
     # 可插拔数据源: 通达信 TDX REST 服务 (env TDX_BASE_URL > DB config > config.py)
     from services import tdx_client
