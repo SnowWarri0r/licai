@@ -1,6 +1,18 @@
 import { useState, useEffect, useRef } from 'react'
 import { fetchJSON } from '../hooks/useApi'
 
+// 每个数据工具配一个图标, 让步骤条一眼能读出 agent 在取什么
+const TOOL_ICON = {
+  resolve_stock: '🔎', get_quote: '📈', get_trend: '📊', get_intraday: '⏱',
+  get_news: '📰', get_announcements: '📑', get_fund_flow: '💰', get_lhb: '🐉',
+  get_stock_concepts: '🏷', get_fundamentals: '📋', get_commodity: '🛢',
+  get_peers: '⚖️', get_shareholders: '👥', get_holdings: '💼',
+  get_asset_allocation: '🧮', get_trades: '🧾', get_market_sentiment: '🌡',
+  get_sector_momentum: '🗺', get_hot_rank: '🔥', get_hot_concepts: '💡',
+  get_board_stocks: '🏆', get_market_news: '📢', web_search: '🌐',
+}
+const toolIcon = (t) => TOOL_ICON[t] || '🔧'
+
 // 极简 markdown 渲染 (## 标题 / **粗** / - 列表 / 段落), 不引依赖
 function renderInline(text, kp) {
   return text.split(/(\*\*[^*]+\*\*)/g).map((p, i) =>
@@ -109,7 +121,7 @@ export default function StockAsk({ page = false }) {
   }
 
   const handleEv = (ev) => {
-    if (ev.type === 'step') patchLast(it => ({ ...it, steps: [...it.steps, { label: ev.label, arg: ev.arg }] }))
+    if (ev.type === 'step') patchLast(it => ({ ...it, steps: [...it.steps, { tool: ev.tool, label: ev.label, arg: ev.arg }] }))
     else if (ev.type === 'thought') patchLast(it => ({ ...it, thought: ev.text }))
     else if (ev.type === 'answer') { patchLast(it => ({ ...it, answer: ev.text })); typewriter(ev.text || '') }
     else if (ev.type === 'error') patchLast(it => ({ ...it, err: ev.error, done: true }))
@@ -190,17 +202,39 @@ export default function StockAsk({ page = false }) {
           <div key={i}>
             <div className="text-[12px] text-text-bright bg-surface-3 rounded-lg px-3 py-1.5 inline-block">{it.q}</div>
             <div className="mt-2 px-3 py-2.5 rounded-lg bg-accent/8 border border-accent/25">
-              {/* 步骤实时流 */}
-              {it.steps.length > 0 && (
-                <div className="flex flex-wrap items-center gap-1.5 mb-2">
-                  {it.steps.map((s, j) => (
-                    <span key={j} className="text-[10.5px] px-1.5 py-0.5 rounded bg-surface-3 text-text-dim border border-border-subtle">
-                      {s.label}{s.arg ? <span className="text-text-muted ml-0.5">{s.arg}</span> : ''}
-                      <span className="text-accent ml-1">{(it.answer != null || it.done) ? '✓' : '…'}</span>
-                    </span>
-                  ))}
-                </div>
-              )}
+              {/* 步骤实时流: 工具调用胶囊 */}
+              {it.steps.length > 0 && (() => {
+                const settled = it.answer != null || it.done
+                return (
+                  <div className="mb-2">
+                    <div className="flex items-center gap-1.5 mb-1.5 text-[10px] text-text-muted">
+                      <span>{settled ? '🔧 调用了' : '🔧 正在取数据'}</span>
+                      <span className="font-mono text-text-dim">{it.steps.length}</span>
+                      <span>个工具</span>
+                      {!settled && <span className="flex gap-0.5 ml-0.5">
+                        <span className="w-1 h-1 rounded-full bg-accent animate-bounce" style={{ animationDelay: '0ms' }} />
+                        <span className="w-1 h-1 rounded-full bg-accent animate-bounce" style={{ animationDelay: '150ms' }} />
+                        <span className="w-1 h-1 rounded-full bg-accent animate-bounce" style={{ animationDelay: '300ms' }} />
+                      </span>}
+                      <span className="flex-1 h-px bg-border-subtle ml-1" />
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {it.steps.map((s, j) => (
+                        <span key={j}
+                          className={`inline-flex items-center gap-1 text-[10.5px] pl-1.5 pr-2 py-[3px] rounded-full border transition-colors ${
+                            settled
+                              ? 'bg-accent/8 border-accent/25 text-text-dim'
+                              : 'bg-accent/12 border-accent/40 text-text'}`}>
+                          <span className="text-[11px] leading-none">{toolIcon(s.tool)}</span>
+                          <span>{s.label}</span>
+                          {s.arg ? <span className="font-mono text-text-muted">{s.arg}</span> : null}
+                          <span className={settled ? 'text-bull' : 'text-accent/60'}>{settled ? '✓' : '·'}</span>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })()}
               {it.thought && it.answer == null && <div className="text-[11px] text-text-muted italic mb-1.5">{it.thought}</div>}
               {/* 答案 / loading / 错误 */}
               {it.err
