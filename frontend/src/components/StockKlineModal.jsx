@@ -141,13 +141,6 @@ function CandleChart({ series, cost, actions }) {
 
   return (
     <div className="relative">
-      <div className="absolute top-1 left-2 z-10 flex gap-3 text-[10px] font-mono leading-none">
-        {maLines.filter(m => m.enough).map(m => (
-          <span key={m.n} className="flex items-center gap-1" style={{ color: m.c }}>
-            <span className="inline-block w-3" style={{ borderTop: `2px solid ${m.c}` }} />MA{m.n} {fmtVal(m.last)}
-          </span>
-        ))}
-      </div>
       <div className="absolute top-1 right-1 z-10 flex gap-1">
         {[['vol', '量'], ['macd', 'MACD'], ['kdj', 'KDJ']].map(([k, lbl]) => (
           <button key={k} onClick={() => setSub(k)} className="px-1.5 py-[1px] rounded text-[9.5px] font-mono cursor-pointer"
@@ -210,8 +203,22 @@ function CandleChart({ series, cost, actions }) {
           )
         })()}
         <text x={P.l - 6} y={volTop + 9} fontSize="9" fill="var(--color-text-muted)" textAnchor="end" fontFamily="monospace">{sub === 'vol' ? '量' : sub === 'macd' ? 'MACD' : 'KDJ'}</text>
-        {/* 均线 MA */}
+        {/* 均线 MA + 图例(SVG 内, 从绘图区左边界起, 等宽字体按字符宽度均匀排, 避开左侧Y轴刻度) */}
         {maLines.map(m => m.enough && <polyline key={m.n} points={m.d} fill="none" stroke={m.c} strokeWidth="1" opacity="0.9" />)}
+        {(() => {
+          let x = P.l + 2
+          return maLines.filter(m => m.enough).map(m => {
+            const label = `MA${m.n} ${fmtVal(m.last)}`
+            const el = (
+              <g key={m.n}>
+                <line x1={x} y1={P.t + 6} x2={x + 11} y2={P.t + 6} stroke={m.c} strokeWidth="2" />
+                <text x={x + 15} y={P.t + 9} fontSize="10" fill={m.c} fontFamily="monospace">{label}</text>
+              </g>
+            )
+            x += 15 + label.length * 6.1 + 12   // 等宽 ~6.1px/字符 + 间距
+            return el
+          })
+        })()}
         {costY != null && (
           <g>
             <line x1={P.l} y1={costY} x2={W - P.r} y2={costY} stroke="var(--color-accent)" strokeWidth="1" strokeDasharray="4 3" opacity="0.7" />
