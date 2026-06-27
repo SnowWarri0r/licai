@@ -328,27 +328,55 @@ def _em_secid(code: str) -> str:
 _fflow_cache: dict = {}
 
 
+def _fetch_realtime_fund_flow(secid: str, headers: dict, hosts: list) -> dict | None:
+    """今日主力资金流(东财 push2 实时, ulist.np/get?secids=): 与榜单 clist f62 同源, 盘中实时滚动。
+    f62 主力净 = f66 超大单净 + f72 大单净; f78 中单净; f84 小单净 (单位元)。
+    注意: stock/get 不填这些资金流字段, 必须走 ulist.np。"""
+    import requests as _rq
+    import time as _t
+    from datetime import datetime, timezone, timedelta
+    params = {"secids": secid, "invt": "2", "fltt": "2",
+              "fields": "f12,f14,f62,f66,f72,f78,f84,f184"}
+    for i in range(6):
+        try:
+            diff = (_rq.get(f"https://{hosts[i % len(hosts)]}/api/qt/ulist.np/get", params=params,
+                            timeout=7, headers=headers).json().get("data") or {}).get("diff") or []
+            if diff and diff[0].get("f62") not in (None, "", "-"):
+                d = diff[0]
+                today = (datetime.now(timezone.utc) + timedelta(hours=8)).strftime("%Y-%m-%d")
+                _g = lambda k: round(float(d.get(k) or 0) / 1e8, 2)
+                return {"date": today, "main": _g("f62"), "xlarge": _g("f66"),
+                        "big": _g("f72"), "mid": _g("f78"), "small": _g("f84")}
+        except Exception:
+            _t.sleep(0.3)
+    return None
+
+
 def _fetch_fund_flow_sync(code: str) -> dict:
-    """个股主力资金流(东财 fflow/kline 日线): 近几日主力净流入趋势 + 今日各单类拆解。
-    klines 每行: 日期,主力净,小单净,中单净,大单净,超大单净 (单位元)。直连 push2his/push2delay, 死分片 79.push2 不走。"""
+    """个股主力资金流: 今日各单类净额走 push2 实时(stock/get f62/f66/f72/f78/f84, 与榜单 f62 同源, 盘中实时);
+    近几日主力净流入趋势走 fflow/kline 日线。两个口径统一: today 永远是实时值, 不再用滞后的历史末根。
+    fflow/kline 每行: 日期,主力净,小单净,中单净,大单净,超大单净 (单位元)。"""
     import requests as _rq
     import time as _t
     ck = f"ff_{code}"
     c = _fflow_cache.get(ck)
-    if c and _t.time() - c[1] < 300:
+    if c and _t.time() - c[1] < 120:  # 实时口径, 缓存收紧到 2 分钟
         return c[0]
     secid = _em_secid(code)
+    hdr = {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
+    hosts = ["push2.eastmoney.com", "push2delay.eastmoney.com", "1.push2.eastmoney.com"]
+    his_hosts = ["push2his.eastmoney.com", "push2.eastmoney.com", "push2delay.eastmoney.com"]
+    rt = _fetch_realtime_fund_flow(secid, hdr, hosts)  # 今日实时主力资金流(权威)
+    # 历史趋势序列(近几日), 末根可能滞后, 仅用于画趋势
     params = {"lmt": "8", "klt": "101", "secid": secid,
               "fields1": "f1,f2,f3,f7", "fields2": "f51,f52,f53,f54,f55,f56"}
-    hosts = ["push2his.eastmoney.com", "push2.eastmoney.com", "push2delay.eastmoney.com"]
+    rows = []
     for i in range(9):
-        host = hosts[i % len(hosts)]
+        host = his_hosts[i % len(his_hosts)]
         try:
-            r = _rq.get(f"https://{host}/api/qt/stock/fflow/kline/get", params=params, timeout=7,
-                        headers={"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"})
+            r = _rq.get(f"https://{host}/api/qt/stock/fflow/kline/get", params=params, timeout=7, headers=hdr)
             kl = (r.json().get("data") or {}).get("klines")
             if kl:
-                rows = []
                 for ln in kl[-6:]:
                     p = ln.split(",")
                     if len(p) < 6:
@@ -356,14 +384,24 @@ def _fetch_fund_flow_sync(code: str) -> dict:
                     rows.append({"date": p[0], "main": round(float(p[1]) / 1e8, 2),
                                  "small": round(float(p[2]) / 1e8, 2), "mid": round(float(p[3]) / 1e8, 2),
                                  "big": round(float(p[4]) / 1e8, 2), "xlarge": round(float(p[5]) / 1e8, 2)})
-                if rows:
-                    out = {"unit": "亿元", "today": rows[-1],
-                           "main_net_series": [{"date": r["date"], "主力净流入亿": r["main"]} for r in rows]}
-                    _fflow_cache[ck] = (out, _t.time())
-                    return out
+                break
         except Exception:
             _t.sleep(0.3)
-    return {"error": "资金流暂不可达(东财源抖动)"}
+    # today 优先用实时值; 实时拿不到才回退历史末根
+    today = rt or (rows[-1] if rows else None)
+    if today is None:
+        return {"error": "资金流暂不可达(东财源抖动)"}
+    series = [{"date": r["date"], "主力净流入亿": r["main"]} for r in rows]
+    # 用实时今日值覆盖/补上趋势序列里的同日点, 保持序列末尾与 today 一致
+    if rt:
+        if series and series[-1]["date"] == rt["date"]:
+            series[-1]["主力净流入亿"] = rt["main"]
+        else:
+            series.append({"date": rt["date"], "主力净流入亿": rt["main"]})
+    out = {"unit": "亿元", "today": today, "today_realtime": bool(rt),
+           "main_net_series": series}
+    _fflow_cache[ck] = (out, _t.time())
+    return out
 
 
 async def _tool_fund_flow(code: str) -> dict:
@@ -1237,7 +1275,7 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_announcements", "description": "查个股公告(分红/回购/增减持/业绩预告/重组/股权激励/关联交易等), 结构化且比新闻权威。看公司层面有没有实质事件驱动。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
-    {"name": "get_fund_flow", "description": "查个股主力资金流(谁在买/卖): 今日主力/超大单/大单/中单/小单净额(亿) + 近几日主力净流入趋势。回答'为什么涨/跌、是不是主力在拉、资金进还是出'的关键。仅 A 股。",
+    {"name": "get_fund_flow", "description": "查个股主力资金流(谁在买/卖): 今日主力/超大单/大单/中单/小单净额(亿, 实时, 与榜单 f62 同源) + 近几日主力净流入趋势。今日值盘中实时滚动, 主力=超大单+大单。回答'为什么涨/跌、是不是主力在拉、资金进还是出'的关键。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_lhb", "description": "龙虎榜: 传 code→该股近期是否上榜及净买额/机构还是游资席位/上榜原因(看是谁在拉); 不传 code→最近交易日资金净买额榜(主力/游资当天在打哪些票, 看资金主线)。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选; 留空看全市场榜"}}}},
@@ -1318,9 +1356,8 @@ _SYSTEM = (
     "+get_news(消息面)+get_announcements(公司公告: 分红回购/业绩预告/重组/股权激励等实质事件, 比新闻权威), 异动明显时 get_lhb(有没有上龙虎榜、游资还是机构在打); 用 get_stock_concepts 看它属于哪个概念, "
     "再与 get_hot_concepts/get_sector_momentum 交叉看是不是踩在当下资金主线上; 需要时 get_market_sentiment 判断个股事件还是大盘普涨跌; "
     "若该票/所属板块对政策敏感(有色/小金属/地产/半导体/医药/军工/新能源/平台经济等), 还要调 get_market_news 看有没有政策催化或调控压制。\n"
-    "  · 【单只个股的主力净流入数字以 get_fund_flow 为准】它的 today 值盘中是实时滚动的(当天累计主力净额, 收盘才定格), 既实时又带超大单/大单/中单/小单拆解和近几日趋势, 是该股资金流的权威口径。"
-    "get_peers/get_board_stocks/get_hot_concepts 里的'主力净流入亿'是另一份实时榜单快照, 取数时点和聚合口径与 get_fund_flow 略有差异, 只用于榜单内横向比较谁强谁弱, 不用它报某只票的绝对金额; "
-    "讲一只票'今天主力净流入/流出多少亿'时, 始终引用 get_fund_flow 的 today 值, 全篇保持同一个数。\n"
+    "  · 【单只个股的主力净流入数字以 get_fund_flow 为准】它的 today 值盘中实时滚动(当天累计主力净额, 收盘定格), 与榜单 f62 同源同口径, 还带超大单/大单/中单/小单拆解和近几日趋势, 是该股资金流的权威口径。"
+    "get_peers/get_board_stocks/get_hot_concepts 里的'主力净流入亿'用于榜单内横向比较谁强谁弱即可; 讲一只票'今天主力净流入/流出多少亿'时, 引用 get_fund_flow 的 today 值, 全篇保持同一个数。\n"
     "【基本面/估值】问'贵不贵、业绩好不好、盈利质地、有没有业绩拐点'时调 get_fundamentals"
     "(营收/净利及同比、ROE/毛利率/净利率、资产负债率、PE/PB/总市值); 即便只问涨跌, 涉及'涨这么多还能不能撑、估值高不高'也该看一眼基本面对照位置。"
     "有色/资源股涨跌还可调 get_commodity 看对应金属期货价(铜铝金锌镍锡)是不是同步驱动。\n"
