@@ -20,6 +20,9 @@ function CandleChart({ series, cost, actions }) {
   const svgRef = useRef(null)
   const W = 720, H = 360, P = { l: 64, r: 16, t: 16, b: 28 }
   const innerW = W - P.l - P.r, innerH = H - P.t - P.b
+  const volH = 54, volGap = 10                 // 底部成交量副图
+  const priceH = innerH - volH - volGap        // 价格区高度
+  const volTop = P.t + priceH + volGap         // 量柱区顶部
 
   const allLows = series.map(d => d.low).filter(v => v > 0)
   const allHighs = series.map(d => d.high).filter(v => v > 0)
@@ -31,7 +34,7 @@ function CandleChart({ series, cost, actions }) {
     if (series.length < 2) return []
     return series.map((d, i) => {
       const x = P.l + (i / (series.length - 1)) * innerW
-      const yOf = (v) => P.t + innerH - ((v - rangeMin) / range) * innerH
+      const yOf = (v) => P.t + priceH - ((v - rangeMin) / range) * priceH
       return { ...d, x, yOpen: yOf(d.open), yClose: yOf(d.close), yHigh: yOf(d.high), yLow: yOf(d.low), i }
     })
   }, [series, innerH, innerW, rangeMin, range])
@@ -46,7 +49,7 @@ function CandleChart({ series, cost, actions }) {
     const N = 4, step = range / N
     return Array.from({ length: N + 1 }, (_, i) => {
       const v = rangeMin + step * i
-      return { v, y: P.t + innerH - ((v - rangeMin) / range) * innerH }
+      return { v, y: P.t + priceH - ((v - rangeMin) / range) * priceH }
     })
   }, [points.length, rangeMin, range, innerH])
 
@@ -66,14 +69,15 @@ function CandleChart({ series, cost, actions }) {
       if (idx == null) continue
       const p = points[idx]
       const isBuy = ACQUIRE.has(a.action_type)
-      const yPrice = (a.price != null && range > 0) ? P.t + innerH - ((a.price - rangeMin) / range) * innerH : (isBuy ? p.yLow : p.yHigh)
+      const yPrice = (a.price != null && range > 0) ? P.t + priceH - ((a.price - rangeMin) / range) * priceH : (isBuy ? p.yLow : p.yHigh)
       out.push({ id: a.id, x: p.x, yPrice, yHigh: p.yHigh, yLow: p.yLow, date: td, price: a.price, shares: a.shares, type: a.action_type, isBuy })
     }
     return out
   }, [points, actions, rangeMin, range, innerH])
 
-  const costY = cost != null && range > 0 ? P.t + innerH - ((cost - rangeMin) / range) * innerH : null
+  const costY = cost != null && range > 0 ? P.t + priceH - ((cost - rangeMin) / range) * priceH : null
   const closes = series.map(d => d.close).filter(c => c > 0)
+  const volMax = Math.max(1, ...series.map(d => Number(d.volume) || 0))
 
   // 均线 MA5/10/20
   const MA_DEFS = [{ n: 5, c: '#e8e0cf' }, { n: 10, c: '#c8a876' }, { n: 20, c: '#7aa2d6' }]
@@ -85,7 +89,7 @@ function CandleChart({ series, cost, actions }) {
       for (let i = n - 1; i < points.length; i++) {
         let s = 0
         for (let j = i - n + 1; j <= i; j++) s += cl[j]
-        pts.push(`${points[i].x},${P.t + innerH - ((s / n - rangeMin) / range) * innerH}`)
+        pts.push(`${points[i].x},${P.t + priceH - ((s / n - rangeMin) / range) * priceH}`)
       }
       return { n, c, d: pts.join(' '), enough: pts.length > 1 }
     })
@@ -128,6 +132,14 @@ function CandleChart({ series, cost, actions }) {
             </g>
           )
         })}
+        {/* 成交量副图 */}
+        {points.map(p => {
+          const h = ((Number(p.volume) || 0) / volMax) * volH
+          return <rect key={'v' + p.i} x={p.x - candleW / 2} y={volTop + volH - h} width={candleW}
+            height={Math.max(0.5, h)} fill={p.close >= p.open ? UP : DOWN} opacity="0.5" />
+        })}
+        <line x1={P.l} y1={volTop + volH} x2={W - P.r} y2={volTop + volH} stroke="var(--color-border-subtle)" strokeWidth="1" />
+        <text x={P.l - 6} y={volTop + 9} fontSize="9" fill="var(--color-text-muted)" textAnchor="end" fontFamily="monospace">量</text>
         {/* 均线 MA */}
         {maLines.map(m => m.enough && <polyline key={m.n} points={m.d} fill="none" stroke={m.c} strokeWidth="1" opacity="0.9" />)}
         <g fontSize="10" fontFamily="monospace">
@@ -188,38 +200,42 @@ function MinuteChart({ points, prevClose }) {
   const svgRef = useRef(null)
   const W = 720, H = 360, P = { l: 64, r: 16, t: 16, b: 28 }
   const innerW = W - P.l - P.r, innerH = H - P.t - P.b
+  const volH = 48, volGap = 10
+  const priceH = innerH - volH - volGap
+  const volTop = P.t + priceH + volGap
 
-  const { rows, rangeMin, range } = useMemo(() => {
+  const { rows, rangeMin, range, volMax } = useMemo(() => {
     const prices = points.map(p => p.price).filter(v => v > 0)
-    if (!prices.length) return { rows: [], rangeMin: 0, range: 1 }
+    if (!prices.length) return { rows: [], rangeMin: 0, range: 1, volMax: 1 }
     // 以昨收为中心对称, 让涨跌幅直观
     const maxDev = Math.max(...prices.map(p => Math.abs(p - prevClose)), prevClose * 0.001)
     const rMin = prevClose - maxDev, rng = maxDev * 2 || 1
+    const vMax = Math.max(1, ...points.map(p => Number(p['手']) || 0))
     let cumPV = 0, cumV = 0
     const rs = points.map((p, i) => {
       const v = Number(p['手']) || 0
       cumPV += p.price * v; cumV += v
       const avg = cumV > 0 ? cumPV / cumV : p.price
       const x = P.l + (i / Math.max(1, points.length - 1)) * innerW
-      const yOf = (val) => P.t + innerH - ((val - rMin) / rng) * innerH
-      return { ...p, avg, x, y: yOf(p.price), yAvg: yOf(avg), i }
+      const yOf = (val) => P.t + priceH - ((val - rMin) / rng) * priceH
+      return { ...p, avg, vol: v, x, y: yOf(p.price), yAvg: yOf(avg), i }
     })
-    return { rows: rs, rangeMin: rMin, range: rng }
-  }, [points, prevClose, innerH, innerW])
+    return { rows: rs, rangeMin: rMin, range: rng, volMax: vMax }
+  }, [points, prevClose, priceH, innerW])
 
   const yTicks = useMemo(() => {
     const N = 4, step = range / N
     return Array.from({ length: N + 1 }, (_, i) => {
       const v = rangeMin + step * i
-      return { v, pct: prevClose > 0 ? ((v / prevClose) - 1) * 100 : 0, y: P.t + innerH - ((v - rangeMin) / range) * innerH }
+      return { v, pct: prevClose > 0 ? ((v / prevClose) - 1) * 100 : 0, y: P.t + priceH - ((v - rangeMin) / range) * priceH }
     })
-  }, [rangeMin, range, prevClose, innerH])
+  }, [rangeMin, range, prevClose, priceH])
 
   const priceLine = rows.map(r => `${r.x},${r.y}`).join(' ')
   const avgLine = rows.map(r => `${r.x},${r.yAvg}`).join(' ')
   const last = rows.length ? rows[rows.length - 1].price : prevClose
   const lineColor = last >= prevClose ? UP : DOWN
-  const baseY = P.t + innerH - ((prevClose - rangeMin) / range) * innerH
+  const baseY = P.t + priceH - ((prevClose - rangeMin) / range) * priceH
 
   const onMove = (e) => {
     if (!svgRef.current || !rows.length) return
@@ -246,9 +262,15 @@ function MinuteChart({ points, prevClose }) {
         {['09:30', '11:30/13:00', '15:00'].map((lbl, i) => (
           <text key={i} x={P.l + (i / 2) * innerW} y={H - 8} fontSize="10" fill="var(--color-text-dim)" textAnchor={i === 0 ? 'start' : i === 2 ? 'end' : 'middle'} fontFamily="monospace">{lbl}</text>
         ))}
+        {/* 分时成交量 */}
+        {rows.map(r => {
+          const h = (r.vol / volMax) * volH
+          return <rect key={'mv' + r.i} x={r.x - 1} y={volTop + volH - h} width="1.6" height={Math.max(0.4, h)} fill={r.price >= prevClose ? UP : DOWN} opacity="0.5" />
+        })}
+        <line x1={P.l} y1={volTop + volH} x2={W - P.r} y2={volTop + volH} stroke="var(--color-border-subtle)" strokeWidth="1" />
         <polyline points={avgLine} fill="none" stroke="#c8a876" strokeWidth="1" opacity="0.85" />
         <polyline points={priceLine} fill="none" stroke={lineColor} strokeWidth="1.4" />
-        {hover && <line x1={hover.x} y1={P.t} x2={hover.x} y2={P.t + innerH} stroke="var(--color-text-muted)" strokeWidth="1" strokeDasharray="2 3" />}
+        {hover && <line x1={hover.x} y1={P.t} x2={hover.x} y2={volTop + volH} stroke="var(--color-text-muted)" strokeWidth="1" strokeDasharray="2 3" />}
       </svg>
       <div className="absolute top-2 left-[68px] text-[10px] font-mono flex gap-3">
         <span style={{ color: lineColor }}>— 价格</span><span style={{ color: '#c8a876' }}>— 均价</span>
@@ -360,7 +382,7 @@ export default function StockKlineModal({ holding, onClose }) {
         .then(d => {
           const bars = d?.data?.bars || []
           if (!bars.length) { setErr('暂无K线'); setSeries([]) }
-          else setSeries(bars.map(b => ({ date: (b.date || '').slice(0, 10), open: b.open, high: b.high, low: b.low, close: b.close })))
+          else setSeries(bars.map(b => ({ date: (b.date || '').slice(0, 10), open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume })))
         }).catch(e => setErr(e?.message || '加载失败')).finally(done)
     } else {
       // 日K (akshare, 带成本线 + 自己买卖标记)
@@ -369,7 +391,7 @@ export default function StockKlineModal({ holding, onClose }) {
         fetchJSON(`/api/portfolio/${encodeURIComponent(code)}/actions`).catch(() => []),
       ]).then(([k, a]) => {
         if (!Array.isArray(k) || !k.length) { setErr('暂无 K 线数据'); setSeries([]) }
-        else setSeries(k.map(x => ({ date: x.time, open: x.open, high: x.high, low: x.low, close: x.close })))
+        else setSeries(k.map(x => ({ date: x.time, open: x.open, high: x.high, low: x.low, close: x.close, volume: x.volume })))
         setActions(Array.isArray(a) ? a : [])
       }).catch(e => setErr(e?.message || '加载失败')).finally(done)
     }
