@@ -21,9 +21,9 @@ function CandleChart({ series, cost, actions }) {
   const svgRef = useRef(null)
   const W = 720, H = 360, P = { l: 64, r: 16, t: 16, b: 28 }
   const innerW = W - P.l - P.r, innerH = H - P.t - P.b
-  const volH = 54, volGap = 10                 // 底部成交量副图
+  const volH = 54, volGap = 24                 // 底部副图; volGap 留出空隙放切换钮, 不压副图内容
   const priceH = innerH - volH - volGap        // 价格区高度
-  const volTop = P.t + priceH + volGap         // 量柱区顶部
+  const volTop = P.t + priceH + volGap         // 副图顶部
 
   const allLows = series.map(d => d.low).filter(v => v > 0)
   const allHighs = series.map(d => d.high).filter(v => v > 0)
@@ -79,6 +79,16 @@ function CandleChart({ series, cost, actions }) {
     return out
   }, [points, actions, rangeMin, range, innerH])
 
+  const lastI = points.length ? points[points.length - 1].i : 0
+  // 副图图例(等宽字体按字符宽度均匀排, 从绘图区左边界起)
+  const subLegend = (items) => {
+    let x = P.l + 2
+    return items.map((it, i) => {
+      const el = <text key={i} x={x} y={volTop + 9} fontSize="9.5" fill={it.c} fontFamily="monospace">{it.t}</text>
+      x += it.t.length * 5.9 + 10
+      return el
+    })
+  }
   const costY = cost != null && range > 0 ? P.t + priceH - ((cost - rangeMin) / range) * priceH : null
   const closes = series.map(d => d.close).filter(c => c > 0)
   const volMax = Math.max(1, ...series.map(d => Number(d.volume) || 0))
@@ -141,8 +151,8 @@ function CandleChart({ series, cost, actions }) {
 
   return (
     <div className="relative">
-      {/* 副图切换钮: 贴在它所控制的底部副图(量/MACD/KDJ)右上角 */}
-      <div className="absolute right-1 z-10 flex gap-1" style={{ top: `${(volTop / H * 100).toFixed(1)}%` }}>
+      {/* 副图切换钮: 放在价格区与副图之间的空隙(右侧), 不压副图内容 */}
+      <div className="absolute right-1 z-10 flex gap-1" style={{ top: `${((volTop - 21) / H * 100).toFixed(1)}%` }}>
         {[['vol', '量'], ['macd', 'MACD'], ['kdj', 'KDJ']].map(([k, lbl]) => (
           <button key={k} onClick={() => setSub(k)} className="px-1.5 py-[1px] rounded text-[9.5px] font-mono cursor-pointer"
             style={{ border: '1px solid', borderColor: sub === k ? 'var(--color-accent)' : 'var(--color-border-med)', color: sub === k ? 'var(--color-accent)' : 'var(--color-text-muted)', background: sub === k ? 'rgba(200,168,118,.1)' : 'rgba(26,25,35,.7)' }}>{lbl}</button>
@@ -189,6 +199,7 @@ function CandleChart({ series, cost, actions }) {
               {points.map(p => { const v = indic.hist[p.i]; return <rect key={'m' + p.i} x={p.x - candleW / 2} y={v >= 0 ? zeroY - v * sc : zeroY} width={candleW} height={Math.max(0.4, Math.abs(v * sc))} fill={v >= 0 ? UP : DOWN} opacity="0.6" /> })}
               <polyline points={line(indic.dif)} fill="none" stroke="#e8e0cf" strokeWidth="1" />
               <polyline points={line(indic.dea)} fill="none" stroke="#c8a876" strokeWidth="1" />
+              {subLegend([{ c: '#e8e0cf', t: `DIF ${fmtVal(indic.dif[lastI])}` }, { c: '#c8a876', t: `DEA ${fmtVal(indic.dea[lastI])}` }, { c: indic.hist[lastI] >= 0 ? UP : DOWN, t: `MACD ${fmtVal(indic.hist[lastI])}` }])}
             </g>
           )
         })()}
@@ -200,6 +211,7 @@ function CandleChart({ series, cost, actions }) {
               <polyline points={line(indic.k)} fill="none" stroke="#e8e0cf" strokeWidth="1" />
               <polyline points={line(indic.d)} fill="none" stroke="#c8a876" strokeWidth="1" />
               <polyline points={line(indic.j)} fill="none" stroke="#7aa2d6" strokeWidth="1" />
+              {subLegend([{ c: '#e8e0cf', t: `K ${fmtVal(indic.k[lastI])}` }, { c: '#c8a876', t: `D ${fmtVal(indic.d[lastI])}` }, { c: '#7aa2d6', t: `J ${fmtVal(indic.j[lastI])}` }])}
             </g>
           )
         })()}
