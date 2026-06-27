@@ -572,6 +572,18 @@ function TypeMiniInfo({ row }) {
     )
   }
   if (type === 'F') {
+    // 场内 ETF/LOF: 按股票口径展示 (持有份额 · 成本价), 它本就是市价实时成交, 不是净值 T+1.
+    if (isOnchainEtf(row.code)) {
+      const sh = Number(row._raw?.shares) || 0
+      const ca = Number(row._raw?.cost_amount) || 0
+      const avg = sh > 0 ? ca / sh : 0
+      return (
+        <span className="text-[10.5px] text-text-muted font-mono">
+          {sh} 份 · ¥{fmtPrice(avg)}
+        </span>
+      )
+    }
+    // 场外公募基金: 净值 T+1 口径.
     return (
       <span className="text-[10.5px] text-text-dim">
         {extra.platform || '基金'}
