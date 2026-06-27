@@ -854,8 +854,9 @@ _POLICY_KW = [
 
 
 async def _tool_market_news(limit: int = 40) -> dict:
-    """全市场财经快讯(东财+财联社+同花顺), 含政策面/国家调控。用来把宏观政策、监管动向、
-    产业政策、央行财政、重要会议等市场背景因素纳入分析。policy_news 是按关键词筛出的政策相关条目。"""
+    """全市场财经快讯(东财+财联社+同花顺+金十), 含政策面/国家调控 + 全球宏观/地缘/央行。用来把宏观政策、监管动向、
+    产业政策、央行财政、重要会议、海外市场扰动等市场背景因素纳入分析。
+    policy_news=政策关键词筛选; important_flash=金十标重要的快讯(全球宏观/地缘/央行, 对 A 股情绪影响大)。"""
     try:
         from api.news_routes import market_news
         mn = await market_news()
@@ -864,7 +865,10 @@ async def _tool_market_news(limit: int = 40) -> dict:
             return any(k in (t or "") for k in _POLICY_KW)
         heads = [{"title": it.get("title"), "time": it.get("time"), "source": it.get("source")} for it in items]
         policy = [h for h in heads if is_pol(h["title"])]
-        return {"policy_news": policy[:18], "headlines": heads[:limit], "note": "policy_news=政策/调控相关筛选; headlines=全部要闻(时间倒序)"}
+        important = [{"title": it.get("title"), "time": it.get("time")}
+                     for it in items if it.get("important")][:12]
+        return {"policy_news": policy[:18], "important_flash": important, "headlines": heads[:limit],
+                "note": "policy_news=政策/调控相关筛选; important_flash=金十重要快讯(全球宏观/地缘/央行); headlines=全部要闻(时间倒序)"}
     except Exception as e:
         return {"error": str(e)}
 
