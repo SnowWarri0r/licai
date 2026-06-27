@@ -641,6 +641,7 @@ function RowActions({ row, visible, onEdit, onHistory, onRemove, onAddLot, onRed
       actions.push({ short: '线', label: 'K 线', fn: () => onKline?.({
         stock_code: row.code,
         stock_name: row.name,
+        asset_id: r.id,                 // 场外 asset 主键, modal 据此走 /api/assets/{id}/actions 取 BS 流水
         cost_price: sh > 0 ? (Number(r.cost_amount) || 0) / sh : 0,
         current_price: r.quote?.nav ?? null,
         price_change_pct: row.today,
