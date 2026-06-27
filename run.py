@@ -44,10 +44,31 @@ from services import feishu_notify
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
-    # Restore LLM proxy config
-    proxy_url = await get_config("llm_proxy_url")
-    if proxy_url:
-        llm_client.configure_proxy(proxy_url)
+    # Restore saved LLM config (多厂商: base_url / key / header / prefix / proxy / model_map)
+    llm_base_url = await get_config("llm_base_url")
+    llm_api_key = await get_config("llm_api_key")
+    llm_api_key_header = await get_config("llm_api_key_header")
+    llm_api_key_prefix = await get_config("llm_api_key_prefix")
+    llm_proxy = await get_config("llm_proxy")
+    llm_model_map_raw = await get_config("llm_model_map")
+    llm_model_map = None
+    if llm_model_map_raw:
+        try:
+            import json as _json
+            llm_model_map = _json.loads(llm_model_map_raw)
+        except Exception:
+            pass
+    # 兼容旧键: 老版本只存了 llm_proxy_url
+    if not llm_proxy:
+        llm_proxy = await get_config("llm_proxy_url") or ""
+    llm_client.configure_llm(
+        base_url=llm_base_url or "",
+        api_key=llm_api_key or "",
+        api_key_header=llm_api_key_header or "",
+        api_key_prefix=llm_api_key_prefix or "",
+        proxy=llm_proxy or "",
+        model_map=llm_model_map,
+    )
 
     # Restore saved feishu webhook config + 静音状态
     url = await get_config("feishu_webhook_url")
