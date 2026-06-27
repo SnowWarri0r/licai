@@ -202,32 +202,54 @@ def _fetch_global_ths() -> list[dict]:
     return out
 
 
-def _fetch_global_jin10() -> list[dict]:
-    """金十数据全球快讯 (flash-api 直连, 偏全球宏观/地缘/央行/能源, 比 akshare 源更快). 保留 important 重要标记。"""
+def _fetch_global_jin10(pages: int = 6, want: int = 80) -> list[dict]:
+    """金十数据全球快讯 (flash-api 直连, 偏全球宏观/地缘/央行/能源)。
+    翻页(max_time)多拉几页凑够历史(单页仅 ~20 条 / 约 10 分钟), 按 id 去重,
+    保留 important 标记, 正文不截断(此前 text[:60] 导致快讯显示不完整)。"""
     import re
     import requests
     s = requests.Session()
     s.trust_env = False  # 绕开 macOS 系统代理
-    try:
-        r = s.get("https://flash-api.jin10.com/get_flash_list",
-                  params={"channel": "-8200", "vip": "1"},
-                  headers={"x-app-id": "bVBF4FyRTn5NJF5n", "x-version": "1.0.0",
-                           "User-Agent": "Mozilla/5.0", "Referer": "https://www.jin10.com/"},
-                  timeout=7)
-        data = r.json().get("data") or []
-    except Exception:
-        return []
+    H = {"x-app-id": "bVBF4FyRTn5NJF5n", "x-version": "1.0.0",
+         "User-Agent": "Mozilla/5.0", "Referer": "https://www.jin10.com/"}
+
+    def _page(max_time=None):
+        p = {"channel": "-8200", "vip": "1"}
+        if max_time:
+            p["max_time"] = max_time
+        try:
+            return s.get("https://flash-api.jin10.com/get_flash_list",
+                         params=p, headers=H, timeout=7).json().get("data") or []
+        except Exception:
+            return []
+
+    raw, seen, max_time = [], set(), None
+    for _ in range(max(1, pages)):
+        page = _page(max_time)
+        if not page:
+            break
+        fresh = [x for x in page if x.get("id") not in seen]
+        if not fresh:
+            break
+        for x in fresh:
+            seen.add(x.get("id"))
+        raw.extend(fresh)
+        max_time = page[-1].get("time")
+        if len(raw) >= want:
+            break
+
     out = []
-    for x in data:
+    for x in raw:
         if x.get("type") not in (0, None):   # 只要文本快讯, 跳过图片/视频/数据型
             continue
         d = x.get("data") or {}
-        raw = d.get("content") or d.get("title") or ""
-        text = re.sub(r"<[^>]+>", " ", raw)          # 去 HTML 标签
+        content = d.get("content") or d.get("title") or ""
+        text = re.sub(r"<[^>]+>", " ", content)      # 去 HTML 标签
         text = re.sub(r"\s+", " ", text).strip()
         if not text:
             continue
-        title = (d.get("title") or "").strip() or text[:60]
+        # 快讯多半无独立标题 → 用完整正文(不再截断到 60 字)
+        title = (d.get("title") or "").strip() or text
         it = _item("金十", title, text, str(x.get("time") or ""), d.get("source_link") or "")
         if it:
             it["important"] = bool(x.get("important"))
@@ -324,18 +346,47 @@ async def market_news():
     return result
 
 
+# 持仓相关板块关键词(命中即标"关联我持仓"): 小金属 + 有色/半导体/电子/新能源/海外
+_PORTFOLIO_SECTOR_KW = _SMALL_METAL_KW + [
+    "有色", "铜", "铝", "锌", "铅", "镍", "贵金属", "黄金", "白银", "金属",
+    "半导体", "芯片", "晶圆", "存储芯片", "电子", "PCB", "覆铜板", "面板", "光刻",
+    "科技", "人工智能", "算力", "新能源", "锂", "光伏", "储能", "风电", "稀土",
+    "纳斯达克", "纳指", "标普", "美股", "日经", "费城半导体",
+]
+
+
+async def _portfolio_keywords() -> set:
+    """关联判定关键词 = 固定板块词 + 当前在持股票名(让点名个股的快讯也命中)。"""
+    kws = set(_PORTFOLIO_SECTOR_KW)
+    try:
+        for h in await get_all_holdings():
+            if float(h.get("shares") or 0) > 0:
+                nm = (h.get("stock_name") or "").strip()
+                if len(nm) >= 2:
+                    kws.add(nm)
+    except Exception:
+        pass
+    return kws
+
+
 @router.get("/jin10")
 async def jin10_flash(limit: int = 30):
-    """金十快讯独立流: 全球宏观/地缘/央行实时快讯, important 重要标记。60s 缓存。"""
+    """金十快讯独立流: 全球宏观/地缘/央行实时快讯, important 重要标记 + related 关联持仓。60s 缓存。"""
     ck = "jin10_flash"
     cached = _cache.get(ck)
-    if cached and time.time() - cached[1] < 60:
-        return {"items": cached[0][:limit], "count": len(cached[0])}
-    _strip_proxy_env()
-    items = await _fetch_source(_fetch_global_jin10)
-    if items:
-        _cache[ck] = (items, time.time())
-    return {"items": items[:limit], "count": len(items)}
+    items = cached[0] if (cached and time.time() - cached[1] < 60) else None
+    if items is None:
+        _strip_proxy_env()
+        items = await _fetch_source(_fetch_global_jin10)
+        if items:
+            _cache[ck] = (items, time.time())
+    # 关联持仓标记(每次按当前持仓判, 持仓变动即时反映; 字符串命中很轻量)
+    kws = await _portfolio_keywords()
+    for it in items:
+        t = (it.get("title") or "") + " " + (it.get("summary") or "")
+        it["related"] = any(k in t for k in kws)
+    return {"items": items[:limit], "count": len(items),
+            "related_count": sum(1 for it in items if it.get("related"))}
 
 
 async def news_prewarm_loop():
