@@ -1535,12 +1535,20 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
       <ClosedPositionsBlock
         items={[
           ...(realized?.stockItems || []).filter(i => !i.still_holding),
-          // 已清仓的理财/基金/加密 (排除 CASH/BOT 和仍持有的); 适配成统一行形状
-          ...(realized?.assetItems || [])
-            .filter(i => !i.still_holding && i.asset_type !== 'CASH' && i.asset_type !== 'BOT'
-              && (i.realized_pnl || 0) !== 0)
-            .map(i => ({ stock_code: i.code || `#${i.asset_id}`, stock_name: i.name,
-              realized_pnl: i.realized_pnl, _asset: true, asset_id: i.asset_id, code: i.code })),
+          // 已清仓的理财/基金/加密 (排除 CASH/BOT): 同一只基金分多次买卖会记成多条(不同 asset_id),
+          // 按 code 合并、已实现盈亏求和, 一只基金只显示一行(避免同名重复)。
+          ...Object.values(
+            (realized?.assetItems || [])
+              .filter(i => !i.still_holding && i.asset_type !== 'CASH' && i.asset_type !== 'BOT'
+                && (i.realized_pnl || 0) !== 0)
+              .reduce((acc, i) => {
+                const key = i.code || `#${i.asset_id}`
+                if (!acc[key]) acc[key] = { stock_code: key, stock_name: i.name, realized_pnl: 0,
+                  _asset: true, asset_id: i.asset_id, code: i.code }
+                acc[key].realized_pnl += (i.realized_pnl || 0)
+                return acc
+              }, {})
+          ),
         ]}
         onHistory={onHistory} onKline={setKlineHolding} />
     </section>
