@@ -9,6 +9,7 @@ class HoldingCreate(BaseModel):
     shares: int
     cost_price: float
     trade_date: Optional[str] = None  # 首次买入日期 YYYY-MM-DD; 不填默认 today
+    trade_time: Optional[str] = None  # 成交时刻 HH:MM (可选, 供分时图打点)
     broker: Optional[str] = None
 
 
