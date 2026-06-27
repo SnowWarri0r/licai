@@ -1,6 +1,6 @@
 # 理财助手 · licai
 
-> 一个本地化的**个人理财驾驶舱**——把 A股 / 基金 / 银行理财 / 现金账户 / 加密货币 / 量化机器人 全部装进一个看板，再叠加板块对比、配置建议、LLM 早盘简报、解套档位规划等决策辅助。
+> 一个本地化的**个人理财驾驶舱**——把 A股 / 基金 / 银行理财 / 现金账户 / 数字资产 / 量化机器人 全部装进一个看板，再叠加板块对比、配置建议、LLM 早盘简报、解套档位规划等决策辅助。
 
 **没有云端**、**没有账号**、**数据全部跑在你自己的机器上**。SQLite 单文件存储，你随时可以拷走、删掉、备份。
 
@@ -39,8 +39,8 @@
 - **基金** — 场内 ETF（实时市价）+ 场外公募（官方净值，跟主流基金平台对齐）
 - **理财** — 银行 T+30 锁定型，年化 + 起投日双向估算
 - **现金** — T+0 货币基金 + 银行活期，单字段录余额，可选估月息
-- **加密** — OKX 现货实时
-- **机器人** — OKX 网格 / DCA 自动同步盈亏
+- **数字资产** — 交易所现货实时
+- **机器人** — 交易所网格 / DCA 自动同步盈亏
 
 附配套：
 - 大类饼图 + 子分类小计（基金按"黄金/海外/A股宽基"等聚合）
@@ -125,7 +125,7 @@ A股 / 港股 / 美股个股实时报价全部走 Sina 免费接口，无需 API
 - 美股个股：Sina gb_
 - 商品期货 / 海外指数：Sina nf_ / hf_
 - 行业板块：同花顺（akshare 内置）
-- 加密：OKX 公开 ticker
+- 数字资产：交易所公开 ticker
 - 问问市场 agent：东财 个股资金流(fflow/kline) / 龙虎榜 / F10 所属概念 / 财务摘要 / 港美股财务(em) / 板块成分 / 个股公告(np-anotice)
 - LLM：Claude API（OAuth via Claude Code 或 ANTHROPIC_API_KEY），个股问答 agent 走 tool-calling + 服务端联网搜索
 
@@ -168,9 +168,9 @@ python scripts/seed_demo.py --restore   # 看完恢复真实 DB
 
 设置 → 飞书 Webhook → 粘贴 URL 保存。所有告警（档位触发 / 基本面恶化 / 早盘简报）会推送过去。
 
-### 可选：OKX 自动同步
+### 可选：交易所自动同步
 
-设置 → OKX → 填 API Key + Secret + Passphrase（建议**只勾"读取"权限**）。机器人和现货持仓会自动同步。
+设置 → 交易所 → 填 API Key + Secret + Passphrase（建议**只勾"读取"权限**）。机器人和现货持仓会自动同步。
 
 ### 可选：LLM 早盘简报
 
@@ -197,14 +197,14 @@ licai/
 ├── services/
 │   ├── stock_agent       # 问问市场 agent（19 个工具 + tool-calling loop）
 │   ├── market_data       # 行情接口 (Sina/EM)
-│   ├── external_assets   # 基金 + 加密 + 期货 + 港美股 quote
+│   ├── external_assets   # 基金 + 数字资产 + 期货 + 港美股 quote
 │   ├── fund_proxy        # 基金代理标的（top10 持仓加权）
 │   ├── fund_holdings     # 天天基金 top10 抓取
 │   ├── sector_compare    # 同花顺板块对比
 │   ├── morning_briefing  # LLM 早盘简报
 │   ├── fundamental_score # 基本面健康度（期货 + 新闻 + LLM）
 │   ├── position_ledger   # 综合成本法（含手续费/印花税/过户费）
-│   ├── okx_client        # OKX 私有 API
+│   ├── okx_client        # 交易所私有 API
 │   ├── feishu_notify     # 飞书 webhook
 │   ├── llm_client        # Claude API (OAuth + API key 双模式)
 │   └── news              # 新闻抓取
@@ -219,16 +219,16 @@ licai/
 
 - **所有数据存本地 SQLite**，不上传任何云端
 - 实时行情从公开接口拉，**不需要任何账号**
-- OKX / LLM 凭证存数据库本地，飞书 webhook 也是
+- 交易所 / LLM 凭证存数据库本地，飞书 webhook 也是
 - `portfolio.db` 已在 `.gitignore` 里，不会被 commit
 - 备份在 `backups/` 目录每天自动保留 30 天
 
 ## 已知限制
 
 - **akshare** 依赖东方财富 API，部分接口（push2.eastmoney.com）会限流，已对这种情况做了 fallback（同花顺 + 硬编码 ETF 兜底）
-- **OKX DCA 端点** 文档标"读取"但只读 Key 返 50120（已反馈客服）
+- **交易所 DCA 端点** 文档标"读取"但只读 Key 返 50120（已反馈客服）
 - **LibreSSL 老版本** macOS 系统 Python 3.9 用 LibreSSL 2.8.3，跟某些 EM 接口 TLS 握手不稳，已用 subprocess curl 兜底
-- 跑在国内非代理环境，海外接口（Claude API / OKX）需要自行处理网络
+- 跑在国内非代理环境，海外接口（Claude API / 交易所）需要自行处理网络
 
 ## License
 
