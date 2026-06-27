@@ -19,6 +19,7 @@ const TOOL_ICONS = {
   get_peers: <><path d="M12 5v15M7 20h10M5 8l7-2 7 2" /><path d="M5 8l-2 5a3 3 0 006 0zM19 8l2 5a3 3 0 01-6 0z" /></>,
   get_shareholders: <><circle cx="9" cy="8" r="3" /><path d="M3.5 19a5.5 5 0 0111 0" /><path d="M16 6a3 3 0 010 6M20.5 19a5.5 5 0 00-4-5" /></>,
   get_holdings: <><rect x="4" y="8" width="16" height="11" rx="2" /><path d="M9 8V6a2 2 0 012-2h2a2 2 0 012 2v2M4 13h16" /></>,
+  get_thesis: <><path d="M7 4h8l4 4v12H7zM15 4v4h4M10 13h6M10 16.5h4" /></>,
   get_asset_allocation: <><circle cx="12" cy="12" r="8" /><path d="M12 12V4M12 12l7 3.5" /></>,
   get_trades: <><path d="M4 9h12M13 6l3 3-3 3" /><path d="M20 15H8M11 12l-3 3 3 3" /></>,
   get_market_sentiment: <><path d="M4 16a8 8 0 0116 0" /><path d="M12 16l4.5-4" /><circle cx="12" cy="16" r="1" /></>,

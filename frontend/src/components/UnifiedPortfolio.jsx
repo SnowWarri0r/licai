@@ -644,14 +644,17 @@ function TypeMiniInfo({ row }) {
 // ============================================================
 // Hover action buttons
 // ============================================================
-function RowActions({ row, visible, onEdit, onHistory, onRemove, onAddLot, onReduceLot, onShowActions, onKline }) {
+function RowActions({ row, visible, onEdit, onHistory, onRemove, onAddLot, onReduceLot, onShowActions, onKline, onThesis, hasThesis }) {
   // 桌面: hover 才显示 (opacity 控制); 移动: 始终显示, 1 字按钮
   const btnBase = 'rounded border border-border-med bg-surface-2 text-text-dim ' +
     'hover:border-accent hover:text-accent transition-colors cursor-pointer whitespace-nowrap'
+  const thesisAction = { short: hasThesis ? '记✓' : '记', label: hasThesis ? '逻辑✓' : '逻辑',
+    fn: () => onThesis?.(row), highlight: hasThesis }
   const actions = []
   if (row.type === 'A') {
     actions.push({ short: '线', label: 'K 线', fn: () => onKline?.(row._raw) })
     actions.push({ short: '史', label: '历史', fn: () => onHistory?.(row._raw) })
+    actions.push(thesisAction)
     actions.push({ short: '改', label: '编辑', fn: () => onEdit?.(row) })
   } else {
     // 场内 ETF/LOF (沪 5xxxxx / 深 1xxxxx): 有实时行情, 给 K 线详情页入口.
@@ -676,6 +679,7 @@ function RowActions({ row, visible, onEdit, onHistory, onRemove, onAddLot, onRed
       actions.push({ short: pendingN > 0 ? `史${pendingN}` : '史', label: histLabel,
         fn: () => onShowActions?.(row), highlight: pendingN > 0 })
     }
+    actions.push(thesisAction)
     actions.push({ short: '改', label: '编辑', fn: () => onEdit?.(row) })
     actions.push({ short: '删', label: '删除', fn: () => onRemove?.(row), danger: true })
   }
@@ -809,6 +813,15 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
   const [reduceAsset, setReduceAsset] = useState(null)
   const [actionsAsset, setActionsAsset] = useState(null)
   const [klineHolding, setKlineHolding] = useState(null)
+  const [thesisTarget, setThesisTarget] = useState(null)
+  const [thesisCodes, setThesisCodes] = useState(() => new Set())
+  const loadThesisCodes = useCallback(async () => {
+    try {
+      const list = await fetchJSON('/api/portfolio/thesis')
+      setThesisCodes(new Set((list || []).map(t => t.code)))
+    } catch {}
+  }, [])
+  useEffect(() => { loadThesisCodes() }, [loadThesisCodes])
   const [realized, setRealized] = useState({ stock: 0, asset: 0 })
   const [settling, setSettling] = useState(false)
   const [settleMsg, setSettleMsg] = useState('')
@@ -1207,6 +1220,10 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
       {klineHolding && (
         <StockKlineModal holding={klineHolding} onClose={() => setKlineHolding(null)} />
       )}
+      {thesisTarget && (
+        <ThesisModal row={thesisTarget} onClose={() => setThesisTarget(null)}
+          onSaved={() => { loadThesisCodes(); setThesisTarget(null) }} />
+      )}
 
       {/* Column headers */}
       {!isEmpty && (
@@ -1474,7 +1491,8 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
                         onEdit={handleEdit} onHistory={onHistory} onRemove={removeAsset}
                         onAddLot={handleAddLot} onReduceLot={handleReduceLot}
                         onShowActions={handleShowActions}
-                        onKline={setKlineHolding} />
+                        onKline={setKlineHolding}
+                        onThesis={setThesisTarget} hasThesis={thesisCodes.has(row.code)} />
                     </div>
                   </div>
                 </div>
@@ -1617,6 +1635,56 @@ function ClosedPositionsBlock({ items, onHistory, onKline }) {
 // ============================================================
 // Add stock form — compact, inline
 // ============================================================
+function ThesisModal({ row, onClose, onSaved }) {
+  const code = row.code
+  const name = row.name || ''
+  const [text, setText] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [meta, setMeta] = useState(null)
+  useEffect(() => {
+    let alive = true
+    fetchJSON(`/api/portfolio/thesis/${encodeURIComponent(code)}`)
+      .then(d => { if (alive) { setText(d?.thesis || ''); setMeta(d?.updated_at || null) } })
+      .catch(() => {})
+      .finally(() => { if (alive) setLoading(false) })
+    return () => { alive = false }
+  }, [code])
+  const save = async () => {
+    setSaving(true)
+    try {
+      await fetchJSON(`/api/portfolio/thesis/${encodeURIComponent(code)}`, {
+        method: 'PUT', body: JSON.stringify({ thesis: text, name }),
+      })
+      onSaved?.()
+    } catch (e) { console.error(e) } finally { setSaving(false) }
+  }
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
+      <div className="bg-surface-2 border border-border rounded-xl w-full max-w-md p-4 md:p-5" onClick={e => e.stopPropagation()}>
+        <div className="flex items-baseline gap-2 mb-1">
+          <h3 className="text-[14px] font-semibold text-text-bright m-0">买入逻辑</h3>
+          <span className="text-[12px] text-text-bright">{name}</span>
+          <span className="font-mono text-[10.5px] text-text-muted">{code}</span>
+          <button onClick={onClose} className="ml-auto text-text-muted hover:text-text cursor-pointer">✕</button>
+        </div>
+        <p className="text-[10.5px] text-text-muted mb-2">记下当初为什么买、看中什么、预期。以后问 AI「这只逻辑还成立吗」会照这个客观复盘。</p>
+        <textarea value={text} onChange={e => setText(e.target.value)} disabled={loading}
+          rows={6}
+          placeholder={loading ? '加载中…' : '例: 国产算力龙头, 中科院系国资背景; 看好 AI 数据中心需求; 等存储涨价兑现到业绩'}
+          className="w-full text-[12px] px-3 py-2 rounded-lg bg-surface-3 border border-border text-text placeholder:text-text-muted focus:border-accent/50 outline-none resize-y" />
+        <div className="flex items-center gap-2 mt-3">
+          {meta && <span className="text-[10px] text-text-muted">上次更新 {String(meta).slice(0, 10)}</span>}
+          <button onClick={save} disabled={saving || loading}
+            className="ml-auto text-[12px] px-3.5 py-1.5 rounded-lg bg-accent/20 text-accent border border-accent/40 hover:bg-accent/30 transition-colors cursor-pointer disabled:opacity-40">
+            {saving ? '保存中…' : '保存'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function AddAShareForm({ initialMarket = 'A', onDone, onCancel, brokers = [] }) {
   const [form, setForm] = useState({
     code: '', name: '', shares: '', cost: '',

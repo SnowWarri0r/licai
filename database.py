@@ -182,6 +182,15 @@ CREATE TABLE IF NOT EXISTS dca_schedules (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_dca_status_due ON dca_schedules (status, next_due);
+
+-- 持仓逻辑跟踪: 记录"当初为什么买这只", 供复盘客观对照逻辑是否还成立 (A股 + 场内外资产共用 code)。
+CREATE TABLE IF NOT EXISTS position_thesis (
+    code TEXT PRIMARY KEY,                    -- 股票/基金代码 (裸码, 如 600519 / 159516)
+    name TEXT DEFAULT '',
+    thesis TEXT NOT NULL,                     -- 买入逻辑 (为什么买、看中什么、预期)
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 
@@ -527,6 +536,50 @@ async def set_config(key: str, value: str):
             "INSERT INTO app_config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?",
             (key, value, value),
         )
+        await db.commit()
+    finally:
+        await db.close()
+
+
+# ── 持仓逻辑 (thesis) ──
+async def get_thesis(code: str) -> dict | None:
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT * FROM position_thesis WHERE code = ?", (code,))
+        row = await cur.fetchone()
+        return dict(row) if row else None
+    finally:
+        await db.close()
+
+
+async def list_theses() -> list[dict]:
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT code, name, thesis, updated_at FROM position_thesis")
+        return [dict(r) for r in await cur.fetchall()]
+    finally:
+        await db.close()
+
+
+async def set_thesis(code: str, thesis: str, name: str = ""):
+    db = await get_db()
+    try:
+        await db.execute(
+            "INSERT INTO position_thesis (code, name, thesis, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) "
+            "ON CONFLICT(code) DO UPDATE SET thesis = excluded.thesis, "
+            "name = CASE WHEN excluded.name != '' THEN excluded.name ELSE position_thesis.name END, "
+            "updated_at = CURRENT_TIMESTAMP",
+            (code, name, thesis),
+        )
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def delete_thesis(code: str):
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM position_thesis WHERE code = ?", (code,))
         await db.commit()
     finally:
         await db.close()
