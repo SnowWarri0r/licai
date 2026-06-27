@@ -21,7 +21,15 @@ function MiniMarkdown({ text }) {
   return <div>{out}</div>
 }
 
-export default function StockAsk() {
+// 能力展示型推荐问题 (page 模式空态用), 覆盖 市场风格/资金主线/政策/基本面/同行/筹码
+const MARKET_SUGGESTIONS = [
+  '这周市场什么风格,资金主线在哪',
+  '现在量化资金在冲哪个概念',
+  '最近有什么政策面/国家调控影响市场',
+  '资金人气榜上抱团方向是什么',
+]
+
+export default function StockAsk({ page = false }) {
   const [q, setQ] = useState('')
   const [loading, setLoading] = useState(false)
   const [history, setHistory] = useState([])   // [{q, steps, thought, answer, typed, done, err}]
@@ -109,22 +117,38 @@ export default function StockAsk() {
   return (
     <div className="bg-surface-2 border border-border rounded-xl p-4 md:p-5">
       <div className="flex items-baseline gap-2 mb-3">
-        <h3 className="text-[14px] font-semibold text-text-bright m-0">问问市场</h3>
-        <span className="text-[10.5px] text-text-muted">个股涨跌/消息 · 这周市场什么风格 · 资金主线</span>
+        <h3 className={`${page ? 'text-[16px]' : 'text-[14px]'} font-semibold text-text-bright m-0`}>问问市场</h3>
+        <span className="text-[10.5px] text-text-muted">
+          {page ? '挂了19个数据工具的AI · 个股资金流/基本面/同行/筹码 · 市场风格/资金主线/政策面' : '个股涨跌/消息 · 这周市场什么风格 · 资金主线'}
+        </span>
       </div>
 
-      {holdings.length > 0 && history.length === 0 && (
-        <div className="flex flex-wrap gap-1.5 mb-3">
-          {holdings.map((h, i) => (
-            <button key={i} onClick={() => ask(`${h.stock_name || h.stock_code}最近为什么涨跌`)}
-              className="text-[11px] px-2 py-0.5 rounded-full border border-border bg-surface-3 text-text-dim hover:text-text hover:border-accent/40">
-              {h.stock_name || h.stock_code} ↗
-            </button>
-          ))}
+      {history.length === 0 && (
+        <div className="flex flex-col gap-2 mb-3">
+          {page && (
+            <div className="flex flex-wrap gap-1.5">
+              {MARKET_SUGGESTIONS.map((s, i) => (
+                <button key={i} onClick={() => ask(s)}
+                  className="text-[11px] px-2.5 py-1 rounded-full border border-accent/30 bg-accent/8 text-accent/90 hover:bg-accent/15 hover:border-accent/50">
+                  {s}
+                </button>
+              ))}
+            </div>
+          )}
+          {holdings.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {holdings.map((h, i) => (
+                <button key={i} onClick={() => ask(`${h.stock_name || h.stock_code}最近为什么涨跌`)}
+                  className="text-[11px] px-2 py-0.5 rounded-full border border-border bg-surface-3 text-text-dim hover:text-text hover:border-accent/40">
+                  {h.stock_name || h.stock_code} ↗
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
-      <div ref={scrollBox} onScroll={onScroll} className={`space-y-3 mb-3 ${history.length ? 'max-h-[58vh] overflow-y-auto pr-1' : ''}`}>
+      <div ref={scrollBox} onScroll={onScroll} className={`space-y-3 mb-3 ${history.length ? `${page ? 'max-h-[70vh]' : 'max-h-[58vh]'} overflow-y-auto pr-1` : ''}`}>
         {history.map((it, i) => (
           <div key={i}>
             <div className="text-[12px] text-text-bright bg-surface-3 rounded-lg px-3 py-1.5 inline-block">{it.q}</div>
