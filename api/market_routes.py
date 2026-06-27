@@ -525,7 +525,8 @@ async def hot_rank(top: int = 20):
         return {"items": [], "mine": [], "count": 0}
 
     from database import get_all_holdings
-    held_codes = {h["stock_code"] for h in await get_all_holdings()}
+    # 只标当前在持(shares>0); 已清仓的票不算"我的持仓"
+    held_codes = {h["stock_code"] for h in await get_all_holdings() if float(h.get("shares") or 0) > 0}
     for r in rows:
         r["mine"] = r["code"] in held_codes
     mine = [r for r in rows if r["mine"]]
