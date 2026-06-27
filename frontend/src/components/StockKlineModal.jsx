@@ -27,8 +27,11 @@ function CandleChart({ series, cost, actions }) {
 
   const allLows = series.map(d => d.low).filter(v => v > 0)
   const allHighs = series.map(d => d.high).filter(v => v > 0)
-  const rangeMin = (allLows.length || cost != null) ? Math.min(...allLows, cost ?? Infinity) : 0
-  const rangeMax = (allHighs.length || cost != null) ? Math.max(...allHighs, cost ?? -Infinity) : 1
+  const lo0 = (allLows.length || cost != null) ? Math.min(...allLows, cost ?? Infinity) : 0
+  const hi0 = (allHighs.length || cost != null) ? Math.max(...allHighs, cost ?? -Infinity) : 1
+  // 上下留白, 避免最高价/成本线贴顶跟 MA图例/切换钮挤在一起
+  const pad = (hi0 - lo0) * 0.07 || 1
+  const rangeMin = lo0 - pad * 0.5, rangeMax = hi0 + pad
   const range = rangeMax - rangeMin || 1
 
   const points = useMemo(() => {
@@ -208,7 +211,8 @@ function CandleChart({ series, cost, actions }) {
         {costY != null && (
           <g>
             <line x1={P.l} y1={costY} x2={W - P.r} y2={costY} stroke="var(--color-accent)" strokeWidth="1" strokeDasharray="4 3" opacity="0.7" />
-            <text x={W - P.r - 4} y={costY - 4} fontSize="10" fill="var(--color-accent)" textAnchor="end" fontFamily="monospace">成本 {fmtVal(cost)}</text>
+            {/* 标签挪到左端(避开右上 量/MACD/KDJ 钮); 贴顶(MA图例区)时放到线下方 */}
+            <text x={P.l + 4} y={costY < P.t + 34 ? costY + 13 : costY - 4} fontSize="10" fill="var(--color-accent)" textAnchor="start" fontFamily="monospace">成本 {fmtVal(cost)}</text>
           </g>
         )}
         {bsMarkers.map((m, idx) => {
