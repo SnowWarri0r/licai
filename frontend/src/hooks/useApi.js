@@ -37,4 +37,9 @@ export const api = {
   getLLMConfig: () => fetchJSON('/api/settings/llm'),
   saveLLMConfig: (data) => fetchJSON('/api/settings/llm', { method: 'POST', body: JSON.stringify(data) }),
   testLLM: () => fetchJSON('/api/settings/llm/test', { method: 'POST' }),
+
+  getProxy: () => fetchJSON('/api/settings/proxy'),
+  saveProxy: (proxy) => fetchJSON('/api/settings/proxy', { method: 'POST', body: JSON.stringify({ proxy }) }),
+  detectProxy: () => fetchJSON('/api/settings/proxy/detect', { method: 'POST' }),
+  testProxy: (proxy) => fetchJSON('/api/settings/proxy/test', { method: 'POST', body: JSON.stringify({ proxy }) }),
 }
