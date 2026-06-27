@@ -1304,6 +1304,15 @@ _TOOL_CN = {
 }
 
 
+def _clean_answer(text: str) -> str:
+    """模型 web_search 后常在正文里内联 <cite index="3-1">...</cite> 这种引用标签(非结构化 citation),
+    前端按纯文本渲染会原样露出。剥掉标签保留里面文字。"""
+    t = text or ""
+    t = _re.sub(r"</?cite[^>]*>", "", t)          # <cite index="x">/<cite ...>/</cite>
+    t = _re.sub(r"[ \t]+\n", "\n", t)
+    return t.strip()
+
+
 def _seed_messages(question: str, history: list | None) -> list:
     """把前端传来的多轮历史(只含 role+text 的简化对话)接到当前问题前面, 让 agent 有上下文。"""
     msgs = []
@@ -1342,7 +1351,7 @@ async def ask_stock_stream(question: str, history: list | None = None):
         tus = [b for b in content if b.get("type") == "tool_use"]
         if not tus:
             text = "".join(b.get("text", "") for b in content if b.get("type") == "text")
-            yield {"type": "answer", "text": text.strip()}
+            yield {"type": "answer", "text": _clean_answer(text)}
             yield {"type": "done"}
             return
         # 先把这一轮模型的简短思考文本(若有)推出去当“正在做什么”的旁白
@@ -1385,7 +1394,7 @@ async def ask_stock(question: str, history: list | None = None) -> dict:
         tus = [b for b in content if b.get("type") == "tool_use"]
         if not tus:
             text = "".join(b.get("text", "") for b in content if b.get("type") == "text")
-            return {"answer": text.strip(), "tools_used": tools_used, "rounds": rnd + 1}
+            return {"answer": _clean_answer(text), "tools_used": tools_used, "rounds": rnd + 1}
         results = []
         for tu in tus:
             name = tu.get("name", "")
