@@ -441,9 +441,9 @@ async def news_digest(force: bool = False, max_items: int = 80):
         title = it.get("title") or ""
         lines.append(f"({t} {kind} {src}) {prefix}{title}")
 
-    holdings_desc = ", ".join(f"{c}({name_by_code.get(c,'')})" for c in codes) or "(无 A 股持仓)"
+    holdings_desc = await _all_holdings_desc()   # 全资产(A股+基金/ETF+加密+机器人), 不再只 A股
     user_prompt = (
-        f"用户 A 股持仓: {holdings_desc}\n\n"
+        f"用户持仓: {holdings_desc}\n\n"
         f"近期市场新闻和公告 ({len(all_items)} 条, 按时间倒序):\n"
         + "\n".join(lines)
         + "\n\n请按要求输出。"
@@ -701,16 +701,48 @@ _INTERPRET_SYS = (
 )
 
 
+async def _all_holdings_desc() -> str:
+    """全部在持资产描述(给 LLM 当上下文): A股 + 场外基金/ETF/加密/机器人/理财。
+    此前只取 A股 holdings 表, 解读只认 A股; 这里补上 external_assets。已清仓(份额 0)过滤。"""
+    parts = []
+    try:
+        a = [h for h in await get_all_holdings() if float(h.get("shares") or 0) > 0]
+        if a:
+            parts.append("A股: " + ", ".join(f"{h.get('stock_name','')}({h['stock_code']})" for h in a))
+    except Exception:
+        pass
+    try:
+        from database import list_external_assets
+        label = {"FUND": "基金/ETF", "CRYPTO": "加密", "BOT": "量化机器人", "WEALTH": "理财", "CASH": "现金"}
+        byt: dict[str, list] = {}
+        for x in await list_external_assets():
+            t = x.get("asset_type")
+            nm = (x.get("name") or "").strip()
+            if not nm:
+                continue
+            # 基金/ETF/加密 看份额>0; 机器人/理财/现金是余额型, 有成本即算在持
+            if t in ("FUND", "CRYPTO"):
+                if float(x.get("shares") or 0) <= 0:
+                    continue
+            elif float(x.get("cost_amount") or 0) <= 0 and not x.get("manual_value"):
+                continue
+            lst = byt.setdefault(label.get(t, t), [])
+            if nm not in lst:
+                lst.append(nm)
+        for lbl in ("基金/ETF", "加密", "量化机器人", "理财"):   # 现金对新闻无关, 略
+            if byt.get(lbl):
+                parts.append(f"{lbl}: " + ", ".join(byt[lbl][:20]))
+    except Exception:
+        pass
+    return " | ".join(parts) or "(无持仓信息)"
+
+
 @router.post("/interpret")
 async def interpret_news(data: InterpretIn):
     key = hashlib.sha1(f"{data.title}|{data.content}|{data.code or ''}".encode("utf-8")).hexdigest()
     if key in _INTERPRET_CACHE:
         return {**_INTERPRET_CACHE[key], "cached": True}
-    try:
-        holdings = [h for h in await get_all_holdings() if float(h.get("shares") or 0) > 0]
-        hold_desc = ", ".join(f"{h['stock_code']}({h.get('stock_name','')})" for h in holdings) or "(无持仓信息)"
-    except Exception:
-        hold_desc = "(无持仓信息)"
+    hold_desc = await _all_holdings_desc()
     rel = f"[{data.code}{('-'+data.name) if data.name else ''}] " if data.code else ""
     user_prompt = (
         f"用户持仓: {hold_desc}\n\n"
