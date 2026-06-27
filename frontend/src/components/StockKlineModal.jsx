@@ -17,6 +17,7 @@ const fmtHand = (h) => h == null ? '--' : h >= 1e4 ? (h / 1e4).toFixed(1) + '万
 // ---------------------------------------------------------------------------
 function CandleChart({ series, cost, actions }) {
   const [hover, setHover] = useState(null)
+  const [sub, setSub] = useState('vol')   // 底部副图: vol | macd | kdj
   const svgRef = useRef(null)
   const W = 720, H = 360, P = { l: 64, r: 16, t: 16, b: 28 }
   const innerW = W - P.l - P.r, innerH = H - P.t - P.b
@@ -79,6 +80,33 @@ function CandleChart({ series, cost, actions }) {
   const closes = series.map(d => d.close).filter(c => c > 0)
   const volMax = Math.max(1, ...series.map(d => Number(d.volume) || 0))
 
+  // 技术指标 MACD / KDJ (用于底部可切换副图)
+  const indic = useMemo(() => {
+    const cl = series.map(d => d.close), hi = series.map(d => d.high), lo = series.map(d => d.low)
+    const n = cl.length
+    if (n < 2) return { dif: [], dea: [], hist: [], k: [], d: [], j: [] }
+    const ema = (arr, p) => {
+      const out = [], a = 2 / (p + 1)
+      arr.forEach((v, i) => out.push(i === 0 ? v : out[i - 1] + a * (v - out[i - 1])))
+      return out
+    }
+    const e12 = ema(cl, 12), e26 = ema(cl, 26)
+    const dif = cl.map((_, i) => e12[i] - e26[i])
+    const dea = ema(dif, 9)
+    const hist = dif.map((v, i) => (v - dea[i]) * 2)
+    // KDJ(9)
+    const k = [], d = [], j = []
+    for (let i = 0; i < n; i++) {
+      const s = Math.max(0, i - 8)
+      const ll = Math.min(...lo.slice(s, i + 1)), hh = Math.max(...hi.slice(s, i + 1))
+      const rsv = hh > ll ? (cl[i] - ll) / (hh - ll) * 100 : 50
+      k[i] = i === 0 ? 50 : (2 / 3) * k[i - 1] + (1 / 3) * rsv
+      d[i] = i === 0 ? 50 : (2 / 3) * d[i - 1] + (1 / 3) * k[i]
+      j[i] = 3 * k[i] - 2 * d[i]
+    }
+    return { dif, dea, hist, k, d, j }
+  }, [series])
+
   // 均线 MA5/10/20
   const MA_DEFS = [{ n: 5, c: '#e8e0cf' }, { n: 10, c: '#c8a876' }, { n: 20, c: '#7aa2d6' }]
   const maLines = useMemo(() => {
@@ -108,6 +136,12 @@ function CandleChart({ series, cost, actions }) {
 
   return (
     <div className="relative">
+      <div className="absolute top-1 right-1 z-10 flex gap-1">
+        {[['vol', '量'], ['macd', 'MACD'], ['kdj', 'KDJ']].map(([k, lbl]) => (
+          <button key={k} onClick={() => setSub(k)} className="px-1.5 py-[1px] rounded text-[9.5px] font-mono cursor-pointer"
+            style={{ border: '1px solid', borderColor: sub === k ? 'var(--color-accent)' : 'var(--color-border-med)', color: sub === k ? 'var(--color-accent)' : 'var(--color-text-muted)', background: sub === k ? 'rgba(200,168,118,.1)' : 'rgba(26,25,35,.7)' }}>{lbl}</button>
+        ))}
+      </div>
       <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full h-auto select-none cursor-crosshair"
         onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
         {yTicks.map((t, i) => (
@@ -132,14 +166,38 @@ function CandleChart({ series, cost, actions }) {
             </g>
           )
         })}
-        {/* 成交量副图 */}
-        {points.map(p => {
-          const h = ((Number(p.volume) || 0) / volMax) * volH
-          return <rect key={'v' + p.i} x={p.x - candleW / 2} y={volTop + volH - h} width={candleW}
-            height={Math.max(0.5, h)} fill={p.close >= p.open ? UP : DOWN} opacity="0.5" />
-        })}
+        {/* 底部副图: 量 / MACD / KDJ */}
         <line x1={P.l} y1={volTop + volH} x2={W - P.r} y2={volTop + volH} stroke="var(--color-border-subtle)" strokeWidth="1" />
-        <text x={P.l - 6} y={volTop + 9} fontSize="9" fill="var(--color-text-muted)" textAnchor="end" fontFamily="monospace">量</text>
+        {sub === 'vol' && points.map(p => {
+          const h = ((Number(p.volume) || 0) / volMax) * volH
+          return <rect key={'v' + p.i} x={p.x - candleW / 2} y={volTop + volH - h} width={candleW} height={Math.max(0.5, h)} fill={p.close >= p.open ? UP : DOWN} opacity="0.5" />
+        })}
+        {sub === 'macd' && (() => {
+          const idx = points.map(p => p.i)
+          const maxAbs = Math.max(1e-6, ...idx.flatMap(i => [Math.abs(indic.dif[i]), Math.abs(indic.dea[i]), Math.abs(indic.hist[i])]))
+          const zeroY = volTop + volH / 2, sc = (volH / 2 - 2) / maxAbs
+          const line = (arr) => points.map(p => `${p.x},${zeroY - arr[p.i] * sc}`).join(' ')
+          return (
+            <g>
+              <line x1={P.l} y1={zeroY} x2={W - P.r} y2={zeroY} stroke="var(--color-border-subtle)" strokeWidth="0.5" strokeDasharray="2 3" />
+              {points.map(p => { const v = indic.hist[p.i]; return <rect key={'m' + p.i} x={p.x - candleW / 2} y={v >= 0 ? zeroY - v * sc : zeroY} width={candleW} height={Math.max(0.4, Math.abs(v * sc))} fill={v >= 0 ? UP : DOWN} opacity="0.6" /> })}
+              <polyline points={line(indic.dif)} fill="none" stroke="#e8e0cf" strokeWidth="1" />
+              <polyline points={line(indic.dea)} fill="none" stroke="#c8a876" strokeWidth="1" />
+            </g>
+          )
+        })()}
+        {sub === 'kdj' && (() => {
+          const yOf = (v) => volTop + volH - Math.max(0, Math.min(100, v)) / 100 * volH
+          const line = (arr) => points.map(p => `${p.x},${yOf(arr[p.i])}`).join(' ')
+          return (
+            <g>
+              <polyline points={line(indic.k)} fill="none" stroke="#e8e0cf" strokeWidth="1" />
+              <polyline points={line(indic.d)} fill="none" stroke="#c8a876" strokeWidth="1" />
+              <polyline points={line(indic.j)} fill="none" stroke="#7aa2d6" strokeWidth="1" />
+            </g>
+          )
+        })()}
+        <text x={P.l - 6} y={volTop + 9} fontSize="9" fill="var(--color-text-muted)" textAnchor="end" fontFamily="monospace">{sub === 'vol' ? '量' : sub === 'macd' ? 'MACD' : 'KDJ'}</text>
         {/* 均线 MA */}
         {maLines.map(m => m.enough && <polyline key={m.n} points={m.d} fill="none" stroke={m.c} strokeWidth="1" opacity="0.9" />)}
         <g fontSize="10" fontFamily="monospace">
