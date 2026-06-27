@@ -972,6 +972,86 @@ async def _tool_shareholders(code: str) -> dict:
         return {"error": f"股东数据获取失败: {e}"}
 
 
+# 红线关键词 → (命中词, 类别, 级别, 排除词)。扫公告标题, 命中且不含排除词=该风险有事实依据。
+# 排除词用于剔除例行/反向公告(如 审核问询=IPO例行、终止减持=减持结束、专项说明=年报例行)。
+_RED_LINE_RULES = [
+    (("立案", "被调查", "行政处罚", "责令改正", "警示函", "监管措施", "纪律处分"), "监管处罚", "高", ()),
+    (("*ST", "退市风险", "终止上市", "暂停上市", "其他风险警示"), "退市风险", "高", ()),
+    (("预亏", "首亏", "续亏", "预减", "由盈转亏", "净利润大幅下降", "业绩大幅下滑"), "业绩预警", "中", ()),
+    (("商誉减值", "计提.*减值", "大额减值"), "资产/商誉减值", "中", ("审计说明", "专项说明")),
+    (("问询函", "关注函", "监管工作函"), "交易所问询", "中", ("审核问询", "保荐", "注册", "回复")),
+    (("违规担保", "违规占用", "重大诉讼", "重大仲裁"), "违规/诉讼", "中", ("专项说明", "专项审计", "审计说明")),
+    (("拟减持", "减持计划", "询价转让", "大宗交易减持"), "股东减持", "低", ("终止", "完成", "不减持", "届满", "结果")),
+    (("平仓风险", "高比例质押", "质押.*预警"), "股权质押", "低", ()),
+]
+
+
+async def _tool_red_flags(code: str) -> dict:
+    """客观红线清单: 扫公告(监管处罚/退市/业绩预警/减值/问询/减持等) + 解禁抛压 + 基本面健康度, 列出有事实依据的风险点。
+    命中=该风险确有依据, 不是买卖建议; 把雷摆给用户自己判断。仅 A 股。"""
+    import re as _re2
+    from services.market_data import normalize_stock_code, is_a_share, get_stock_name
+    raw = normalize_stock_code(_norm_code(code))
+    if not is_a_share(raw):
+        return {"error": "红线清单仅支持 A 股"}
+    bare = raw.split(".")[-1] if "." in raw else raw
+    from services.news import get_stock_announcements
+    from services.fundamental_score import fetch_health_snapshot
+
+    name = ""
+    try:
+        name = await get_stock_name(raw) or ""
+    except Exception:
+        pass
+    anns, shholders, health = await asyncio.gather(
+        get_stock_announcements(bare, limit=30),
+        asyncio.to_thread(_fetch_shareholders_sync, raw),
+        fetch_health_snapshot(raw, name),
+        return_exceptions=True,
+    )
+    if isinstance(anns, Exception): anns = []
+    if isinstance(shholders, Exception): shholders = {}
+    if isinstance(health, Exception): health = None
+
+    flags, hit_cats = [], set()
+    # 1) 公告关键词扫描(取最近一条命中作依据)
+    for a in (anns or []):
+        title = a.get("title") or ""
+        date = (a.get("date") or "")[:10]
+        for kws, cat, lvl, excludes in _RED_LINE_RULES:
+            if cat in hit_cats:
+                continue
+            if any(x in title for x in excludes):
+                continue
+            if any((_re2.search(k, title) if ".*" in k else k in title) for k in kws):
+                flags.append({"类别": cat, "级别": lvl, "依据": f"[{date}] {title}"})
+                hit_cats.add(cat)
+    # 2) 解禁抛压
+    unlock = (shholders or {}).get("upcoming_unlock")
+    if isinstance(unlock, list) and unlock:
+        u0 = unlock[0]
+        pct = u0.get("占流通市值%") or 0
+        lvl = "中" if pct and pct >= 5 else "低"
+        flags.append({"类别": "解禁抛压", "级别": lvl,
+                      "依据": f"{u0.get('date')} 解禁约占流通市值 {pct}% ({u0.get('类型') or ''})"})
+    # 3) 基本面健康度
+    if health and isinstance(health, dict):
+        lv = health.get("level")
+        if lv == "red":
+            flags.append({"类别": "基本面健康度", "级别": "中", "依据": f"健康度红灯 (评分 {health.get('score')})"})
+        elif lv == "yellow":
+            flags.append({"类别": "基本面健康度", "级别": "提示", "依据": f"健康度黄灯 (评分 {health.get('score')})"})
+
+    order = {"高": 0, "中": 1, "低": 2, "提示": 3}
+    flags.sort(key=lambda f: order.get(f["级别"], 9))
+    checked = ["监管处罚", "退市风险", "业绩预警", "资产/商誉减值", "交易所问询", "违规/诉讼", "股东减持", "解禁抛压", "基本面健康度"]
+    clear = [c for c in checked if c not in {f["类别"] for f in flags}]
+    return {"code": bare, "name": name, "red_flags": flags, "checked_clear": clear,
+            "note": "客观红线扫描(近30条公告+解禁+健康度): red_flags=有事实依据的风险点(按高/中/低/提示排), "
+                    "checked_clear=扫过未命中的项。命中只代表'有这个风险事实', 不是卖出建议; 摆给用户自己判断。"
+                    "公告源仅近期, 更早或非公告类风险可能漏, 不要据此宣称'无任何风险'。"}
+
+
 _ann_cache: dict = {}
 # 值得重点标注的公告类型(资金/事件驱动)
 _ANN_KEY_TYPES = ["分红", "回购", "增持", "减持", "业绩", "预增", "预减", "重组", "收购", "中标",
@@ -1446,6 +1526,8 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_lhb", "description": "龙虎榜: 传 code→该股近期是否上榜及净买额/机构还是游资席位/上榜原因(看是谁在拉); 不传 code→最近交易日资金净买额榜(主力/游资当天在打哪些票, 看资金主线)。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选; 留空看全市场榜"}}}},
+    {"name": "get_red_flags", "description": "客观红线清单: 扫近期公告(监管处罚/立案/退市风险/业绩预亏/商誉减值/交易所问询/违规占用/股东减持等) + 解禁抛压 + 基本面健康度, 列出有事实依据的风险点(按高/中/低排)。回答'这票有没有雷/风险/暴雷过吗/能不能放心拿'时用。命中=有该风险事实, 非卖出建议。仅 A 股。",
+     "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_company_profile", "description": "查公司是做什么的 + 什么背景: 公司简介(主营业务) + 细分行业 + 主营构成(各产品/地区收入占比和毛利率) + 控股/实际控制人/前三大股东(判断国资/央企/地方国企/中科院系/民营/外资性质)。回答'这家公司主营什么、靠什么赚钱、谁控股、什么背景、和同行业务差异'时必用。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_stock_concepts", "description": "查个股所属行业/概念板块 + 核心题材。判断'这只票属于哪个概念、有没有踩在当下资金主线/热门概念上'时用; 可与 get_hot_concepts 交叉印证。仅 A 股。",
@@ -1489,6 +1571,7 @@ _EXECUTORS = {
     "get_announcements": lambda a: _tool_announcements(a.get("code", "")),
     "get_fund_flow": lambda a: _tool_fund_flow(a.get("code", "")),
     "get_lhb": lambda a: _tool_lhb(a.get("code", "")),
+    "get_red_flags": lambda a: _tool_red_flags(a.get("code", "")),
     "get_company_profile": lambda a: _tool_company_profile(a.get("code", "")),
     "get_stock_concepts": lambda a: _tool_stock_concepts(a.get("code", "")),
     "get_fundamentals": lambda a: _tool_fundamentals(a.get("code", "")),
@@ -1543,6 +1626,8 @@ _SYSTEM = (
     "  · 【讲清楚公司是做什么的 + 什么背景】只要问题涉及某只票(尤其'为什么涨/两只票对比/值不值得关注'), 必调 get_company_profile 拿主营业务+细分行业+主营构成+控股/实控背景, "
     "一句话说清它靠什么赚钱、和同行的业务差异(如'中芯=大陆晶圆代工龙头、先进制程为主'对'华虹=特色工艺代工、功率器件/8寸为主'); "
     "并据 controller/top_holders 的股东名点明公司性质——是国资/央企/地方国企/中科院系院所背景/民营/外资(如第一大股东'北京中科算源'=中科院计算所系国企)。把'做什么+什么背景'讲在涨跌前面。\n"
+    "  · 【有没有雷·客观红线清单】问'这票有没有雷/风险/暴过雷吗/能不能放心拿', 或复盘/评估一只票时, 调 get_red_flags 拿客观红线(监管处罚/退市风险/业绩预亏/商誉减值/交易所问询/违规占用/股东减持/解禁抛压/健康度), "
+    "按高/中/低把命中的风险点摆出来(带公告日期/依据), 没命中的项也说一句'这些都扫过没踩'。这是客观风险事实、不是卖出建议; red_flags 为空时说'近期公告/解禁/健康度没扫到明显红线', 同时提醒非公告类或更早的风险可能漏, 别打包票'绝对没风险'。\n"
     "  · 【讲清楚市场在追捧什么】涨跌/对比类问题要落到驱动题材: 用 get_stock_concepts(它挂在哪些概念)+get_hot_concepts(这几天资金在冲哪个概念)+get_news/get_market_news(有没有催化: 政策/涨价/新品/业绩/事件)交叉, "
     "明确说出'这波资金在追的是 XX 题材/催化是 XX'(如国产替代、存储涨价、算力、设备验证突破), 而不是只说'踩在主线上'这种空话。\n"
     "若该票/所属板块对政策敏感(有色/小金属/地产/半导体/医药/军工/新能源/平台经济等), 还要调 get_market_news 看有没有政策催化或调控压制。\n"
@@ -1626,7 +1711,7 @@ def _system() -> str:
 _TOOL_CN = {
     "resolve_stock": "解析代码", "get_quote": "查行情", "get_trend": "查走势",
     "get_news": "查新闻", "get_intraday": "查分时", "get_announcements": "查公告", "get_fund_flow": "查资金流", "get_lhb": "查龙虎榜",
-    "get_company_profile": "查公司主营", "get_stock_concepts": "查所属概念", "get_fundamentals": "查基本面", "get_commodity": "查商品价",
+    "get_company_profile": "查公司主营", "get_red_flags": "查红线风险", "get_stock_concepts": "查所属概念", "get_fundamentals": "查基本面", "get_commodity": "查商品价",
     "get_peers": "同行对比", "get_shareholders": "查股东解禁",
     "get_holdings": "看持仓", "get_asset_allocation": "看资产配置", "get_trades": "查成交记录", "get_market_sentiment": "看大盘情绪",
     "get_sector_momentum": "看板块动量", "get_hot_rank": "看资金热度",
