@@ -11,15 +11,38 @@ from services import feishu_notify, llm_client, tdx_client
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
+def _assert_local_url(v: str) -> str:
+    """TDX 服务只该在本机/私网。限制 base_url 的 host 为 loopback 或 RFC1918 私网,
+    拒绝公网与 link-local(169.254, 含云元数据 169.254.169.254) —— 防 SSRF。"""
+    if not v:
+        return v
+    if not v.startswith(("http://", "https://")):
+        raise ValueError("base_url 必须以 http:// 或 https:// 开头")
+    from urllib.parse import urlparse
+    import ipaddress
+    host = (urlparse(v).hostname or "").strip()
+    if not host:
+        raise ValueError("base_url 缺少主机名")
+    if host in ("localhost", "localhost.localdomain"):
+        return v.rstrip("/")
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        raise ValueError("TDX base_url 只允许 localhost 或本机/私网 IP(防 SSRF), 不接受公网域名")
+    if ip.is_link_local or ip.is_reserved or ip.is_multicast:
+        raise ValueError("base_url 不允许 link-local/保留地址(如 169.254.169.254)")
+    if not (ip.is_loopback or ip.is_private):
+        raise ValueError("TDX base_url 只允许本机/私网地址(防 SSRF), 不接受公网 IP")
+    return v.rstrip("/")
+
+
 class TDXConfig(BaseModel):
     base_url: str = ""
 
     @field_validator("base_url")
     @classmethod
     def _v(cls, v: str) -> str:
-        if v and not v.startswith(("http://", "https://")):
-            raise ValueError("base_url 必须以 http:// 或 https:// 开头")
-        return v.rstrip("/")
+        return _assert_local_url(v)
 
 
 @router.get("/tdx")
