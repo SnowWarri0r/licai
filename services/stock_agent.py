@@ -736,7 +736,7 @@ def _fetch_peers_sync(code: str) -> dict:
                     me = [r for r in rows if r["code"] == code]
                     top = (top[:11] + me) if me else top
                 out = {"行业": ind, "板块": bk, "peers": top,
-                       "note": f"同属【{ind}】板块, 按今日主力净流入排序; PE/PB 横向比可看谁贵谁便宜, 涨跌幅看谁领涨。"}
+                       "note": f"同属【{ind}】板块, 按今日主力净流入排序; PE/PB 横向比可看谁贵谁便宜, 涨跌幅看谁领涨。主力净流入亿为榜单实时快照, 用于榜内横向比较; 单只票的精确金额以 get_fund_flow 为准。"}
                 _peers_cache[ck] = (out, _t.time())
                 return out
         except Exception:
@@ -1160,7 +1160,7 @@ def _fetch_board_stocks_sync(name: str, top: int = 12) -> dict:
                         continue
                 if rows:
                     return {"板块": std, "类型": kind, "code": bk, "top_stocks": rows,
-                            "note": f"「{std}」成分股按今日涨幅排序; 主力净流入正=资金净买入。看龙头/资金集中在哪几只。"}
+                            "note": f"「{std}」成分股按今日涨幅排序; 主力净流入正=资金净买入(榜单实时快照, 用于看资金集中在哪几只; 单只票精确金额以 get_fund_flow 为准)。"}
         except Exception:
             _t.sleep(0.3)
     return {"error": f"「{std}」成分股暂不可达(东财源抖动)"}
@@ -1318,6 +1318,9 @@ _SYSTEM = (
     "+get_news(消息面)+get_announcements(公司公告: 分红回购/业绩预告/重组/股权激励等实质事件, 比新闻权威), 异动明显时 get_lhb(有没有上龙虎榜、游资还是机构在打); 用 get_stock_concepts 看它属于哪个概念, "
     "再与 get_hot_concepts/get_sector_momentum 交叉看是不是踩在当下资金主线上; 需要时 get_market_sentiment 判断个股事件还是大盘普涨跌; "
     "若该票/所属板块对政策敏感(有色/小金属/地产/半导体/医药/军工/新能源/平台经济等), 还要调 get_market_news 看有没有政策催化或调控压制。\n"
+    "  · 【单只个股的主力净流入数字以 get_fund_flow 为准】这是该股当日资金流的权威口径(还带超大单/大单/中单/小单拆解和近几日趋势)。"
+    "get_peers/get_board_stocks/get_hot_concepts 里的'主力净流入亿'是榜单实时快照, 取数时点和口径与 get_fund_flow 不同, 只用于榜单内横向比较谁强谁弱, 不用它报某只票的绝对金额; "
+    "讲一只票'今天主力净流入/流出多少亿'时, 始终引用 get_fund_flow 的 today 值, 全篇保持同一个数。\n"
     "【基本面/估值】问'贵不贵、业绩好不好、盈利质地、有没有业绩拐点'时调 get_fundamentals"
     "(营收/净利及同比、ROE/毛利率/净利率、资产负债率、PE/PB/总市值); 即便只问涨跌, 涉及'涨这么多还能不能撑、估值高不高'也该看一眼基本面对照位置。"
     "有色/资源股涨跌还可调 get_commodity 看对应金属期货价(铜铝金锌镍锡)是不是同步驱动。\n"
