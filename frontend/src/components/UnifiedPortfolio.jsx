@@ -1540,15 +1540,15 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
             .filter(i => !i.still_holding && i.asset_type !== 'CASH' && i.asset_type !== 'BOT'
               && (i.realized_pnl || 0) !== 0)
             .map(i => ({ stock_code: i.code || `#${i.asset_id}`, stock_name: i.name,
-              realized_pnl: i.realized_pnl, _asset: true })),
+              realized_pnl: i.realized_pnl, _asset: true, asset_id: i.asset_id, code: i.code })),
         ]}
-        onHistory={onHistory} />
+        onHistory={onHistory} onKline={setKlineHolding} />
     </section>
   )
 }
 
 // 已清仓股票区块 — 列出持仓已删但还有交易历史的标的, 看到累计已实现盈亏 + 翻历史
-function ClosedPositionsBlock({ items, onHistory }) {
+function ClosedPositionsBlock({ items, onHistory, onKline }) {
   const [open, setOpen] = useState(false)
   if (!items || items.length === 0) return null
   const total = items.reduce((s, it) => s + (it.realized_pnl || 0), 0)
@@ -1581,6 +1581,16 @@ function ClosedPositionsBlock({ items, onHistory }) {
                 <span className={`font-mono ${priceColor(it.realized_pnl)}`}>
                   {it.realized_pnl >= 0 ? '+' : ''}¥{fmtMoney(it.realized_pnl)}
                 </span>
+                {/* A股清仓 / 场内ETF清仓: 有K线; BS标记按保留的流水照常标出买卖点 */}
+                {((!it._asset) || (it._asset && isOnchainEtf(it.code))) && (
+                  <button onClick={() => onKline?.({
+                    stock_code: it.code || it.stock_code, stock_name: it.stock_name,
+                    asset_id: it._asset ? it.asset_id : undefined,
+                  })}
+                    className="text-[10.5px] text-text-dim hover:text-accent cursor-pointer">
+                    K线
+                  </button>
+                )}
                 {!it._asset && (
                   <button onClick={() => onHistory?.({ stock_code: it.stock_code, stock_name: it.stock_name })}
                     className="text-[10.5px] text-text-dim hover:text-accent cursor-pointer">
