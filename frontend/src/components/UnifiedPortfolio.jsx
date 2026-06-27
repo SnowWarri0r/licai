@@ -836,6 +836,7 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
         stock: Math.round(stockCarry * 100) / 100,
         asset: Math.round(assetExclCash * 100) / 100,
         stockItems: s.items || [],
+        assetItems: a.items || [],
       })
     } catch (e) { console.error('realized load failed', e) }
   }, [])
@@ -863,9 +864,10 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
   const rows = useMemo(() => {
     // 0 持仓的股票/基金 不在主列表显示, 走 "已清仓" 区块
     const a = (holdings || []).filter(h => (h.shares || 0) > 0).map(normalizeHolding)
-    const e = (assets || []).filter(x => x.asset_type === 'BOT' || x.asset_type === 'WEALTH' || x.asset_type === 'CASH'
+    // BOT/CASH 常驻; 理财(WEALTH)/基金/加密 已清仓(无成本/无市值/无在途)的不进主列表, 走"已清仓"区块
+    const e = (assets || []).filter(x => x.asset_type === 'BOT' || x.asset_type === 'CASH'
       || (x.shares || 0) > 0 || (x.cost_amount || 0) > 0
-      || (x.pending_amount || 0) > 0).map(normalizeAsset)
+      || (x.current_value || 0) > 0 || (x.pending_amount || 0) > 0).map(normalizeAsset)
     return [...a, ...e]
   }, [holdings, assets])
 
@@ -1495,7 +1497,16 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
         </div>
       )}
 
-      <ClosedPositionsBlock items={(realized?.stockItems || []).filter(i => !i.still_holding)}
+      <ClosedPositionsBlock
+        items={[
+          ...(realized?.stockItems || []).filter(i => !i.still_holding),
+          // 已清仓的理财/基金/加密 (排除 CASH/BOT 和仍持有的); 适配成统一行形状
+          ...(realized?.assetItems || [])
+            .filter(i => !i.still_holding && i.asset_type !== 'CASH' && i.asset_type !== 'BOT'
+              && (i.realized_pnl || 0) !== 0)
+            .map(i => ({ stock_code: i.code || `#${i.asset_id}`, stock_name: i.name,
+              realized_pnl: i.realized_pnl, _asset: true })),
+        ]}
         onHistory={onHistory} />
     </section>
   )
@@ -1528,16 +1539,19 @@ function ClosedPositionsBlock({ items, onHistory }) {
               className="flex items-baseline justify-between text-[11.5px] py-1 px-1 rounded hover:bg-surface-2 transition-colors">
               <span className="flex items-baseline gap-2 min-w-0">
                 <span className="text-text-bright truncate">{it.stock_name || '--'}</span>
-                <span className="font-mono text-[10px] text-text-muted">{it.stock_code}</span>
+                {!it._asset && <span className="font-mono text-[10px] text-text-muted">{it.stock_code}</span>}
+                {it._asset && <span className="text-[9.5px] px-1 rounded bg-surface-3 text-text-muted">理财/基金</span>}
               </span>
               <span className="flex items-baseline gap-3 shrink-0">
                 <span className={`font-mono ${priceColor(it.realized_pnl)}`}>
                   {it.realized_pnl >= 0 ? '+' : ''}¥{fmtMoney(it.realized_pnl)}
                 </span>
-                <button onClick={() => onHistory?.({ stock_code: it.stock_code, stock_name: it.stock_name })}
-                  className="text-[10.5px] text-text-dim hover:text-accent cursor-pointer">
-                  流水
-                </button>
+                {!it._asset && (
+                  <button onClick={() => onHistory?.({ stock_code: it.stock_code, stock_name: it.stock_name })}
+                    className="text-[10.5px] text-text-dim hover:text-accent cursor-pointer">
+                    流水
+                  </button>
+                )}
               </span>
             </div>
           ))}
