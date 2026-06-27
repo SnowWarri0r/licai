@@ -1398,6 +1398,17 @@ _EXECUTORS = {
 }
 
 
+async def _run_tool(tu: dict) -> dict:
+    """跑单个工具调用, 把异常/未知工具兜成 {"error":...}。供 asyncio.gather 并发执行。"""
+    try:
+        fn = _EXECUTORS.get(tu.get("name"))
+        if not fn:
+            return {"error": f"未知工具 {tu.get('name')}"}
+        return await fn(tu.get("input") or {})
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def _active_tools() -> list:
     """web_search 是 Anthropic 服务端工具, 只有官方端点支持; 若切到 DeepSeek/硅基流动等
     非 Anthropic 厂商, 必须去掉它, 否则请求会被对方拒绝。其余自定义工具各厂商通用。"""
@@ -1555,15 +1566,11 @@ async def ask_stock_stream(question: str, history: list | None = None):
             yield {"type": "step", "tool": tu.get("name"),
                    "label": _TOOL_CN.get(tu.get("name"), tu.get("name")),
                    "arg": (tu.get("input") or {}).get("query") or (tu.get("input") or {}).get("code") or ""}
-        results = []
-        for tu in tus:
-            try:
-                fn = _EXECUTORS.get(tu.get("name"))
-                out = await fn(tu.get("input") or {}) if fn else {"error": "未知工具"}
-            except Exception as e:
-                out = {"error": str(e)}
-            results.append({"type": "tool_result", "tool_use_id": tu.get("id"),
-                            "content": _json.dumps(out, ensure_ascii=False)})
+        # 同一轮里的工具相互独立(各自的网络请求), 并发跑, 顺序保留, 单个失败不连累其他
+        outs = await asyncio.gather(*[_run_tool(tu) for tu in tus])
+        results = [{"type": "tool_result", "tool_use_id": tu.get("id"),
+                    "content": _json.dumps(out, ensure_ascii=False)}
+                   for tu, out in zip(tus, outs)]
         messages.append({"role": "user", "content": results})
     yield {"type": "answer", "text": "（分析步数超限, 请换个问法或更具体）"}
     yield {"type": "done"}
@@ -1588,16 +1595,11 @@ async def ask_stock(question: str, history: list | None = None) -> dict:
         if not tus:
             text = "".join(b.get("text", "") for b in content if b.get("type") == "text")
             return {"answer": _clean_answer(text), "tools_used": tools_used, "rounds": rnd + 1}
-        results = []
-        for tu in tus:
-            name = tu.get("name", "")
-            tools_used.append(name)
-            try:
-                fn = _EXECUTORS.get(name)
-                out = await fn(tu.get("input") or {}) if fn else {"error": f"未知工具 {name}"}
-            except Exception as e:
-                out = {"error": str(e)}
-            results.append({"type": "tool_result", "tool_use_id": tu.get("id"),
-                            "content": _json.dumps(out, ensure_ascii=False)})
+        tools_used.extend(tu.get("name", "") for tu in tus)
+        # 同一轮里的工具并发跑(相互独立), 顺序保留, 单个失败不连累其他
+        outs = await asyncio.gather(*[_run_tool(tu) for tu in tus])
+        results = [{"type": "tool_result", "tool_use_id": tu.get("id"),
+                    "content": _json.dumps(out, ensure_ascii=False)}
+                   for tu, out in zip(tus, outs)]
         messages.append({"role": "user", "content": results})
     return {"answer": "（分析步数超限, 请换个问法或更具体）", "tools_used": tools_used, "rounds": _MAX_ROUNDS}
