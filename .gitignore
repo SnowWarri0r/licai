@@ -60,3 +60,8 @@ com.*.stock-t-assistant.plist
 
 # --- Misc ---
 .claude/
+
+# DB 备份(含真实财务数据, 严禁入库)
+portfolio.db.*
+*.bak-*
+*.bak
