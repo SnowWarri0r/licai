@@ -125,10 +125,12 @@ function CandleChart({ series, cost, actions }) {
           const tipY = m.isBuy ? m.yLow + gap : m.yHigh - gap
           const baseY = m.isBuy ? tipY + tri : tipY - tri
           const labelY = m.isBuy ? baseY + 9 : baseY - 4
+          // 连接线用高亮对比色(亮薄荷/亮珊瑚), 穿过同色蜡烛体也看得清
+          const lineColor = m.isBuy ? '#8df0b4' : '#ff9a9a'
           return (
             <g key={m.id || idx}>
-              <line x1={m.x} y1={m.yPrice} x2={m.x} y2={tipY} stroke={color} strokeWidth="0.75" strokeDasharray="2 2" opacity="0.7" />
-              <circle cx={m.x} cy={m.yPrice} r="1.7" fill={color} />
+              <line x1={m.x} y1={m.yPrice} x2={m.x} y2={tipY} stroke={lineColor} strokeWidth="1.4" strokeDasharray="3 2" opacity="0.95" />
+              <circle cx={m.x} cy={m.yPrice} r="2.4" fill={lineColor} stroke="var(--color-bg)" strokeWidth="1" />
               <polygon points={`${m.x},${tipY} ${m.x - 5},${baseY} ${m.x + 5},${baseY}`} fill={color} stroke="var(--color-bg)" strokeWidth="0.5" />
               <text x={m.x} y={labelY} fontSize="9" fill={color} textAnchor="middle" fontFamily="monospace" fontWeight="600">{m.isBuy ? 'B' : 'S'}</text>
             </g>
