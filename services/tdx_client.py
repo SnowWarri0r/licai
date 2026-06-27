@@ -60,14 +60,15 @@ def _normalize_quote(data) -> dict | None:
         out = []
         for x in (arr or [])[:5]:
             price = _f(x.get("Price"))
-            num = x.get("Number")           # 股
+            num = x.get("Number")           # TDX 盘口量单位是「手」(与 TotalHand/内外盘一致), 不是股
             if price is None:
                 continue
             try:
-                lots = round(float(num) / 100, 1)
+                hand = int(round(float(num)))
             except (ValueError, TypeError):
-                lots = None
-            out.append({"price": price, "手": lots, "股": num})
+                hand = None
+            out.append({"price": price, "手": hand,
+                        "股": (hand * 100 if hand is not None else None)})
         return out
     return {
         "code": data.get("Code"),
