@@ -320,6 +320,15 @@ async def list_assets():
     rows = await list_external_assets()
     enriched = await asyncio.gather(*[_enrich(r) for r in rows])
 
+    # 场内 ETF 未设券商时, 显示回退到配置默认券商(与 A股 一致, 让默认也有 tag)
+    from database import list_brokers
+    _brokers = await list_brokers()
+    _default_broker = next((b["name"] for b in _brokers if b.get("is_default")),
+                           (_brokers[0]["name"] if _brokers else None))
+    for a in enriched:
+        if a.get("asset_type") == "FUND" and _is_etf_code(a.get("code") or "") and not a.get("broker"):
+            a["broker"] = _default_broker
+
     # Summary
     # NOTE: total_pnl 必须等于 Σ a["pnl"] (= 每个资产 (current_value - pending) - cost).
     # 不能简单 total_value - total_cost — current_value 含 pending 但 cost 不含,
