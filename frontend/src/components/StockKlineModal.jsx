@@ -19,9 +19,9 @@ function CandleChart({ series, cost, actions }) {
   const [hover, setHover] = useState(null)
   const [sub, setSub] = useState('vol')   // 底部副图: vol | macd | kdj
   const svgRef = useRef(null)
-  const W = 720, H = 360, P = { l: 64, r: 16, t: 16, b: 28 }
+  const W = 720, H = 410, P = { l: 64, r: 16, t: 16, b: 28 }
   const innerW = W - P.l - P.r, innerH = H - P.t - P.b
-  const volH = 54, volGap = 24                 // 底部副图; volGap 留出空隙放切换钮, 不压副图内容
+  const volH = 70, volGap = 30                 // 底部副图加高; volGap 留出空隙放图例/切换钮, 不压副图内容
   const priceH = innerH - volH - volGap        // 价格区高度
   const volTop = P.t + priceH + volGap         // 副图顶部
 
@@ -84,7 +84,7 @@ function CandleChart({ series, cost, actions }) {
   const subLegend = (items) => {
     let x = P.l + 2
     return items.map((it, i) => {
-      const el = <text key={i} x={x} y={volTop + 9} fontSize="9.5" fill={it.c} fontFamily="monospace">{it.t}</text>
+      const el = <text key={i} x={x} y={volTop - 9} fontSize="9.5" fill={it.c} fontFamily="monospace">{it.t}</text>
       x += it.t.length * 5.9 + 10
       return el
     })
@@ -152,7 +152,7 @@ function CandleChart({ series, cost, actions }) {
   return (
     <div className="relative">
       {/* 副图切换钮: 放在价格区与副图之间的空隙(右侧), 不压副图内容 */}
-      <div className="absolute right-1 z-10 flex gap-1" style={{ top: `${((volTop - 21) / H * 100).toFixed(1)}%` }}>
+      <div className="absolute right-1 z-10 flex gap-1" style={{ top: `${((volTop - 24) / H * 100).toFixed(1)}%` }}>
         {[['vol', '量'], ['macd', 'MACD'], ['kdj', 'KDJ']].map(([k, lbl]) => (
           <button key={k} onClick={() => setSub(k)} className="px-1.5 py-[1px] rounded text-[9.5px] font-mono cursor-pointer"
             style={{ border: '1px solid', borderColor: sub === k ? 'var(--color-accent)' : 'var(--color-border-med)', color: sub === k ? 'var(--color-accent)' : 'var(--color-text-muted)', background: sub === k ? 'rgba(200,168,118,.1)' : 'rgba(26,25,35,.7)' }}>{lbl}</button>
@@ -215,7 +215,7 @@ function CandleChart({ series, cost, actions }) {
             </g>
           )
         })()}
-        <text x={P.l - 6} y={volTop + 9} fontSize="9" fill="var(--color-text-muted)" textAnchor="end" fontFamily="monospace">{sub === 'vol' ? '量' : sub === 'macd' ? 'MACD' : 'KDJ'}</text>
+        {sub === 'vol' && <text x={P.l + 2} y={volTop - 9} fontSize="9.5" fill="var(--color-text-muted)" fontFamily="monospace">成交量</text>}
         {/* 均线 MA + 图例(SVG 内, 从绘图区左边界起, 等宽字体按字符宽度均匀排, 避开左侧Y轴刻度) */}
         {maLines.map(m => m.enough && <polyline key={m.n} points={m.d} fill="none" stroke={m.c} strokeWidth="1" opacity="0.9" />)}
         {(() => {
@@ -284,7 +284,7 @@ function CandleChart({ series, cost, actions }) {
 function MinuteChart({ points, prevClose }) {
   const [hover, setHover] = useState(null)
   const svgRef = useRef(null)
-  const W = 720, H = 360, P = { l: 64, r: 16, t: 16, b: 28 }
+  const W = 720, H = 410, P = { l: 64, r: 16, t: 16, b: 28 }
   const innerW = W - P.l - P.r, innerH = H - P.t - P.b
   const volH = 48, volGap = 10
   const priceH = innerH - volH - volGap
