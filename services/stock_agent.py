@@ -522,6 +522,81 @@ def _fetch_stock_concepts_sync(code: str) -> dict:
     return out
 
 
+_profile_cache: dict = {}
+
+
+def _fetch_company_profile_sync(bare: str) -> dict:
+    """公司是做什么的: 东财 F10 公司简介(ORG_PROFILE) + 细分行业(EM2016) + 主营构成(产品/地区收入占比+毛利率)。"""
+    import requests as _rq
+    import time as _t
+    ck = f"prof_{bare}"
+    c = _profile_cache.get(ck)
+    if c and _t.time() - c[1] < 86400:
+        return c[0]
+    pfx = "SH" if bare[:1] in ("6", "9", "5") else "SZ"
+    hdr = {"User-Agent": "Mozilla/5.0"}
+    out: dict = {"code": bare}
+    # 1) 公司简介 + 行业
+    try:
+        d = _rq.get(f"https://emweb.eastmoney.com/PC_HSF10/CompanySurvey/PageAjax?code={pfx}{bare}",
+                    timeout=9, headers=hdr).json()
+        jb = (d.get("jbzl") or [{}])[0]
+        prof = (jb.get("ORG_PROFILE") or "").strip()
+        out.update({
+            "name": jb.get("ORG_NAME") or jb.get("SECURITY_NAME_ABBR"),
+            "industry": jb.get("EM2016") or jb.get("INDUSTRYCSRC1"),
+            "profile": prof[:400] or None,
+            "h_share": jb.get("STR_CODEH"),
+            "employees": jb.get("EMP_NUM"),
+        })
+    except Exception:
+        pass
+    # 2) 主营构成(优先按产品, 其次地区, 再行业); ITEM_NAME 占比 毛利率
+    try:
+        d2 = _rq.get(f"https://emweb.eastmoney.com/PC_HSF10/BusinessAnalysis/PageAjax?code={pfx}{bare}",
+                     timeout=9, headers=hdr).json()
+        rows = d2.get("zygcfx") or []
+        # 只取最新报告期(zygcfx 含多期, 跨期会重复)
+        if rows:
+            latest = max(str(r.get("REPORT_DATE") or "") for r in rows)
+            rows = [r for r in rows if str(r.get("REPORT_DATE") or "") == latest]
+        # 同一期里优先按产品(2), 其次地区(3), 再行业(1)
+        for prefer in ("2", "3", "1"):
+            sub = [r for r in rows if str(r.get("MAINOP_TYPE")) == prefer]
+            if sub:
+                rows = sub
+                break
+        comp = []
+        for r in rows[:6]:
+            ratio = r.get("MBI_RATIO")
+            gross = r.get("GROSS_RPOFIT_RATIO")
+            comp.append({
+                "项目": r.get("ITEM_NAME"),
+                "营收占比%": round(float(ratio) * 100, 1) if ratio not in (None, "") else None,
+                "毛利率%": round(float(gross) * 100, 1) if gross not in (None, "") else None,
+            })
+        if comp:
+            out["main_business"] = comp
+            out["report_date"] = str((rows[0].get("REPORT_DATE") or ""))[:10]
+    except Exception:
+        pass
+    if not out.get("profile") and not out.get("main_business"):
+        return {"error": "公司简介暂不可达(东财F10抖动)"}
+    out["note"] = "profile=公司简介(做什么); industry=细分行业; main_business=主营构成(收入占比+毛利率)。仅 A 股。"
+    _profile_cache[ck] = (out, _t.time())
+    return out
+
+
+async def _tool_company_profile(code: str) -> dict:
+    """公司是做什么的: 公司简介 + 细分行业 + 主营构成(收入占比/毛利率)。回答'这家公司主营什么、靠什么赚钱'时用。仅 A 股。"""
+    from services.market_data import normalize_stock_code, is_a_share
+    raw = normalize_stock_code(_norm_code(code))
+    if not is_a_share(raw):
+        return {"error": "公司简介仅支持 A 股"}
+    bare = raw.split(".")[-1] if "." in raw else raw
+    return await asyncio.to_thread(_fetch_company_profile_sync, bare)
+
+
 async def _tool_stock_concepts(code: str) -> dict:
     """个股所属行业/概念板块 + 核心题材。回答'这只票属于哪个概念、是不是踩在资金主线上'时用。仅 A 股。"""
     from services.market_data import normalize_stock_code, is_a_share
@@ -1340,6 +1415,8 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_lhb", "description": "龙虎榜: 传 code→该股近期是否上榜及净买额/机构还是游资席位/上榜原因(看是谁在拉); 不传 code→最近交易日资金净买额榜(主力/游资当天在打哪些票, 看资金主线)。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选; 留空看全市场榜"}}}},
+    {"name": "get_company_profile", "description": "查公司是做什么的: 公司简介(主营业务描述) + 细分行业 + 主营构成(各产品/地区的收入占比和毛利率)。回答'这家公司主营什么、靠什么赚钱、和同行业务差异'时必用。仅 A 股。",
+     "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_stock_concepts", "description": "查个股所属行业/概念板块 + 核心题材。判断'这只票属于哪个概念、有没有踩在当下资金主线/热门概念上'时用; 可与 get_hot_concepts 交叉印证。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_fundamentals", "description": "查个股基本面+估值: 营收/净利及同比增速、ROE/毛利率/净利率、资产负债率、每股收益, 以及 PE(TTM)/PB/总市值/行业。回答'这票贵不贵、业绩好不好、盈利质地、有没有业绩拐点'时用。仅 A 股。",
@@ -1381,6 +1458,7 @@ _EXECUTORS = {
     "get_announcements": lambda a: _tool_announcements(a.get("code", "")),
     "get_fund_flow": lambda a: _tool_fund_flow(a.get("code", "")),
     "get_lhb": lambda a: _tool_lhb(a.get("code", "")),
+    "get_company_profile": lambda a: _tool_company_profile(a.get("code", "")),
     "get_stock_concepts": lambda a: _tool_stock_concepts(a.get("code", "")),
     "get_fundamentals": lambda a: _tool_fundamentals(a.get("code", "")),
     "get_commodity": lambda a: _tool_commodity(a.get("code", "")),
@@ -1431,6 +1509,10 @@ _SYSTEM = (
     "【个股问题】先 resolve_stock 拿代码, 再 get_quote+get_trend; 找涨跌原因务必看 get_fund_flow(主力资金是进是出、谁在拉)"
     "+get_news(消息面)+get_announcements(公司公告: 分红回购/业绩预告/重组/股权激励等实质事件, 比新闻权威), 异动明显时 get_lhb(有没有上龙虎榜、游资还是机构在打); 用 get_stock_concepts 看它属于哪个概念, "
     "再与 get_hot_concepts/get_sector_momentum 交叉看是不是踩在当下资金主线上; 需要时 get_market_sentiment 判断个股事件还是大盘普涨跌; "
+    "  · 【讲清楚公司是做什么的】只要问题涉及某只票(尤其'为什么涨/两只票对比/值不值得关注'), 必调 get_company_profile 拿主营业务+细分行业+主营构成, "
+    "一句话说清它靠什么赚钱、和同行的业务差异(如'中芯=大陆晶圆代工龙头、先进制程为主'对'华虹=特色工艺代工、功率器件/8寸为主'), 别只报代码和涨跌。\n"
+    "  · 【讲清楚市场在追捧什么】涨跌/对比类问题要落到驱动题材: 用 get_stock_concepts(它挂在哪些概念)+get_hot_concepts(这几天资金在冲哪个概念)+get_news/get_market_news(有没有催化: 政策/涨价/新品/业绩/事件)交叉, "
+    "明确说出'这波资金在追的是 XX 题材/催化是 XX'(如国产替代、存储涨价、算力、设备验证突破), 而不是只说'踩在主线上'这种空话。\n"
     "若该票/所属板块对政策敏感(有色/小金属/地产/半导体/医药/军工/新能源/平台经济等), 还要调 get_market_news 看有没有政策催化或调控压制。\n"
     "  · 【单只个股的主力净流入数字以 get_fund_flow 为准】它的 today 值盘中实时滚动(当天累计主力净额, 收盘定格), 与榜单 f62 同源同口径, 还带超大单/大单/中单/小单拆解和近几日趋势, 是该股资金流的权威口径。"
     "get_peers/get_board_stocks/get_hot_concepts 里的'主力净流入亿'用于榜单内横向比较谁强谁弱即可; 讲一只票'今天主力净流入/流出多少亿'时, 引用 get_fund_flow 的 today 值, 全篇保持同一个数。\n"
@@ -1500,7 +1582,7 @@ def _system() -> str:
 _TOOL_CN = {
     "resolve_stock": "解析代码", "get_quote": "查行情", "get_trend": "查走势",
     "get_news": "查新闻", "get_intraday": "查分时", "get_announcements": "查公告", "get_fund_flow": "查资金流", "get_lhb": "查龙虎榜",
-    "get_stock_concepts": "查所属概念", "get_fundamentals": "查基本面", "get_commodity": "查商品价",
+    "get_company_profile": "查公司主营", "get_stock_concepts": "查所属概念", "get_fundamentals": "查基本面", "get_commodity": "查商品价",
     "get_peers": "同行对比", "get_shareholders": "查股东解禁",
     "get_holdings": "看持仓", "get_asset_allocation": "看资产配置", "get_trades": "查成交记录", "get_market_sentiment": "看大盘情绪",
     "get_sector_momentum": "看板块动量", "get_hot_rank": "看资金热度",
