@@ -14,7 +14,8 @@ const isTableSep = (t) => /^\|?[\s:|-]+\|[\s:|-]*$/.test(t) && t.includes('-')
 const splitCells = (t) => t.replace(/^\||\|$/g, '').split('|').map(c => c.trim())
 
 function MiniMarkdown({ text }) {
-  const lines = (text || '').split('\n')
+  // 模型偶尔内联 <cite index="x">...</cite> 引用标签, 去掉只留文字(后端已剥, 这里兜底)
+  const lines = (text || '').replace(/<\/?cite[^>]*>/g, '').split('\n')
   const out = []
   let i = 0
   while (i < lines.length) {
