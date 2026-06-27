@@ -75,6 +75,22 @@ function CandleChart({ series, cost, actions }) {
   const costY = cost != null && range > 0 ? P.t + innerH - ((cost - rangeMin) / range) * innerH : null
   const closes = series.map(d => d.close).filter(c => c > 0)
 
+  // 均线 MA5/10/20
+  const MA_DEFS = [{ n: 5, c: '#e8e0cf' }, { n: 10, c: '#c8a876' }, { n: 20, c: '#7aa2d6' }]
+  const maLines = useMemo(() => {
+    if (points.length < 2) return []
+    const cl = points.map(p => p.close)
+    return MA_DEFS.map(({ n, c }) => {
+      const pts = []
+      for (let i = n - 1; i < points.length; i++) {
+        let s = 0
+        for (let j = i - n + 1; j <= i; j++) s += cl[j]
+        pts.push(`${points[i].x},${P.t + innerH - ((s / n - rangeMin) / range) * innerH}`)
+      }
+      return { n, c, d: pts.join(' '), enough: pts.length > 1 }
+    })
+  }, [points, rangeMin, range, innerH])
+
   const onMove = (e) => {
     if (!svgRef.current || !points.length) return
     const rect = svgRef.current.getBoundingClientRect()
@@ -112,6 +128,13 @@ function CandleChart({ series, cost, actions }) {
             </g>
           )
         })}
+        {/* 均线 MA */}
+        {maLines.map(m => m.enough && <polyline key={m.n} points={m.d} fill="none" stroke={m.c} strokeWidth="1" opacity="0.9" />)}
+        <g fontSize="10" fontFamily="monospace">
+          {maLines.filter(m => m.enough).map((m, i) => (
+            <text key={m.n} x={P.l + 2 + i * 56} y={P.t + 10} fill={m.c}>MA{m.n}</text>
+          ))}
+        </g>
         {costY != null && (
           <g>
             <line x1={P.l} y1={costY} x2={W - P.r} y2={costY} stroke="var(--color-accent)" strokeWidth="1" strokeDasharray="4 3" opacity="0.7" />
@@ -276,17 +299,26 @@ function OrderBook({ data, prevClose }) {
 // ---------------------------------------------------------------------------
 function Ticks({ ticks }) {
   if (!ticks?.length) return null
+  const vols = ticks.map(t => Number(t['手']) || 0)
+  const avg = vols.reduce((a, b) => a + b, 0) / (vols.length || 1)
+  const bigThresh = Math.max(avg * 3, 100)   // 大单: ≥均量3倍且≥100手
   return (
     <div>
-      <div className="text-[10.5px] text-text-muted mb-1">逐笔成交</div>
+      <div className="text-[10.5px] text-text-muted mb-1 flex justify-between"><span>逐笔成交</span><span className="text-text-muted/70">大单加亮</span></div>
       <div className="max-h-[150px] overflow-y-auto pr-1">
-        {ticks.map((t, i) => (
-          <div key={i} className="flex justify-between items-center text-[10.5px] font-mono py-[2px]">
-            <span className="text-text-muted">{t.time}</span>
-            <span className="text-text">{fmtVal(t.price)}</span>
-            <span style={{ color: t.dir === '买' ? UP : t.dir === '卖' ? DOWN : 'var(--color-text-muted)' }}>{Math.round(Number(t['手']) || 0)}{t.dir === '买' ? '↑' : t.dir === '卖' ? '↓' : ''}</span>
-          </div>
-        ))}
+        {ticks.map((t, i) => {
+          const v = Math.round(Number(t['手']) || 0)
+          const big = v >= bigThresh
+          const dc = t.dir === '买' ? UP : t.dir === '卖' ? DOWN : 'var(--color-text-muted)'
+          return (
+            <div key={i} className="flex justify-between items-center text-[10.5px] font-mono py-[2px]"
+              style={big ? { background: t.dir === '买' ? 'rgba(207,92,92,.12)' : t.dir === '卖' ? 'rgba(95,168,108,.12)' : 'transparent', borderRadius: 3 } : undefined}>
+              <span className="text-text-muted px-1">{t.time}</span>
+              <span className={big ? 'text-text-bright' : 'text-text'}>{fmtVal(t.price)}</span>
+              <span className="px-1" style={{ color: dc, fontWeight: big ? 700 : 400 }}>{v}{t.dir === '买' ? '↑' : t.dir === '卖' ? '↓' : ''}</span>
+            </div>
+          )
+        })}
       </div>
     </div>
   )
