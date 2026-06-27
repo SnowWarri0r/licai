@@ -298,7 +298,7 @@ function _minuteSlot(t) {
   return 240
 }
 
-function MinuteChart({ points, prevClose }) {
+function MinuteChart({ points, prevClose, actions = [], day }) {
   const [hover, setHover] = useState(null)
   const svgRef = useRef(null)
   const W = 720, H = 410, P = { l: 64, r: 16, t: 16, b: 28 }
@@ -333,6 +333,28 @@ function MinuteChart({ points, prevClose }) {
       return { v, pct: prevClose > 0 ? ((v / prevClose) - 1) * 100 : 0, y: P.t + priceH - ((v - rangeMin) / range) * priceH }
     })
   }, [rangeMin, range, prevClose, priceH])
+
+  // 当日买卖点: 只取与分时同一天的成交, 按 at_time(成交时刻)落到分时网格
+  const bsMarks = useMemo(() => {
+    if (!rows.length || !actions?.length) return []
+    const norm = s => String(s || '').replace(/\D/g, '').slice(0, 8)   // → YYYYMMDD, 容忍带/不带横杠
+    const now = new Date()
+    const today = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
+    const matchDay = norm(day) || today
+    const yOf = (val) => P.t + priceH - ((val - rangeMin) / range) * priceH
+    const out = []
+    for (const a of actions) {
+      if (norm(a.trade_date) !== matchDay) continue
+      if (!a.at_time) continue
+      const slot = _minuteSlot(a.at_time)
+      const x = P.l + (slot / 240) * innerW
+      const isBuy = ACQUIRE.has(a.action_type)
+      const price = Number(a.price)
+      const y = price > 0 ? yOf(price) : (isBuy ? P.t + priceH : P.t)
+      out.push({ id: a.id, x, y, isBuy, price, at: a.at_time, shares: a.shares })
+    }
+    return out
+  }, [rows, actions, day, rangeMin, range, priceH, innerW])
 
   const priceLine = rows.map(r => `${r.x},${r.y}`).join(' ')
   const avgLine = rows.map(r => `${r.x},${r.yAvg}`).join(' ')
@@ -375,6 +397,18 @@ function MinuteChart({ points, prevClose }) {
         <line x1={P.l} y1={volTop + volH} x2={W - P.r} y2={volTop + volH} stroke="var(--color-border-subtle)" strokeWidth="1" />
         <polyline points={avgLine} fill="none" stroke="#c8a876" strokeWidth="1" opacity="0.85" />
         <polyline points={priceLine} fill="none" stroke={lineColor} strokeWidth="1.4" />
+        {/* 当日买卖点: B 在下方, S 在上方, 虚线连到成交价圆点 */}
+        {bsMarks.map(m => {
+          const col = m.isBuy ? '#8df0b4' : '#ff9a9a'
+          const labelY = m.isBuy ? Math.min(m.y + 16, P.t + priceH - 2) : Math.max(m.y - 10, P.t + 8)
+          return (
+            <g key={'bs' + m.id}>
+              <line x1={m.x} y1={labelY} x2={m.x} y2={m.y} stroke={col} strokeWidth="1" strokeDasharray="2 2" opacity="0.8" />
+              <circle cx={m.x} cy={m.y} r="2.5" fill={col} />
+              <text x={m.x} y={labelY} fontSize="10" fill={col} textAnchor="middle" fontWeight="bold">{m.isBuy ? 'B' : 'S'}</text>
+            </g>
+          )
+        })}
         {hover && <line x1={hover.x} y1={P.t} x2={hover.x} y2={volTop + volH} stroke="var(--color-text-muted)" strokeWidth="1" strokeDasharray="2 3" />}
       </svg>
       <div className="absolute top-2 left-[68px] text-[10px] font-mono flex gap-3">
@@ -580,7 +614,7 @@ export default function StockKlineModal({ holding, onClose }) {
             <div className="bg-surface-3 rounded-md p-2">
               {loading ? <div className="h-[360px] flex items-center justify-center text-text-dim text-[12px]">加载中…</div>
                 : err ? <div className="h-[360px] flex items-center justify-center text-text-dim text-[12px]">{err}</div>
-                : tab === '分时' ? <MinuteChart points={minute?.points || []} prevClose={prevClose} />
+                : tab === '分时' ? <MinuteChart points={minute?.points || []} prevClose={prevClose} actions={actions} day={minute?.date} />
                 : <CandleChart series={series} cost={tab === '日' ? cost : null} actions={tab === '日' ? actions : []} warmup={tab === '日' ? warmup : []} />}
             </div>
           </div>
