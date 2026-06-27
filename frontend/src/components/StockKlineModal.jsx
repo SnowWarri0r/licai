@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { fetchJSON } from '../hooks/useApi'
 
 const ACQUIRE = new Set(['BUY', 'ADD', 'BONUS'])
+const MA_WARMUP = 20                  // 日K 多取的均线预热根数(够 MA20 从首根可见蜡烛起连续)
 // A 股口径: 红涨绿跌
 const UP = '#cf5c5c', DOWN = '#5fa86c'
 const BUY_COLOR = '#3fae6a', SELL_COLOR = '#d04a4a'
@@ -15,7 +16,7 @@ const fmtHand = (h) => h == null ? '--' : h >= 1e4 ? (h / 1e4).toFixed(1) + '万
 // ---------------------------------------------------------------------------
 // 蜡烛图 (日/周/月) — 真蜡烛 + 成本线 + 自己历史 BS 标记
 // ---------------------------------------------------------------------------
-function CandleChart({ series, cost, actions }) {
+function CandleChart({ series, cost, actions, warmup = [] }) {
   const [hover, setHover] = useState(null)
   const [sub, setSub] = useState('vol')   // 底部副图: vol | macd | kdj
   const svgRef = useRef(null)
@@ -124,19 +125,22 @@ function CandleChart({ series, cost, actions }) {
   const MA_DEFS = [{ n: 5, c: '#e8e0cf' }, { n: 10, c: '#c8a876' }, { n: 20, c: '#7aa2d6' }]
   const maLines = useMemo(() => {
     if (points.length < 2) return []
-    const cl = points.map(p => p.close)
+    const w = warmup.length
+    const ext = [...warmup, ...points.map(p => p.close)]   // 预热 close 前置, 让 MA 从首根可见蜡烛起连续
     return MA_DEFS.map(({ n, c }) => {
       const pts = []
       let lastVal = null
-      for (let i = n - 1; i < points.length; i++) {
+      for (let vi = 0; vi < points.length; vi++) {
+        const ei = w + vi                                   // 在 ext 中的下标
+        if (ei < n - 1) continue                            // 连预热都不够(极新标的)才留空
         let s = 0
-        for (let j = i - n + 1; j <= i; j++) s += cl[j]
+        for (let j = ei - n + 1; j <= ei; j++) s += ext[j]
         lastVal = s / n
-        pts.push(`${points[i].x},${P.t + priceH - ((lastVal - rangeMin) / range) * priceH}`)
+        pts.push(`${points[vi].x},${P.t + priceH - ((lastVal - rangeMin) / range) * priceH}`)
       }
       return { n, c, d: pts.join(' '), enough: pts.length > 1, last: lastVal }
     })
-  }, [points, rangeMin, range, innerH])
+  }, [points, warmup, rangeMin, range, innerH])
 
   const onMove = (e) => {
     if (!svgRef.current || !points.length) return
@@ -440,6 +444,7 @@ export default function StockKlineModal({ holding, onClose }) {
   const [tab, setTab] = useState('日')            // 分时 | 日 | 周 | 月
   const [days, setDays] = useState(60)
   const [series, setSeries] = useState([])
+  const [warmup, setWarmup] = useState([])        // MA 预热: 可见窗口前的 close 序列(不显示)
   const [actions, setActions] = useState([])
   const [minute, setMinute] = useState(null)
   const [book, setBook] = useState(null)
@@ -448,6 +453,7 @@ export default function StockKlineModal({ holding, onClose }) {
   const [err, setErr] = useState('')
 
   const code = holding?.stock_code
+  const assetId = holding?.asset_id               // 场外 ETF: 据此走 assets 流水端点
   const isA = code && /^\d{6}$/.test(String(code).replace(/^(sh|sz|SH|SZ)/, ''))
 
   // TDX 是否启用(决定显示哪些 tab)
@@ -464,6 +470,7 @@ export default function StockKlineModal({ holding, onClose }) {
       fetchJSON(`/api/market/tdx/minute/${encodeURIComponent(code)}`)
         .then(d => setMinute(d?.data || null)).catch(e => setErr(e?.message || '加载失败')).finally(done)
     } else if ((tab === '周' || tab === '月') && tdxOn) {
+      setWarmup([])
       fetchJSON(`/api/market/tdx/kline/${encodeURIComponent(code)}?type=${tab === '周' ? 'week' : 'month'}&limit=200`)
         .then(d => {
           const bars = d?.data?.bars || []
@@ -471,17 +478,28 @@ export default function StockKlineModal({ holding, onClose }) {
           else setSeries(bars.map(b => ({ date: (b.date || '').slice(0, 10), open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume })))
         }).catch(e => setErr(e?.message || '加载失败')).finally(done)
     } else {
-      // 日K (akshare, 带成本线 + 自己买卖标记)
+      // 日K (akshare, 带成本线 + 自己买卖标记). 多取 MA_WARMUP 根做均线预热, 让 MA 从首根可见
+      // 蜡烛就连续, 不在左侧错位断头. 场内 ETF 走 /api/assets/{id}/actions 取 BS 流水.
+      const actUrl = assetId
+        ? `/api/assets/${assetId}/actions`
+        : `/api/portfolio/${encodeURIComponent(code)}/actions`
       Promise.all([
-        fetchJSON(`/api/market/history/${encodeURIComponent(code)}?days=${days}`),
-        fetchJSON(`/api/portfolio/${encodeURIComponent(code)}/actions`).catch(() => []),
+        fetchJSON(`/api/market/history/${encodeURIComponent(code)}?days=${days + MA_WARMUP}`),
+        fetchJSON(actUrl).catch(() => []),
       ]).then(([k, a]) => {
-        if (!Array.isArray(k) || !k.length) { setErr('暂无 K 线数据'); setSeries([]) }
-        else setSeries(k.map(x => ({ date: x.time, open: x.open, high: x.high, low: x.low, close: x.close, volume: x.volume })))
-        setActions(Array.isArray(a) ? a : [])
+        if (!Array.isArray(k) || !k.length) { setErr('暂无 K 线数据'); setSeries([]); setWarmup([]) }
+        else {
+          const all = k.map(x => ({ date: x.time, open: x.open, high: x.high, low: x.low, close: x.close, volume: x.volume }))
+          const cut = Math.max(0, all.length - days)        // 前 cut 根仅作 MA 预热, 不显示
+          setWarmup(all.slice(0, cut).map(b => b.close))
+          setSeries(all.slice(cut))
+        }
+        // 场外 asset 流水: {actions:[{unit_price,...}]} → 归一成 BS 标记要的 {price,...}
+        const raw = Array.isArray(a) ? a : (a?.actions || [])
+        setActions(raw.map(x => ({ ...x, price: x.price ?? x.unit_price })))
       }).catch(e => setErr(e?.message || '加载失败')).finally(done)
     }
-  }, [code, tab, days, tdxOn])
+  }, [code, tab, days, tdxOn, assetId])
 
   // 五档 + 逐笔 (TDX, 仅 A 股; 5s 刷新)
   useEffect(() => {
@@ -548,7 +566,7 @@ export default function StockKlineModal({ holding, onClose }) {
               {loading ? <div className="h-[360px] flex items-center justify-center text-text-dim text-[12px]">加载中…</div>
                 : err ? <div className="h-[360px] flex items-center justify-center text-text-dim text-[12px]">{err}</div>
                 : tab === '分时' ? <MinuteChart points={minute?.points || []} prevClose={prevClose} />
-                : <CandleChart series={series} cost={tab === '日' ? cost : null} actions={tab === '日' ? actions : []} />}
+                : <CandleChart series={series} cost={tab === '日' ? cost : null} actions={tab === '日' ? actions : []} warmup={tab === '日' ? warmup : []} />}
             </div>
           </div>
 
