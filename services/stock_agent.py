@@ -465,35 +465,58 @@ async def _tool_chain_quote(stocks: list) -> dict:
 _readurl_cache: dict = {}
 
 
-def _fetch_url_markdown_sync(url: str) -> dict:
-    """Firecrawl 免 key /v1/scrape 抓网页正文 markdown(境外服务, 走代理)。返回 {markdown, title} 或 {error}。"""
+def _scrape_firecrawl(url: str, proxies) -> dict | None:
+    """Firecrawl 免 key /v1/scrape。配额(约5000/月)用完会非200, 返 None 让上层转备用源。"""
     import requests as _rq
-    import time as _t
-    ck = url
-    c = _readurl_cache.get(ck)
-    if c and _t.time() - c[1] < 600:
-        return c[0]
-    from services import proxy_config
-    px = proxy_config.get_proxy()
-    proxies = {"http": px, "https": px} if px else None
     try:
         r = _rq.post("https://api.firecrawl.dev/v1/scrape",
                      json={"url": url, "formats": ["markdown"], "onlyMainContent": True},
                      timeout=45, proxies=proxies)
         if r.status_code != 200:
-            return {"error": f"抓取失败 HTTP {r.status_code}"}
-        j = r.json()
-        data = j.get("data") or {}
+            return None
+        data = (r.json() or {}).get("data") or {}
         md = (data.get("markdown") or "").strip()
         if not md:
-            return {"error": "未抓到正文"}
-        meta = data.get("metadata") or {}
-        out = {"title": meta.get("title") or "", "markdown": md[:7000],
-               "truncated": len(md) > 7000}
-        _readurl_cache[ck] = (out, _t.time())
-        return out
-    except Exception as e:
-        return {"error": f"抓取异常: {str(e)[:80]}"}
+            return None
+        return {"title": (data.get("metadata") or {}).get("title") or "", "markdown": md, "via": "firecrawl"}
+    except Exception:
+        return None
+
+
+def _scrape_jina(url: str, proxies) -> dict | None:
+    """Jina Reader 免 key 备用源 (r.jina.ai), 正文较干净。"""
+    import requests as _rq
+    try:
+        r = _rq.get("https://r.jina.ai/" + url, timeout=50, proxies=proxies, allow_redirects=True)
+        if r.status_code != 200 or not r.text.strip():
+            return None
+        txt = r.text
+        title = ""
+        if txt.startswith("Title:"):
+            title = txt.split("\n", 1)[0][6:].strip()
+        body = txt.split("Markdown Content:", 1)[-1].strip()
+        return {"title": title, "markdown": body or txt.strip(), "via": "jina"}
+    except Exception:
+        return None
+
+
+def _fetch_url_markdown_sync(url: str) -> dict:
+    """抓网页正文 markdown: Firecrawl 主(免key, 约5000/月), 用完/报错自动转 Jina Reader 备用(均免key, 走代理)。"""
+    import time as _t
+    c = _readurl_cache.get(url)
+    if c and _t.time() - c[1] < 600:
+        return c[0]
+    from services import proxy_config
+    px = proxy_config.get_proxy()
+    proxies = {"http": px, "https": px} if px else None
+    res = _scrape_firecrawl(url, proxies) or _scrape_jina(url, proxies)
+    if not res:
+        return {"error": "两个抓取源都失败(配额/网络/反爬), 退回用 web_search 摘要"}
+    md = res["markdown"]
+    out = {"title": res.get("title") or "", "markdown": md[:7000],
+           "truncated": len(md) > 7000, "via": res.get("via")}
+    _readurl_cache[url] = (out, _t.time())
+    return out
 
 
 async def _tool_read_url(url: str) -> dict:
