@@ -162,8 +162,12 @@ async def list_holdings() -> list[HoldingResponse]:
                 c_rate, c_min = fee_resolve(hb)
                 _st = compute_position_state(_acts, stock_code=code,
                                              commission_rate=c_rate, commission_min=c_min)
+                from services.dividends import dilute_state
+                _st = await dilute_state(code, _st)   # 分红摊薄成本(对齐券商)
                 h["shares"] = _st["shares"]
                 h["cost_price"] = _st["cost_price"]
+                if _st.get("div_per_share"):
+                    h["div_per_share"] = _st["div_per_share"]
                 # 主行券商: 显示当前持仓段实际用的(单一→该券商, 多个→"多券商")
                 brs = _current_segment_brokers(_acts, hb)
                 if brs:
@@ -222,6 +226,7 @@ async def list_holdings() -> list[HoldingResponse]:
             market_value=market_value,
             sector=sector_map.get(code),
             broker=broker_display,
+            div_per_share=h.get("div_per_share"),
         ))
 
     return result
