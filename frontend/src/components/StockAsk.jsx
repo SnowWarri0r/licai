@@ -264,10 +264,10 @@ export default function StockAsk({ page = false }) {
       const s = await fetchJSON(`/api/ask/sessions/${id}`)
       const turns = []
       for (const m of (s.messages || [])) {
-        if (m.role === 'user') turns.push({ q: m.content, images: (m.meta && m.meta.images) || [], steps: [], thought: '', answer: null, typed: '', done: true, sources: [] })
+        if (m.role === 'user') turns.push({ q: m.content, images: (m.meta && m.meta.images) || [], steps: [], thought: '', answer: null, typed: '', done: true, sources: [], charts: [] })
         else if (turns.length) {
           const t = turns[turns.length - 1]
-          t.answer = m.content; t.typed = m.content; t.sources = (m.meta && m.meta.sources) || []
+          t.answer = m.content; t.typed = m.content; t.sources = (m.meta && m.meta.sources) || []; t.charts = (m.meta && m.meta.charts) || []
         }
       }
       sessionId.current = id; setHistory(turns); setShowHist(false)
@@ -294,7 +294,7 @@ export default function StockAsk({ page = false }) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           session_id: sessionId.current, role: 'assistant', content: item.answer || '',
-          meta: { tools_used: (item.steps || []).map(s => s.tool), sources: item.sources || [] },
+          meta: { tools_used: (item.steps || []).map(s => s.tool), sources: item.sources || [], charts: item.charts || [] },
         }),
       })
     } catch { /* 持久化失败不影响使用 */ }
@@ -334,6 +334,7 @@ export default function StockAsk({ page = false }) {
     else if (ev.type === 'thought') patchLast(it => ({ ...it, thought: ev.text }))
     else if (ev.type === 'answer') { patchLast(it => ({ ...it, answer: ev.text })); typewriter(ev.text || '') }
     else if (ev.type === 'sources') patchLast(it => ({ ...it, sources: [...(it.sources || []), ...(ev.sources || [])] }))
+    else if (ev.type === 'chart') patchLast(it => ({ ...it, charts: [...(it.charts || []), ev.url] }))
     else if (ev.type === 'error') patchLast(it => ({ ...it, err: ev.error, done: true }))
   }
 
@@ -346,7 +347,7 @@ export default function StockAsk({ page = false }) {
       .flatMap(it => [{ role: 'user', content: it.q }, { role: 'assistant', content: it.answer }])
     setQ(''); setPendImgs([]); setLoading(true)
     follow.current = true
-    setHistory(h => [...h, { q: text || '(看图)', images: imgs, steps: [], thought: '', answer: null, typed: '', done: false, sources: [] }])
+    setHistory(h => [...h, { q: text || '(看图)', images: imgs, steps: [], thought: '', answer: null, typed: '', done: false, sources: [], charts: [] }])
     abortRef.current?.abort()
     const ctrl = new AbortController(); abortRef.current = ctrl
     try {
@@ -356,7 +357,7 @@ export default function StockAsk({ page = false }) {
       })
       const reader = resp.body.getReader(); const dec = new TextDecoder()
       let buf = ''
-      let fAnswer = null; const fSources = []; const fSteps = []   // 本地累计, 供持久化
+      let fAnswer = null; const fSources = []; const fSteps = []; const fCharts = []   // 本地累计, 供持久化
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
@@ -369,10 +370,11 @@ export default function StockAsk({ page = false }) {
           if (ev.type === 'answer') fAnswer = ev.text
           else if (ev.type === 'sources') fSources.push(...(ev.sources || []))
           else if (ev.type === 'step') fSteps.push({ tool: ev.tool })
+          else if (ev.type === 'chart') fCharts.push(ev.url)
           handleEv(ev)
         }
       }
-      if (fAnswer != null) persistTurn(text || '(看图)', { answer: fAnswer, steps: fSteps, sources: fSources, images: imgs })
+      if (fAnswer != null) persistTurn(text || '(看图)', { answer: fAnswer, steps: fSteps, sources: fSources, charts: fCharts, images: imgs })
     } catch (e) {
       if (e.name !== 'AbortError') patchLast(it => it.answer == null ? { ...it, err: '连接中断', done: true } : it)
     } finally {
@@ -504,6 +506,17 @@ export default function StockAsk({ page = false }) {
                 )
               })()}
               {it.thought && it.answer == null && <div className="text-[11px] text-text-muted italic mb-1.5">{it.thought}</div>}
+              {/* AI 渲染的K线图(结构已标注): 我方数据画→精确, 数字以正文为准 */}
+              {(it.charts || []).length > 0 && (
+                <div className="flex flex-col gap-2 mb-2">
+                  {it.charts.map((src, k) => (
+                    <a key={k} href={src} target="_blank" rel="noreferrer" className="block">
+                      <img src={src} alt="K线图" loading="lazy"
+                        className="w-full max-w-[640px] rounded-lg border border-border-subtle" />
+                    </a>
+                  ))}
+                </div>
+              )}
               {/* 答案 / loading / 错误 */}
               {it.err
                 ? <div className="text-[11.5px] text-bull-bright">出错: {it.err}</div>
