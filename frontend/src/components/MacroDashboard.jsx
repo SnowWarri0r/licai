@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { fetchJSON } from '../hooks/useApi'
 import MacroKlineModal from './MacroKlineModal'
+import SkeletonCard from './Skeleton'
 
 const GROUP_META = {
   a_index:          { label: 'A 股大盘',   desc: '上证 / 深成 / 宽基' },
@@ -132,6 +133,8 @@ export default function MacroDashboard() {
   }, [reload])
 
   const totalCount = Object.values(data).reduce((s, arr) => s + (arr?.length || 0), 0)
+
+  if (loading && totalCount === 0) return <SkeletonCard rows={8} label="宏观指标加载中" />
 
   return (
     <section className="rounded-xl border border-border bg-surface/60 overflow-hidden"
