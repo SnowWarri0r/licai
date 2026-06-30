@@ -136,6 +136,15 @@ async def trading_day_status():
     }
 
 
+@router.get("/rankings")
+async def market_rankings(limit: int = 100):
+    """全市场 涨幅榜 top-N + 成交额榜 top-N(沪深A股, 东财实时)。供榜单模块。"""
+    import asyncio as _aio
+    from services import market_review
+    limit = max(10, min(int(limit or 100), 200))
+    return await _aio.to_thread(market_review.top_rankings, limit)
+
+
 @router.get("/quote/{stock_code}")
 async def get_quote(stock_code: str):
     stock_code = normalize_stock_code(stock_code)
