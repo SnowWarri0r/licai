@@ -797,8 +797,8 @@ async def interpret_news(data: InterpretIn):
                             full = "\n".join(lines[i:]); break
                 full = full.strip()
                 if len(full) > len(content):       # 抓到的比原摘要更全才替换
-                    content = full[:3000]          # 喂给 LLM 的正文
-                body_excerpt = full[:1500]         # 回给前端展示的原文摘录
+                    content = full[:3000]          # 喂给 LLM 的正文(限长控 token)
+                body_excerpt = full                # 展示给前端的原文全文(已由抓取层截到 7000, 不再二次截断)
         except Exception:
             pass
     key = hashlib.sha1(f"{data.title}|{content}|{data.code or ''}|{data.url or ''}".encode("utf-8")).hexdigest()
