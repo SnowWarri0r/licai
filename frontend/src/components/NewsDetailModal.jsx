@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { MiniMarkdown } from './askShared'
 
 const _cache = new Map()  // key=url||title → interpret 结果, 同会话重开秒显
 
@@ -58,9 +59,11 @@ export default function NewsDetailModal({ item, onClose }) {
           const fetched = interp?.body || ''           // 抓到的全文优先于 teaser
           const body = fetched || item.content || ''
           if (body) return (
-            <div className="text-[12px] text-text-dim leading-relaxed whitespace-pre-wrap">
+            <div className="leading-relaxed">
               {fetched && <span className="text-[10px] text-text-muted block mb-1">原文摘录 ↓</span>}
-              {body}
+              {fetched
+                ? <MiniMarkdown text={body} />
+                : <div className="text-[12px] text-text-dim whitespace-pre-wrap">{body}</div>}
             </div>
           )
           if (loading && hasUrl) return <div className="text-[11px] text-text-muted animate-pulse">抓取原文中…</div>
