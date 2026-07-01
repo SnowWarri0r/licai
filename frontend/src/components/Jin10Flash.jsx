@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { fetchJSON } from '../hooks/useApi'
 import NewsDetailModal from './NewsDetailModal'
+import ImageZoom from './ImageZoom'
 
 // 金十快讯滚动流: 全球宏观/地缘/央行实时快讯。重要高亮 + 关联持仓标记 + 筛选。30s 自动刷新。
 export default function Jin10Flash() {
@@ -93,11 +94,9 @@ export default function Jin10Flash() {
                       {it.title}
                     </div>
                     {it.image && (
-                      <a href={it.url || it.image} target="_blank" rel="noreferrer" className="block mt-1.5">
-                        <img src={it.image} alt="" loading="lazy"
-                          className="rounded-lg border border-border-subtle max-h-44 w-auto object-cover hover:border-accent/40"
-                          onError={(e) => { e.currentTarget.style.display = 'none' }} />
-                      </a>
+                      <ImageZoom src={it.image}
+                        className="rounded-lg border border-border-subtle max-h-44 w-auto object-cover hover:border-accent/40 mt-1.5 block"
+                        imgProps={{ onError: (e) => { e.currentTarget.style.display = 'none' } }} />
                     )}
                   </div>
                 </div>
