@@ -90,7 +90,7 @@ export default function App() {
   const PAD = 'max-w-[1440px] mx-auto px-2 md:px-4 py-3 md:py-4'
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="h-screen flex flex-col overflow-hidden">
       <Header
         marketOpen={marketOpen}
         lastUpdate={lastUpdate}
@@ -101,10 +101,15 @@ export default function App() {
       <div className="flex flex-1 min-h-0">
         <Sidebar active={view} onNav={setView} open={sidebarOpen} onToggle={() => setSidebarOpen(o => !o)} />
 
-        <main className="flex-1 min-w-0 overflow-y-auto">
-          {/* 仪表盘概览条 + 风险条: 常驻所有视图顶部, 不单独占导航 */}
-          <Dashboard holdings={holdings} />
-          <RiskBanner holdings={holdings} />
+        <main className="flex-1 min-w-0 flex flex-col min-h-0">
+          {/* 仪表盘概览条 + 风险条: 固定在内容区顶部, 不随内容滚动 */}
+          <div className="shrink-0">
+            <Dashboard holdings={holdings} />
+            <RiskBanner holdings={holdings} />
+          </div>
+
+          {/* 视图内容: 唯一滚动区 — 侧边栏/顶栏/仪表盘全部固定 */}
+          <div className="flex-1 min-h-0 overflow-y-auto">
 
           {view === 'portfolio' && (
             <div className={`${PAD} space-y-3 md:space-y-4`}>
@@ -170,6 +175,7 @@ export default function App() {
               <Settings onClose={() => setView('dashboard')} />
             </div>
           )}
+          </div>
         </main>
       </div>
 
