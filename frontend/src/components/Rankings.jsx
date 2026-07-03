@@ -168,6 +168,28 @@ export default function Rankings() {
               </button>
             )
           })}
+
+          {/* AI 淘汰的边缘候选: 折叠展示分数+判词, 供人工过目(不算正式结果) */}
+          {tab === 'coiled' && !loading && !err && (coiled?.ai_dropped || []).length > 0 && (
+            <div className="mt-1">
+              <div className="px-3 py-1 text-[9.5px] text-text-muted border-t border-b border-border-subtle bg-surface-3/40">
+                AI 看图判不符合({coiled.ai_dropped.length}) · 边缘候选仅供过目
+              </div>
+              {coiled.ai_dropped.map((r) => (
+                <button key={r.code} onClick={() => setSelected(r)} title={r['AI理由'] || undefined}
+                  className={`w-full flex items-center gap-2 px-3 py-1.5 text-left border-b border-border-subtle/40 opacity-55 hover:opacity-90 ${selected?.code === r.code ? 'bg-accent/10 opacity-90' : ''}`}>
+                  <span className="min-w-0 flex-1">
+                    <span className="text-[12px] text-text-dim truncate block">{r.name}</span>
+                    <span className="text-[9.5px] text-text-muted font-mono">{r.code} · {r['行业'] || '—'}</span>
+                  </span>
+                  <span className="text-right shrink-0">
+                    <span className={`block text-[12px] font-mono ${pctColor(r.pct)}`}>{r.pct >= 0 ? '+' : ''}{r.pct}%</span>
+                    <span className="block text-[9.5px] text-text-muted font-mono">AI{r['AI置信']}·横盘{r['横盘日']}日</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
         </div>
 
         {tab === 'coiled' && !loading && list.length > 0 && (
