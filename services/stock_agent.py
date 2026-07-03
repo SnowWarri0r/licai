@@ -110,6 +110,12 @@ def _date_with_weekday(d: str | None) -> str | None:
         return d
 
 
+async def _tool_coiled() -> dict:
+    """横盘蓄势扫描(共享 10min 缓存)。"""
+    from services.coiled_scanner import scan_coiled
+    return await scan_coiled()
+
+
 async def _tool_global_indices(query: str = "") -> dict:
     """全球指数/汇率/商品实时行情(宏观仪表盘同源): A股大盘、恒生系、道纳标、日经/KOSPI/富时、
     汇率、金属、能化。query 为空返回全部分组; 非空按 指标名/组名 子串过滤。"""
@@ -2235,6 +2241,8 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"limit": {"type": "integer", "description": "默认40"}}}},
     {"name": "get_chain_quote", "description": "批量取一组票的多周期量价摘要(产业链全景/多票横向对比专用): 一次返回每只的 pct_5d/pct_20d/pct_60d 涨幅、dist_20high 距20日高、ma 均线排列(全多头/多头/短多头/纠缠/空头)、vol 量能(放量/平/缩量)。做'X产业链上游到下游量价一览'时: 先 web_search 拿到该产业链各环节代表公司, 把这串代码/名称一次传进来即可拿到整条链量价, 无需逐只 get_trend。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"stocks": {"type": "array", "items": {"type": "string"}, "description": "股票名称或代码列表, 最多24只"}}, "required": ["stocks"]}},
+    {"name": "get_coiled_stocks", "description": "横盘蓄势扫描(全市场结构筛选): 找'近60日窄幅箱体横盘 + 今日温和放量上攻(贴近/突破箱体上沿)'的票, 返回每只的横盘天数/箱体振幅/缩量比/放量倍数/距上沿%/行业。用户问'有哪些横盘蓄势/平台突破/准备启动的票'时用它; 结果是客观结构描述, 突破可能失败, 表述时保持结构层面。",
+     "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_global_indices", "description": "全球指数/汇率/商品实时行情: A股大盘(上证/深成/沪深300/创业板/科创50/科创100/北证50)、港股(恒生/恒科/国企)、美股(道琼斯/纳斯达克/标普)、海外(日经225/韩国KOSPI/伦敦FTSE)、汇率(USDCNH等)、贵金属/工业金属/能化期货。问大盘、外围市场、某国指数、汇率、金铜油价时用它, 不用 web_search。query 传指标名子串(如 KOSPI/纳斯达克/沪金)只取匹配项, 留空返回全部。",
      "input_schema": {"type": "object", "properties": {"query": {"type": "string", "description": "指标名/组名子串过滤, 空=全部"}}}},
     {"name": "read_url", "description": "抓取某个网页的正文全文(干净 markdown)。web_search 给的是摘要片段, 当需要某篇文章的完整内容时用它读全——尤其: 产业链/行业深度梳理研报(把各环节代表公司抽全更准)、核实某条事实的原文细节、读公告/政策原文。先用 web_search 拿到 url, 再对最相关的 1-2 篇 read_url 读全。",
@@ -2273,6 +2281,7 @@ _EXECUTORS = {
     "read_url": lambda a: _tool_read_url(a.get("url", "")),
     "get_market_news": lambda a: _tool_market_news(a.get("limit", 40)),
     "get_global_indices": lambda a: _tool_global_indices(a.get("query", "")),
+    "get_coiled_stocks": lambda a: _tool_coiled(),
 }
 
 
@@ -2478,7 +2487,7 @@ _TOOL_CN = {
     "get_holdings": "看持仓", "get_thesis": "看买入逻辑", "get_asset_allocation": "看资产配置", "get_trades": "查成交记录", "get_market_sentiment": "看大盘情绪", "get_market_review": "复盘强势股",
     "get_sector_momentum": "看板块动量", "get_hot_rank": "看资金热度",
     "get_hot_concepts": "看热门概念", "get_board_stocks": "查板块龙头", "get_market_news": "看政策快讯", "web_search": "联网搜索",
-    "get_chain_quote": "产业链量价", "read_url": "读网页全文", "get_global_indices": "看全球指数",
+    "get_chain_quote": "产业链量价", "read_url": "读网页全文", "get_global_indices": "看全球指数", "get_coiled_stocks": "扫横盘蓄势",
 }
 
 
