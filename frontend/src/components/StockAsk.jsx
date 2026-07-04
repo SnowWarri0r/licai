@@ -264,7 +264,7 @@ export default function StockAsk({ page = false }) {
       const s = await fetchJSON(`/api/ask/sessions/${id}`)
       const turns = []
       for (const m of (s.messages || [])) {
-        if (m.role === 'user') turns.push({ q: m.content, steps: [], thought: '', answer: null, typed: '', done: true, sources: [] })
+        if (m.role === 'user') turns.push({ q: m.content, images: (m.meta && m.meta.images) || [], steps: [], thought: '', answer: null, typed: '', done: true, sources: [] })
         else if (turns.length) {
           const t = turns[turns.length - 1]
           t.answer = m.content; t.typed = m.content; t.sources = (m.meta && m.meta.sources) || []
@@ -281,12 +281,13 @@ export default function StockAsk({ page = false }) {
     loadSessions()
   }
 
-  // 持久化一轮(user + assistant)。assistant 带 tools_used/sources 进 meta。
+  // 持久化一轮(user + assistant)。user 带发送的图、assistant 带 tools_used/sources 进 meta。
   const persistTurn = async (question, item) => {
     try {
       const r1 = await fetch('/api/ask/messages', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId.current, role: 'user', content: question, title: question }),
+        body: JSON.stringify({ session_id: sessionId.current, role: 'user', content: question, title: question,
+                               meta: (item.images || []).length ? { images: item.images } : null }),
       })
       const j1 = await r1.json(); sessionId.current = j1.session_id
       await fetch('/api/ask/messages', {
@@ -371,7 +372,7 @@ export default function StockAsk({ page = false }) {
           handleEv(ev)
         }
       }
-      if (fAnswer != null) persistTurn(text, { answer: fAnswer, steps: fSteps, sources: fSources })
+      if (fAnswer != null) persistTurn(text || '(看图)', { answer: fAnswer, steps: fSteps, sources: fSources, images: imgs })
     } catch (e) {
       if (e.name !== 'AbortError') patchLast(it => it.answer == null ? { ...it, err: '连接中断', done: true } : it)
     } finally {
