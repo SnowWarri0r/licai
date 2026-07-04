@@ -17,6 +17,66 @@ function maLine(bars, n) {
 
 const fmt = (v) => v == null ? '--' : Math.abs(v) >= 100 ? v.toFixed(1) : Math.abs(v) >= 10 ? v.toFixed(2) : v.toFixed(3)
 
+const GAP_UP = 'rgba(207,92,92,0.18)', GAP_DOWN = 'rgba(95,168,108,0.18)'   // 跳空缺口阴影: 红跳空/绿跳空
+const GAP_MIN = 0.015   // 缺口≥1.5%才标, 过滤碎口, 只留"两根离得远"的真跳空
+
+// 跳空缺口: 相邻两根价区不重叠的空白带(上跳=前高<后低 / 下跳=前低>后高),
+// 盒子从缺口横向延伸到被回补的那根(价区重回带内)或末根, 让未回补的开口缺口成可见的价区带。
+function detectGaps(bars) {
+  const out = []
+  for (let i = 1; i < bars.length; i++) {
+    const p = bars[i - 1], c = bars[i]
+    let lo, hi, color, up
+    if (c.low > p.high && (c.low - p.high) / p.high >= GAP_MIN) { lo = p.high; hi = c.low; color = GAP_UP; up = true }
+    else if (c.high < p.low && (p.low - c.high) / p.low >= GAP_MIN) { lo = c.high; hi = p.low; color = GAP_DOWN; up = false }
+    else continue
+    let end = bars.length - 1
+    for (let j = i + 1; j < bars.length; j++) {
+      if (up ? bars[j].low <= hi : bars[j].high >= lo) { end = j; break }   // 价格重回缺口带 = 回补
+    }
+    out.push({ t1: p.time, t2: bars[end].time, lo, hi, color })
+  }
+  return out
+}
+
+// lightweight-charts 自定义图元: 把缺口画成半透明盒子(衬在蜡烛之下)
+class GapPaneRenderer {
+  constructor(boxes) { this._boxes = boxes }
+  draw(target) {
+    target.useBitmapCoordinateSpace(scope => {
+      const ctx = scope.context, hr = scope.horizontalPixelRatio, vr = scope.verticalPixelRatio
+      for (const b of this._boxes) {
+        if (b.x1 == null || b.x2 == null || b.y1 == null || b.y2 == null) continue
+        const x = Math.min(b.x1, b.x2) * hr, w = Math.max(2, Math.abs(b.x2 - b.x1) * hr)
+        const y = Math.min(b.y1, b.y2) * vr, h = Math.max(2, Math.abs(b.y2 - b.y1) * vr)
+        ctx.fillStyle = b.color
+        ctx.fillRect(x, y, w, h)
+      }
+    })
+  }
+}
+class GapPaneView {
+  constructor(src) { this._src = src; this._boxes = [] }
+  update() {
+    const { chart, series, gaps } = this._src
+    const ts = chart?.timeScale()
+    this._boxes = (ts && series) ? gaps.map(g => ({
+      x1: ts.timeToCoordinate(g.t1), x2: ts.timeToCoordinate(g.t2),
+      y1: series.priceToCoordinate(g.lo), y2: series.priceToCoordinate(g.hi), color: g.color,
+    })) : []
+  }
+  renderer() { return new GapPaneRenderer(this._boxes) }
+  zOrder() { return 'bottom' }
+}
+class GapPrimitive {
+  constructor() { this.gaps = []; this.chart = null; this.series = null; this._view = new GapPaneView(this) }
+  attached(p) { this.chart = p.chart; this.series = p.series; this._req = p.requestUpdate }
+  detached() { this.chart = null; this.series = null }
+  updateAllViews() { this._view.update() }
+  paneViews() { return [this._view] }
+  setGaps(gaps) { this.gaps = gaps; this._req?.() }
+}
+
 // 券商式可拖动/缩放 K线(TradingView lightweight-charts): 蜡烛 + 量能 + MA5/10/20, 滚轮缩放/拖动平移/十字光标。
 export default function ProKline({ code, days = 250, height = 460 }) {
   const wrapRef = useRef(null)
@@ -47,7 +107,9 @@ export default function ProKline({ code, days = 250, height = 460 }) {
     const vol = chart.addSeries(HistogramSeries, { priceFormat: { type: 'volume' }, priceScaleId: 'vol' })
     chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.78, bottom: 0 } })
     const mas = MA_DEFS.map(m => chart.addSeries(LineSeries, { color: m.c, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }))
-    seriesRef.current = { candle, vol, mas }
+    const gapPrim = new GapPrimitive()
+    candle.attachPrimitive(gapPrim)
+    seriesRef.current = { candle, vol, mas, gapPrim }
 
     // 十字光标 → 顶部图例(日期/OHLC/涨跌)
     chart.subscribeCrosshairMove(param => {
@@ -69,10 +131,11 @@ export default function ProKline({ code, days = 250, height = 460 }) {
         if (!alive) return
         if (!Array.isArray(k) || !k.length) { setErr('暂无 K 线数据'); return }
         const bars = k.map(x => ({ time: x.time, open: x.open, high: x.high, low: x.low, close: x.close, volume: x.volume }))
-        const { candle, vol, mas } = seriesRef.current
+        const { candle, vol, mas, gapPrim } = seriesRef.current
         candle.setData(bars.map(b => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close })))
         vol.setData(bars.map(b => ({ time: b.time, value: b.volume, color: b.close >= b.open ? 'rgba(207,92,92,0.5)' : 'rgba(95,168,108,0.5)' })))
         mas.forEach((s, i) => s.setData(maLine(bars, MA_DEFS[i].n)))
+        gapPrim?.setGaps(detectGaps(bars))
         chartRef.current?.timeScale().fitContent()
       })
       .catch(e => alive && setErr(e?.message || '加载失败'))
