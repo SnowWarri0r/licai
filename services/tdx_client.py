@@ -24,6 +24,17 @@ def is_enabled() -> bool:
     return bool(_BASE_URL)
 
 
+def _mkcode(code: str) -> str:
+    """TDX 服务对裸代码自行推断市场, 但不认 588/56xxxx 等新段(报'代码长度错误')。
+    一律显式带小写市场前缀(sh/sz/bj —— quote 端点只认小写), 复用 market_data 的市场判定
+    (6/9/5→sh, 8/4/920→bj, 其余→sz)。"""
+    c = (code or "").strip()
+    if c[:2].lower() in ("sh", "sz", "bj"):
+        return c[:2].lower() + c[2:]
+    from services.market_data import _sina_symbol
+    return _sina_symbol(c)
+
+
 def _get_sync(path: str, params: dict) -> dict | None:
     if not _BASE_URL:
         return None
@@ -86,7 +97,7 @@ async def quote(code: str) -> dict | None:
     """五档盘口 + 实时价。返回标准化 dict 或 None(禁用/失败)。"""
     if not _BASE_URL:
         return None
-    data = await asyncio.to_thread(_get_sync, "/api/quote", {"code": code})
+    data = await asyncio.to_thread(_get_sync, "/api/quote", {"code": _mkcode(code)})
     return _normalize_quote(data) if data is not None else None
 
 
@@ -114,7 +125,7 @@ async def minute(code: str) -> dict | None:
     """分时(当日 9:30-11:30 / 13:00-15:00, 至多 240 点)。返回 {date, points:[{time,price,手}]} 或 None。"""
     if not _BASE_URL:
         return None
-    data = await asyncio.to_thread(_get_sync, "/api/minute", {"code": code})
+    data = await asyncio.to_thread(_get_sync, "/api/minute", {"code": _mkcode(code)})
     if not isinstance(data, dict):
         return None
     raw = data.get("List") or []
@@ -147,7 +158,7 @@ async def kline(code: str, ktype: str = "day", limit: int = 200) -> dict | None:
         return None
     kt = ktype if ktype in _KTYPES else "day"
     data = await asyncio.to_thread(_get_sync, "/api/kline-history",
-                                   {"code": code, "type": kt, "limit": str(int(limit or 200))})
+                                   {"code": _mkcode(code), "type": kt, "limit": str(int(limit or 200))})
     rows = (data or {}).get("List") if isinstance(data, dict) else None
     if not rows:
         return None
@@ -168,7 +179,7 @@ async def trade(code: str, limit: int = 60) -> dict | None:
     dir: 买/卖/中性 (Status 0/1/2)。"""
     if not _BASE_URL:
         return None
-    data = await asyncio.to_thread(_get_sync, "/api/trade", {"code": code})
+    data = await asyncio.to_thread(_get_sync, "/api/trade", {"code": _mkcode(code)})
     rows = (data or {}).get("List") if isinstance(data, dict) else None
     if not rows:
         return None
