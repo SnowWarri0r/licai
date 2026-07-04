@@ -2,27 +2,35 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useWebSocket } from './hooks/useWebSocket'
 import { api } from './hooks/useApi'
 import Header from './components/Header'
+import Sidebar from './components/Sidebar'
 import Dashboard from './components/Dashboard'
 import RiskBanner from './components/RiskBanner'
 import UnifiedPortfolio from './components/UnifiedPortfolio'
+import Rankings from './components/Rankings'
+import StockAsk from './components/StockAsk'
 import Settings from './components/Settings'
 import EditModal from './components/EditModal'
-import UnwindView from './components/UnwindView'
 import TransactionHistory from './components/TransactionHistory'
 
 export default function App() {
   const [holdings, setHoldings] = useState([])
   const [marketOpen, setMarketOpen] = useState(false)
-  const [showSettings, setShowSettings] = useState(false)
   const [editTarget, setEditTarget] = useState(null)
   const [historyTarget, setHistoryTarget] = useState(null)
   const [lastUpdate, setLastUpdate] = useState(null)
+  const _VIEWS = ['dashboard', 'portfolio', 'rankings', 'ask', 'settings']
+  const [view, _setView] = useState(() => {
+    const h = (window.location.hash || '').slice(1)
+    return _VIEWS.includes(h) ? h : 'dashboard'
+  })
+  const setView = (v) => { _setView(v); try { window.location.hash = v } catch {} }
+  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [dataVersion, setDataVersion] = useState(0)
   const quotesRef = useRef({})
 
   const loadPortfolio = useCallback(async () => {
     try { setHoldings(await api.getPortfolio()) } catch {}
   }, [])
-
   useEffect(() => { loadPortfolio() }, [loadPortfolio])
 
   const handleWsMessage = useCallback((msg) => {
@@ -56,48 +64,67 @@ export default function App() {
       }))
     }
   }, [])
-
   useWebSocket(handleWsMessage)
 
-  const handleRefresh = () => loadPortfolio()
-  // 交易流水变动: 既重载持仓, 也 +1 dataVersion 触发 UnifiedPortfolio 重载已实现/已清仓/解套
-  const [dataVersion, setDataVersion] = useState(0)
   const handleHoldingChange = () => { loadPortfolio(); setDataVersion(v => v + 1) }
 
+  const PAD = 'max-w-[1440px] mx-auto px-2 md:px-4 py-3 md:py-4'
+
   return (
-    <div className="min-h-screen">
+    <div className="min-h-screen flex flex-col">
       <Header
         marketOpen={marketOpen}
         lastUpdate={lastUpdate}
-        onRefresh={handleRefresh}
-        onSettings={() => setShowSettings(!showSettings)}
+        onRefresh={loadPortfolio}
+        onSettings={() => setView('settings')}
       />
 
-      <Dashboard holdings={holdings} />
-      <RiskBanner holdings={holdings} />
+      <div className="flex flex-1 min-h-0">
+        <Sidebar active={view} onNav={setView} open={sidebarOpen} onToggle={() => setSidebarOpen(o => !o)} />
 
-      <main className="max-w-[1440px] mx-auto px-2 md:px-4 py-3 md:py-4 space-y-3 md:space-y-4">
-        {showSettings && <Settings onClose={() => setShowSettings(false)} />}
+        <main className="flex-1 min-w-0 overflow-y-auto">
+          {view === 'dashboard' && (
+            <>
+              <Dashboard holdings={holdings} />
+              <RiskBanner holdings={holdings} />
+            </>
+          )}
 
-        <UnifiedPortfolio
-          holdings={holdings}
-          onEdit={setEditTarget}
-          onHistory={setHistoryTarget}
-          onAdd={handleHoldingChange}
-          dataVersion={dataVersion}
-        />
+          {view === 'portfolio' && (
+            <div className={`${PAD} space-y-3 md:space-y-4`}>
+              <UnifiedPortfolio
+                holdings={holdings}
+                onEdit={setEditTarget}
+                onHistory={setHistoryTarget}
+                onAdd={handleHoldingChange}
+                dataVersion={dataVersion}
+              />
+            </div>
+          )}
 
-        <UnwindView />
-      </main>
+          {view === 'rankings' && (
+            <div className={PAD}>
+              <Rankings />
+            </div>
+          )}
+
+          {view === 'ask' && (
+            <div className={`${PAD} max-w-[900px]`}>
+              <StockAsk page />
+            </div>
+          )}
+
+          {view === 'settings' && (
+            <div className={`${PAD} max-w-[900px]`}>
+              <Settings onClose={() => setView('dashboard')} />
+            </div>
+          )}
+        </main>
+      </div>
 
       {editTarget && (
-        <EditModal
-          holding={editTarget}
-          onClose={() => setEditTarget(null)}
-          onChange={handleHoldingChange}
-        />
+        <EditModal holding={editTarget} onClose={() => setEditTarget(null)} onChange={handleHoldingChange} />
       )}
-
       {historyTarget && (
         <TransactionHistory
           stockCode={historyTarget.stock_code}
