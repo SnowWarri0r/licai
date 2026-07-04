@@ -97,6 +97,51 @@ function MiniMarkdown({ text }) {
   return <div>{out}</div>
 }
 
+// 从 url 取域名(去 www), 当来源出处展示
+function domainOf(url) {
+  try { return new URL(url).hostname.replace(/^www\./, '') } catch { return '' }
+}
+
+// 联网来源列表: 默认折叠, 展开后逐条可点(新标签打开原文)
+function SourcesBlock({ sources }) {
+  const [open, setOpen] = useState(false)
+  if (!sources || sources.length === 0) return null
+  return (
+    <div className="mt-2.5 pt-2 border-t border-border-subtle">
+      <button onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-1.5 text-[10.5px] text-text-muted hover:text-text-dim">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+          <circle cx="12" cy="12" r="8" /><path d="M4 12h16M12 4c2.5 2.4 2.5 13.6 0 16M12 4c-2.5 2.4-2.5 13.6 0 16" />
+        </svg>
+        <span>联网来源</span>
+        <span className="font-mono text-text-dim">{sources.length}</span>
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+          className={`shrink-0 transition-transform ${open ? 'rotate-90' : ''}`}>
+          <path d="M9 6l6 6-6 6" />
+        </svg>
+      </button>
+      {open && (
+        <ol className="mt-1.5 space-y-1 max-h-52 overflow-y-auto pr-1">
+          {sources.map((s, i) => (
+            <li key={i} className="flex gap-1.5 text-[11px] leading-snug">
+              <span className="text-text-muted font-mono shrink-0 w-4 text-right">{i + 1}</span>
+              <a href={s.url} target="_blank" rel="noopener noreferrer"
+                className="group min-w-0 flex-1 hover:text-accent text-text-dim">
+                <span className="block truncate group-hover:underline">{s.title}</span>
+                <span className="block truncate text-[9.5px] text-text-muted">
+                  {domainOf(s.url)}{s.age ? ` · ${s.age}` : ''}
+                </span>
+              </a>
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  )
+}
+
 // 能力展示型推荐问题 (page 模式空态用), 覆盖 市场风格/资金主线/政策/基本面/同行/筹码
 const MARKET_SUGGESTIONS = [
   '这周市场什么风格,资金主线在哪',
@@ -152,6 +197,7 @@ export default function StockAsk({ page = false }) {
     if (ev.type === 'step') patchLast(it => ({ ...it, steps: [...it.steps, { tool: ev.tool, label: ev.label, arg: ev.arg }] }))
     else if (ev.type === 'thought') patchLast(it => ({ ...it, thought: ev.text }))
     else if (ev.type === 'answer') { patchLast(it => ({ ...it, answer: ev.text })); typewriter(ev.text || '') }
+    else if (ev.type === 'sources') patchLast(it => ({ ...it, sources: [...(it.sources || []), ...(ev.sources || [])] }))
     else if (ev.type === 'error') patchLast(it => ({ ...it, err: ev.error, done: true }))
   }
 
@@ -163,7 +209,7 @@ export default function StockAsk({ page = false }) {
       .flatMap(it => [{ role: 'user', content: it.q }, { role: 'assistant', content: it.answer }])
     setQ(''); setLoading(true)
     follow.current = true
-    setHistory(h => [...h, { q: text, steps: [], thought: '', answer: null, typed: '', done: false }])
+    setHistory(h => [...h, { q: text, steps: [], thought: '', answer: null, typed: '', done: false, sources: [] }])
     abortRef.current?.abort()
     const ctrl = new AbortController(); abortRef.current = ctrl
     try {
@@ -278,6 +324,7 @@ export default function StockAsk({ page = false }) {
                   : <div className="relative">
                       <MiniMarkdown text={it.typed} />
                       {!it.done && <span className="inline-block w-1.5 h-3.5 bg-accent/70 align-middle animate-pulse ml-0.5" />}
+                      {it.done && <SourcesBlock sources={it.sources} />}
                     </div>}
             </div>
           </div>

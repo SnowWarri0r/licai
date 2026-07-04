@@ -1793,6 +1793,30 @@ def _clean_answer(text: str) -> str:
     return t.strip()
 
 
+def _collect_sources(content: list, acc: list, seen: set) -> list:
+    """从一轮响应里抽 web_search 命中的网页来源(标题+url), 按 url 去重累加到 acc。
+    结构: web_search_tool_result 块的 content 是 [{type:web_search_result, title, url, page_age}]。
+    返回本轮新增的来源(供流式实时推送)。"""
+    fresh = []
+    for b in content:
+        if b.get("type") != "web_search_tool_result":
+            continue
+        inner = b.get("content")
+        if not isinstance(inner, list):
+            continue
+        for r in inner:
+            if r.get("type") != "web_search_result":
+                continue
+            url = (r.get("url") or "").strip()
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            item = {"title": (r.get("title") or url).strip(), "url": url, "age": r.get("page_age")}
+            acc.append(item)
+            fresh.append(item)
+    return fresh
+
+
 def _seed_messages(question: str, history: list | None) -> list:
     """把前端传来的多轮历史(只含 role+text 的简化对话)接到当前问题前面, 让 agent 有上下文。"""
     msgs = []
@@ -1814,6 +1838,8 @@ async def ask_stock_stream(question: str, history: list | None = None):
         yield {"type": "error", "error": "空问题"}
         return
     messages = _seed_messages(question, history)
+    sources: list = []
+    seen_urls: set = set()
     for rnd in range(_MAX_ROUNDS):
         try:
             resp = await asyncio.to_thread(
@@ -1828,6 +1854,10 @@ async def ask_stock_stream(question: str, history: list | None = None):
             if b.get("type") == "server_tool_use" and b.get("name") == "web_search":
                 yield {"type": "step", "tool": "web_search", "label": "联网搜索",
                        "arg": (b.get("input") or {}).get("query", "")}
+        # 抽取本轮 web_search 命中的网页来源, 实时推给前端(去重累加)
+        fresh = _collect_sources(content, sources, seen_urls)
+        if fresh:
+            yield {"type": "sources", "sources": fresh}
         tus = [b for b in content if b.get("type") == "tool_use"]
         if not tus:
             text = "".join(b.get("text", "") for b in content if b.get("type") == "text")
@@ -1859,6 +1889,8 @@ async def ask_stock(question: str, history: list | None = None) -> dict:
         return {"answer": "", "error": "空问题"}
     messages = _seed_messages(question, history)
     tools_used: list[str] = []
+    sources: list = []
+    seen_urls: set = set()
     for rnd in range(_MAX_ROUNDS):
         try:
             resp = await asyncio.to_thread(
@@ -1870,10 +1902,11 @@ async def ask_stock(question: str, history: list | None = None) -> dict:
         # 服务端 web_search 也计入 tools_used(它是 server_tool_use, 不在 tus 里, 否则会被漏记成"没联网")
         tools_used.extend("web_search" for b in content
                           if b.get("type") == "server_tool_use" and b.get("name") == "web_search")
+        _collect_sources(content, sources, seen_urls)
         tus = [b for b in content if b.get("type") == "tool_use"]
         if not tus:
             text = "".join(b.get("text", "") for b in content if b.get("type") == "text")
-            return {"answer": _clean_answer(text), "tools_used": tools_used, "rounds": rnd + 1}
+            return {"answer": _clean_answer(text), "tools_used": tools_used, "rounds": rnd + 1, "sources": sources}
         tools_used.extend(tu.get("name", "") for tu in tus)
         # 同一轮里的工具并发跑(相互独立), 顺序保留, 单个失败不连累其他
         outs = await asyncio.gather(*[_run_tool(tu) for tu in tus])
