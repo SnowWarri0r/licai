@@ -363,27 +363,44 @@ async def get_bot_details(algo_id: str, algo_ord_type: str = "grid") -> dict | N
     return result
 
 
+def _pick_by_algo(data: list, algo_id: str) -> dict | None:
+    """history 列表里按 algoId 取该策略那条(取不到按第一条兜底)。"""
+    if not data:
+        return None
+    return next((x for x in data if str(x.get("algoId")) == str(algo_id)), data[0])
+
+
 async def _fetch_bot_details_raw(algo_id: str, algo_ord_type: str) -> dict | None:
-    """Actual fetch without caching."""
+    """Actual fetch without caching. 在职走 ongoing/details, 已停止/止损结束的回退到 history 端点取最终态。"""
     if algo_ord_type in ("spot_dca", "contract_dca"):
-        # DCA / 马丁: refetch via ongoing-list filtered by algoId
+        # DCA / 马丁: 先 ongoing-list (在职), 取不到再 history (已结束)
         r = await asyncio.to_thread(
             _authed_get, "/api/v5/tradingBot/dca/ongoing-list",
             {"algoOrdType": algo_ord_type, "algoId": algo_id},
         )
-        if not r or r.get("error") or not r.get("data"):
-            return None
-        raw = r["data"][0]
-        return _normalize_dca(raw, active=raw.get("state") == "running")
-    # Grid family
+        if r and not r.get("error") and r.get("data"):
+            raw = r["data"][0]
+            return _normalize_dca(raw, active=raw.get("state") == "running")
+        h = await asyncio.to_thread(
+            _authed_get, "/api/v5/tradingBot/dca/orders-algo-history",
+            {"algoOrdType": algo_ord_type, "limit": "50"},
+        )
+        raw = _pick_by_algo((h or {}).get("data") if h and not h.get("error") else None, algo_id)
+        return _normalize_dca(raw, active=False) if raw else None
+    # Grid family: 先 details (在职), 已停止的回退到 history
     r = await asyncio.to_thread(
         _authed_get, "/api/v5/tradingBot/grid/orders-algo-details",
         {"algoOrdType": algo_ord_type, "algoId": algo_id},
     )
-    if not r or r.get("error") or not r.get("data"):
-        return None
-    raw = r["data"][0]
-    return _normalize_bot(raw, active=raw.get("state") == "running")
+    if r and not r.get("error") and r.get("data"):
+        raw = r["data"][0]
+        return _normalize_bot(raw, active=raw.get("state") == "running")
+    h = await asyncio.to_thread(
+        _authed_get, "/api/v5/tradingBot/grid/orders-algo-history",
+        {"algoOrdType": algo_ord_type, "limit": "50"},
+    )
+    raw = _pick_by_algo((h or {}).get("data") if h and not h.get("error") else None, algo_id)
+    return _normalize_bot(raw, active=False) if raw else None
 
 
 async def test_credentials() -> dict:
