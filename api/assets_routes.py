@@ -392,8 +392,39 @@ async def assets_realized():
             "income_realized": float(state.get("income_realized") or 0),
             "still_holding": (state.get("cost_amount") or 0) > 0,
         })
+    # 已平仓归档的(BOT/策略止损结束等): closed_realized 是平仓时定格的已实现盈亏
+    from database import list_closed_external_assets
+    for a in await list_closed_external_assets():
+        rp = float(a.get("closed_realized") or 0)
+        total += rp
+        items.append({
+            "asset_id": a["id"], "asset_type": a.get("asset_type") or "",
+            "code": a.get("code") or "", "name": a.get("name") or "",
+            "realized_pnl": rp, "income_realized": 0.0,
+            "still_holding": False, "closed": True, "closed_date": a.get("closed_date"),
+        })
     items.sort(key=lambda x: x["realized_pnl"])
     return {"items": items, "total_realized_pnl": round(total, 2), "count": len(items)}
+
+
+@router.post("/{asset_id}/close")
+async def close_asset(asset_id: int):
+    """平仓归档: 定格当前已实现盈亏(现值−成本, CNY), 标记 closed → 退出在持, 盈亏转入已实现。
+    主要用于 OKX 策略止损/正常结束后归档。"""
+    from database import get_external_asset, close_external_asset
+    from datetime import datetime, timezone, timedelta
+    asset = await get_external_asset(asset_id)
+    if not asset:
+        raise HTTPException(404, "资产不存在")
+    enriched = await _enrich(asset)
+    cur_val = float(enriched.get("current_value") or 0)
+    cost = float(enriched.get("cost_amount") or 0)
+    realized = round(cur_val - cost, 2)   # 平仓时定格的盈亏(CNY)
+    today = (datetime.now(timezone.utc) + timedelta(hours=8)).strftime("%Y-%m-%d")
+    await close_external_asset(asset_id, realized, today)
+    return {"ok": True, "asset_id": asset_id, "name": asset.get("name"),
+            "closed_realized": realized, "closed_date": today,
+            "note": "已平仓归档: 退出在持, 该盈亏已转入已实现。"}
 
 
 @router.post("")
