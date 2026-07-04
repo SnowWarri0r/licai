@@ -425,6 +425,27 @@ def _structure_scan(closes: list, highs: list, lows: list, vols: list) -> dict:
                     out["回调量能"] = "放量"   # 回调放量(分歧/抛压)
                 else:
                     out["回调量能"] = "平量"
+    # 顶部/派发结构(M头/双顶, 进二退三的镜像): 两个相近高点 + 中间回落 = 高位共识破裂。客观形态描述。
+    if len(shi) >= 2:
+        i1, h1 = shi[-2]   # 较早的高点(左峰)
+        i2, h2 = shi[-1]   # 最近的高点(右峰)
+        mid = [L[j] for j in range(i1, i2 + 1) if L[j] is not None]
+        trough = min(mid) if mid else None
+        hi_all = max([h for h in H if h is not None] or [0])
+        lo_all = min(closes) if closes else 0
+        # 高位限定: 两峰贴近窗口最高 + 此前确有一段拉升(峰显著高于窗口最低), 避免把箱体里的等高小波动误判
+        elevated = (hi_all > 0 and max(h1, h2) >= hi_all * 0.97
+                    and lo_all > 0 and max(h1, h2) >= lo_all * 1.2)
+        rolled_over = hi_all > 0 and last < hi_all * 0.95   # 现价已离高点≥5%, 顶部才成立(贴着新高不算见顶)
+        if trough and elevated and rolled_over and (max(h1, h2) - trough) / max(h1, h2) > 0.08:
+            if abs(h2 - h1) / max(h1, h2) < 0.04:
+                out["双顶"] = True            # 两个相近高点(M头), 颈线≈中间低点
+                out["颈线"] = round(trough, 3)
+            elif h2 < h1 * 0.97:
+                out["二次冲高未创新高"] = True  # 右峰明显低于左峰(冲高动能衰减/顶背离迹象)
+                out["颈线"] = round(trough, 3)
+            if ("双顶" in out or "二次冲高未创新高" in out) and last < trough:
+                out["跌破颈线"] = True         # 收盘跌破颈线, 顶部结构确认, 高位共识破裂
     return out
 
 
@@ -1893,7 +1914,7 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"query": {"type": "string", "description": "股票名字或代码"}}, "required": ["query"]}},
     {"name": "get_quote", "description": "查个股实时行情: 现价/当日涨跌幅/开高低/成交额/换手。code 直接用 resolve_stock 返回的 code 原样传(A股是裸6位如 600667 / 000657; 港美股 HK.00700 / US.AAPL), 保持原样、A股无需 sh/sz 前缀。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
-    {"name": "get_trend", "description": "查个股近 N 个交易日走势(裸K + 量): 累计涨跌/逐日涨跌/上涨天数。支持 A 股/港股/美股。daily_pct 每条是 {date, open_pct, pct, high_pct, low_pct, vol_ratio, shape}: date 是该日真实交易日(YYYY-MM-DD), open_pct/pct 是开盘/收盘相对昨收, high_pct/low_pct 是当日最高/最低相对昨收, vol_ratio 是当日量比(成交量/前5日均量, >1.5 放量、<0.7 缩量), shape 是这根K线的裸K形态(如 光头光脚阳线/长上影阴线/十字星)。最后一条即 last_date(最新交易日)。limit_pct=该股涨跌停幅度%(科创板688/创业板30开头=20, 北交所8/4开头=30, ST=5, 沪深主板=10), 别按10%默认。daily_pct 每条已带 板 字段(收在涨停封板/盘中触及涨停后回落/跌停, 已按该股真实涨停幅度判好, 直接用别自己算)。引用某天涨跌时日期以 date 字段为准。读裸K量价: 用 open_pct/pct/high_pct/low_pct 还原每根K线的开收高低位置 + shape 形态 + vol_ratio 量, 描述放量光头大阳=量价齐升、放量长上影=冲高回落分歧、缩量十字=观望、高位放量长上影=兑现等。无需分时即可还原历史每天盘中量价形态。structure 字段给阶梯式上行结构识别(进二退三框架, A股): 阶梯式上行(抬高高点+抬高低点)/抬高低点、台阶支撑(最近确认的上行低点价位)+距支撑%、回调量能(缩量=抛压衰竭洗盘特征/放量=分歧)、结构破位(收盘跌破上一抬高低点, 上行结构被破坏)。用这些字段客观描述该股所处的趋势结构与所在台阶, 把方向性决策留给用户。",
+    {"name": "get_trend", "description": "查个股近 N 个交易日走势(裸K + 量): 累计涨跌/逐日涨跌/上涨天数。支持 A 股/港股/美股。daily_pct 每条是 {date, open_pct, pct, high_pct, low_pct, vol_ratio, shape}: date 是该日真实交易日(YYYY-MM-DD), open_pct/pct 是开盘/收盘相对昨收, high_pct/low_pct 是当日最高/最低相对昨收, vol_ratio 是当日量比(成交量/前5日均量, >1.5 放量、<0.7 缩量), shape 是这根K线的裸K形态(如 光头光脚阳线/长上影阴线/十字星)。最后一条即 last_date(最新交易日)。limit_pct=该股涨跌停幅度%(科创板688/创业板30开头=20, 北交所8/4开头=30, ST=5, 沪深主板=10), 别按10%默认。daily_pct 每条已带 板 字段(收在涨停封板/盘中触及涨停后回落/跌停, 已按该股真实涨停幅度判好, 直接用别自己算)。引用某天涨跌时日期以 date 字段为准。读裸K量价: 用 open_pct/pct/high_pct/low_pct 还原每根K线的开收高低位置 + shape 形态 + vol_ratio 量, 描述放量光头大阳=量价齐升、放量长上影=冲高回落分歧、缩量十字=观望、高位放量长上影=兑现等。无需分时即可还原历史每天盘中量价形态。structure 字段给阶梯式上行结构识别(进二退三框架, A股): 阶梯式上行(抬高高点+抬高低点)/抬高低点、台阶支撑(最近确认的上行低点价位)+距支撑%、回调量能(缩量=抛压衰竭洗盘特征/放量=分歧)、结构破位(收盘跌破上一抬高低点, 上行结构被破坏); 另含顶部/派发结构(进二退三镜像): 双顶(两个相近高点=M头, 附颈线价位)/二次冲高未创新高(右峰明显低于左峰=冲高动能衰减)、跌破颈线(顶部结构确认=高位资金共识破裂)。用这些字段客观描述该股所处的趋势结构与所在台阶, 把方向性决策留给用户。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}, "days": {"type": "integer", "description": "默认20"}}, "required": ["code"]}},
     {"name": "get_intraday", "description": "当日分时走势(开盘/最高及时间/最低及时间/现价 + 冲高回落幅度 + 路径采样): 判断盘中是不是冲高回落/炸板/尾盘拉升时用, 比日K细。需启用 TDX 数据源, 仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
