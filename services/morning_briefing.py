@@ -163,7 +163,7 @@ async def generate_briefing_for_stock(stock_code: str, stock_name: str,
     try:
         raw = await asyncio.to_thread(
             call_claude, user_prompt, SYSTEM_PROMPT,
-            "claude-sonnet-4-6", 1200,
+            "claude-sonnet-5", 1200,
         )
         parsed = json.loads(_strip_to_json(raw))
     except Exception as e:

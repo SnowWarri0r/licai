@@ -87,8 +87,10 @@ def test_resolve_model_with_map():
 
 def test_resolve_model_unknown_alias():
     llm._model_map = {"smart": "deepseek-chat"}
-    # Unknown alias → return as-is
-    assert llm.resolve_model("balanced") == "balanced"
+    # 用户 map 没配的逻辑别名 → 落到默认别名(真实 Anthropic 模型)
+    assert llm.resolve_model("balanced") == llm._DEFAULT_ALIASES["balanced"]
+    # 真正未知的名字 → 原样返回
+    assert llm.resolve_model("turbo-x") == "turbo-x"
 
 
 def test_get_model_map_returns_copy():
