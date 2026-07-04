@@ -392,6 +392,30 @@ def _fractals(seq, low: bool, w: int = 3, gap: int = 3) -> list:
     return out
 
 
+def _intraday_vol_factor():
+    """A股盘中: 返回 (是否盘中未收盘, 已走交易时间占全天比例 0~1)。
+    非交易日/开盘前/已收盘 → (False, 1.0)。交易时段 9:30-11:30 + 13:00-15:00 共240分钟。"""
+    from datetime import datetime, timezone, timedelta
+    cst = datetime.now(timezone.utc) + timedelta(hours=8)
+    try:
+        from services.market_data import _is_a_share_trading_day
+        trading = _is_a_share_trading_day(cst.date())
+    except Exception:
+        trading = cst.weekday() < 5
+    if not trading:
+        return (False, 1.0)
+    m = cst.hour * 60 + cst.minute
+    if m < 570 or m >= 900:            # 开盘前 / 已收盘(15:00后)
+        return (False, 1.0)
+    if m < 690:                        # 9:30-11:30
+        elapsed = m - 570
+    elif m < 780:                      # 午休(上午120分钟已成交)
+        elapsed = 120
+    else:                              # 13:00-15:00
+        elapsed = 120 + (m - 780)
+    return (True, min(max(elapsed, 1) / 240.0, 0.999))
+
+
 def _vol_at(vols: list, idx: int, w: int = 1):
     """某拐点附近的平均量能(idx 左右各 w 根), 供量价背离比较。"""
     seg = [v for v in vols[max(0, idx - w):idx + w + 1] if v]
@@ -579,16 +603,27 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
                     allbars[-1] = (d, rc, max(rh, rc), min(rl, rc) if rl else rc, v, ro)
             except Exception as e:
                 print(f"[trend] realtime graft failed for {raw}: {e}")
-    summary = _trend_summary([b[1] for b in allbars], [b[4] for b in allbars])
+    # 盘中: 今天这根的量是"已成交累计"(不完整), 直接比昨天全天必然偏低 → 会误判缩量。
+    # 按已走交易时间把末根量折算成全天预估量, 让量比可比; 收盘后 vfrac=1 不动。daily 末条会标"盘中预估"。
+    from datetime import datetime as _dt2, timezone as _tz2, timedelta as _td2
+    _today_cst = (_dt2.now(_tz2.utc) + _td2(hours=8)).strftime("%Y-%m-%d")
+    is_intraday, vfrac = _intraday_vol_factor()
+    intraday_last = bool(is_intraday and allbars and allbars[-1][0] == _today_cst and vfrac < 1)
+    vols_calc = [b[4] for b in allbars]
+    if intraday_last and vols_calc and vols_calc[-1]:
+        vols_calc = vols_calc[:-1] + [vols_calc[-1] / vfrac]   # 末根→全天线性预估量
+    summary = _trend_summary([b[1] for b in allbars], vols_calc)
     try:
         structure = _structure_scan([b[1] for b in allbars], [b[2] for b in allbars],
-                                     [b[3] for b in allbars], [b[4] for b in allbars]) if is_a_share(raw) else {}
+                                     [b[3] for b in allbars], vols_calc) if is_a_share(raw) else {}
     except Exception:
         structure = {}
     bars = allbars[-(days + 1):]
     code = raw
     closes = [b[1] for b in bars]
     vols = [b[4] for b in bars]
+    if intraday_last and vols and vols[-1]:
+        vols = vols[:-1] + [vols[-1] / vfrac]   # 末根(今天)量比按全天预估量算, 盘中不拿半天量误判缩量
     # 该股涨跌停幅度(按板块: 科创/创业20、北交所30、ST5、主板10), 让 agent 判封板别按 10% 猜
     bare6 = "".join(ch for ch in raw if ch.isdigit())[-6:]
     lp = _a_limit_pct(bare6, "") if is_a_share(raw) else None
@@ -611,6 +646,8 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
         prior = [v for v in vols[max(0, i - 5):i] if v]
         if vols[i] and prior:
             e["vol_ratio"] = round(vols[i] / (sum(prior) / len(prior)), 2)
+        if intraday_last and i == len(bars) - 1:
+            e["量_盘中预估"] = True   # 今天未收盘, vol_ratio 是按已走时间折算的全天预估量比, 缩/放量待收盘确认
         shape = _candle_shape(o, c, h, l)
         if shape:
             e["shape"] = shape
@@ -639,6 +676,11 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
         # 最近 10 日逐日涨跌, 每条带 date + high_pct/low_pct + 板(涨跌停标记, 已按该股真实涨停幅度判)。最后一条即最新交易日。
         "daily_pct": daily[-min(10, len(daily)):],
     }
+    if intraday_last:
+        out["盘中"] = True
+        out["盘中提示"] = (f"今天({_today_cst})尚未收盘, 已走约{round(vfrac * 100)}%交易时间。"
+                          "末根的量比/量能已按已走时间线性折算为全天预估量(粗估), 标 量_盘中预估=true; "
+                          "缩量/放量只是当前节奏的预估, 收盘前别下定论, 表述为'按当前节奏预计…/盘中暂…'。")
     # 渲染一张 K线+量能+均线图(结构已标注), 给用户看 + 作模型 gestalt 辅助。图由我方数据画→精确;
     # 数字仍以上面结构化字段为准。chart_url=前端展示; _chart_png_b64=喂给模型(由 _result_content 转 image 块)。
     if is_a_share(raw) and len(allbars) >= 20:
@@ -2075,7 +2117,7 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"query": {"type": "string", "description": "股票名字或代码"}}, "required": ["query"]}},
     {"name": "get_quote", "description": "查个股实时行情: 现价/当日涨跌幅/开高低/成交额/换手。code 直接用 resolve_stock 返回的 code 原样传(A股是裸6位如 600667 / 000657; 港美股 HK.00700 / US.AAPL), 保持原样、A股无需 sh/sz 前缀。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
-    {"name": "get_trend", "description": "查个股近 N 个交易日走势(裸K + 量): 累计涨跌/逐日涨跌/上涨天数。支持 A 股/港股/美股。daily_pct 每条是 {date, open_pct, pct, high_pct, low_pct, vol_ratio, shape}: date 是该日真实交易日(YYYY-MM-DD), open_pct/pct 是开盘/收盘相对昨收, high_pct/low_pct 是当日最高/最低相对昨收, vol_ratio 是当日量比(成交量/前5日均量, >1.5 放量、<0.7 缩量), shape 是这根K线的裸K形态(如 光头光脚阳线/长上影阴线/十字星)。最后一条即 last_date(最新交易日)。limit_pct=该股涨跌停幅度%(科创板688/创业板30开头=20, 北交所8/4开头=30, ST=5, 沪深主板=10), 别按10%默认。daily_pct 每条已带 板 字段(收在涨停封板/盘中触及涨停后回落/跌停, 已按该股真实涨停幅度判好, 直接用别自己算)。引用某天涨跌时日期以 date 字段为准。读裸K量价: 用 open_pct/pct/high_pct/low_pct 还原每根K线的开收高低位置 + shape 形态 + vol_ratio 量, 描述放量光头大阳=量价齐升、放量长上影=冲高回落分歧、缩量十字=观望、高位放量长上影=兑现等。无需分时即可还原历史每天盘中量价形态。structure 字段给阶梯式上行结构识别(进二退三框架, A股): 阶梯式上行(抬高高点+抬高低点)/抬高低点、台阶支撑(最近确认的上行低点价位)+距支撑%、回调量能(缩量=抛压衰竭洗盘特征/放量=分歧)、结构破位(收盘跌破上一抬高低点, 上行结构被破坏); 另含顶部/派发结构(进二退三镜像): 双顶(两个相近高点=M头, 附颈线价位)/二次冲高未创新高(右峰明显低于左峰=冲高动能衰减)、跌破颈线(顶部结构确认=高位资金共识破裂); 以及更多确定性形态: 头肩顶(肩头肩三高, 头部见顶)/头肩底(倒头肩三低, 底部企稳, 附底颈线)/突破底颈线、顶背离(价创新高但量能萎缩=上涨共识透支)/底背离(价创新低但量能萎缩=抛压衰竭)、收敛三角(高点降+低点抬=变盘临近)、向上跳空缺口/向下跳空缺口([下沿,上沿]价位, 前复权后多为真实跳空)。用这些字段客观描述该股所处的趋势结构与所在台阶, 把方向性决策留给用户。本工具(A股)还会附一张我方数据渲染的K线图(蜡烛+量能+均线, 已标注台阶支撑/颈线), 你能直接看到它: 据图识别上面字段未编码的形态(头肩顶/旗形/收敛三角/量价背离/缺口等)作为补充, 凡引用具体价位/涨跌幅/量比仍以结构化字段为准(图负责形、数字负责数)。",
+    {"name": "get_trend", "description": "查个股近 N 个交易日走势(裸K + 量): 累计涨跌/逐日涨跌/上涨天数。支持 A 股/港股/美股。daily_pct 每条是 {date, open_pct, pct, high_pct, low_pct, vol_ratio, shape}: date 是该日真实交易日(YYYY-MM-DD), open_pct/pct 是开盘/收盘相对昨收, high_pct/low_pct 是当日最高/最低相对昨收, vol_ratio 是当日量比(成交量/前5日均量, >1.5 放量、<0.7 缩量), shape 是这根K线的裸K形态(如 光头光脚阳线/长上影阴线/十字星)。最后一条即 last_date(最新交易日)。limit_pct=该股涨跌停幅度%(科创板688/创业板30开头=20, 北交所8/4开头=30, ST=5, 沪深主板=10), 别按10%默认。daily_pct 每条已带 板 字段(收在涨停封板/盘中触及涨停后回落/跌停, 已按该股真实涨停幅度判好, 直接用别自己算)。引用某天涨跌时日期以 date 字段为准。读裸K量价: 用 open_pct/pct/high_pct/low_pct 还原每根K线的开收高低位置 + shape 形态 + vol_ratio 量, 描述放量光头大阳=量价齐升、放量长上影=冲高回落分歧、缩量十字=观望、高位放量长上影=兑现等。无需分时即可还原历史每天盘中量价形态。structure 字段给阶梯式上行结构识别(进二退三框架, A股): 阶梯式上行(抬高高点+抬高低点)/抬高低点、台阶支撑(最近确认的上行低点价位)+距支撑%、回调量能(缩量=抛压衰竭洗盘特征/放量=分歧)、结构破位(收盘跌破上一抬高低点, 上行结构被破坏); 另含顶部/派发结构(进二退三镜像): 双顶(两个相近高点=M头, 附颈线价位)/二次冲高未创新高(右峰明显低于左峰=冲高动能衰减)、跌破颈线(顶部结构确认=高位资金共识破裂); 以及更多确定性形态: 头肩顶(肩头肩三高, 头部见顶)/头肩底(倒头肩三低, 底部企稳, 附底颈线)/突破底颈线、顶背离(价创新高但量能萎缩=上涨共识透支)/底背离(价创新低但量能萎缩=抛压衰竭)、收敛三角(高点降+低点抬=变盘临近)、向上跳空缺口/向下跳空缺口([下沿,上沿]价位, 前复权后多为真实跳空)。用这些字段客观描述该股所处的趋势结构与所在台阶, 把方向性决策留给用户。本工具(A股)还会附一张我方数据渲染的K线图(蜡烛+量能+均线, 已标注台阶支撑/颈线), 你能直接看到它: 据图识别上面字段未编码的形态(头肩顶/旗形/收敛三角/量价背离/缺口等)作为补充, 凡引用具体价位/涨跌幅/量比仍以结构化字段为准(图负责形、数字负责数)。盘中(未收盘)时返回带 盘中=true + 盘中提示, 末根 daily_pct 标 量_盘中预估=true: 今天的量比是按已走交易时间折算的全天预估(粗估), 缩量/放量按'当前节奏预计'表述, 收盘前不下定论。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}, "days": {"type": "integer", "description": "默认20"}}, "required": ["code"]}},
     {"name": "get_intraday", "description": "当日分时走势(开盘/最高及时间/最低及时间/现价 + 冲高回落幅度 + 路径采样): 判断盘中是不是冲高回落/炸板/尾盘拉升时用, 比日K细。需启用 TDX 数据源, 仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
