@@ -1615,20 +1615,48 @@ async def _tool_trades(code: str = "", start: str = "", end: str = "") -> dict:
                     if atype in ("FUND", "ETF") and ac and (q == ac or bare == ac or (len(q) >= 2 and q in an)):
                         fa = {"BUY": "申购", "ADD": "加仓", "REDEEM": "赎回",
                               "DEPOSIT": "转入", "WITHDRAW": "转出"}
+                        _IN, _OUT = {"BUY", "ADD", "DEPOSIT"}, {"REDEEM", "WITHDRAW"}
+                        from datetime import datetime as _dt
+                        today_str = _dt.now().strftime("%Y-%m-%d")
+                        # 按时间排序, 算每笔后的净份额余额(只计已确认), 让"卖了多少/还剩多少/占比"有准数, 不靠脑算
+                        allx = sorted(await list_external_actions(a["id"]),
+                                      key=lambda r: (act_date(r), r.get("id") or 0))
+                        net = 0.0
+                        today_in = today_out = 0.0
                         recs = []
-                        for x in await list_external_actions(a["id"]):
-                            if not in_range(act_date(x)):
+                        for x in allx:
+                            at = (x.get("action_type") or "").upper()
+                            sh = float(x.get("shares") or 0)
+                            confirmed = (x.get("status") or "confirmed") == "confirmed"
+                            d = act_date(x)
+                            if confirmed:
+                                net += sh if at in _IN else (-sh if at in _OUT else 0)
+                                if d == today_str:
+                                    if at in _IN:
+                                        today_in += sh
+                                    elif at in _OUT:
+                                        today_out += sh
+                            if not in_range(d):
                                 continue
-                            r = {"date": act_date(x),
-                                 "动作": fa.get((x.get("action_type") or "").upper(), x.get("action_type")),
-                                 "price": x.get("unit_price"), "shares": x.get("shares"),
-                                 "金额": x.get("amount"), "note": x.get("note") or ""}
-                            if (x.get("status") or "confirmed") != "confirmed":
+                            r = {"date": d, "动作": fa.get(at, at),
+                                 "price": x.get("unit_price"), "shares": sh,
+                                 "金额": x.get("amount"), "余额": round(net, 2),
+                                 "note": x.get("note") or ""}
+                            if not confirmed:
                                 r["状态"] = "待确认(T+1未出净值)"
                             recs.append(r)
-                        return {"code": ac, "name": an, "asset_class": "基金/ETF", "trades": recs,
-                                "range": {"start": s or None, "end": e or None},
-                                "note": "基金/ETF 申赎流水(外部资产账本); 综合成本/盈亏请用看板。"}
+                        cur = round(net, 2)
+                        pre_today = round(net - today_in + today_out, 2)   # 今日开盘前份额
+                        out = {"code": ac, "name": an, "asset_class": "基金/ETF",
+                               "当前份额": cur, "trades": recs,
+                               "range": {"start": s or None, "end": e or None},
+                               "note": "基金/ETF 申赎流水; 每条带 余额=该笔后的累计净份额(已确认), 当前份额=最新净持仓。"
+                                       "说'卖了多少/还剩多少/减仓占比'一律用这些数, 别用流水金额脑算。综合成本/盈亏用看板。"}
+                        if today_in or today_out:
+                            out["今日"] = {"净买入份额": round(today_in, 2), "净卖出份额": round(today_out, 2),
+                                           "盘前份额": pre_today, "当前份额": cur,
+                                           "卖出占盘前%": round(today_out / pre_today * 100, 1) if pre_today > 0 else None}
+                        return out
             except Exception:
                 pass
             return {"code": bare, "trades": [], "note": "该标的无成交记录"}
