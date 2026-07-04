@@ -492,8 +492,9 @@ async def get_historical_data(stock_code: str, days: int = 60) -> pd.DataFrame:
             fetch_days = max(days, 120)
             df = await asyncio.to_thread(_fetch_history_sina, stock_code, fetch_days)
             if df is not None and not df.empty:
-                # Save all fetched data to SQLite
-                await save_klines(stock_code, df.to_dict("records"))
+                # Sina 是不复权, 只服务本次请求, 不写回 SQLite。SQLite 定位为前复权连续序列的持久层,
+                # 不复权写回会与历史前复权行混成除权断崖(INSERT OR REPLACE 部分覆盖), 污染阶梯式上行
+                # 结构识别(误判破位/台阶错位)。主源(东财)或 akshare(qfq)恢复后会以前复权重填, 此处仅临时降级。
                 df = df.tail(days)
                 _cache_set(cache_key, df)
                 return df
