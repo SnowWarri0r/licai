@@ -183,7 +183,9 @@ export default function Rankings() {
                 <span className="text-right shrink-0">
                   <span className={`block text-[12.5px] font-mono font-semibold ${pctColor(r.pct)}`}>{r.pct >= 0 ? '+' : ''}{r.pct}%</span>
                   <span className="block text-[10px] text-text-muted font-mono">
-                    {tab === 'by_amount' ? `${r['成交额亿']}亿` : `量比${r['量比'] ?? '—'}`}
+                    {tab === 'by_amount'
+                      ? `${r['成交额亿']}亿`
+                      : (r['涨停占比%'] != null ? `占停${r['涨停占比%']}%` : `量比${r['量比'] ?? '—'}`)}
                   </span>
                 </span>
               </button>
