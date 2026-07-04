@@ -242,9 +242,11 @@ def _fetch_global_jin10(pages: int = 6, want: int = 80) -> list[dict]:
     out = []
     for x in raw:
         typ = x.get("type")
-        if typ not in (0, None, 2):   # 文本(0) + 精选分析/VIP 图文(2); 跳过视频/数据型
+        if typ not in (0, None, 2):   # 文本(0) + 图文分析(2); 跳过视频型
             continue
         d = x.get("data") or {}
+        if typ == 2 and (d.get("tag") or "").strip() == "VIP":   # 纯 VIP 原文要会员, 跳过; 保留免费分析(精选分析/热点头条/地缘热点/市场要闻)
+            continue
         content = d.get("content") or d.get("title") or ""
         text = re.sub(r"<[^>]+>", " ", content)      # 去 HTML 标签
         text = re.sub(r"\s+", " ", text).strip()
