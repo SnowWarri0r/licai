@@ -78,15 +78,42 @@ def _fetch_matrix_sync(days: int) -> dict | None:
             df = ak.stock_board_industry_index_ths(symbol=name, start_date=sd, end_date=ed)
             if df is None or len(df) < 2:
                 return None
-            closes = [(str(r["日期"])[:10], float(r["收盘价"])) for _, r in df.iterrows() if r.get("收盘价")]
-            closes = closes[-(days + 1):]
+            has_vol = "成交量" in df.columns
+            bars = [(str(r["日期"])[:10], float(r["收盘价"]),
+                     float(r["成交量"]) if has_vol and r.get("成交量") else None)
+                    for _, r in df.iterrows() if r.get("收盘价")]
+            bars = bars[-(days + 1):]
             daily = []
-            for i in range(1, len(closes)):
-                d0, c0 = closes[i - 1]; d1, c1 = closes[i]
-                daily.append({"date": d1[5:], "pct": round((c1 / c0 - 1) * 100, 2) if c0 else 0})
+            for i in range(1, len(bars)):
+                d0, c0, _ = bars[i - 1]; d1, c1, v1 = bars[i]
+                e = {"date": d1[5:], "pct": round((c1 / c0 - 1) * 100, 2) if c0 else 0}
+                if v1:
+                    e["vol"] = v1
+                daily.append(e)
             return daily
         except Exception:
             return None
+
+
+def _vol_price_read(daily: list, cum: float):
+    """板块量价: 量能趋势(近3日均量 / 之前均量) + 量价配合 tag。daily 末尾可能含无量的今日实时格, 只用有量的 bar。"""
+    bars = [d for d in daily if d.get("vol")]
+    if len(bars) < 5:
+        return None, None
+    recent = [d["vol"] for d in bars[-3:]]
+    base = [d["vol"] for d in bars[-8:-3]] or [d["vol"] for d in bars[:-3]]
+    if not base:
+        return None, None
+    vt = round((sum(recent) / len(recent)) / (sum(base) / len(base)), 2)  # 量能趋势 >1 放大 <1 萎缩
+    expand = vt >= 1.2
+    shrink = vt <= 0.8
+    if cum > 0:
+        tag = "放量上行(量价配合)" if expand else ("缩量上行(动能衰减)" if shrink else "温和上行")
+    elif cum < 0:
+        tag = "放量下跌(抛压重)" if expand else ("缩量回调(抛压不重)" if shrink else "温和回落")
+    else:
+        tag = "放量横盘(分歧)" if expand else "缩量横盘(观望)"
+    return vt, tag
 
     rows = []
     for name in universe:
@@ -107,6 +134,7 @@ def _fetch_matrix_sync(days: int) -> dict | None:
             else:
                 break
         up_days = sum(1 for p in pcts if p > 0)
+        vt, vp_tag = _vol_price_read(daily, cum)
         rows.append({
             "name": name,
             "daily": daily,
@@ -117,6 +145,7 @@ def _fetch_matrix_sync(days: int) -> dict | None:
             "leader": t.get("leader", ""),
             "streak": streak,
             "up_days": up_days, "n_days": len(pcts),
+            "vol_trend": vt, "vp_read": vp_tag,
         })
     # 默认按 N 日累计涨幅排序(强→弱)
     rows.sort(key=lambda x: -x["cum_pct"])
