@@ -302,6 +302,13 @@ async def init_db():
         ecols = {r[1] for r in await cur.fetchall()}
         if "broker" not in ecols:
             await db.execute("ALTER TABLE external_assets ADD COLUMN broker TEXT")
+        # 平仓归档(BOT/策略止损结束等): closed=1 退出在持, closed_realized 记平仓时已实现盈亏(CNY)
+        if "closed" not in ecols:
+            await db.execute("ALTER TABLE external_assets ADD COLUMN closed INTEGER DEFAULT 0")
+        if "closed_realized" not in ecols:
+            await db.execute("ALTER TABLE external_assets ADD COLUMN closed_realized REAL")
+        if "closed_date" not in ecols:
+            await db.execute("ALTER TABLE external_assets ADD COLUMN closed_date TEXT")
 
         # external_asset_actions: status 字段 + fee 字段 (旧库迁移)
         cursor = await db.execute("PRAGMA table_info(external_asset_actions)")
@@ -793,12 +800,42 @@ async def mark_tranche_executed(tranche_id: int, executed_price: float):
 
 # --- External assets (ETFs / funds / crypto / bots) ---
 
-async def list_external_assets() -> list[dict]:
+async def list_external_assets(include_closed: bool = False) -> list[dict]:
+    """在持外部资产(全系统'我的持仓/看板'的唯一来源)。默认排除已平仓归档的(closed=1),
+    一处过滤处处生效; include_closed=True 才返回全部(含归档)。"""
     db = await get_db()
     try:
-        cursor = await db.execute("SELECT * FROM external_assets ORDER BY asset_type, id")
+        sql = "SELECT * FROM external_assets"
+        if not include_closed:
+            sql += " WHERE COALESCE(closed, 0) = 0"
+        sql += " ORDER BY asset_type, id"
+        cursor = await db.execute(sql)
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
+    finally:
+        await db.close()
+
+
+async def list_closed_external_assets() -> list[dict]:
+    """已平仓归档的外部资产(供已实现盈亏统计)。"""
+    db = await get_db()
+    try:
+        cursor = await db.execute("SELECT * FROM external_assets WHERE COALESCE(closed, 0) = 1 ORDER BY closed_date DESC")
+        return [dict(r) for r in await cursor.fetchall()]
+    finally:
+        await db.close()
+
+
+async def close_external_asset(asset_id: int, realized_cny: float, closed_date: str) -> None:
+    """平仓归档: 标记 closed=1, 记下平仓时已实现盈亏(CNY), 市值归零(退出在持)。"""
+    db = await get_db()
+    try:
+        await db.execute(
+            "UPDATE external_assets SET closed = 1, closed_realized = ?, closed_date = ?, "
+            "manual_value = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (round(float(realized_cny), 2), closed_date, asset_id),
+        )
+        await db.commit()
     finally:
         await db.close()
 
