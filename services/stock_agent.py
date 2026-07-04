@@ -110,8 +110,21 @@ def _date_with_weekday(d: str | None) -> str | None:
         return d
 
 
+# 常见美股中文名 → ticker(resolve_stock 用; 生僻的靠用户/LLM 直接给 ticker)
+_US_NAME_MAP = {
+    "苹果": "AAPL", "微软": "MSFT", "英伟达": "NVDA", "特斯拉": "TSLA",
+    "谷歌": "GOOGL", "亚马逊": "AMZN", "脸书": "META", "META": "META",
+    "奈飞": "NFLX", "网飞": "NFLX", "英特尔": "INTC", "超微": "AMD",
+    "高通": "QCOM", "博通": "AVGO", "美光": "MU", "台积电": "TSM",
+    "甲骨文": "ORCL", "特斯拉汽车": "TSLA", "拼多多": "PDD", "百度美股": "BIDU",
+    "阿里美股": "BABA", "理想汽车": "LI", "蔚来": "NIO", "小鹏汽车": "XPEV",
+    "微策略": "MSTR", "波音": "BA", "伯克希尔": "BRK.B",
+}
+
+
 async def _tool_resolve_stock(query: str) -> dict:
-    """名字或代码 → 标准代码 + 名称。先查在持持仓(已清仓不算在持), 再查持仓表全部, 最后 A 股全表。"""
+    """名字或代码 → 标准代码 + 名称。先查在持持仓(已清仓不算在持), 再查持仓表全部, 再 A 股全表,
+    最后美股(纯字母 ticker / 常见中文名 → US.XXX)。"""
     from database import get_all_holdings
     q = (query or "").strip()
     if not q:
@@ -151,6 +164,24 @@ async def _tool_resolve_stock(query: str) -> dict:
         except Exception:
             nm = ""
         return {"code": q, "name": nm or "", "in_holdings": False}
+    # 4) 美股: 纯字母 ticker(AAPL/NVDA) 或常见中文名 → US.XXX, 实时报价验一把顺便拿中文名
+    ticker = None
+    if _re.fullmatch(r"[A-Za-z]{1,5}", q):
+        ticker = q.upper()
+    elif q in _US_NAME_MAP:
+        ticker = _US_NAME_MAP[q]
+    if ticker:
+        code = f"US.{ticker}"
+        try:
+            from services.market_data import get_realtime_quotes
+            qq = (await get_realtime_quotes([code])).get(code)
+        except Exception:
+            qq = None
+        if qq and qq.get("price"):
+            return {"code": code, "name": qq.get("stock_name") or q, "market": "US", "in_holdings": False}
+        if q in _US_NAME_MAP:   # 名字在映射里但行情暂不可达, 仍给出代码
+            return {"code": code, "name": q, "market": "US", "in_holdings": False,
+                    "note": "行情暂未验证(源抖动), 代码可直接用于 get_quote/get_trend"}
     return {"error": f"找不到 {q}"}
 
 
