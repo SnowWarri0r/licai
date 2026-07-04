@@ -37,10 +37,10 @@ export default function App() {
   const [editTarget, setEditTarget] = useState(null)
   const [historyTarget, setHistoryTarget] = useState(null)
   const [lastUpdate, setLastUpdate] = useState(null)
-  const _VIEWS = ['dashboard', 'portfolio', 'sector', 'rankings', 'macro', 'news', 'review', 'ask', 'settings']
+  const _VIEWS = ['portfolio', 'sector', 'rankings', 'macro', 'news', 'review', 'ask', 'settings']
   const [view, _setView] = useState(() => {
     const h = (window.location.hash || '').slice(1)
-    return _VIEWS.includes(h) ? h : 'dashboard'
+    return _VIEWS.includes(h) ? h : 'portfolio'
   })
   const setView = (v) => { _setView(v); try { window.location.hash = v } catch {} }
   const [sidebarOpen, setSidebarOpen] = useState(true)
@@ -102,12 +102,9 @@ export default function App() {
         <Sidebar active={view} onNav={setView} open={sidebarOpen} onToggle={() => setSidebarOpen(o => !o)} />
 
         <main className="flex-1 min-w-0 overflow-y-auto">
-          {view === 'dashboard' && (
-            <>
-              <Dashboard holdings={holdings} />
-              <RiskBanner holdings={holdings} />
-            </>
-          )}
+          {/* 仪表盘概览条 + 风险条: 常驻所有视图顶部, 不单独占导航 */}
+          <Dashboard holdings={holdings} />
+          <RiskBanner holdings={holdings} />
 
           {view === 'portfolio' && (
             <div className={`${PAD} space-y-3 md:space-y-4`}>

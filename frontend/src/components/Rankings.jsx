@@ -109,7 +109,7 @@ export default function Rankings() {
   const list = (data && data[tab]) || []
 
   return (
-    <div className="bg-surface-2 border border-border rounded-xl overflow-hidden flex flex-col lg:flex-row h-[calc(100vh-7rem)]">
+    <div className="bg-surface-2 border border-border rounded-xl overflow-hidden flex flex-col lg:flex-row h-[calc(100vh-11rem)] min-h-[480px]">
       {/* 左: 榜单列表 */}
       <div className="lg:w-[420px] shrink-0 flex flex-col border-b lg:border-b-0 lg:border-r border-border min-h-0">
         <div className="flex items-center gap-1 px-3 py-2 border-b border-border-subtle">
