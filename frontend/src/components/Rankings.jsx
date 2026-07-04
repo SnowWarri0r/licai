@@ -6,6 +6,7 @@ import StockAskModal from './StockAskModal'
 const TABS = [
   { key: 'gainers', label: '涨幅榜' },
   { key: 'by_amount', label: '成交额榜' },
+  { key: 'coiled', label: '蓄势突破' },
 ]
 
 function pctColor(v) {
@@ -88,20 +89,23 @@ export default function Rankings() {
   const [tab, setTab] = useState('gainers')
   const [board, setBoard] = useState('全部')
   const [data, setData] = useState(null)
+  const [coiled, setCoiled] = useState(null)
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState(false)
   const [selected, setSelected] = useState(null)
 
   const load = () => {
     setLoading(true); setErr(false)
-    fetchJSON('/api/market/rankings?limit=100')
-      .then(d => { if (d.error) { setErr(true) } else setData(d) })
-      .catch(() => setErr(true))
-      .finally(() => setLoading(false))
+    const req = tab === 'coiled'
+      ? fetchJSON('/api/market/coiled').then(d => { if (d.error) setErr(true); else setCoiled(d) })
+      : fetchJSON('/api/market/rankings?limit=100').then(d => { if (d.error) setErr(true); else setData(d) })
+    req.catch(() => setErr(true)).finally(() => setLoading(false))
   }
   useEffect(() => { load() }, [])
+  // 切到蓄势突破 tab 时懒加载(首扫服务端要 ~20s, 之后 10min 缓存秒回)
+  useEffect(() => { if (tab === 'coiled' && !coiled) load() }, [tab])   // eslint-disable-line react-hooks/exhaustive-deps
 
-  const rawList = (data && data[tab]) || []
+  const rawList = tab === 'coiled' ? (coiled?.rows || []) : ((data && data[tab]) || [])
   const list = board === '全部' ? rawList : rawList.filter(r => boardOf(r.code) === board)
 
   return (
@@ -114,7 +118,7 @@ export default function Rankings() {
               {t.label}
             </button>
           ))}
-          <span className="ml-auto text-[10px] text-text-muted">{data?.as_of ? data.as_of.slice(5) : ''}</span>
+          <span className="ml-auto text-[10px] text-text-muted">{(tab === 'coiled' ? coiled?.as_of : data?.as_of)?.slice(5) || ''}</span>
           <button onClick={load} title="刷新" className="text-[10.5px] px-1.5 py-0.5 rounded border border-border text-text-dim hover:text-text">刷新</button>
         </div>
 
@@ -129,8 +133,12 @@ export default function Rankings() {
         </div>
 
         <div className="flex-1 overflow-y-auto min-h-0">
-          {!loading && !err && list.length === 0 && <div className="text-center py-8 text-text-dim text-[12px]">榜单 top100 里暂无{board}标的</div>}
-          {loading && <div className="text-center py-8 text-text-dim text-[12px]">加载榜单…</div>}
+          {!loading && !err && list.length === 0 && (
+            <div className="text-center py-8 text-text-dim text-[12px] px-4 leading-relaxed">
+              {tab === 'coiled' ? '今天没有满足"横盘≥20日 + 放量攻箱体上沿"结构的票（震荡市里这种结构本来就稀缺）' : `榜单 top100 里暂无${board}标的`}
+            </div>
+          )}
+          {loading && <div className="text-center py-8 text-text-dim text-[12px]">{tab === 'coiled' ? '全市场扫描中…（首扫约20秒, 之后10分钟缓存秒开）' : '加载榜单…'}</div>}
           {err && <div className="text-center py-8 text-text-dim text-[12px]">榜单源暂不可达（东财抖动），<button onClick={load} className="text-accent">重试</button></div>}
           {!loading && !err && list.map((r, i) => {
             const active = selected?.code === r.code
@@ -149,7 +157,9 @@ export default function Rankings() {
                 <span className="text-right shrink-0">
                   <span className={`block text-[12.5px] font-mono font-semibold ${pctColor(r.pct)}`}>{r.pct >= 0 ? '+' : ''}{r.pct}%</span>
                   <span className="block text-[10px] text-text-muted font-mono">
-                    {tab === 'by_amount'
+                    {tab === 'coiled'
+                      ? `横盘${r['横盘日']}日·量${r['放量倍数']}x`
+                      : tab === 'by_amount'
                       ? `${r['成交额亿']}亿`
                       : r.is_new ? '新股·无涨停'
                       : (r['涨停占比%'] != null ? `占停${r['涨停占比%']}%` : `量比${r['量比'] ?? '—'}`)}
@@ -159,6 +169,12 @@ export default function Rankings() {
             )
           })}
         </div>
+
+        {tab === 'coiled' && !loading && list.length > 0 && (
+          <div className="shrink-0 px-3 py-1.5 border-t border-border-subtle text-[9.5px] text-text-muted leading-relaxed">
+            结构筛选：40日箱体≤25%、横盘≥20日 + 温和放量攻箱体上沿 · 突破可能失败（假突破回落）· 仅客观结构，非买卖建议
+          </div>
+        )}
       </div>
 
       <div className="flex-1 min-h-0 min-w-0">
