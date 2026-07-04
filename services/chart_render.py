@@ -54,6 +54,27 @@ _TAG_KEYS = ("阶梯式上行", "抬高低点", "结构破位", "跌破近台阶
              "头肩顶", "头肩底", "突破底颈线", "顶背离", "底背离", "收敛三角")
 
 
+def _fractals(seq, low: bool, w: int = 3, gap: int = 3):
+    """分型拐点(与 _structure_scan 同口径), 用于在图上标摆动高/低点。返回 [(idx, value), ...]。"""
+    pts = []
+    for i in range(w, len(seq) - w):
+        seg = seq[i - w:i + w + 1]
+        if seq[i] is None or any(x is None for x in seg):
+            continue
+        if (low and seq[i] == min(seg)) or (not low and seq[i] == max(seg)):
+            pts.append((i, seq[i]))
+    if not pts:
+        return []
+    out = [pts[0]]
+    for idx, val in pts[1:]:
+        if idx - out[-1][0] <= gap:
+            if (low and val < out[-1][1]) or (not low and val > out[-1][1]):
+                out[-1] = (idx, val)
+        else:
+            out.append((idx, val))
+    return out
+
+
 def render_trend_chart(bars: list, *, code: str = "", name: str = "",
                        structure: dict | None = None) -> bytes | None:
     """bars: [(date, close, high, low, vol, open), ...] 升序(已截到展示窗口)。返回 PNG bytes 或 None。"""
@@ -76,41 +97,55 @@ def render_trend_chart(bars: list, *, code: str = "", name: str = "",
                                    "xtick.color": _FG, "ytick.color": _FG,
                                    **({"font.family": _CJK} if _CJK else {})})
 
-    hlines, hcolors = [], []
+    # 结构线: (价位, 颜色, 标签) —— 横线 + 右端直接标名称价位
+    line_specs = []
     if structure.get("台阶支撑"):
-        hlines.append(structure["台阶支撑"]); hcolors.append(_ACCENT)
+        line_specs.append((structure["台阶支撑"], _ACCENT, "台阶支撑"))
     if structure.get("颈线"):
-        hlines.append(structure["颈线"]); hcolors.append(_NECK)
+        line_specs.append((structure["颈线"], _NECK, "颈线"))
     if structure.get("底颈线"):
-        hlines.append(structure["底颈线"]); hcolors.append("#7bb37a")   # 底颈线=绿
+        line_specs.append((structure["底颈线"], "#7bb37a", "底颈线"))
 
     kwargs = dict(type="candle", volume=True, mav=(5, 10, 20), style=style,
                   figsize=(10, 6.2), returnfig=True, tight_layout=True,
                   ylabel="", ylabel_lower="", datetime_format="%m-%d", xrotation=0,
                   update_width_config=dict(candle_linewidth=0.7, candle_width=0.62))
-    if hlines:
-        kwargs["hlines"] = dict(hlines=hlines, colors=hcolors, linestyle="--", linewidths=1.0, alpha=0.9)
+    if line_specs:
+        kwargs["hlines"] = dict(hlines=[s[0] for s in line_specs], colors=[s[1] for s in line_specs],
+                                linestyle="--", linewidths=1.0, alpha=0.9)
 
     title = (f"{name} {code}").strip()
     tags = [k for k in _TAG_KEYS if structure.get(k)]
     if tags:
         title += "   " + " · ".join(tags)
-    legend = []
-    if structure.get("台阶支撑"):
-        legend.append(f"台阶支撑 {structure['台阶支撑']}")
-    if structure.get("颈线"):
-        legend.append(f"颈线 {structure['颈线']}")
-    if structure.get("底颈线"):
-        legend.append(f"底颈线 {structure['底颈线']}")
+
+    # 摆动高/低点(结构骨架): 在每个分型高点上方标 ▽、低点下方标 △
+    Hs = [r[1] for r in rows]
+    Ls = [r[2] for r in rows]
+    shi = _fractals(Hs, low=False)
+    slo = _fractals(Ls, low=True)
 
     with _lock:
         fig, axes = mpf.plot(df, **kwargs)
+        ax = axes[0]
+        n = len(df)
         _tkw = {"fontproperties": _FP} if _FP else {}
         fig.suptitle(title, color="#e8e6e1", fontsize=12, y=0.985, **_tkw)
-        if legend:
-            axes[0].text(0.01, 0.02, "  ".join(legend), transform=axes[0].transAxes,
-                         color=_FG, fontsize=8.5, va="bottom", **_tkw,
-                         bbox=dict(facecolor=_BG, edgecolor=_GRID, boxstyle="round,pad=0.3", alpha=0.85))
+        # 跳空缺口阴影带(价位区间)
+        for key, col in (("向上跳空缺口", _UP), ("向下跳空缺口", _DOWN)):
+            g = structure.get(key)
+            if isinstance(g, list) and len(g) == 2 and all(g):
+                lo_, hi_ = min(g), max(g)
+                ax.axhspan(lo_, hi_, color=col, alpha=0.13, zorder=0)
+                ax.text(0.6, (lo_ + hi_) / 2, "缺口", color=col, fontsize=7.5, va="center", **_tkw)
+        # 摆动高/低点标记
+        for i, hv in shi:
+            ax.scatter(i, hv, marker="v", s=24, color="#e08a8a", zorder=6, edgecolors="none")
+        for i, lv in slo:
+            ax.scatter(i, lv, marker="^", s=24, color="#6fb36f", zorder=6, edgecolors="none")
+        # 结构线右端标名称+价位(自解释, 不靠图例)
+        for lv, col, lb in line_specs:
+            ax.text(n - 0.5, lv, f" {lb} {lv}", color=col, fontsize=8, va="center", ha="left", **_tkw)
         buf = io.BytesIO()
         fig.savefig(buf, format="png", dpi=110, facecolor=_BG, bbox_inches="tight")
         plt.close(fig)
