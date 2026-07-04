@@ -608,22 +608,24 @@ async def get_intraday_data(stock_code: str) -> pd.DataFrame:
     if df is not None:
         return df
 
-    try:
-        df = await asyncio.to_thread(
-            ak.stock_zh_a_hist_min_em,
-            symbol=stock_code,
-            period="5",
-            adjust="qfq",
-        )
-        if df is not None and not df.empty:
-            today = datetime.now().strftime("%Y-%m-%d")
-            if "时间" in df.columns:
-                df = df[df["时间"].astype(str).str.startswith(today)]
-            _cache_set(cache_key, df)
-            return df
-    except Exception as e:
-        # Intraday failure is non-critical, just skip
-        pass
+    # 东财分钟接口个股/ETF 分家: stock_zh_a_hist_min_em 只认个股, 传 ETF 代码返回空还会抛
+    # TypeError; ETF/LOF(588xxx/56xxxx/51xxxx/15xxxx 等)走 fund_etf_hist_min_em(列结构一致)。
+    fetchers = ([ak.fund_etf_hist_min_em, ak.stock_zh_a_hist_min_em]
+                if _is_etf_lof(stock_code)
+                else [ak.stock_zh_a_hist_min_em, ak.fund_etf_hist_min_em])
+    # push2 偶发掐首连(RemoteDisconnected), akshare 单次请求不重试 → 每个接口试 3 次
+    for fetch in fetchers * 3:
+        try:
+            df = await asyncio.to_thread(fetch, symbol=stock_code, period="5", adjust="qfq")
+            if df is not None and not df.empty:
+                today = datetime.now().strftime("%Y-%m-%d")
+                if "时间" in df.columns:
+                    df = df[df["时间"].astype(str).str.startswith(today)]
+                _cache_set(cache_key, df)
+                return df
+        except Exception:
+            # 主接口不认这个代码(个股/ETF 分家)或抖动 → 换一个/再试
+            continue
 
     return pd.DataFrame()
 
