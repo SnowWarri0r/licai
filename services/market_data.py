@@ -133,9 +133,18 @@ def _is_etf_lof(stock_code: str) -> bool:
     return bool(re.match(r"^(1[56]|5[0-8])\d{4}$", code))
 
 
+def _is_bse(code: str) -> bool:
+    """北交所: 8xxxxx (83/87/88) / 4xxxxx (老三板迁移) / 920xxx (新代码段, 注意以 9 开头要先于沪B判断)。"""
+    code = split_stock_code(code)[1]
+    return code[:3] == "920" or code[:1] in ("4", "8")
+
+
 def _sina_symbol(stock_code: str) -> str:
-    """Convert stock code to Sina symbol format (sh/sz prefix)."""
+    """Convert stock code to Sina symbol format (sh/sz/bj prefix)."""
     stock_code = split_stock_code(stock_code)[1]
+    # 北交所(bj): 8/4/920 — 必须先判, 否则 920xxx 会被下面的 9→sh 规则吃掉
+    if _is_bse(stock_code):
+        return f"bj{stock_code}"
     # Shanghai: 6 (主板), 9 (B股), 5 (ETF/封基/可转债)
     # Shenzhen: 0/2/3 (主板/中小板/创业板), 1 (ETF/可转债, e.g. 159xxx)
     if stock_code[:1] in ("6", "9", "5"):
@@ -387,8 +396,10 @@ def _fetch_history_sina(stock_code: str, days: int) -> pd.DataFrame:
 
 
 def _em_secid(stock_code: str) -> str:
-    """东财 secid: 沪(6/9/5) → 1.code, 深(0/2/3/1) → 0.code。"""
+    """东财 secid: 沪(6/9/5) → 1.code, 深(0/2/3/1) → 0.code, 北交所(8/4/920) → 0.code。"""
     code = split_stock_code(stock_code)[1]
+    if _is_bse(code):
+        return f"0.{code}"          # 北交所 EM 归在 market 0(同深), 920xxx 不能走下面的 9→1
     return f"1.{code}" if code[:1] in ("6", "9", "5") else f"0.{code}"
 
 
@@ -396,7 +407,7 @@ def _kline_tencent_a(stock_code: str, datalen: int = 120) -> pd.DataFrame:
     """腾讯 gtimg A股/ETF 前复权日K(不同提供商, 抗东财 push2his 抽风; ETF 同样支持)。
     数组: [日期, 开, 收, 高, 低, 量, ...]。"""
     code = split_stock_code(stock_code)[1]
-    pre = "sh" if code[:1] in ("6", "9", "5") else "sz"
+    pre = "bj" if _is_bse(code) else ("sh" if code[:1] in ("6", "9", "5") else "sz")
     sym = pre + code
     url = (f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
            f"?_var=kline_dayqfq&param={sym},day,,,{max(int(datalen), 1)},qfq")
