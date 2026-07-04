@@ -160,7 +160,7 @@ export default function App() {
           )}
 
           {view === 'ask' && (
-            <div className={`${PAD} max-w-[900px]`}>
+            <div className={`${PAD} max-w-[900px] h-[calc(100vh-8rem)]`}>
               <StockAsk page />
             </div>
           )}
