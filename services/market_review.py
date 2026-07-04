@@ -109,3 +109,38 @@ def scan_strong_stocks() -> dict:
     }
     _cache["scan"] = (out, _t.time())
     return out
+
+
+def _rank_row(x: dict) -> dict | None:
+    """榜单行(保留 ST, 打 is_st 标记; 比 _row 宽松, 给 top100 用)。"""
+    code = str(x.get("f12") or ""); name = str(x.get("f14") or "")
+    try:
+        pct = float(x.get("f3"))
+    except (TypeError, ValueError):
+        return None
+    if not code:
+        return None
+    return {"code": code, "name": name, "pct": round(pct, 2),
+            "成交额亿": round(float(x.get("f6") or 0) / 1e8, 2),
+            "换手": x.get("f8"), "量比": x.get("f10"),
+            "市值亿": round(float(x.get("f20") or 0) / 1e8, 0),
+            "行业": x.get("f100") or "",
+            "is_st": ("ST" in name.upper() or "退" in name)}
+
+
+def top_rankings(limit: int = 100) -> dict:
+    """全市场 涨幅榜 top-N + 成交额榜 top-N。缓存 120s。失败返回 {error}。"""
+    c = _cache.get("rankings")
+    if c and _t.time() - c[1] < _TTL and c[2] >= limit:
+        out = c[0]
+        return {**out, "gainers": out["gainers"][:limit], "by_amount": out["by_amount"][:limit]}
+    pz = max(int(limit), 1)
+    up = [r for r in (_rank_row(x) for x in _clist("f3", pz)) if r][:pz]
+    amt = [r for r in (_rank_row(x) for x in _clist("f6", pz)) if r][:pz]
+    if not up and not amt:
+        return {"error": "榜单源暂不可达(东财抖动)"}
+    out = {"as_of": _t.strftime("%Y-%m-%d %H:%M", _t.localtime()),
+           "gainers": up, "by_amount": amt,
+           "note": "全市场沪深A股 涨幅榜/成交额榜(东财 clist 实时, 盘中滚动)。is_st=ST/退市标记。"}
+    _cache["rankings"] = (out, _t.time(), pz)
+    return out
