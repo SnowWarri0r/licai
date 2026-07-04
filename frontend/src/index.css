@@ -46,7 +46,8 @@
   --font-mono: 'JetBrains Mono', 'Menlo', monospace;
 }
 
-html { font-size: 14px; }
+/* 关闭横向 overscroll 导航: K线左右拖动/双指横扫不再触发浏览器前进后退 */
+html { font-size: 14px; overscroll-behavior-x: none; }
 
 body {
   margin: 0;
@@ -55,6 +56,7 @@ body {
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   min-height: 100vh;
+  overscroll-behavior-x: none;
 }
 
 /* Warm grid background — more subtle than before */
