@@ -199,6 +199,11 @@ async def _stage2(c: dict) -> dict | str:
     vol_mult = max(bk_vm, (sum(vols[-3:]) / 3) / base_vol)
     if (last_close / closes[-6] - 1) * 100 > 20:       # 近5日已经飞了, 不是"准备窜"
         return "近5日已飞"
+    # 启动新鲜度: V型反转/多日爬坡(箱底一路拉回上沿)在触到上沿前涨幅已兑现大半, 不是"准备窜"。
+    # 近20日最低点算起的累计拉升 ≤12% 才算刚启动; 两半均值查不出V型(前高后高中间低会互相抵消), 用这条兜
+    run_up = (last_close / min(closes[-20:]) - 1) * 100
+    if run_up > 12:
+        return "已拉升多日(非新启动)"
     # 突破日收盘强度: (收-低)/(高-低)。长上影(冲高被砸回)= 假突破笔, 直接拒
     if len(highs) == len(closes) and highs and highs[bk_i] > lows[bk_i]:
         strength = round((closes[bk_i] - lows[bk_i]) / (highs[bk_i] - lows[bk_i]), 2)
