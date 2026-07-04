@@ -462,6 +462,51 @@ async def _tool_chain_quote(stocks: list) -> dict:
                     "产业链全景按上游→下游环节排列各标的, 量价强弱横向比。数据为最新交易日快照。"}
 
 
+_readurl_cache: dict = {}
+
+
+def _fetch_url_markdown_sync(url: str) -> dict:
+    """Firecrawl 免 key /v1/scrape 抓网页正文 markdown(境外服务, 走代理)。返回 {markdown, title} 或 {error}。"""
+    import requests as _rq
+    import time as _t
+    ck = url
+    c = _readurl_cache.get(ck)
+    if c and _t.time() - c[1] < 600:
+        return c[0]
+    from services import proxy_config
+    px = proxy_config.get_proxy()
+    proxies = {"http": px, "https": px} if px else None
+    try:
+        r = _rq.post("https://api.firecrawl.dev/v1/scrape",
+                     json={"url": url, "formats": ["markdown"], "onlyMainContent": True},
+                     timeout=45, proxies=proxies)
+        if r.status_code != 200:
+            return {"error": f"抓取失败 HTTP {r.status_code}"}
+        j = r.json()
+        data = j.get("data") or {}
+        md = (data.get("markdown") or "").strip()
+        if not md:
+            return {"error": "未抓到正文"}
+        meta = data.get("metadata") or {}
+        out = {"title": meta.get("title") or "", "markdown": md[:7000],
+               "truncated": len(md) > 7000}
+        _readurl_cache[ck] = (out, _t.time())
+        return out
+    except Exception as e:
+        return {"error": f"抓取异常: {str(e)[:80]}"}
+
+
+async def _tool_read_url(url: str) -> dict:
+    """抓取指定网页的正文(干净 markdown), 用于把 web_search 找到的某篇文章读全。"""
+    url = (url or "").strip()
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return {"error": "需要 http(s) 链接"}
+    out = await asyncio.to_thread(_fetch_url_markdown_sync, url)
+    out["url"] = url
+    out["note"] = "网页正文(markdown), 来源以该 url 为准, 引用按 [联网] 标来源+日期。"
+    return out
+
+
 async def _tool_get_news(code: str) -> dict:
     """个股最近新闻 (akshare 东财, A 股)。"""
     from api.news_routes import _fetch_stock_news_em_sync
@@ -1742,6 +1787,8 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"limit": {"type": "integer", "description": "默认40"}}}},
     {"name": "get_chain_quote", "description": "批量取一组票的多周期量价摘要(产业链全景/多票横向对比专用): 一次返回每只的 pct_5d/pct_20d/pct_60d 涨幅、dist_20high 距20日高、ma 均线排列(全多头/多头/短多头/纠缠/空头)、vol 量能(放量/平/缩量)。做'X产业链上游到下游量价一览'时: 先 web_search 拿到该产业链各环节代表公司, 把这串代码/名称一次传进来即可拿到整条链量价, 无需逐只 get_trend。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"stocks": {"type": "array", "items": {"type": "string"}, "description": "股票名称或代码列表, 最多24只"}}, "required": ["stocks"]}},
+    {"name": "read_url", "description": "抓取某个网页的正文全文(干净 markdown)。web_search 给的是摘要片段, 当需要某篇文章的完整内容时用它读全——尤其: 产业链/行业深度梳理研报(把各环节代表公司抽全更准)、核实某条事实的原文细节、读公告/政策原文。先用 web_search 拿到 url, 再对最相关的 1-2 篇 read_url 读全。",
+     "input_schema": {"type": "object", "properties": {"url": {"type": "string", "description": "要抓取的 http(s) 网页链接"}}, "required": ["url"]}},
     # Anthropic 服务端联网搜索: 本地工具查不到/可能过期的事实(海外公司是否上市/IPO/代码/政策/最新消息)用它核实, 以联网结果为准而非凭记忆。
     {"type": "web_search_20250305", "name": "web_search", "max_uses": 12},
 ]
@@ -1772,6 +1819,7 @@ _EXECUTORS = {
     "get_hot_concepts": lambda a: _tool_hot_concepts(a.get("top", 15)),
     "get_board_stocks": lambda a: _tool_board_stocks(a.get("board", ""), a.get("top", 12)),
     "get_chain_quote": lambda a: _tool_chain_quote(a.get("stocks", [])),
+    "read_url": lambda a: _tool_read_url(a.get("url", "")),
     "get_market_news": lambda a: _tool_market_news(a.get("limit", 40)),
 }
 
@@ -1824,7 +1872,7 @@ _SYSTEM = (
     "读裸K量价: 放量(vol_ratio>1.5)光头大阳=量价齐升承接强、放量长上影或冲高回落(high_pct 高而 pct 收低)=分歧出货迹象、缩量(vol_ratio<0.7)十字/小阴=观望惜售、高位放量长上影=兑现压力、地量=关注度低; 连续几根K的形态+量比串起来看节奏(连阴缩量磨底 vs 放量反包)。"
     "资金流分档(超大单/大单=主力)在当下拆单 + 多子账户操作下已失真——大单常被拆成中小单分散到多账户, 净流入只作参考线索, 不单凭它下'主力在进/出'结论; 与裸K量价背离时点明背离、以裸K量价为主。\n"
     "【产业链全景 · 量价一览】问'X(HBM/CPO/固态电池/光模块/有色 等)产业链从上游到下游有哪些公司、各环节标的、量价一览'时, 分三步: "
-    "① 先 web_search 拿到该产业链的工艺/价值链环节顺序(上游→中游→下游)及各环节代表公司(标注来源, 这是动态知识以联网为准); "
+    "① 先 web_search 拿到该产业链的工艺/价值链环节顺序(上游→中游→下游)及各环节代表公司(标注来源, 这是动态知识以联网为准); 命中产业链梳理/研报类长文时, 对最相关的 1-2 篇 read_url 读全文, 把各环节代表公司抽全抽准(比摘要片段更完整); "
     "② 把这串公司(名称或代码)一次性传给 get_chain_quote, 拿回每只的 pct_5d/pct_20d/pct_60d、dist_20high(距20日高)、ma(均线排列)、vol(量能); "
     "③ 按上游→下游环节排成表格: 列含【环节 | 核心标的(名+代码) | 角色 | 均线 | 5d | 60d | 距20高 | 量能】, 末尾挑出'量价最强(全多头+放量+距高近)'和'需等回调(强多头但短期已涨多/缩量)'两组。"
     "环节顺序与角色来自 web_search[联网], 量价数字来自 get_chain_quote[实测]; 全程客观陈列, 强弱是量价描述不是买卖建议。\n"
@@ -1882,7 +1930,8 @@ _SYSTEM = (
     "陈述'市场在奖励动量'这类客观规律, 落到用户身上时停留在'市场正如此运作', 由其自行判断是否跟随。信息不足时表述为不确定, 数字与新闻一律引用工具返回值。\n"
     "(资产配置/现金理财层面的通用框架 + 现状分析照常给出, 见上方【资产配置/现金理财】, 同样停留在框架与现状层面, 具体产品择时交由用户。)\n"
     "【知识边界·先搜再答】你的训练知识有截止日, 海外公司上市/IPO/重组/政策/某公司近况/近期事件这类时效性强的事实, 一律以联网结果为准。"
-    "涉及外部世界近期事实(事件真伪、销量/出口/同比、政策细节、某公司最新动态)时, 先用 web_search 获取当前事实再作答; 以检索结果为准并标注来源/日期, 检索到标的代码时再用 get_quote 查实时行情; web_search 亦无结果时如实表述'查不到/无法确认, 建议你自行核实'。\n"
+    "涉及外部世界近期事实(事件真伪、销量/出口/同比、政策细节、某公司最新动态)时, 先用 web_search 获取当前事实再作答; 以检索结果为准并标注来源/日期, 检索到标的代码时再用 get_quote 查实时行情; web_search 亦无结果时如实表述'查不到/无法确认, 建议你自行核实'。"
+    "web_search 只给摘要片段, 当需要某篇文章的完整内容(深度研报、政策/公告原文、核实某条事实的上下文细节)时, 对最相关的 url 用 read_url 抓全文再下结论。\n"
     "【正文中的具体数字需有据】同比/金额/销量/份额/排名/价格 这类具体数字, 一律来自 web_search 结果或本地工具返回方写入正文, 并尽量附来源/时间。"
     "仅存于记忆、未经联网或工具核实的数字, 用定性表述替代(如'出口明显放量''需求高增''普及率很低'), 或明确标注'具体数字需联网核实'——区分'量级估计'与'确切数字', 记忆中的数字以定性表述呈现而非作为实测报出。\n"
     "【信息分级——结论依赖的关键数字/事实标来源等级】三档: "
@@ -1931,7 +1980,7 @@ _TOOL_CN = {
     "get_holdings": "看持仓", "get_thesis": "看买入逻辑", "get_asset_allocation": "看资产配置", "get_trades": "查成交记录", "get_market_sentiment": "看大盘情绪",
     "get_sector_momentum": "看板块动量", "get_hot_rank": "看资金热度",
     "get_hot_concepts": "看热门概念", "get_board_stocks": "查板块龙头", "get_market_news": "看政策快讯", "web_search": "联网搜索",
-    "get_chain_quote": "产业链量价",
+    "get_chain_quote": "产业链量价", "read_url": "读网页全文",
 }
 
 
