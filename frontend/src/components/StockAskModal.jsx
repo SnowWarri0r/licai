@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { MiniMarkdown, SourcesBlock, ToolCallStrip, streamAnalysis } from './askShared'
+import ImageZoom from './ImageZoom'
 
 function pctColor(v) {
   if (v > 0) return 'text-bear'
@@ -124,9 +125,8 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
                 {(it.charts || []).length > 0 && (
                   <div className="flex flex-col gap-2 mb-2">
                     {it.charts.map((src, k) => (
-                      <a key={k} href={src} target="_blank" rel="noreferrer" className="block">
-                        <img src={src} alt="K线图" loading="lazy" className="w-full max-w-[640px] rounded-lg border border-border-subtle" />
-                      </a>
+                      <ImageZoom key={k} src={src} alt="K线图"
+                        className="w-full max-w-[640px] rounded-lg border border-border-subtle block" />
                     ))}
                   </div>
                 )}
