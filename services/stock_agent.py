@@ -5,6 +5,7 @@ LLM 自己决定调哪些工具(查行情/走势/新闻/持仓/大盘情绪)拿�
 """
 from __future__ import annotations
 import asyncio
+import base64 as _b64
 import json as _json
 import re as _re
 import time as _time
@@ -533,7 +534,7 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
         daily.append(e)
     cum = round((closes[-1] / closes[0] - 1) * 100, 2)
     up = sum(1 for d in daily if d["pct"] > 0)
-    return {
+    out = {
         "code": code, "days": len(daily), "limit_pct": limit_pct,   # 涨跌停幅度% (科创/创业=20, 主板=10, 北交=30, ST=5)
         "cum_pct": cum, "up_days": up, "down_days": len(daily) - up,
         "last_date": bars[-1][0], "last_close": round(closes[-1], 3),
@@ -544,6 +545,21 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
         # 最近 10 日逐日涨跌, 每条带 date + high_pct/low_pct + 板(涨跌停标记, 已按该股真实涨停幅度判)。最后一条即最新交易日。
         "daily_pct": daily[-min(10, len(daily)):],
     }
+    # 渲染一张 K线+量能+均线图(结构已标注), 给用户看 + 作模型 gestalt 辅助。图由我方数据画→精确;
+    # 数字仍以上面结构化字段为准。chart_url=前端展示; _chart_png_b64=喂给模型(由 _result_content 转 image 块)。
+    if is_a_share(raw) and len(allbars) >= 20:
+        try:
+            from services import chart_render
+            png = await asyncio.to_thread(
+                chart_render.render_trend_chart, allbars[-50:],
+                code=bare6, name="", structure=structure)
+            if png:
+                out["chart_url"] = chart_render.save_png(png)
+                out["_chart_png_b64"] = _b64.b64encode(png).decode()
+                out["_chart_media"] = "image/png"
+        except Exception as e:
+            print(f"[chart] render failed for {code}: {e}")
+    return out
 
 
 async def _tool_chain_quote(stocks: list) -> dict:
@@ -1914,7 +1930,7 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"query": {"type": "string", "description": "股票名字或代码"}}, "required": ["query"]}},
     {"name": "get_quote", "description": "查个股实时行情: 现价/当日涨跌幅/开高低/成交额/换手。code 直接用 resolve_stock 返回的 code 原样传(A股是裸6位如 600171 / 000960; 港美股 HK.00700 / US.AAPL), 保持原样、A股无需 sh/sz 前缀。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
-    {"name": "get_trend", "description": "查个股近 N 个交易日走势(裸K + 量): 累计涨跌/逐日涨跌/上涨天数。支持 A 股/港股/美股。daily_pct 每条是 {date, open_pct, pct, high_pct, low_pct, vol_ratio, shape}: date 是该日真实交易日(YYYY-MM-DD), open_pct/pct 是开盘/收盘相对昨收, high_pct/low_pct 是当日最高/最低相对昨收, vol_ratio 是当日量比(成交量/前5日均量, >1.5 放量、<0.7 缩量), shape 是这根K线的裸K形态(如 光头光脚阳线/长上影阴线/十字星)。最后一条即 last_date(最新交易日)。limit_pct=该股涨跌停幅度%(科创板688/创业板30开头=20, 北交所8/4开头=30, ST=5, 沪深主板=10), 别按10%默认。daily_pct 每条已带 板 字段(收在涨停封板/盘中触及涨停后回落/跌停, 已按该股真实涨停幅度判好, 直接用别自己算)。引用某天涨跌时日期以 date 字段为准。读裸K量价: 用 open_pct/pct/high_pct/low_pct 还原每根K线的开收高低位置 + shape 形态 + vol_ratio 量, 描述放量光头大阳=量价齐升、放量长上影=冲高回落分歧、缩量十字=观望、高位放量长上影=兑现等。无需分时即可还原历史每天盘中量价形态。structure 字段给阶梯式上行结构识别(进二退三框架, A股): 阶梯式上行(抬高高点+抬高低点)/抬高低点、台阶支撑(最近确认的上行低点价位)+距支撑%、回调量能(缩量=抛压衰竭洗盘特征/放量=分歧)、结构破位(收盘跌破上一抬高低点, 上行结构被破坏); 另含顶部/派发结构(进二退三镜像): 双顶(两个相近高点=M头, 附颈线价位)/二次冲高未创新高(右峰明显低于左峰=冲高动能衰减)、跌破颈线(顶部结构确认=高位资金共识破裂)。用这些字段客观描述该股所处的趋势结构与所在台阶, 把方向性决策留给用户。",
+    {"name": "get_trend", "description": "查个股近 N 个交易日走势(裸K + 量): 累计涨跌/逐日涨跌/上涨天数。支持 A 股/港股/美股。daily_pct 每条是 {date, open_pct, pct, high_pct, low_pct, vol_ratio, shape}: date 是该日真实交易日(YYYY-MM-DD), open_pct/pct 是开盘/收盘相对昨收, high_pct/low_pct 是当日最高/最低相对昨收, vol_ratio 是当日量比(成交量/前5日均量, >1.5 放量、<0.7 缩量), shape 是这根K线的裸K形态(如 光头光脚阳线/长上影阴线/十字星)。最后一条即 last_date(最新交易日)。limit_pct=该股涨跌停幅度%(科创板688/创业板30开头=20, 北交所8/4开头=30, ST=5, 沪深主板=10), 别按10%默认。daily_pct 每条已带 板 字段(收在涨停封板/盘中触及涨停后回落/跌停, 已按该股真实涨停幅度判好, 直接用别自己算)。引用某天涨跌时日期以 date 字段为准。读裸K量价: 用 open_pct/pct/high_pct/low_pct 还原每根K线的开收高低位置 + shape 形态 + vol_ratio 量, 描述放量光头大阳=量价齐升、放量长上影=冲高回落分歧、缩量十字=观望、高位放量长上影=兑现等。无需分时即可还原历史每天盘中量价形态。structure 字段给阶梯式上行结构识别(进二退三框架, A股): 阶梯式上行(抬高高点+抬高低点)/抬高低点、台阶支撑(最近确认的上行低点价位)+距支撑%、回调量能(缩量=抛压衰竭洗盘特征/放量=分歧)、结构破位(收盘跌破上一抬高低点, 上行结构被破坏); 另含顶部/派发结构(进二退三镜像): 双顶(两个相近高点=M头, 附颈线价位)/二次冲高未创新高(右峰明显低于左峰=冲高动能衰减)、跌破颈线(顶部结构确认=高位资金共识破裂)。用这些字段客观描述该股所处的趋势结构与所在台阶, 把方向性决策留给用户。本工具(A股)还会附一张我方数据渲染的K线图(蜡烛+量能+均线, 已标注台阶支撑/颈线), 你能直接看到它: 据图识别上面字段未编码的形态(头肩顶/旗形/收敛三角/量价背离/缺口等)作为补充, 凡引用具体价位/涨跌幅/量比仍以结构化字段为准(图负责形、数字负责数)。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}, "days": {"type": "integer", "description": "默认20"}}, "required": ["code"]}},
     {"name": "get_intraday", "description": "当日分时走势(开盘/最高及时间/最低及时间/现价 + 冲高回落幅度 + 路径采样): 判断盘中是不是冲高回落/炸板/尾盘拉升时用, 比日K细。需启用 TDX 数据源, 仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
@@ -2011,6 +2027,18 @@ async def _run_tool(tu: dict) -> dict:
         return await fn(tu.get("input") or {})
     except Exception as e:
         return {"error": str(e)}
+
+
+def _result_content(out: dict):
+    """工具输出 → tool_result.content。普通输出=JSON 字符串; 带图(get_trend 渲染的K线)=
+    [text, image] 块列表, 把图作为多模态输入喂给模型(base64 不进 text, 避免巨串)。"""
+    if isinstance(out, dict) and out.get("_chart_png_b64"):
+        out = dict(out)
+        b64 = out.pop("_chart_png_b64")
+        media = out.pop("_chart_media", "image/png")
+        return [{"type": "text", "text": _json.dumps(out, ensure_ascii=False)},
+                {"type": "image", "source": {"type": "base64", "media_type": media, "data": b64}}]
+    return _json.dumps(out, ensure_ascii=False)
 
 
 def _active_tools() -> list:
@@ -2321,8 +2349,11 @@ async def ask_stock_stream(question: str, history: list | None = None, images: l
                    "arg": (tu.get("input") or {}).get("query") or (tu.get("input") or {}).get("code") or ""}
         # 同一轮里的工具相互独立(各自的网络请求), 并发跑, 顺序保留, 单个失败不连累其他
         outs = await asyncio.gather(*[_run_tool(tu) for tu in tus])
+        for out in outs:
+            if isinstance(out, dict) and out.get("chart_url"):
+                yield {"type": "chart", "url": out["chart_url"], "code": out.get("code", "")}
         results = [{"type": "tool_result", "tool_use_id": tu.get("id"),
-                    "content": _json.dumps(out, ensure_ascii=False)}
+                    "content": _result_content(out)}
                    for tu, out in zip(tus, outs)]
         messages.append({"role": "user", "content": results})
     yield {"type": "answer", "text": "（分析步数超限, 请换个问法或更具体）"}
@@ -2338,6 +2369,7 @@ async def ask_stock(question: str, history: list | None = None, images: list | N
     tools_used: list[str] = []
     sources: list = []
     seen_urls: set = set()
+    charts: list = []
     for rnd in range(_MAX_ROUNDS):
         try:
             resp = await asyncio.to_thread(
@@ -2353,12 +2385,16 @@ async def ask_stock(question: str, history: list | None = None, images: list | N
         tus = [b for b in content if b.get("type") == "tool_use"]
         if not tus:
             text = _assemble_cited_text(content, sources, seen_urls)
-            return {"answer": text, "tools_used": tools_used, "rounds": rnd + 1, "sources": sources}
+            return {"answer": text, "tools_used": tools_used, "rounds": rnd + 1,
+                    "sources": sources, "charts": charts}
         tools_used.extend(tu.get("name", "") for tu in tus)
         # 同一轮里的工具并发跑(相互独立), 顺序保留, 单个失败不连累其他
         outs = await asyncio.gather(*[_run_tool(tu) for tu in tus])
+        charts.extend(out["chart_url"] for out in outs
+                      if isinstance(out, dict) and out.get("chart_url"))
         results = [{"type": "tool_result", "tool_use_id": tu.get("id"),
-                    "content": _json.dumps(out, ensure_ascii=False)}
+                    "content": _result_content(out)}
                    for tu, out in zip(tus, outs)]
         messages.append({"role": "user", "content": results})
-    return {"answer": "（分析步数超限, 请换个问法或更具体）", "tools_used": tools_used, "rounds": _MAX_ROUNDS}
+    return {"answer": "（分析步数超限, 请换个问法或更具体）", "tools_used": tools_used,
+            "rounds": _MAX_ROUNDS, "charts": charts}
