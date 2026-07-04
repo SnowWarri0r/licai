@@ -60,14 +60,23 @@ function CiteMark({ n, src }) {
   )
 }
 
-// 极简 markdown 渲染 (## 标题 / **粗** / - 列表 / ⟦N⟧引用 / 段落), 不引依赖
+// 给带符号涨跌数字上色(A股 红涨绿跌): +X% / -X% → 红 / 绿。在表格和正文里都生效。
+function colorizeSigned(text, kp) {
+  return text.split(/([+-]\d[\d,.]*%?)/g).map((seg, j) => {
+    const m = seg.match(/^([+-])[\d,.]+%?$/)
+    if (m) return <span key={`${kp}-s${j}`} className={m[1] === '+' ? 'text-bear' : 'text-bull'}>{seg}</span>
+    return seg
+  })
+}
+
+// 极简 markdown 渲染 (## 标题 / **粗** / - 列表 / ⟦N⟧引用 / 涨跌红绿 / 段落), 不引依赖
 function renderInlineBase(text, kp, sources) {
   return text.split(/(\*\*[^*]+\*\*|⟦\d+⟧)/g).map((p, i) => {
     if (p.startsWith('**') && p.endsWith('**'))
-      return <strong key={`${kp}-${i}`} className="text-text-bright">{p.slice(2, -2)}</strong>
+      return <strong key={`${kp}-${i}`} className="text-text-bright">{colorizeSigned(p.slice(2, -2), `${kp}-${i}`)}</strong>
     const m = p.match(/^⟦(\d+)⟧$/)
     if (m) { const n = parseInt(m[1], 10); return <CiteMark key={`${kp}-${i}`} n={n} src={sources && sources[n - 1]} /> }
-    return <span key={`${kp}-${i}`}>{p}</span>
+    return <span key={`${kp}-${i}`}>{colorizeSigned(p, `${kp}-${i}`)}</span>
   })
 }
 // 表格行: 以 | 开头/结尾且含分隔; 分隔行: |---|:--|... (全是 - 和 : 和 |)
