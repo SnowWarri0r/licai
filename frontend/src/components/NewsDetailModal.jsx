@@ -55,10 +55,11 @@ export default function NewsDetailModal({ item, onClose }) {
         </div>
 
         {(() => {
-          const body = item.content || interp?.body || ''
+          const fetched = interp?.body || ''           // 抓到的全文优先于 teaser
+          const body = fetched || item.content || ''
           if (body) return (
             <div className="text-[12px] text-text-dim leading-relaxed whitespace-pre-wrap">
-              {interp?.body && !item.content && <span className="text-[10px] text-text-muted block mb-1">原文摘录 ↓</span>}
+              {fetched && <span className="text-[10px] text-text-muted block mb-1">原文摘录 ↓</span>}
               {body}
             </div>
           )
