@@ -14,6 +14,16 @@ function pctColor(v) {
   return 'text-text-dim'
 }
 
+// 按代码前缀分板块
+function boardOf(code) {
+  const c = String(code || '')
+  if (c.startsWith('688') || c.startsWith('689')) return '科创板'
+  if (c.startsWith('30')) return '创业板'
+  if (c[0] === '8' || c[0] === '4') return '北交所'
+  return '主板'
+}
+const BOARDS = ['全部', '主板', '创业板', '科创板', '北交所']
+
 // 右侧面板: 选中股票先看 K线; 想问再在底部输入框问(可选), 才跑 AI 分析
 function StockPanel({ stock }) {
   const [q, setQ] = useState('')
@@ -111,6 +121,7 @@ function StockPanel({ stock }) {
 
 export default function Rankings() {
   const [tab, setTab] = useState('gainers')
+  const [board, setBoard] = useState('全部')
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState(false)
@@ -125,7 +136,8 @@ export default function Rankings() {
   }
   useEffect(() => { load() }, [])
 
-  const list = (data && data[tab]) || []
+  const rawList = (data && data[tab]) || []
+  const list = board === '全部' ? rawList : rawList.filter(r => boardOf(r.code) === board)
 
   return (
     <div className="bg-surface-2 border border-border rounded-xl overflow-hidden flex flex-col lg:flex-row h-[calc(100vh-11rem)] min-h-[480px]">
@@ -141,7 +153,18 @@ export default function Rankings() {
           <button onClick={load} title="刷新" className="text-[10.5px] px-1.5 py-0.5 rounded border border-border text-text-dim hover:text-text">刷新</button>
         </div>
 
+        {/* 板块筛选 */}
+        <div className="flex items-center gap-1 px-3 py-1.5 border-b border-border-subtle flex-wrap">
+          {BOARDS.map(b => (
+            <button key={b} onClick={() => setBoard(b)}
+              className={`text-[11px] px-2 py-0.5 rounded ${board === b ? 'bg-accent/15 text-accent' : 'text-text-dim hover:text-text'}`}>
+              {b}{b !== '全部' && rawList.length > 0 ? ` ${rawList.filter(r => boardOf(r.code) === b).length}` : ''}
+            </button>
+          ))}
+        </div>
+
         <div className="flex-1 overflow-y-auto min-h-0">
+          {!loading && !err && list.length === 0 && <div className="text-center py-8 text-text-dim text-[12px]">榜单 top100 里暂无{board}标的</div>}
           {loading && <div className="text-center py-8 text-text-dim text-[12px]">加载榜单…</div>}
           {err && <div className="text-center py-8 text-text-dim text-[12px]">榜单源暂不可达（东财抖动），<button onClick={load} className="text-accent">重试</button></div>}
           {!loading && !err && list.map((r, i) => {
@@ -155,7 +178,7 @@ export default function Rankings() {
                     <span className="text-[12.5px] text-text-bright truncate">{r.name}</span>
                     {r.is_st && <span className="text-[8.5px] px-1 rounded bg-bear/15 text-bear-bright shrink-0">ST</span>}
                   </span>
-                  <span className="text-[10px] text-text-muted font-mono">{r.code} · {r['行业'] || '—'}</span>
+                  <span className="text-[10px] text-text-muted font-mono">{boardOf(r.code)} · {r.code} · {r['行业'] || '—'}</span>
                 </span>
                 <span className="text-right shrink-0">
                   <span className={`block text-[12.5px] font-mono font-semibold ${pctColor(r.pct)}`}>{r.pct >= 0 ? '+' : ''}{r.pct}%</span>
