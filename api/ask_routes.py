@@ -15,12 +15,17 @@ from services.stock_agent import ask_stock, ask_stock_stream
 from database import (create_ask_session, add_ask_message, list_ask_sessions,
                       get_ask_session, delete_ask_session)
 
-# 会话图片落盘目录(跟 DB 同级), 存压缩 JPG 文件, DB 只留 URL — 不把 base64 塞进库
+# 会话图片落盘目录(跟 DB 同级), 存压缩光栅图文件, DB 只留 URL — 不把 base64 塞进库
 _MEDIA_DIR = os.path.join(os.path.dirname(os.path.abspath(config.db_path)) or ".", "ask_media")
+# 只允许光栅图; 明确排除 SVG(可含脚本 → 存储型 XSS)及其它可执行/未知类型
+_ALLOWED_IMG = {"jpeg": ("jpg", "image/jpeg"), "jpg": ("jpg", "image/jpeg"),
+                "png": ("png", "image/png"), "gif": ("gif", "image/gif"),
+                "webp": ("webp", "image/webp")}
 
 
 def _persist_images(meta: Optional[dict]) -> Optional[dict]:
-    """把 meta.images 里的 data URL 落盘成文件, 替换为 /api/ask/image/<name> URL。已是 URL 的原样保留。"""
+    """把 meta.images 里的 data URL 落盘成文件, 替换为 /api/ask/image/<name> URL。已是 URL 的原样保留。
+    只接受光栅图(jpg/png/gif/webp), SVG 等非白名单类型一律丢弃, 防存储型 XSS。"""
     if not isinstance(meta, dict):
         return meta
     imgs = meta.get("images")
@@ -36,8 +41,11 @@ def _persist_images(meta: Optional[dict]) -> Optional[dict]:
         if s.startswith("data:"):
             try:
                 head, b64 = s.split(",", 1)
-                m = re.search(r"image/(\w+)", head)
-                ext = (m.group(1) if m else "jpg").replace("jpeg", "jpg")
+                m = re.match(r"data:image/([a-zA-Z0-9.+-]+)", head)
+                subtype = (m.group(1).lower() if m else "")
+                if subtype not in _ALLOWED_IMG:    # svg+xml / 未知类型 → 丢弃
+                    continue
+                ext = _ALLOWED_IMG[subtype][0]
                 name = f"{uuid.uuid4().hex}.{ext}"
                 with open(os.path.join(_MEDIA_DIR, name), "wb") as f:
                     f.write(base64.b64decode(b64))
@@ -107,13 +115,19 @@ async def save_message(m: SessionMsg):
     return {"session_id": sid}
 
 
+_EXT_CT = {"jpg": "image/jpeg", "png": "image/png", "gif": "image/gif", "webp": "image/webp"}
+
+
 @router.get("/image/{name}")
 async def get_ask_image(name: str):
-    """读会话图片(落盘的压缩JPG)。basename 防目录穿越。"""
-    path = os.path.join(_MEDIA_DIR, os.path.basename(name))
-    if not os.path.isfile(path):
+    """读会话图片(落盘的压缩光栅图)。basename 防目录穿越; 按扩展名强制安全 Content-Type + nosniff, 不让浏览器嗅探执行。"""
+    safe = os.path.basename(name)
+    ext = safe.rsplit(".", 1)[-1].lower() if "." in safe else ""
+    ct = _EXT_CT.get(ext)
+    path = os.path.join(_MEDIA_DIR, safe)
+    if not ct or not os.path.isfile(path):    # 只服务白名单光栅图
         return Response(status_code=404)
-    return FileResponse(path)
+    return FileResponse(path, media_type=ct, headers={"X-Content-Type-Options": "nosniff"})
 
 
 @router.get("/sessions")
