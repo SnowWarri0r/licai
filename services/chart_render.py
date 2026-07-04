@@ -76,8 +76,9 @@ def _fractals(seq, low: bool, w: int = 3, gap: int = 3):
 
 
 def render_trend_chart(bars: list, *, code: str = "", name: str = "",
-                       structure: dict | None = None) -> bytes | None:
-    """bars: [(date, close, high, low, vol, open), ...] 升序(已截到展示窗口)。返回 PNG bytes 或 None。"""
+                       structure: dict | None = None, display: int = 50) -> bytes | None:
+    """bars: [(date, close, high, low, vol, open), ...] 升序。传入比展示窗口更长的序列(含前置数据),
+    均线在完整序列上算好再裁切, 避免 MA 在窗口前段断开。只显示最后 display 根。返回 PNG bytes 或 None。"""
     structure = structure or {}
     idx, rows = [], []
     for d, c, h, l, v, o in bars:
@@ -87,8 +88,14 @@ def render_trend_chart(bars: list, *, code: str = "", name: str = "",
         rows.append((float(o), float(h), float(l), float(c), float(v or 0)))
     if len(rows) < 5:
         return None
-    df = pd.DataFrame(rows, columns=["Open", "High", "Low", "Close", "Volume"],
-                      index=pd.DatetimeIndex(idx))
+    df_full = pd.DataFrame(rows, columns=["Open", "High", "Low", "Close", "Volume"],
+                           index=pd.DatetimeIndex(idx))
+    # 均线在完整序列上算(含前置数据), 再裁到展示窗口 → MA 从第一根展示K线起就连续, 前段不断开
+    closes_full = df_full["Close"]
+    ma5, ma10, ma20 = (closes_full.rolling(w).mean() for w in (5, 10, 20))
+    disp = min(display, len(df_full))
+    start = len(df_full) - disp
+    df = df_full.iloc[start:]
 
     mc = mpf.make_marketcolors(up=_UP, down=_DOWN, edge="inherit", wick="inherit", volume="inherit")
     style = mpf.make_mpf_style(base_mpf_style="nightclouds", marketcolors=mc,
@@ -106,7 +113,11 @@ def render_trend_chart(bars: list, *, code: str = "", name: str = "",
     if structure.get("底颈线"):
         line_specs.append((structure["底颈线"], "#7bb37a", "底颈线"))
 
-    kwargs = dict(type="candle", volume=True, mav=(5, 10, 20), style=style,
+    # 均线裁到展示窗口后作 addplot 叠加(取代 mpf 自带 mav, 后者只在展示窗口内算会前段断开)
+    aps = [mpf.make_addplot(ma5.iloc[start:], color="#e8b04a", width=0.9),
+           mpf.make_addplot(ma10.iloc[start:], color="#4aa6e0", width=0.9),
+           mpf.make_addplot(ma20.iloc[start:], color="#cf6bcf", width=0.9)]
+    kwargs = dict(type="candle", volume=True, addplot=aps, style=style,
                   figsize=(10, 6.2), returnfig=True, tight_layout=True,
                   ylabel="", ylabel_lower="", datetime_format="%m-%d", xrotation=0,
                   update_width_config=dict(candle_linewidth=0.7, candle_width=0.62))
@@ -119,11 +130,11 @@ def render_trend_chart(bars: list, *, code: str = "", name: str = "",
     if tags:
         title += "   " + " · ".join(tags)
 
-    # 摆动高/低点(结构骨架): 在每个分型高点上方标 ▽、低点下方标 △
+    # 摆动高/低点(结构骨架): 在完整序列上找分型, 平移到展示窗口坐标(只画落在窗口内的)
     Hs = [r[1] for r in rows]
     Ls = [r[2] for r in rows]
-    shi = _fractals(Hs, low=False)
-    slo = _fractals(Ls, low=True)
+    shi = [(i - start, v) for i, v in _fractals(Hs, low=False) if i >= start]
+    slo = [(i - start, v) for i, v in _fractals(Ls, low=True) if i >= start]
 
     with _lock:
         fig, axes = mpf.plot(df, **kwargs)
@@ -139,7 +150,7 @@ def render_trend_chart(bars: list, *, code: str = "", name: str = "",
                 ax.axhspan(lo_, hi_, color=col, alpha=0.13, zorder=0)
                 ax.text(0.6, (lo_ + hi_) / 2, "缺口", color=col, fontsize=7.5, va="center", **_tkw)
         # 摆动高/低点标记(稍偏出K线, 放大便于看清)
-        span = (max(Hs) - min(Ls)) or 1
+        span = float(df["High"].max() - df["Low"].min()) or 1
         off = span * 0.015
         for i, hv in shi:
             ax.scatter(i, hv + off, marker="v", s=70, color="#e88a8a", zorder=6, edgecolors="none")
