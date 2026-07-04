@@ -140,11 +140,13 @@ export default function Dashboard({ holdings }) {
     }
     return s
   }, 0)
-  // 基金今日浮动 (仅交易日,跟 A 股共用 isTradingDay 判断)
+  // 基金今日浮动 (仅交易日,跟 A 股共用 isTradingDay 判断)。
+  // 用 today_change_pct(后端折算的"今日"口径: 场内实时 / 净值滞后走底层代理估算 / 都没有则 null),
+  // 与持仓总览 SummaryStrip 同源, 两处"今日浮动"一致; change_pct 混着 T-1 官方净值会低/高估当天。
   const fundTodayPnl = isTradingDay
     ? (external?.assets || []).reduce((s, a) => {
         if (a.asset_type !== 'FUND') return s
-        const pct = a.quote?.change_pct
+        const pct = a.quote?.today_change_pct
         if (pct == null || a.current_value == null) return s
         return s + (a.current_value * pct / 100) / (1 + pct / 100)
       }, 0)
@@ -272,7 +274,7 @@ export default function Dashboard({ holdings }) {
         </>
       )}
 
-      {(aValue > 0 || cryptoTodayPnl !== 0) && (
+      {(aValue > 0 || todayPnl !== 0) && (
         <>
           <div className="w-px h-4 bg-border shrink-0" />
           <div className="flex items-center gap-1.5 shrink-0">
