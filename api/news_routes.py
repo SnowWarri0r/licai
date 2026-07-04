@@ -140,7 +140,7 @@ def _strip_proxy_env():
             os.environ.pop(k, None)
 
 
-def _item(src: str, title: str, content: str, t: str, url: str = "") -> dict | None:
+def _item(src: str, title: str, content: str, t: str, url: str = "", image: str = "") -> dict | None:
     title = (title or "").strip()
     if not title:
         return None
@@ -151,6 +151,7 @@ def _item(src: str, title: str, content: str, t: str, url: str = "") -> dict | N
         "content": (content or "").strip()[:200],
         "time": (t or "").strip(),
         "url": url,
+        "image": (image or "").strip(),
     }
 
 
@@ -240,19 +241,24 @@ def _fetch_global_jin10(pages: int = 6, want: int = 80) -> list[dict]:
 
     out = []
     for x in raw:
-        if x.get("type") not in (0, None):   # 只要文本快讯, 跳过图片/视频/数据型
+        typ = x.get("type")
+        if typ not in (0, None, 2):   # 文本(0) + 精选分析/VIP 图文(2); 跳过视频/数据型
             continue
         d = x.get("data") or {}
         content = d.get("content") or d.get("title") or ""
         text = re.sub(r"<[^>]+>", " ", content)      # 去 HTML 标签
         text = re.sub(r"\s+", " ", text).strip()
-        if not text:
-            continue
-        # 快讯多半无独立标题 → 用完整正文(不再截断到 60 字)
         title = (d.get("title") or "").strip() or text
-        it = _item("金十", title, text, str(x.get("time") or ""), d.get("source_link") or "")
+        if not title:
+            continue
+        # type=2(图文)用 pic 当配图、link 当原文; type=0 用 source_link
+        image = (d.get("pic") or "") if typ == 2 else ""
+        url = (d.get("link") or d.get("source_link") or "") if typ == 2 else (d.get("source_link") or "")
+        it = _item("金十", title, text, str(x.get("time") or ""), url, image)
         if it:
             it["important"] = bool(x.get("important"))
+            if typ == 2:
+                it["tag"] = (d.get("tag") or "").strip()   # VIP / 精选分析 / 市场要闻
             out.append(it)
     return out
 
