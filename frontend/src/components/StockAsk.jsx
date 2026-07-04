@@ -383,7 +383,7 @@ export default function StockAsk({ page = false }) {
   }
 
   return (
-    <div className="bg-surface-2 border border-border rounded-xl p-4 md:p-5">
+    <div className={`bg-surface-2 border border-border rounded-xl p-4 md:p-5 ${page ? 'flex flex-col h-full' : ''}`}>
       <div className="flex items-baseline gap-2 mb-3">
         <h3 className={`${page ? 'text-[16px]' : 'text-[14px]'} font-semibold text-text-bright m-0`}>问问市场</h3>
         <span className="text-[10.5px] text-text-muted hidden sm:inline">
@@ -454,7 +454,7 @@ export default function StockAsk({ page = false }) {
         </div>
       )}
 
-      <div ref={scrollBox} onScroll={onScroll} className={`space-y-3 mb-3 ${history.length ? `${page ? 'max-h-[82vh] min-h-[60vh]' : 'max-h-[58vh]'} overflow-y-auto pr-1` : ''}`}>
+      <div ref={scrollBox} onScroll={onScroll} className={`space-y-3 mb-3 ${page ? 'flex-1 min-h-0 overflow-y-auto pr-1' : (history.length ? 'max-h-[58vh] overflow-y-auto pr-1' : '')}`}>
         {history.map((it, i) => (
           <div key={i}>
             <div className="text-[12px] text-text-bright bg-surface-3 rounded-lg px-3 py-1.5 inline-block">{it.q}</div>
@@ -543,7 +543,7 @@ export default function StockAsk({ page = false }) {
           ))}
         </div>
       )}
-      <div className="flex gap-2">
+      <div className="flex gap-2 shrink-0">
         <input ref={fileRef} type="file" accept="image/*" multiple className="hidden"
           onChange={e => { addImages(e.target.files); e.target.value = '' }} />
         <button onClick={() => fileRef.current?.click()} disabled={loading} title="发图给 AI 看(截图/K线/持仓)"
