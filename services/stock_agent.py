@@ -2104,27 +2104,52 @@ def _assemble_cited_text(content: list, sources: list, seen: set) -> str:
     return _clean_answer("".join(parts))
 
 
-def _seed_messages(question: str, history: list | None) -> list:
-    """把前端传来的多轮历史(只含 role+text 的简化对话)接到当前问题前面, 让 agent 有上下文。"""
+def _image_blocks(images: list | None) -> list:
+    """把前端传来的图片(data URL 或裸 base64)转成 Anthropic image content 块。最多 4 张。"""
+    out = []
+    for raw in (images or [])[:4]:
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        s = raw.strip()
+        media = "image/jpeg"
+        if s.startswith("data:"):
+            try:
+                head, b64 = s.split(",", 1)
+                media = head.split(";")[0][5:] or media   # data:image/png;base64
+                s = b64
+            except ValueError:
+                continue
+        out.append({"type": "image", "source": {"type": "base64", "media_type": media, "data": s}})
+    return out
+
+
+def _seed_messages(question: str, history: list | None, images: list | None = None) -> list:
+    """把前端传来的多轮历史(只含 role+text 的简化对话)接到当前问题前面, 让 agent 有上下文。
+    带 images 时, 当前 user 消息构造成 [图片块... + 文本块] 多模态内容。"""
     msgs = []
     for h in (history or [])[-8:]:           # 最多带最近 8 条, 控制 token
         role = h.get("role")
         content = (h.get("content") or "").strip()
         if role in ("user", "assistant") and content:
             msgs.append({"role": role, "content": content[:4000]})
-    msgs.append({"role": "user", "content": question})
+    blocks = _image_blocks(images)
+    if blocks:
+        msgs.append({"role": "user", "content": blocks + [{"type": "text", "text": question or "看看这张图"}]})
+    else:
+        msgs.append({"role": "user", "content": question})
     return msgs
 
 
-async def ask_stock_stream(question: str, history: list | None = None):
+async def ask_stock_stream(question: str, history: list | None = None, images: list | None = None):
     """流式版: 边跑边 yield 事件 (step/answer/done/error), 供 SSE 推给前端。
     每轮 LLM 调用之间 yield 工具步骤, 步骤实时出现; 末轮文本作为答案。
-    history: 前端传的多轮对话历史 [{role, content}], 让 agent 有上下文(支持追问)。"""
+    history: 前端传的多轮对话历史 [{role, content}], 让 agent 有上下文(支持追问)。
+    images: 当前问题附带的图片(data URL / base64), 走多模态。"""
     question = (question or "").strip()
-    if not question:
+    if not question and not images:
         yield {"type": "error", "error": "空问题"}
         return
-    messages = _seed_messages(question, history)
+    messages = _seed_messages(question, history, images)
     sources: list = []
     seen_urls: set = set()
     for rnd in range(_MAX_ROUNDS):
@@ -2172,12 +2197,12 @@ async def ask_stock_stream(question: str, history: list | None = None):
     yield {"type": "done"}
 
 
-async def ask_stock(question: str, history: list | None = None) -> dict:
+async def ask_stock(question: str, history: list | None = None, images: list | None = None) -> dict:
     """跑 agent loop, 返回 {answer, tools_used, rounds}。"""
     question = (question or "").strip()
-    if not question:
+    if not question and not images:
         return {"answer": "", "error": "空问题"}
-    messages = _seed_messages(question, history)
+    messages = _seed_messages(question, history, images)
     tools_used: list[str] = []
     sources: list = []
     seen_urls: set = set()
