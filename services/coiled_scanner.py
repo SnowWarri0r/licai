@@ -173,11 +173,14 @@ async def _stage2(c: dict) -> dict | str:
     width = (bh / bl - 1) * 100
     if width > 25:                                     # 蓄势基座要窄
         return "箱体过宽"
-    # 平: 窗口前后半均值漂移小(箱子够宽, 趋势也装得下, 光在箱体内不算横)
+    # 平(不对称): 重心上移=已在启动, 卡严(+5%); 重心缓慢下移=缓跌收敛/下降楔形, 属洗盘蓄势变体,
+    # 容忍到-12%; 更陡的就是阴跌趋势不是盘整
     half_c = len(prev_c) // 2
-    drift = (sum(prev_c[half_c:]) / (len(prev_c) - half_c)) / (sum(prev_c[:half_c]) / half_c) - 1
-    if abs(drift) * 100 > 6:
-        return "窗口内有趋势(非横盘)"
+    drift = ((sum(prev_c[half_c:]) / (len(prev_c) - half_c)) / (sum(prev_c[:half_c]) / half_c) - 1) * 100
+    if drift > 5:
+        return "重心上移(已非蓄势)"
+    if drift < -12:
+        return "阴跌下行(非横盘)"
     # 静: 日收益σ小(安静基座σ≈1.5-2, 宽幅过山车≥2.5)
     rets = [prev_c[i] / prev_c[i - 1] - 1 for i in range(1, len(prev_c))]
     mean_r = sum(rets) / len(rets)
@@ -191,8 +194,8 @@ async def _stage2(c: dict) -> dict | str:
     # 位置: 还在箱体内(观察目标); 已放量越过上沿的属于"突破(偏晚)", 跌到下沿边缘的属于破位风险
     if last_close > bh * 0.995 and (last_close / min(closes[-10:]) - 1) * 100 > 6:
         return "已突破(偏晚)"
-    if last_close < bl * 1.02:
-        return "贴箱体下沿(有破位风险)"
+    if len(closes) > 16 and last_close <= min(closes[-15:-1]) * 0.995:
+        return "创近期新低(仍在下行)"
     # 近5日已明显启动的也偏晚
     if (last_close / closes[-6] - 1) * 100 > 8:
         return "已启动(偏晚)"
@@ -213,6 +216,8 @@ async def _stage2(c: dict) -> dict | str:
     # 初动迹象: 近3日均量相对基座均量温和放大(还没突破, 但量先热了)
     warm = round((sum(vols[-3:]) / 3) / base_vol, 2)
     pos_tag = "贴上沿" if dist >= -3 else ("箱体中部" if dist >= -12 else "箱体下部")
+    if drift <= -4:
+        pos_tag = "缓跌收敛·" + pos_tag       # 下降楔形/洗盘型基座
     tag = pos_tag + ("·量在暖" if warm >= 1.3 else "")
     # 蓄势质量分(0-105): 横盘越久+箱体越窄+越缩量+越贴上沿+量开始暖+机构覆盖
     score = (min(days_flat, 60) / 60 * 30
@@ -224,7 +229,7 @@ async def _stage2(c: dict) -> dict | str:
     return {**c,
             "横盘日": days_flat, "箱体振幅%": round(width, 1),
             "缩量比": contraction, "近3日量比基座": warm,
-            "距上沿%": dist, "标签": tag,
+            "距上沿%": dist, "重心漂移%": round(drift, 1), "标签": tag,
             "评分": round(score),
             "箱体上沿": round(bh, 2), "箱体下沿": round(bl, 2), "现价": round(last_close, 2)}
 
@@ -235,7 +240,8 @@ _AI_SYS = (
     "你是K线形态审核员, 任务是给K线图的『安静横盘蓄势基座(仍在箱体内, 突破尚未发生)』形态打贴合度分。\n"
     "审核范围(图上金色虚线=箱体下沿, 蓝色虚线=箱体上沿):\n"
     "· 基座 = 最近约两个月: 要求价格重心走平、波动收敛、大体在箱体内运行、成交量平稳或渐缩。"
-    "更早的历史走势(基座之前的下跌或上涨)属于背景, 独立于基座质量之外——先跌一波再筑底属标准形态之一;\n"
+    "更早的历史走势(基座之前的下跌或上涨)属于背景, 独立于基座质量之外——先跌一波再筑底属标准形态之一。"
+    "基座形态除水平箱体外, 缓慢下倾的收敛通道(下降楔形/缓跌洗盘, 卖压逐步衰竭)同样属于合格的蓄势基座变体; 重心持续上移的爬坡通道则属已启动;\n"
     "· 当前位置 = 最新几根K线仍在箱体内(贴近上沿或箱体中部都可), 已放量越过上沿并连续拉升的属于突破已发生, 大幅扣分;"
     "近期跌破下沿走弱的同样大幅扣分。\n"
     "加分项: 横盘时间长、箱体窄、越盘量越缩、近几日量能温和转暖但价格未动(蓄势末端特征)。\n"
