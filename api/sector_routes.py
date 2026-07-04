@@ -265,7 +265,7 @@ async def sector_why(data: WhyIn):
         + "\n\n请据此按要求输出 JSON。"
     )
     try:
-        raw = await asyncio.to_thread(_llm.call_claude, user_prompt, _WHY_SYS, "claude-sonnet-4-6", 500)
+        raw = await asyncio.to_thread(_llm.call_claude, user_prompt, _WHY_SYS, "claude-sonnet-5", 500)
     except Exception:
         return {"why": "", "relation": "", "error": "解读暂不可用", "cached": False}
     parsed = None

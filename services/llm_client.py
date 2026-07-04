@@ -119,8 +119,8 @@ _RETRYABLE_EXC = (
 # Anthropic 模型, 否则"fast"会原样发出去被 404(测试连接/默认调用都受影响)。
 _DEFAULT_ALIASES = {
     "smart": "claude-opus-4-8",
-    "balanced": "claude-sonnet-4-6",
-    "fast": "claude-sonnet-4-6",   # 不用 haiku, 最低也走 sonnet
+    "balanced": "claude-sonnet-5",
+    "fast": "claude-sonnet-5",   # 不用 haiku, 最低也走 sonnet
 }
 
 
@@ -462,7 +462,7 @@ def _retry_on_oauth_401(
 def call_claude(
     user_prompt: str,
     system: str | None = None,
-    model: str = "claude-sonnet-4-6",
+    model: str = "claude-sonnet-5",
     max_tokens: int = 2048,
 ) -> str:
     """Call LLM API (Anthropic-协议兼容). Returns text response.

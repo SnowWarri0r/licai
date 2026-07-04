@@ -92,7 +92,7 @@ async def _fetch_news_sentiment(stock_code: str, stock_name: str = "") -> float:
 
     try:
         resp = await asyncio.to_thread(
-            call_claude, prompt, SENTIMENT_SYSTEM, "claude-sonnet-4-6", 200
+            call_claude, prompt, SENTIMENT_SYSTEM, "claude-sonnet-5", 200
         )
         resp = resp.strip()
         if resp.startswith("```"):
@@ -149,7 +149,7 @@ async def _fetch_announcement_sentiment(stock_code: str, stock_name: str = "") -
 
     try:
         resp = await asyncio.to_thread(
-            call_claude, prompt, ANNOUNCEMENT_SYSTEM, "claude-sonnet-4-6", 200
+            call_claude, prompt, ANNOUNCEMENT_SYSTEM, "claude-sonnet-5", 200
         )
         resp = resp.strip()
         if resp.startswith("```"):
