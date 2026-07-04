@@ -155,16 +155,12 @@ async def _tool_resolve_stock(query: str) -> dict:
 
 
 def _a_limit_pct(bare: str, name: str) -> float | None:
-    """A股当日涨跌停幅度: ST 5%, 创业板/科创板 20%, 北交所 30%, 主板 10%。港美股无涨跌停→None。"""
+    """A股/场内基金当日涨跌停幅度(小数)。港美股无涨跌停→None。
+    规则收口到 market_review._limit_pct 单一来源(板块优先、588科创ETF/创业板类基金=20%、北交30%)。"""
     if not (len(bare) == 6 and bare.isdigit()):
         return None
-    if "ST" in (name or "").upper():
-        return 0.05
-    if bare[:1] in ("8", "4"):          # 北交所
-        return 0.30
-    if bare[:3] == "688" or bare[:2] == "30":   # 科创板 / 创业板
-        return 0.20
-    return 0.10                          # 沪深主板
+    from services.market_review import _limit_pct
+    return _limit_pct(bare, name) / 100.0
 
 
 async def _tool_get_quote(code: str) -> dict:
