@@ -1237,7 +1237,7 @@ def _mk_ohlc(date, c, o=None, h=None, l=None) -> dict | None:
 
 
 def _kline_sina_ashare(sym: str, datalen: int = 30) -> list[dict]:
-    """sh*/sz* A 股 / A 股板块指数."""
+    """sh*/sz*/bj*(北交所) A 股 / A 股板块指数."""
     url = (f"http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
            f"CN_MarketData.getKLineData?symbol={sym}&scale=240&ma=5&datalen={datalen}")
     r = _requests.get(url, timeout=6)
@@ -1487,7 +1487,7 @@ def _kline_frankfurter_fx(sym: str, datalen: int = 30) -> list[dict]:
 def _kline_for_symbol(sym: str, datalen: int = 30) -> list[dict]:
     """根据 symbol 前缀分发到对应接口. 失败返回 []."""
     try:
-        if sym.startswith("sh") or sym.startswith("sz"):
+        if sym.startswith("sh") or sym.startswith("sz") or sym.startswith("bj"):
             return _kline_sina_ashare(sym, datalen)
         if sym.startswith("hk"):
             return _kline_tencent_hk(sym, datalen)
