@@ -40,6 +40,7 @@ class HoldingResponse(BaseModel):
     market_value: Optional[float] = None
     sector: Optional[str] = None  # 顶级行业, e.g. "有色金属" / "汽车" — 用于前端分组
     broker: Optional[str] = None
+    div_per_share: Optional[float] = None  # 持有期累计每股现金分红(已摊进 cost_price, 对齐券商摊薄成本)
 
 
 class QuoteData(BaseModel):
