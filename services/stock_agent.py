@@ -401,6 +401,11 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
     code = raw
     closes = [b[1] for b in bars]
     vols = [b[4] for b in bars]
+    # 该股涨跌停幅度(按板块: 科创/创业20、北交所30、ST5、主板10), 让 agent 判封板别按 10% 猜
+    bare6 = "".join(ch for ch in raw if ch.isdigit())[-6:]
+    lp = _a_limit_pct(bare6, "") if is_a_share(raw) else None
+    limit_pct = round(lp * 100, 1) if lp else None
+    near = (limit_pct - 0.4) if limit_pct else None   # 容差(价格档位/四舍五入)
     # 每条逐日涨跌挂真实日期 + 当天最高/最低相对昨收的幅度(看历史某天日内摸没摸到涨停/封板还是冲高回落, 无需分时)
     # + 量比(当日量/前5日均量): >1.5 明显放量, <0.7 缩量 —— 配合 pct 看量价(放量上涨/放量滞涨/缩量回调)
     # + open_pct(开盘相对昨收) + shape(裸K形态: 光头光脚/长上影/十字星 等), 让 agent 读单根K线
@@ -421,16 +426,27 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
         shape = _candle_shape(o, c, h, l)
         if shape:
             e["shape"] = shape
+        # 涨跌停标记(用该股真实涨停幅度判, 非默认10%)
+        if near and "high_pct" in e:
+            if e["pct"] >= near:
+                e["板"] = "收在涨停(封板)"
+            elif e["high_pct"] >= near:
+                e["板"] = "盘中触及涨停后回落"
+        if near and "low_pct" in e and "板" not in e:
+            if e["pct"] <= -near:
+                e["板"] = "收在跌停"
+            elif e["low_pct"] <= -near:
+                e["板"] = "盘中触及跌停后回升"
         daily.append(e)
     cum = round((closes[-1] / closes[0] - 1) * 100, 2)
     up = sum(1 for d in daily if d["pct"] > 0)
     return {
-        "code": code, "days": len(daily),
+        "code": code, "days": len(daily), "limit_pct": limit_pct,   # 涨跌停幅度% (科创/创业=20, 主板=10, 北交=30, ST=5)
         "cum_pct": cum, "up_days": up, "down_days": len(daily) - up,
         "last_date": bars[-1][0], "last_close": round(closes[-1], 3),
         # 多周期量价摘要: pct_5d/pct_20d/pct_60d 涨幅、dist_20high 距20日高、ma 均线排列、vol 量能
         "summary": summary,
-        # 最近 10 日逐日涨跌, 每条带 date(YYYY-MM-DD) + high_pct/low_pct(当日最高/最低相对昨收)。最后一条即最新交易日。
+        # 最近 10 日逐日涨跌, 每条带 date + high_pct/low_pct + 板(涨跌停标记, 已按该股真实涨停幅度判)。最后一条即最新交易日。
         "daily_pct": daily[-min(10, len(daily)):],
     }
 
@@ -1794,7 +1810,7 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"query": {"type": "string", "description": "股票名字或代码"}}, "required": ["query"]}},
     {"name": "get_quote", "description": "查个股实时行情: 现价/当日涨跌幅/开高低/成交额/换手。code 直接用 resolve_stock 返回的 code 原样传(A股是裸6位如 600667 / 000657; 港美股 HK.00700 / US.AAPL), 保持原样、A股无需 sh/sz 前缀。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
-    {"name": "get_trend", "description": "查个股近 N 个交易日走势(裸K + 量): 累计涨跌/逐日涨跌/上涨天数。支持 A 股/港股/美股。daily_pct 每条是 {date, open_pct, pct, high_pct, low_pct, vol_ratio, shape}: date 是该日真实交易日(YYYY-MM-DD), open_pct/pct 是开盘/收盘相对昨收, high_pct/low_pct 是当日最高/最低相对昨收, vol_ratio 是当日量比(成交量/前5日均量, >1.5 放量、<0.7 缩量), shape 是这根K线的裸K形态(如 光头光脚阳线/长上影阴线/十字星)。最后一条即 last_date(最新交易日)。引用某天涨跌时日期以 date 字段为准。看封板/炸板: high_pct≈涨停幅度(主板10/创业板科创20)且 pct=high_pct 即收在涨停(封板), high_pct 到涨停而 pct 明显更低即触板回落。读裸K量价: 用 open_pct/pct/high_pct/low_pct 还原每根K线的开收高低位置 + shape 形态 + vol_ratio 量, 描述放量光头大阳=量价齐升、放量长上影=冲高回落分歧、缩量十字=观望、高位放量长上影=兑现等。无需分时即可还原历史每天盘中量价形态。",
+    {"name": "get_trend", "description": "查个股近 N 个交易日走势(裸K + 量): 累计涨跌/逐日涨跌/上涨天数。支持 A 股/港股/美股。daily_pct 每条是 {date, open_pct, pct, high_pct, low_pct, vol_ratio, shape}: date 是该日真实交易日(YYYY-MM-DD), open_pct/pct 是开盘/收盘相对昨收, high_pct/low_pct 是当日最高/最低相对昨收, vol_ratio 是当日量比(成交量/前5日均量, >1.5 放量、<0.7 缩量), shape 是这根K线的裸K形态(如 光头光脚阳线/长上影阴线/十字星)。最后一条即 last_date(最新交易日)。limit_pct=该股涨跌停幅度%(科创板688/创业板30开头=20, 北交所8/4开头=30, ST=5, 沪深主板=10), 别按10%默认。daily_pct 每条已带 板 字段(收在涨停封板/盘中触及涨停后回落/跌停, 已按该股真实涨停幅度判好, 直接用别自己算)。引用某天涨跌时日期以 date 字段为准。读裸K量价: 用 open_pct/pct/high_pct/low_pct 还原每根K线的开收高低位置 + shape 形态 + vol_ratio 量, 描述放量光头大阳=量价齐升、放量长上影=冲高回落分歧、缩量十字=观望、高位放量长上影=兑现等。无需分时即可还原历史每天盘中量价形态。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}, "days": {"type": "integer", "description": "默认20"}}, "required": ["code"]}},
     {"name": "get_intraday", "description": "当日分时走势(开盘/最高及时间/最低及时间/现价 + 冲高回落幅度 + 路径采样): 判断盘中是不是冲高回落/炸板/尾盘拉升时用, 比日K细。需启用 TDX 数据源, 仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
