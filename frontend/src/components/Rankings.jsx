@@ -1,10 +1,11 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { fetchJSON } from '../hooks/useApi'
+import KlineChart from './KlineChart'
 import { MiniMarkdown, SourcesBlock, streamAnalysis } from './askShared'
 
 const TABS = [
-  { key: 'gainers', label: '涨幅榜', col: '涨幅', desc: '今日涨幅 top100' },
-  { key: 'by_amount', label: '成交额榜', col: '成交额', desc: '今日成交额 top100' },
+  { key: 'gainers', label: '涨幅榜' },
+  { key: 'by_amount', label: '成交额榜' },
 ]
 
 function pctColor(v) {
@@ -13,79 +14,104 @@ function pctColor(v) {
   return 'text-text-dim'
 }
 
-// 单只股票的 AI 分析面板(右侧内嵌): 选中即跑一次单轮分析, 展示步骤/答案/K线图/来源
-function AnalysisPanel({ stock }) {
-  const [steps, setSteps] = useState([])
+const fmtVal = (v) => v == null ? '--' : Math.abs(v) >= 100 ? v.toFixed(1) : Math.abs(v) >= 10 ? v.toFixed(2) : v.toFixed(3)
+
+// 右侧面板: 选中股票先看 K线; 想问再在底部输入框问(可选), 才跑 AI 分析
+function StockPanel({ stock }) {
+  const [q, setQ] = useState('')
+  const [asking, setAsking] = useState(false)
   const [answer, setAnswer] = useState('')
   const [charts, setCharts] = useState([])
   const [sources, setSources] = useState([])
-  const [loading, setLoading] = useState(false)
-  const [err, setErr] = useState('')
+  const [steps, setSteps] = useState([])
   const abortRef = useRef(null)
 
+  // 切换股票: 清空问答、停掉进行中的请求
   useEffect(() => {
-    if (!stock) return
+    setQ(''); setAnswer(''); setCharts([]); setSources([]); setSteps([]); setAsking(false)
+    return () => abortRef.current?.abort()
+  }, [stock])
+
+  const fetchByDays = useCallback((days) =>
+    fetchJSON(`/api/market/history/${stock.code}?days=${days}`)
+      .then(d => (d || []).map(r => ({ ...r, date: r.time }))).catch(() => []),
+    [stock?.code])
+
+  const ask = () => {
+    const question = q.trim()
+    if (!question || asking || !stock) return
     abortRef.current?.abort()
     const ctrl = new AbortController(); abortRef.current = ctrl
-    setSteps([]); setAnswer(''); setCharts([]); setSources([]); setErr(''); setLoading(true)
-    const q = `分析一下 ${stock.name}(${stock.code}) 今天的走势：为什么${stock.pct >= 0 ? '涨' : '跌'}、量价配合、有没有消息催化、资金面如何。客观分析即可。`
-    streamAnalysis(q, {
+    setAsking(true); setAnswer(''); setCharts([]); setSources([]); setSteps([])
+    streamAnalysis(`${stock.name}(${stock.code}): ${question}`, {
       signal: ctrl.signal,
-      onStep: (ev) => setSteps(s => [...s, { tool: ev.tool, label: ev.label }]),
-      onChart: (ev) => setCharts(c => [...c, ev.url]),
+      onStep: (e) => setSteps(s => [...s, { label: e.label }]),
+      onChart: (e) => setCharts(c => [...c, e.url]),
       onSource: (arr) => setSources(s => [...s, ...arr]),
       onAnswer: (t) => setAnswer(t),
-      onError: (e) => setErr(e || '分析失败'),
-      onDone: () => setLoading(false),
+      onError: () => setAsking(false),
+      onDone: () => setAsking(false),
     })
-    return () => ctrl.abort()
-  }, [stock])
+  }
 
   if (!stock) {
     return (
       <div className="h-full flex items-center justify-center text-center px-6">
         <div className="text-text-muted text-[13px] leading-relaxed">
-          点左侧任意一只股票<br />这里给你跑 AI 分析（含 K 线图）<br />
-          <span className="text-[11px] text-text-dim">为什么涨跌 · 量价 · 消息催化 · 资金面</span>
+          点左侧任意一只股票看 K 线<br />
+          <span className="text-[11px] text-text-dim">想问什么(为什么涨/量价/消息)在下面输入框问</span>
         </div>
       </div>
     )
   }
 
   return (
-    <div className="h-full overflow-y-auto px-4 py-3">
-      <div className="flex items-baseline gap-2 mb-2 sticky top-0 bg-surface-2 py-1 -mx-4 px-4 z-10 border-b border-border-subtle">
+    <div className="h-full flex flex-col">
+      <div className="flex items-baseline gap-2 px-4 py-2 border-b border-border-subtle shrink-0">
         <span className="text-[14px] font-semibold text-text-bright">{stock.name}</span>
         <span className="text-[11px] font-mono text-text-muted">{stock.code}</span>
         <span className={`text-[13px] font-mono font-semibold ${pctColor(stock.pct)}`}>
           {stock.pct >= 0 ? '+' : ''}{stock.pct}%
         </span>
-        {loading && <span className="ml-auto text-[10.5px] text-text-dim">分析中…</span>}
+        {stock['行业'] && <span className="text-[10.5px] text-text-dim ml-1">{stock['行业']}</span>}
       </div>
 
-      {steps.length > 0 && answer === '' && !err && (
-        <div className="flex flex-wrap gap-1.5 mb-2">
-          {steps.map((s, i) => (
-            <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-surface-3 text-text-dim border border-border-subtle">{s.label}</span>
-          ))}
-        </div>
-      )}
+      <div className="flex-1 overflow-y-auto px-3 py-2 min-h-0">
+        <KlineChart key={stock.code} fetchByDays={fetchByDays} defaultDays={60} fmtVal={fmtVal} />
 
-      {charts.map((src, k) => (
-        <a key={k} href={src} target="_blank" rel="noreferrer" className="block mb-2">
-          <img src={src} alt="K线图" loading="lazy" className="w-full rounded-lg border border-border-subtle" />
-        </a>
-      ))}
+        {(asking || answer || steps.length > 0) && (
+          <div className="mt-3 pt-3 border-t border-border-subtle">
+            {asking && !answer && (
+              <div className="flex flex-wrap gap-1.5 mb-1 items-center">
+                <span className="text-[11px] text-text-dim">分析中…</span>
+                {steps.slice(-6).map((s, i) => (
+                  <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-surface-3 text-text-dim border border-border-subtle">{s.label}</span>
+                ))}
+              </div>
+            )}
+            {charts.map((src, k) => (
+              <a key={k} href={src} target="_blank" rel="noreferrer" className="block mb-2">
+                <img src={src} alt="K线图" loading="lazy" className="w-full rounded-lg border border-border-subtle" />
+              </a>
+            ))}
+            {answer && <MiniMarkdown text={answer} sources={sources} />}
+            {answer && <SourcesBlock sources={sources} />}
+            {answer && <div className="mt-2 pt-2 border-t border-border-subtle text-[10px] text-text-muted">仅客观分析，不构成买卖建议</div>}
+          </div>
+        )}
+      </div>
 
-      {err && <div className="text-[12px] text-bull-bright">分析出错：{err}</div>}
-      {!err && answer === '' && !loading && <div className="text-[12px] text-text-dim">无分析结果</div>}
-      {answer && <MiniMarkdown text={answer} sources={sources} />}
-      {answer && <SourcesBlock sources={sources} />}
-      {answer && (
-        <div className="mt-3 pt-2 border-t border-border-subtle text-[10px] text-text-muted">
-          仅客观分析，不构成买卖建议
-        </div>
-      )}
+      <div className="shrink-0 border-t border-border px-3 py-2 flex gap-2">
+        <input value={q} onChange={e => setQ(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) ask() }}
+          disabled={asking}
+          placeholder={`想问点 ${stock.name} 什么?(可选) 例: 今天为什么涨 / 量价怎么看`}
+          className="flex-1 text-[12px] px-3 py-2 rounded-lg bg-surface-3 border border-border text-text placeholder:text-text-muted focus:border-accent/50 outline-none disabled:opacity-50" />
+        <button onClick={ask} disabled={asking || !q.trim()}
+          className="text-[12px] px-3.5 py-2 rounded-lg bg-accent/20 text-accent border border-accent/40 hover:bg-accent/30 disabled:opacity-40 disabled:cursor-not-allowed">
+          {asking ? '分析中' : '问'}
+        </button>
+      </div>
     </div>
   )
 }
@@ -110,7 +136,6 @@ export default function Rankings() {
 
   return (
     <div className="bg-surface-2 border border-border rounded-xl overflow-hidden flex flex-col lg:flex-row h-[calc(100vh-11rem)] min-h-[480px]">
-      {/* 左: 榜单列表 */}
       <div className="lg:w-[420px] shrink-0 flex flex-col border-b lg:border-b-0 lg:border-r border-border min-h-0">
         <div className="flex items-center gap-1 px-3 py-2 border-b border-border-subtle">
           {TABS.map(t => (
@@ -151,9 +176,8 @@ export default function Rankings() {
         </div>
       </div>
 
-      {/* 右: AI 分析面板 */}
       <div className="flex-1 min-h-0 min-w-0">
-        <AnalysisPanel stock={selected} />
+        <StockPanel stock={selected} />
       </div>
     </div>
   )
