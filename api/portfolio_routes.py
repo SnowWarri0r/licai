@@ -547,10 +547,33 @@ async def trade_review_ai(period: str = "all", force: int = 0):
             tag = _cls_tag.get(t.get("asset_class", "stock"), "个股")
             sh = t.get("shares") or 0
             sh_s = f"{sh:.0f}" if sh == int(sh) else f"{sh:.2f}"
-            tail = (f" (现价{t['current']}, 至今{t['pct']:+.1f}%)"
-                    if t.get("current") and t.get("pct") is not None else "")
+            # '至今%'是标的从该笔成交价到现价的涨跌(择时参考), 不是用户收益; 买卖分别标注语义, 防被当成赚了多少
+            if t.get("current") and t.get("pct") is not None:
+                if t["kind"] == "buy":
+                    tail = f" (现价{t['current']}, 成交后该标的至今{t['pct']:+.1f}%·仅择时参考非你的收益)"
+                else:
+                    tail = f" (现价{t['current']}, 卖出后该标的至今{t['pct']:+.1f}%·正=卖飞少赚/负=躲过下跌)"
+            else:
+                tail = ""
             amt = f" 约¥{t['amount']:.0f}" if t.get("amount") else ""
             lines.append(f"  [{tag}] {t['date']} {kd} {t['name']} @{t['price']}×{sh_s}{amt}{tail}")
+        # 补每只标的的"真实盈亏"(已实现+浮盈, 来自综合成本法账本), 让 LLM 报收益时有准数, 而不是误用'至今%'
+        try:
+            _rv = await trade_review()
+            _smap = {s.get("name"): s for s in (_rv.get("stats") or [])}
+            _traded = []
+            for nm in dict.fromkeys(t["name"] for t in ptrades):   # 去重保序
+                s = _smap.get(nm)
+                if not s:
+                    continue
+                if (s.get("shares") or 0) > 0:
+                    _traded.append(f"  {nm}: 持仓中, 已落袋(realized){s.get('realized', 0):+.0f}元 + 当前浮盈{s.get('floating', 0):+.0f}元")
+                else:
+                    _traded.append(f"  {nm}: 已清仓, 实际落袋(realized){s.get('realized', 0):+.0f}元")
+            if _traded:
+                lines += ["", "【这些标的你的真实盈亏——报收益只看这里, 不是上面的'至今%'】"] + _traded
+        except Exception:
+            pass
         # 当日复盘 + 复盘的就是今天的交易 → 注入今日市场画像, 对照"操作 vs 今天市场奖励的风格/主线"
         market_ctx = ""
         if period == "day" and anchor == today.isoformat():
@@ -576,7 +599,9 @@ async def trade_review_ai(period: str = "all", force: int = 0):
             "  · [个股]/[场内ETF]: 可做T, 看有没有追高(越买越高)、同一标的反复买卖(频繁做T)、追涨杀跌、情绪化。\n"
             "  · [场外基金]: T+1 净值成交, 不能做T。小额规律买入是【定投】=策略, 不是追高/情绪化, 别拿做T那套骂它; "
             "    它该看的是: 定投有没有乱中断、是否在高位还大额追加、有没有恐慌赎回/追涨赎回。净值滞后, 别用单日表现判对错。\n"
-            "'至今X%'是该笔对现价的表现(参考, 别据此判追高对错——可能还持有/趋势未走完; 基金更别看这个下结论)。\n"
+            "【关键·'至今X%'不是你的收益】'至今X%'是该标的从你成交价涨/跌到现价的幅度(只反映择时, 不反映你赚没赚)。"
+            "你卖出后它再涨多少跟你无关——可能你早已亏着卖出, 它后来才大涨。报某只'给你赚了多少/收益X%'时, 一律用下方【真实盈亏】块的 realized(已落袋)+浮盈, "
+            "严禁把'至今+X%'说成'这只给你赚了X%'。基金净值滞后, 更别用至今%下结论。\n"
             "客观、像老友点评; 该夸的夸(节奏克制/卖点干脆/定投坚持)该点的点(追高/频繁/恐慌操作)。\n"
             "可用进阶交易原则(不点名出处): 买前估空间、卖点纪律、克制贪念、别接最后一棒。\n"
             "【硬规则】严禁任何未来操作指令(该买/该卖/加减仓/止损位/目标价/现在适合), 只复盘已发生, 不编造数字。\n"
