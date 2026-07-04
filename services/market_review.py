@@ -24,12 +24,18 @@ def _is_new_stock(name: str) -> bool:
 
 
 def _limit_pct(bare: str, name: str) -> float:
-    # 板块优先: 创业/科创/北交的 ST 仍是 20/30%, 只有主板 ST 才降到 5%
-    if bare[:1] in ("8", "4"):                       # 北交所
+    """A股/场内基金当日涨跌幅限制(%)。板块优先: 创业/科创/北交的 ST 仍是 20/30%, 只有主板 ST 才降 5%。
+    场内 ETF: 588xxx(科创板ETF专段)与跟踪创业板/科创/双创指数的基金为 20%, 其余 10%。"""
+    nm = (name or "").upper()
+    if bare[:1] in ("8", "4") or bare[:3] == "920":       # 北交所(含 920 新段)
         return 30.0
-    if bare[:3] in ("688", "689") or bare[:2] == "30":   # 科创 / 创业
+    if bare[:3] in ("688", "689") or bare[:2] == "30":    # 科创 / 创业 股票
         return 20.0
-    return 5.0 if "ST" in (name or "").upper() else 10.0   # 主板: ST 5, 否则 10
+    if bare[:1] == "5" or bare[:2] in ("15", "16", "18"):   # 场内基金(沪5x / 深15,16,18)
+        if bare[:3] == "588" or any(k in nm for k in ("创业板", "双创", "科创")):
+            return 20.0
+        return 10.0
+    return 5.0 if "ST" in nm else 10.0                    # 主板: ST 5, 否则 10
 
 
 def _clist(fid: str, pz: int) -> list[dict]:
