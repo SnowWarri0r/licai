@@ -79,11 +79,15 @@ function StockPanel({ stock }) {
         {stock['行业'] && <span className="text-[10.5px] text-text-dim ml-1">{stock['行业']}</span>}
       </div>
 
-      <div className="flex-1 overflow-y-auto px-3 py-2 min-h-0">
-        <ProKline code={stock.code} />
+      {/* K线固定在上方, 不随对话流滚动 */}
+      <div className="shrink-0 px-3 pt-2 pb-1 border-b border-border-subtle">
+        <ProKline code={stock.code} height={380} />
+      </div>
 
-        {(asking || answer || steps.length > 0) && (
-          <div className="mt-3 pt-3 border-t border-border-subtle">
+      {/* 对话流单独滚动 */}
+      <div className="flex-1 overflow-y-auto px-3 py-2 min-h-0">
+        {(asking || answer || steps.length > 0) ? (
+          <div>
             {asking && !answer && (
               <div className="flex flex-wrap gap-1.5 mb-1 items-center">
                 <span className="text-[11px] text-text-dim">分析中…</span>
@@ -100,6 +104,10 @@ function StockPanel({ stock }) {
             {answer && <MiniMarkdown text={answer} sources={sources} />}
             {answer && <SourcesBlock sources={sources} />}
             {answer && <div className="mt-2 pt-2 border-t border-border-subtle text-[10px] text-text-muted">仅客观分析，不构成买卖建议</div>}
+          </div>
+        ) : (
+          <div className="h-full flex items-center justify-center text-[11px] text-text-dim">
+            想问点 {stock.name} 什么，在下面输入框问
           </div>
         )}
       </div>
