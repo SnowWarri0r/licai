@@ -695,6 +695,25 @@ async def daily_review(force: bool = False):
 _INTERPRET_CACHE: dict[str, dict] = {}
 
 
+# 文章正文之后的页面尾部噪声标志(版权/分享/评论/推荐/下载), 命中最早的一个即截断
+_END_MARKERS = (
+    "未经正式授权", "未经授权", "侵权必究", "版权声明", "免责声明", "郑重声明",
+    "责任编辑", "本文首发", "扫描二维码", "下载界面新闻", "微信公众号",
+    "热门排行", "发布评论", "暂无评论", "下一篇", "上一篇", "分享至",
+)
+
+
+def _trim_article_tail(text: str) -> str:
+    """从正文里砍掉尾部页面噪声(版权/点赞收藏/分享/评论/热门排行/下载App 等)。
+    取最早命中的尾标志处截断; 标志出现在极靠前(<80)时不截, 避免误伤短正文。"""
+    cut = len(text)
+    for mk in _END_MARKERS:
+        i = text.find(mk)
+        if 80 <= i < cut:
+            cut = i
+    return text[:cut].strip()
+
+
 def _url_is_safe_public(url: str) -> bool:
     """SSRF 防护: 只放行 http(s) 且解析到公网 IP 的 URL, 挡环回/内网/链路本地(含云元数据 169.254.x)/组播/保留地址。
     抓取虽由外部 Firecrawl/Jina 代抓(不直连内网), 仍做纵深防御, 避免本端点被当开放抓取代理指向内部目标。"""
@@ -795,7 +814,7 @@ async def interpret_news(data: InterpretIn):
                     for i, ln in enumerate(lines):
                         if len(ln.strip().lstrip("#-*>| ").strip()) >= 16:   # 首个足够长的行=标题/正文
                             full = "\n".join(lines[i:]); break
-                full = full.strip()
+                full = _trim_article_tail(full.strip())   # 砍尾部版权/分享/评论/热门排行等噪声
                 if len(full) > len(content):       # 抓到的比原摘要更全才替换
                     content = full[:3000]          # 喂给 LLM 的正文(限长控 token)
                 body_excerpt = full                # 展示给前端的原文全文(已由抓取层截到 7000, 不再二次截断)
