@@ -18,27 +18,38 @@ _HOSTS = ["push2.eastmoney.com", "push2delay.eastmoney.com", "1.push2.eastmoney.
 
 
 def _limit_pct(bare: str, name: str) -> float:
-    if "ST" in (name or "").upper():
-        return 5.0
-    if bare[:3] == "688" or bare[:2] == "30":
+    # 板块优先: 创业/科创/北交的 ST 仍是 20/30%, 只有主板 ST 才降到 5%
+    if bare[:1] in ("8", "4"):                       # 北交所
+        return 30.0
+    if bare[:3] in ("688", "689") or bare[:2] == "30":   # 科创 / 创业
         return 20.0
-    return 10.0
+    return 5.0 if "ST" in (name or "").upper() else 10.0   # 主板: ST 5, 否则 10
 
 
 def _clist(fid: str, pz: int) -> list[dict]:
-    """拉一页 clist 榜单(fid=f3 涨幅 / f6 成交额), 降序。"""
+    """拉 clist 榜单(fid=f3 涨幅 / f6 成交额), 降序。东财单页上限100, 需要更多时自动翻页(pn)。"""
     import requests as _rq
     s = _rq.Session(); s.trust_env = False
-    params = {"pn": "1", "pz": str(pz), "po": "1", "np": "1", "fltt": "2", "invt": "2",
-              "fid": fid, "fs": _FS_ALL_A, "fields": _FIELDS}
-    for h in _HOSTS:
-        try:
-            d = s.get(f"https://{h}/api/qt/clist/get", params=params, timeout=7).json().get("data")
-            if d and d.get("diff"):
-                return d["diff"]
-        except Exception:
-            continue
-    return []
+    per = 100
+    pages = max(1, (int(pz) + per - 1) // per)
+    out: list[dict] = []
+    for pn in range(1, pages + 1):
+        params = {"pn": str(pn), "pz": str(per), "po": "1", "np": "1", "fltt": "2", "invt": "2",
+                  "fid": fid, "fs": _FS_ALL_A, "fields": _FIELDS}
+        got = None
+        for h in _HOSTS:
+            try:
+                d = s.get(f"https://{h}/api/qt/clist/get", params=params, timeout=7).json().get("data")
+                if d and d.get("diff"):
+                    got = d["diff"]; break
+            except Exception:
+                continue
+        if not got:
+            break
+        out.extend(got)
+        if len(got) < per:        # 末页, 后面没了
+            break
+    return out[:pz]
 
 
 def _row(x: dict) -> dict | None:
@@ -120,27 +131,36 @@ def _rank_row(x: dict) -> dict | None:
         return None
     if not code:
         return None
+    lim = _limit_pct(code, name)
     return {"code": code, "name": name, "pct": round(pct, 2),
             "成交额亿": round(float(x.get("f6") or 0) / 1e8, 2),
             "换手": x.get("f8"), "量比": x.get("f10"),
             "市值亿": round(float(x.get("f20") or 0) / 1e8, 0),
             "行业": x.get("f100") or "",
+            "limit": lim,
+            "涨停占比%": round(pct / lim * 100, 1) if lim else None,   # 涨幅占该板块涨停幅度的比例(100=涨停), 跨板块可比
             "is_st": ("ST" in name.upper() or "退" in name)}
 
 
 def top_rankings(limit: int = 100) -> dict:
-    """全市场 涨幅榜 top-N + 成交额榜 top-N。缓存 120s。失败返回 {error}。"""
+    """全市场 涨幅榜(按涨停占比排)top-N + 成交额榜 top-N。缓存 120s。失败返回 {error}。"""
     c = _cache.get("rankings")
     if c and _t.time() - c[1] < _TTL and c[2] >= limit:
         out = c[0]
         return {**out, "gainers": out["gainers"][:limit], "by_amount": out["by_amount"][:limit]}
     pz = max(int(limit), 1)
-    up = [r for r in (_rank_row(x) for x in _clist("f3", pz)) if r][:pz]
+    # 涨幅榜按"涨停占比"(涨幅/该板块涨停幅度)排: 主板涨停10%与创业板涨停20%都算100%, 跨板块公平。
+    # 必须拉大池子(只按 raw 涨幅取 top, 10%涨停的主板会被20%板挤光), 再用占比重排。
+    pool = [r for r in (_rank_row(x) for x in _clist("f3", max(pz * 8, 800))) if r]
+    # 占比封顶100(涨停因报价跳动会微过线100.x%, 不封顶则各板块涨停按零头排, 又把主板挤掉);
+    # 涨停统一并列, 二级用成交额(板块中性), 让主板涨停与创业/科创涨停真正平起
+    up = sorted([r for r in pool if r.get("涨停占比%") is not None],
+                key=lambda r: (min(r["涨停占比%"], 100.0), r["成交额亿"]), reverse=True)[:pz]
     amt = [r for r in (_rank_row(x) for x in _clist("f6", pz)) if r][:pz]
     if not up and not amt:
         return {"error": "榜单源暂不可达(东财抖动)"}
     out = {"as_of": _t.strftime("%Y-%m-%d %H:%M", _t.localtime()),
            "gainers": up, "by_amount": amt,
-           "note": "全市场沪深A股 涨幅榜/成交额榜(东财 clist 实时, 盘中滚动)。is_st=ST/退市标记。"}
+           "note": "涨幅榜按涨停占比(涨幅/该板块涨停幅度)排, 跨板块可比; 成交额榜按成交额。东财 clist 实时。is_st=ST/退市。"}
     _cache["rankings"] = (out, _t.time(), pz)
     return out
