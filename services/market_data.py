@@ -974,11 +974,12 @@ async def get_commodity_for_stock(stock_code: str) -> dict | None:
 
 
 def _fetch_indices_sina() -> list[dict]:
-    """Fetch key market indices from Sina: 上证, 深证, 有色板块."""
+    """Fetch key market indices from Sina: 上证, 深证, 创业板, 科创."""
     symbols = {
         "sh000001": "上证指数",
         "sz399001": "深证成指",
-        "sz399395": "有色金属",  # 有色金属板块指数
+        "sz399006": "创业板指",
+        "sh000688": "科创50",
     }
     url = f"https://hq.sinajs.cn/list={','.join(symbols.keys())}"
     resp = _requests.get(url, headers={"Referer": "https://finance.sina.com.cn"}, timeout=5)
@@ -1032,6 +1033,8 @@ MACRO_SYMBOLS = [
     ("a_index", "sh000300", "沪深300"),
     ("a_index", "sz399006", "创业板指"),
     ("a_index", "sh000688", "科创50"),
+    ("a_index", "sh000698", "科创100"),
+    ("a_index", "bj899050", "北证50"),
     # 港股
     ("hk_index", "hkHSI", "恒生指数"),
     ("hk_index", "hkHSTECH", "恒生科技"),
@@ -1107,8 +1110,8 @@ def _parse_macro_line(sym: str, body: str) -> dict | None:
         return None
     fields = body.split(",")
     try:
-        # A 股 sh/sz: 名,昨,开,当前,最高,最低,...
-        if sym.startswith("sh") or sym.startswith("sz"):
+        # A 股 sh/sz/bj(北交所): 名,昨,开,当前,最高,最低,...
+        if sym.startswith("sh") or sym.startswith("sz") or sym.startswith("bj"):
             if len(fields) < 4:
                 return None
             prev = float(fields[2]) if fields[2] else 0
