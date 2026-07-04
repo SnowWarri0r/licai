@@ -88,7 +88,7 @@ export default function Jin10Flash() {
                       {it.related && <span className="text-[9.5px] px-1 rounded" style={{ background: 'var(--color-up)18', color: 'var(--color-up)', border: '1px solid var(--color-up)50' }}>关联</span>}
                       {it.url && <a href={it.url} target="_blank" rel="noreferrer" className="text-[9.5px] text-text-muted hover:text-accent">原文↗</a>}
                     </div>
-                    <div onClick={() => setSel({ title: it.title, content: '', source: '金十', time: it.time, url: it.url })}
+                    <div onClick={() => setSel({ title: it.title, content: it.content && it.content !== it.title ? it.content : '', source: '金十', time: it.time, url: it.url })}
                       className={`text-[12px] leading-relaxed mt-0.5 cursor-pointer hover:text-accent transition-colors ${it.important ? 'text-text-bright font-medium' : it.related ? 'text-text' : 'text-text-dim'}`}>
                       {it.title}
                     </div>

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json as _json
+import re
 import time
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -698,6 +699,7 @@ class InterpretIn(BaseModel):
     name: Optional[str] = None
     source: Optional[str] = None
     time: Optional[str] = None
+    url: Optional[str] = None      # 带原文链接的快讯: 正文薄时抓全文补足
 
 
 _INTERPRET_SYS = (
@@ -747,7 +749,26 @@ async def _all_holdings_desc() -> str:
 
 @router.post("/interpret")
 async def interpret_news(data: InterpretIn):
-    key = hashlib.sha1(f"{data.title}|{data.content}|{data.code or ''}".encode("utf-8")).hexdigest()
+    content = (data.content or "").strip()
+    body_excerpt = ""
+    # 正文薄(金十很多快讯只有一行)且带原文链接时, 抓全文补足 → 解读基于全文而非一句话摘要
+    if data.url and len(content) < 40 and (data.url.startswith("http://") or data.url.startswith("https://")):
+        try:
+            from services.stock_agent import _fetch_url_markdown_sync
+            md = await asyncio.to_thread(_fetch_url_markdown_sync, data.url)
+            full = (md or {}).get("markdown") or ""
+            if full and not md.get("error"):
+                full = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", full)        # 去图片 markdown
+                full = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", full)     # 链接只留文字
+                full = re.sub(r"\n{3,}", "\n\n", full).strip()
+                m = re.search(r"(?m)^#\s", full)                        # 从正文首个 H1 起, 跳过站点导航头
+                if m and m.start() < 2000:
+                    full = full[m.start():]
+                content = full[:3000]              # 喂给 LLM 的正文
+                body_excerpt = full[:1500]         # 回给前端展示的原文摘录
+        except Exception:
+            pass
+    key = hashlib.sha1(f"{data.title}|{content}|{data.code or ''}|{data.url or ''}".encode("utf-8")).hexdigest()
     if key in _INTERPRET_CACHE:
         return {**_INTERPRET_CACHE[key], "cached": True}
     hold_desc = await _all_holdings_desc()
@@ -755,7 +776,7 @@ async def interpret_news(data: InterpretIn):
     user_prompt = (
         f"用户持仓: {hold_desc}\n\n"
         f"新闻标题: {rel}{data.title}\n"
-        f"新闻正文: {data.content or '(无正文, 仅标题)'}\n\n请按要求输出 JSON。"
+        f"新闻正文: {content or '(无正文, 仅标题)'}\n\n请按要求输出 JSON。"
     )
     try:
         raw = await asyncio.to_thread(_llm.call_claude, user_prompt, _INTERPRET_SYS, "claude-sonnet-4-6", 600)
@@ -775,6 +796,7 @@ async def interpret_news(data: InterpretIn):
         "what": str(parsed.get("what") or "").strip(),
         "why": str(parsed.get("why") or "").strip(),
         "relation": str(parsed.get("relation") or "").strip(),
+        "body": body_excerpt,      # 抓到的原文摘录(仅带链接且成功时非空), 供前端展示
     }
     _INTERPRET_CACHE[key] = out
     return {**out, "cached": False}
