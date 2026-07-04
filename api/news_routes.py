@@ -774,9 +774,10 @@ async def _all_holdings_desc() -> str:
 async def interpret_news(data: InterpretIn):
     content = (data.content or "").strip()
     body_excerpt = ""
-    # 正文薄(金十很多快讯只有一行)且带原文链接时, 抓全文补足 → 解读基于全文而非一句话摘要
-    # 只对解析到公网地址的 URL 抓取(SSRF 防护)
-    if data.url and len(content) < 40 and await asyncio.to_thread(_url_is_safe_public, data.url):
+    # 正文只是摘要/teaser(金十快讯多为一行, 图文分析带"点击查看"链接指向全文)且带原文链接时,
+    # 抓全文补足 → 解读基于全文而非一句话摘要。阈值放宽到 600, 覆盖带 teaser 的图文分析;
+    # 已是长正文(≥600)就不再抓。只对解析到公网地址的 URL 抓取(SSRF 防护)。
+    if data.url and len(content) < 600 and await asyncio.to_thread(_url_is_safe_public, data.url):
         try:
             from services.stock_agent import _fetch_url_markdown_sync
             md = await asyncio.to_thread(_fetch_url_markdown_sync, data.url)
@@ -785,10 +786,18 @@ async def interpret_news(data: InterpretIn):
                 full = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", full)        # 去图片 markdown
                 full = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", full)     # 链接只留文字
                 full = re.sub(r"\n{3,}", "\n\n", full).strip()
-                m = re.search(r"(?m)^#\s", full)                        # 从正文首个 H1 起, 跳过站点导航头
+                # 跳过站点导航头: 优先从正文首个 H1 起; 无 H1(如金十 xnews)则跳过开头的短行(字体/分享/二维码等菜单)
+                m = re.search(r"(?m)^#\s", full)
                 if m and m.start() < 2000:
                     full = full[m.start():]
-                content = full[:3000]              # 喂给 LLM 的正文
+                else:
+                    lines = full.split("\n")
+                    for i, ln in enumerate(lines):
+                        if len(ln.strip().lstrip("#-*>| ").strip()) >= 16:   # 首个足够长的行=标题/正文
+                            full = "\n".join(lines[i:]); break
+                full = full.strip()
+                if len(full) > len(content):       # 抓到的比原摘要更全才替换
+                    content = full[:3000]          # 喂给 LLM 的正文
                 body_excerpt = full[:1500]         # 回给前端展示的原文摘录
         except Exception:
             pass
