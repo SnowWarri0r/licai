@@ -124,14 +124,17 @@ def _build_universe(rows: list[dict], fund_map: dict | None = None) -> list[dict
         if pct < -5:                           # 今天正在崩的不列(结构再好也先让它跌完)
             continue
         profit, roe, rev_yoy, prof_yoy, pb, pe = _f("f45"), _f("f37"), _f("f41"), _f("f46"), _f("f23"), _f("f115")
-        if profit is None or profit <= 0:      # 盈利中
-            continue
-        if roe is None or roe < 1.0:           # ROE(报告期累计口径): 排接近零利润的
-            continue
-        if prof_yoy is not None and prof_yoy < -60:   # 暴雷级下滑
-            continue
-        if pb is not None and pb <= 0:
-            continue
+        # 基本面闸(定位=排暴雷): 机构重仓龙头(≥60家基金)免检——创新药/卫星/量子/重资产半导体
+        # 处在研发或扩产投入期, 亏损/低ROE属正常商业阶段, 机构已用真金白银投票
+        if fund_cnt < 60:
+            if profit is None or profit <= 0:      # 盈利中
+                continue
+            if roe is None or roe < 1.0:           # ROE(报告期累计口径): 排接近零利润的
+                continue
+            if prof_yoy is not None and prof_yoy < -60:   # 暴雷级下滑
+                continue
+            if pb is not None and pb <= 0:
+                continue
         out.append({"code": code, "name": name, "pct": round(pct, 2),
                     "成交额亿": round((amount or 0) / 1e8, 2),
                     "量比": _f("f10"), "市值亿": round(cap, 0),
@@ -148,7 +151,7 @@ async def _stage2(c: dict) -> dict | str:
     """日K结构体检: 箱体 + 横盘时长 + 缩量蓄势 + 近5日突破窗口。返回 dict(通过) 或 拒绝原因。"""
     from services.market_data import get_historical_data
     try:
-        df = await get_historical_data(c["code"], days=90)
+        df = await get_historical_data(c["code"], days=150)   # 多拉一段作"自身波动基准"
     except Exception:
         return "K线不可达"
     if df is None or len(df) < 50:
@@ -171,8 +174,23 @@ async def _stage2(c: dict) -> dict | str:
     if bl <= 0:
         return "K线不足"
     width = (bh / bl - 1) * 100
-    if width > 25:                                     # 蓄势基座要窄
+    # 静的两把尺子: 绝对σ(低波动蓝筹适用) + 相对自身收敛(高波动成长股适用)。
+    # 半导体/创新药/机器人这类高beta票, 横盘时绝对振幅天然30%+、σ天然2.5+,
+    # 蓄势与否要看"最近两个月是否明显比之前安静"(波动收敛, VCP逻辑)。
+    rets = [prev_c[i] / prev_c[i - 1] - 1 for i in range(1, len(prev_c))]
+    mean_r = sum(rets) / len(rets)
+    sd = (sum((r - mean_r) ** 2 for r in rets) / len(rets)) ** 0.5 * 100
+    sd_prior = None                                    # 基座前一段(~2个月)的自身波动基准
+    base_c = closes[-80:-40]
+    if len(base_c) >= 30:
+        brets = [base_c[i] / base_c[i - 1] - 1 for i in range(1, len(base_c))]
+        bm = sum(brets) / len(brets)
+        sd_prior = (sum((r - bm) ** 2 for r in brets) / len(brets)) ** 0.5 * 100
+    converging = bool(sd_prior) and sd <= sd_prior * 0.8     # 比自己此前安静≥20%
+    if width > 28 and not (converging and width <= 42):      # 蓄势基座要窄(高波动票按收敛度放宽)
         return "箱体过宽"
+    if sd > 2.4 and not (converging and sd <= 3.6):
+        return "宽幅震荡(非安静横盘)"
     # 平(不对称): 重心上移=已在启动, 卡严(+5%); 重心缓慢下移=缓跌收敛/下降楔形, 属洗盘蓄势变体,
     # 容忍到-12%; 更陡的就是阴跌趋势不是盘整
     half_c = len(prev_c) // 2
@@ -181,12 +199,6 @@ async def _stage2(c: dict) -> dict | str:
         return "重心上移(已非蓄势)"
     if drift < -12:
         return "阴跌下行(非横盘)"
-    # 静: 日收益σ小(安静基座σ≈1.5-2, 宽幅过山车≥2.5)
-    rets = [prev_c[i] / prev_c[i - 1] - 1 for i in range(1, len(prev_c))]
-    mean_r = sum(rets) / len(rets)
-    sd = (sum((r - mean_r) ** 2 for r in rets) / len(rets)) ** 0.5 * 100
-    if sd > 2.4:
-        return "宽幅震荡(非安静横盘)"
     last_close = closes[-1]
     base_vol = sum(prev_v[:-3]) / max(len(prev_v) - 3, 1)
     if base_vol <= 0:
@@ -218,10 +230,14 @@ async def _stage2(c: dict) -> dict | str:
     pos_tag = "贴上沿" if dist >= -3 else ("箱体中部" if dist >= -12 else "箱体下部")
     if drift <= -4:
         pos_tag = "缓跌收敛·" + pos_tag       # 下降楔形/洗盘型基座
+    elif width > 25 or sd > 2.4:
+        pos_tag = "波动收敛·" + pos_tag       # 高波动品种, 靠相对自身收敛过闸
     tag = pos_tag + ("·量在暖" if warm >= 1.3 else "")
-    # 蓄势质量分(0-105): 横盘越久+箱体越窄+越缩量+越贴上沿+量开始暖+机构覆盖
+    # 蓄势质量分(0-105): 横盘越久+窄(或相对收敛深)+越缩量+越贴上沿+量开始暖+机构覆盖
+    narrow_score = ((25 - width) / 25 * 20 if width <= 25
+                    else (12 if sd_prior and sd <= sd_prior * 0.65 else 8))
     score = (min(days_flat, 60) / 60 * 30
-             + (25 - min(width, 25)) / 25 * 20
+             + narrow_score
              + (18 if contraction <= 0.8 else 12 if contraction <= 0.95 else 6 if contraction <= 1.1 else 0)
              + (15 if dist >= -3 else 10 if dist >= -8 else 5)
              + (12 if 1.3 <= warm <= 3 else 6 if warm >= 1.1 else 0)
@@ -229,7 +245,8 @@ async def _stage2(c: dict) -> dict | str:
     return {**c,
             "横盘日": days_flat, "箱体振幅%": round(width, 1),
             "缩量比": contraction, "近3日量比基座": warm,
-            "距上沿%": dist, "重心漂移%": round(drift, 1), "标签": tag,
+            "距上沿%": dist, "重心漂移%": round(drift, 1),
+            "波动收敛比": round(sd / sd_prior, 2) if sd_prior else None, "标签": tag,
             "评分": round(score),
             "箱体上沿": round(bh, 2), "箱体下沿": round(bl, 2), "现价": round(last_close, 2)}
 
@@ -241,7 +258,9 @@ _AI_SYS = (
     "审核范围(图上金色虚线=箱体下沿, 蓝色虚线=箱体上沿):\n"
     "· 基座 = 最近约两个月: 要求价格重心走平、波动收敛、大体在箱体内运行、成交量平稳或渐缩。"
     "更早的历史走势(基座之前的下跌或上涨)属于背景, 独立于基座质量之外——先跌一波再筑底属标准形态之一。"
-    "基座形态除水平箱体外, 缓慢下倾的收敛通道(下降楔形/缓跌洗盘, 卖压逐步衰竭)同样属于合格的蓄势基座变体; 重心持续上移的爬坡通道则属已启动;\n"
+    "基座形态除水平箱体外, 缓慢下倾的收敛通道(下降楔形/缓跌洗盘, 卖压逐步衰竭)同样属于合格的蓄势基座变体; 重心持续上移的爬坡通道则属已启动。"
+    "『安静』以该股自身波动为基准: 高波动成长股(半导体/创新药/军工等)的基座振幅天然宽于蓝筹, "
+    "只要近两个月波动明显小于更早时段且重心走平, 同样算合格的收敛基座;\n"
     "· 当前位置 = 最新几根K线仍在箱体内(贴近上沿或箱体中部都可), 已放量越过上沿并连续拉升的属于突破已发生, 大幅扣分;"
     "近期跌破下沿走弱的同样大幅扣分。\n"
     "加分项: 横盘时间长、箱体窄、越盘量越缩、近几日量能温和转暖但价格未动(蓄势末端特征)。\n"
@@ -327,8 +346,19 @@ async def scan_coiled(force: bool = False) -> dict:
     rejected = Counter(r for r in results if isinstance(r, str))
 
     # AI 看图精判(规则只做宽召回, 形态是格式塔, 死阈值精度不够): 渲染K线图交模型审核,
-    # 判不符合的剔除并计数; LLM 不可用时 fail-open 保留规则结果并标注未复核
-    rows = rows[:30]
+    # 判不符合的剔除并计数; LLM 不可用时 fail-open 保留规则结果并标注未复核。
+    # 送审位按行业限流(≤3只/行业): 评分尺子天然偏爱低波动行业(银行/基建), 限流保证
+    # 半导体/医药/军工这类高波动行业的候选同样拿到 AI 复核位
+    picked, per_ind = [], {}
+    for r in rows:
+        k = r.get("行业") or "?"
+        if per_ind.get(k, 0) >= 3:
+            continue
+        per_ind[k] = per_ind.get(k, 0) + 1
+        picked.append(r)
+        if len(picked) >= 30:
+            break
+    rows = picked
     ai_sem = asyncio.Semaphore(4)
 
     async def _judge_one(r):
@@ -353,9 +383,11 @@ async def scan_coiled(force: bool = False) -> dict:
     out = {"as_of": time.strftime("%Y-%m-%d %H:%M"), "rows": rows[:40],
            "ai_dropped": dropped[:12],   # AI 判不符合的边缘候选(带分数判词), 折叠展示供人工过目
            "scanned": len(pool), "universe": len(universe), "rejected": dict(rejected),
-           "note": "横盘蓄势观察池: 龙头池(百亿+≥30家基金+盈利, 全市场含北交所) → 规则召回仍在箱体内的"
-                   "安静横盘(窄/平/静/横盘≥20日, 未突破——已突破/已启动的判偏晚剔除) → AI看图按'安静蓄势基座'"
-                   "贴合度精判。标签: 贴上沿/箱体中部/箱体下部, ·量在暖=近3日量能温和转暖(蓄势末端特征)。"
+           "note": "横盘蓄势观察池: 龙头池(百亿+≥30家基金+盈利, 机构重仓≥60家免盈利审查, 全市场含北交所)"
+                   " → 规则召回仍在箱体内的安静横盘(窄/平/静/横盘≥20日, 未突破——已突破/已启动的判偏晚剔除;"
+                   " 高波动成长股按'比自己此前安静'的收敛度判, 送审位按行业限流) → AI看图按'安静蓄势基座'"
+                   "贴合度精判。标签: 贴上沿/箱体中部/箱体下部, 波动收敛=高波动品种靠自身收敛过闸, "
+                   "·量在暖=近3日量能温和转暖(蓄势末端特征)。"
                    "纯客观结构描述, 横盘可能向下解决而非向上, 不构成任何买卖建议。"}
     _cache["coiled"] = (out, time.time())
     return out
