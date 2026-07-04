@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { fetchJSON } from '../hooks/useApi'
 
 const ACQUIRE = new Set(['BUY', 'ADD', 'BONUS'])
-const MA_WARMUP = 20                  // 日K 多取的均线预热根数(够 MA20 从首根可见蜡烛起连续)
+export const MA_WARMUP = 20           // 日K 多取的均线预热根数(够 MA20 从首根可见蜡烛起连续)
 // A 股口径: 红涨绿跌
 const UP = '#cf5c5c', DOWN = '#5fa86c'
 const BUY_COLOR = '#3fae6a', SELL_COLOR = '#d04a4a'
@@ -16,7 +16,7 @@ const fmtHand = (h) => h == null ? '--' : h >= 1e4 ? (h / 1e4).toFixed(1) + '万
 // ---------------------------------------------------------------------------
 // 蜡烛图 (日/周/月) — 真蜡烛 + 成本线 + 自己历史 BS 标记
 // ---------------------------------------------------------------------------
-function CandleChart({ series, cost, actions, warmup = [] }) {
+export function CandleChart({ series, cost, actions, warmup = [] }) {
   const [hover, setHover] = useState(null)
   const [sub, setSub] = useState('vol')   // 底部副图: vol | macd | kdj
   const svgRef = useRef(null)
