@@ -50,7 +50,8 @@ def _setup_cjk_font():
 
 _CJK, _FP = _setup_cjk_font()
 _TAG_KEYS = ("阶梯式上行", "抬高低点", "结构破位", "跌破近台阶",
-             "双顶", "二次冲高未创新高", "跌破颈线")
+             "双顶", "二次冲高未创新高", "跌破颈线",
+             "头肩顶", "头肩底", "突破底颈线", "顶背离", "底背离", "收敛三角")
 
 
 def render_trend_chart(bars: list, *, code: str = "", name: str = "",
@@ -80,6 +81,8 @@ def render_trend_chart(bars: list, *, code: str = "", name: str = "",
         hlines.append(structure["台阶支撑"]); hcolors.append(_ACCENT)
     if structure.get("颈线"):
         hlines.append(structure["颈线"]); hcolors.append(_NECK)
+    if structure.get("底颈线"):
+        hlines.append(structure["底颈线"]); hcolors.append("#7bb37a")   # 底颈线=绿
 
     kwargs = dict(type="candle", volume=True, mav=(5, 10, 20), style=style,
                   figsize=(10, 6.2), returnfig=True, tight_layout=True,
@@ -97,6 +100,8 @@ def render_trend_chart(bars: list, *, code: str = "", name: str = "",
         legend.append(f"台阶支撑 {structure['台阶支撑']}")
     if structure.get("颈线"):
         legend.append(f"颈线 {structure['颈线']}")
+    if structure.get("底颈线"):
+        legend.append(f"底颈线 {structure['底颈线']}")
 
     with _lock:
         fig, axes = mpf.plot(df, **kwargs)
