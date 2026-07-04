@@ -63,27 +63,36 @@ async def _active_holdings() -> list[dict]:
     holdings 表的 shares 列对已清仓的票可能是陈旧非0值, 不能直接信; 这里跟 /api/portfolio 口径一致。"""
     from database import get_all_holdings, get_position_actions
     from services.position_ledger import compute_position_state
+    from services.dividends import dilute_state
     from api.portfolio_routes import _broker_stock_fee
     out = []
     for h in await get_all_holdings():
         code = h.get("stock_code")
         shares = float(h.get("shares") or 0)
-        hold_days = open_date = None
+        hold_days = open_date = cost = div_ps = None
         try:
             acts = await get_position_actions(code, limit=500)
             if acts:
                 rate, mn = await _broker_stock_fee(h.get("broker"))
                 st = compute_position_state(acts, stock_code=code, commission_rate=rate, commission_min=mn)
+                st = await dilute_state(code, st)   # 分红摊薄成本(对齐券商)
                 shares = float(st.get("shares") or 0)
                 hold_days = st.get("weighted_days")
+                cost = st.get("cost_price")
+                div_ps = st.get("div_per_share")
                 lots = st.get("lots") or []
                 if lots:
                     open_date = min(l["trade_date"] for l in lots)  # 当前段最早一笔=开仓日
         except Exception:
             pass  # ledger 算不出就退回表里的 shares
         if shares > 0:
-            out.append({**h, "shares": shares, "hold_days": hold_days,
-                        "open_date": _date_with_weekday(open_date)})
+            row = {**h, "shares": shares, "hold_days": hold_days,
+                   "open_date": _date_with_weekday(open_date)}
+            if cost is not None:
+                row["cost_price"] = cost
+            if div_ps:
+                row["每股已收分红"] = div_ps
+            out.append(row)
     return out
 
 
@@ -1391,12 +1400,14 @@ async def _tool_trades(code: str = "", start: str = "", end: str = "") -> dict:
         try:
             rate, mn = await _broker_stock_fee(None)
             st = compute_position_state(acts, stock_code=bare, commission_rate=rate, commission_min=mn)
+            from services.dividends import dilute_state
+            st = await dilute_state(bare, st)   # 分红摊薄成本(对齐券商)
             # 已实现盈亏用 realized_carry(已平仓段+分红, 不含浮动)。注意 realized_pnl 与 carry
             # 在清仓后是同一笔, 不能相加; 当前持仓段的浮盈在 综合成本 里体现, 不算"已实现"。
             summary = {"当前持股": st.get("shares"), "综合成本": st.get("cost_price"),
+                       "成本未摊薄分红前": st.get("cost_price_raw"), "每股已收分红": st.get("div_per_share"),
                        "已实现盈亏": round(float(st.get("realized_carry") or 0), 2),
-                       "其中累计分红": st.get("income_realized"), "加权持有天数": st.get("weighted_days"),
-                       "累计手续费": st.get("total_fees")}
+                       "加权持有天数": st.get("weighted_days"), "累计手续费": st.get("total_fees")}
         except Exception:
             pass
         return {"code": bare, "name": name, "trades": recs, "position": summary,
@@ -1478,9 +1489,11 @@ async def _tool_get_holdings() -> dict:
     try:
         hs = await _active_holdings()
         return {"holdings": [{"code": h.get("stock_code"), "name": h.get("stock_name"),
-                              "shares": h.get("shares"),
+                              "shares": h.get("shares"), "综合成本": h.get("cost_price"),
+                              "每股已收分红": h.get("每股已收分红"),
                               "持有天数": h.get("hold_days"), "开仓日": h.get("open_date")} for h in hs],
                 "note": "仅当前在持(已清仓的票不在此列, 按综合成本法现算 shares>0)。"
+                        "综合成本=含手续费+分红摊薄(对齐券商口径); 每股已收分红=持有期吃到的现金分红(已从成本扣)。"
                         "持有天数=资金加权持有天数(0=今天才开/加的仓); 开仓日=当前持仓段最早一笔买入日(=今天则是今日新开仓), 已带好星期, 说开仓是周几时以括号内星期为准照抄。"}
     except Exception as e:
         return {"error": str(e)}

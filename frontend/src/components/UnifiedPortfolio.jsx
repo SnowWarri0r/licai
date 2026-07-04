@@ -203,6 +203,7 @@ function normalizeHolding(h) {
       shares: h.shares,
       price: h.current_price,
       avgCost: h.cost_price,
+      divPerShare: h.div_per_share,
     },
   }
 }
@@ -568,6 +569,11 @@ function TypeMiniInfo({ row }) {
     return (
       <span className="text-[10.5px] text-text-muted font-mono">
         {extra.shares} 股 · {currencySymbol(extra.currency)}{fmtPrice(extra.avgCost)}
+        {extra.divPerShare > 0 && (
+          <span className="text-accent/80 ml-1" title={`持有期已收每股现金分红 ¥${extra.divPerShare}，已按券商摊薄成本口径从成本中扣减`}>
+            含红{currencySymbol(extra.currency)}{extra.divPerShare}
+          </span>
+        )}
       </span>
     )
   }

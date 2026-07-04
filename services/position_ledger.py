@@ -74,6 +74,7 @@ def compute_position_state(
     stock_code: str = "",
     commission_rate: float | None = None,
     commission_min: float | None = None,
+    cash_div_per_share: float = 0.0,
 ) -> dict:
     """Process actions in chronological order using FIFO.
 
@@ -199,6 +200,11 @@ def compute_position_state(
     if net_cost <= 0:
         net_cost = fifo_cost
 
+    # 摊薄成本(对齐券商): 持有期间累计每股现金分红从每股成本里扣
+    div_ps = max(0.0, float(cash_div_per_share or 0.0))
+    net_cost_diluted = max(0.0, net_cost - div_ps)
+    fifo_cost_diluted = max(0.0, fifo_cost - div_ps)
+
     # Capital-weighted days on FIFO lots (each lot has a concrete date)
     capital_days_sum = sum(
         l["shares"] * l["price"] * max(0, (today - l["trade_date"]).days)
@@ -208,8 +214,10 @@ def compute_position_state(
 
     return {
         "shares": total_shares,
-        "cost_price": round(net_cost, 4),       # primary: 综合成本法 (matches broker)
-        "fifo_cost_price": round(fifo_cost, 4), # for reference
+        "cost_price": round(net_cost_diluted, 4),       # primary: 综合成本法 + 分红摊薄 (matches broker)
+        "cost_price_raw": round(net_cost, 4),           # 未摊薄(仅买卖+费), 供对照
+        "div_per_share": round(div_ps, 4),              # 持有期累计每股现金分红(已摊进 cost_price)
+        "fifo_cost_price": round(fifo_cost_diluted, 4), # for reference
         "total_fees": round(total_fees, 2),
         "weighted_days": int(round(weighted_days)),
         "realized_pnl": realized_pnl,
