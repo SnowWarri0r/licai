@@ -300,22 +300,70 @@ def _candle_shape(o, c, h, l):
     return f"{color}线"
 
 
+def _pos_float(v):
+    try:
+        f = float(v)
+        return f if f > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _ma_arrange(c, m5, m10, m20, m60):
+    """均线排列(趋势位置标签, 非择时信号): 价相对 MA5/10/20/60 的多空结构。"""
+    if None in (m5, m10, m20):
+        return None
+    if m60 and c > m5 > m10 > m20 > m60:
+        return "全多头"
+    if c > m5 > m10 > m20:
+        return "多头"
+    if c > m5 and c > m10:
+        return "短多头"
+    if m60 and c < m5 < m10 < m20 < m60:
+        return "全空头"
+    if c < m5 < m10 < m20:
+        return "空头"
+    return "纠缠"
+
+
+def _trend_summary(closes: list, vols: list) -> dict:
+    """多周期量价摘要(产业链/横向对比用): 5d/20d/60d 涨幅 + 距20日高 + 均线排列 + 量能状态。"""
+    n = len(closes)
+    if n < 2:
+        return {}
+    last = closes[-1]
+    s = {}
+    for k, key in ((5, "pct_5d"), (20, "pct_20d"), (60, "pct_60d")):
+        if n > k and closes[-1 - k]:
+            s[key] = round((last / closes[-1 - k] - 1) * 100, 1)
+    if n >= 20:
+        hi20 = max(closes[-20:])
+        if hi20 > 0:
+            s["dist_20high"] = round((last / hi20 - 1) * 100, 1)   # 距20日高(<=0, 越接近0越靠近新高)
+    def ma(k):
+        return sum(closes[-k:]) / k if n >= k else None
+    arr = _ma_arrange(last, ma(5), ma(10), ma(20), ma(60))
+    if arr:
+        s["ma"] = arr
+    vv = [v for v in vols if v]
+    if len(vv) >= 6:
+        prior = vv[-6:-1]
+        vr = vv[-1] / (sum(prior) / len(prior))
+        s["vol"] = "放量" if vr > 1.4 else ("缩量" if vr < 0.7 else "平")
+    return s
+
+
 async def _tool_get_trend(code: str, days: int = 20) -> dict:
     """近 N 日走势: 每日涨跌幅 + 累计。A 股走新浪历史; 港股走腾讯日K; 美股走新浪 US 日K。"""
     from services.market_data import (get_historical_data, normalize_stock_code, is_a_share,
                                        split_stock_code, _kline_tencent_hk)
     raw = normalize_stock_code(_norm_code(code))
     days = max(5, min(int(days or 20), 60))
+    need = max(days, 62)   # 多取些历史, 供 60d 涨幅 + MA60 摘要
     market, symbol = split_stock_code(raw)
-    def _ff(v):
-        try:
-            f = float(v)
-            return f if f > 0 else None
-        except (TypeError, ValueError):
-            return None
-    bars: list = []  # [(date_str, close, high|None, low|None, vol|None, open|None)] 升序; date 可能为空(数据源缺)
+    _ff = _pos_float
+    allbars: list = []  # [(date_str, close, high|None, low|None, vol|None, open|None)] 升序
     if is_a_share(raw):
-        df = await get_historical_data(raw, days + 5)
+        df = await get_historical_data(raw, need + 5)
         if df is None or df.empty:
             return {"error": "无历史数据"}
         n = len(df)
@@ -325,21 +373,22 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
         ocol = df["开盘"].tolist() if "开盘" in df.columns else [None] * n
         vcol = df["成交量"].tolist() if "成交量" in df.columns else (
                df["成交额"].tolist() if "成交额" in df.columns else [None] * n)
-        bars = [(str(d)[:10], float(c), _ff(h), _ff(l), _ff(v), _ff(o))
-                for d, c, h, l, v, o in zip(dcol, df["收盘"].tolist(), hcol, lcol, vcol, ocol)]
+        allbars = [(str(d)[:10], float(c), _ff(h), _ff(l), _ff(v), _ff(o))
+                   for d, c, h, l, v, o in zip(dcol, df["收盘"].tolist(), hcol, lcol, vcol, ocol)]
     elif market == "HK":
-        rows = await asyncio.to_thread(_kline_tencent_hk, f"hk{symbol.zfill(5)}", days + 5)
-        bars = [(str(r.get("date") or "")[:10], float(r["close"]), _ff(r.get("high")), _ff(r.get("low")), _ff(r.get("volume")), _ff(r.get("open")))
-                for r in (rows or []) if r.get("close")]
+        rows = await asyncio.to_thread(_kline_tencent_hk, f"hk{symbol.zfill(5)}", need + 5)
+        allbars = [(str(r.get("date") or "")[:10], float(r["close"]), _ff(r.get("high")), _ff(r.get("low")), _ff(r.get("volume")), _ff(r.get("open")))
+                   for r in (rows or []) if r.get("close")]
     elif market == "US":
-        rows = await asyncio.to_thread(_us_daily_k_sync, symbol, days)
-        bars = [(str(r.get("date") or "")[:10], float(r["close"]), _ff(r.get("high")), _ff(r.get("low")), _ff(r.get("volume")), _ff(r.get("open")))
-                for r in (rows or []) if r.get("close")]
+        rows = await asyncio.to_thread(_us_daily_k_sync, symbol, need)
+        allbars = [(str(r.get("date") or "")[:10], float(r["close"]), _ff(r.get("high")), _ff(r.get("low")), _ff(r.get("volume")), _ff(r.get("open")))
+                   for r in (rows or []) if r.get("close")]
     else:
         return {"error": "走势暂不支持该市场"}
-    bars = bars[-(days + 1):]
-    if len(bars) < 2:
+    if len(allbars) < 2:
         return {"error": "无历史数据"}
+    summary = _trend_summary([b[1] for b in allbars], [b[4] for b in allbars])
+    bars = allbars[-(days + 1):]
     code = raw
     closes = [b[1] for b in bars]
     vols = [b[4] for b in bars]
@@ -370,9 +419,47 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
         "code": code, "days": len(daily),
         "cum_pct": cum, "up_days": up, "down_days": len(daily) - up,
         "last_date": bars[-1][0], "last_close": round(closes[-1], 3),
+        # 多周期量价摘要: pct_5d/pct_20d/pct_60d 涨幅、dist_20high 距20日高、ma 均线排列、vol 量能
+        "summary": summary,
         # 最近 10 日逐日涨跌, 每条带 date(YYYY-MM-DD) + high_pct/low_pct(当日最高/最低相对昨收)。最后一条即最新交易日。
         "daily_pct": daily[-min(10, len(daily)):],
     }
+
+
+async def _tool_chain_quote(stocks: list) -> dict:
+    """批量取一组票的多周期量价摘要(产业链全景/横向对比用): 一次拿整条链每只的 5d/20d/60d/距20高/均线排列/量能。
+    stocks: 名称或代码列表。仅 A 股给量价(链上标的基本是 A 股)。"""
+    from services.market_data import get_historical_data, is_a_share, normalize_stock_code
+    if not isinstance(stocks, list) or not stocks:
+        return {"error": "需要传 stocks 列表(股票名称或代码)"}
+    stocks = [str(s).strip() for s in stocks if str(s).strip()][:24]
+
+    async def one(s: str) -> dict:
+        try:
+            r = await _tool_resolve_stock(s)
+            code = r.get("code")
+            name = r.get("name") or s
+            if not code:
+                return {"input": s, "name": name, "error": "未解析到代码"}
+            raw = normalize_stock_code(code)
+            bare = raw.split(".")[-1] if "." in raw else raw
+            if not is_a_share(raw):
+                return {"input": s, "code": bare, "name": name, "error": "仅A股给量价"}
+            df = await get_historical_data(raw, 70)
+            if df is None or df.empty:
+                return {"input": s, "code": bare, "name": name, "error": "无历史数据"}
+            closes = [float(c) for c in df["收盘"].tolist() if c]
+            vcol = df["成交量"].tolist() if "成交量" in df.columns else []
+            vols = [_pos_float(v) for v in vcol] if vcol else []
+            summ = _trend_summary(closes, vols)
+            return {"input": s, "code": bare, "name": name, **summ}
+        except Exception as e:
+            return {"input": s, "error": str(e)[:60]}
+
+    rows = await asyncio.gather(*[one(s) for s in stocks])
+    return {"stocks": rows,
+            "note": "每只: pct_5d/pct_20d/pct_60d 涨幅%、dist_20high 距20日高%(<=0)、ma 均线排列(全多头/多头/短多头/纠缠/空头)、vol 量能(放量/平/缩量)。"
+                    "产业链全景按上游→下游环节排列各标的, 量价强弱横向比。数据为最新交易日快照。"}
 
 
 async def _tool_get_news(code: str) -> dict:
@@ -1653,6 +1740,8 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"board": {"type": "string"}, "top": {"type": "integer", "description": "默认12"}}, "required": ["board"]}},
     {"name": "get_market_news", "description": "全市场财经快讯(含政策面/国家调控: 货币财政、央行、证监会/部委监管、产业政策、行业调控、出口管制/关税、国常会/政治局等重要会议)。分析市场背景、判断政策驱动/调控影响时必看; policy_news 是政策相关筛选。",
      "input_schema": {"type": "object", "properties": {"limit": {"type": "integer", "description": "默认40"}}}},
+    {"name": "get_chain_quote", "description": "批量取一组票的多周期量价摘要(产业链全景/多票横向对比专用): 一次返回每只的 pct_5d/pct_20d/pct_60d 涨幅、dist_20high 距20日高、ma 均线排列(全多头/多头/短多头/纠缠/空头)、vol 量能(放量/平/缩量)。做'X产业链上游到下游量价一览'时: 先 web_search 拿到该产业链各环节代表公司, 把这串代码/名称一次传进来即可拿到整条链量价, 无需逐只 get_trend。仅 A 股。",
+     "input_schema": {"type": "object", "properties": {"stocks": {"type": "array", "items": {"type": "string"}, "description": "股票名称或代码列表, 最多24只"}}, "required": ["stocks"]}},
     # Anthropic 服务端联网搜索: 本地工具查不到/可能过期的事实(海外公司是否上市/IPO/代码/政策/最新消息)用它核实, 以联网结果为准而非凭记忆。
     {"type": "web_search_20250305", "name": "web_search", "max_uses": 12},
 ]
@@ -1682,6 +1771,7 @@ _EXECUTORS = {
     "get_hot_rank": lambda a: _tool_hot_rank(),
     "get_hot_concepts": lambda a: _tool_hot_concepts(a.get("top", 15)),
     "get_board_stocks": lambda a: _tool_board_stocks(a.get("board", ""), a.get("top", 12)),
+    "get_chain_quote": lambda a: _tool_chain_quote(a.get("stocks", [])),
     "get_market_news": lambda a: _tool_market_news(a.get("limit", 40)),
 }
 
@@ -1733,6 +1823,11 @@ _SYSTEM = (
     "用这些直接读价格行为本身——支撑压力、趋势位置、K线形态心里有数, 不依赖均线/MACD/KDJ 这类从价量算出来的滞后衍生指标(均线自在心中, 不报二手信号)。"
     "读裸K量价: 放量(vol_ratio>1.5)光头大阳=量价齐升承接强、放量长上影或冲高回落(high_pct 高而 pct 收低)=分歧出货迹象、缩量(vol_ratio<0.7)十字/小阴=观望惜售、高位放量长上影=兑现压力、地量=关注度低; 连续几根K的形态+量比串起来看节奏(连阴缩量磨底 vs 放量反包)。"
     "资金流分档(超大单/大单=主力)在当下拆单 + 多子账户操作下已失真——大单常被拆成中小单分散到多账户, 净流入只作参考线索, 不单凭它下'主力在进/出'结论; 与裸K量价背离时点明背离、以裸K量价为主。\n"
+    "【产业链全景 · 量价一览】问'X(HBM/CPO/固态电池/光模块/有色 等)产业链从上游到下游有哪些公司、各环节标的、量价一览'时, 分三步: "
+    "① 先 web_search 拿到该产业链的工艺/价值链环节顺序(上游→中游→下游)及各环节代表公司(标注来源, 这是动态知识以联网为准); "
+    "② 把这串公司(名称或代码)一次性传给 get_chain_quote, 拿回每只的 pct_5d/pct_20d/pct_60d、dist_20high(距20日高)、ma(均线排列)、vol(量能); "
+    "③ 按上游→下游环节排成表格: 列含【环节 | 核心标的(名+代码) | 角色 | 均线 | 5d | 60d | 距20高 | 量能】, 末尾挑出'量价最强(全多头+放量+距高近)'和'需等回调(强多头但短期已涨多/缩量)'两组。"
+    "环节顺序与角色来自 web_search[联网], 量价数字来自 get_chain_quote[实测]; 全程客观陈列, 强弱是量价描述不是买卖建议。\n"
     "【基本面/估值】问'估值高低、业绩优劣、盈利质地、有无业绩拐点'时调用 get_fundamentals"
     "(营收/净利及同比、ROE/毛利率/净利率、资产负债率、PE/PB/总市值); 即便仅问涨跌, 涉及'涨幅能否支撑当前估值、估值是否偏高'时, 一并对照基本面位置。"
     "有色/资源股涨跌可另调 get_commodity 查对应金属期货价(铜铝金锌镍锡), 判断是否同步驱动。\n"
@@ -1836,6 +1931,7 @@ _TOOL_CN = {
     "get_holdings": "看持仓", "get_thesis": "看买入逻辑", "get_asset_allocation": "看资产配置", "get_trades": "查成交记录", "get_market_sentiment": "看大盘情绪",
     "get_sector_momentum": "看板块动量", "get_hot_rank": "看资金热度",
     "get_hot_concepts": "看热门概念", "get_board_stocks": "查板块龙头", "get_market_news": "看政策快讯", "web_search": "联网搜索",
+    "get_chain_quote": "产业链量价",
 }
 
 
