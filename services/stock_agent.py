@@ -532,7 +532,7 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
                                        split_stock_code, _kline_tencent_hk)
     raw = normalize_stock_code(_norm_code(code))
     days = max(5, min(int(days or 20), 60))
-    need = max(days, 62)   # 多取些历史, 供 60d 涨幅 + MA60 摘要
+    need = max(days, 78)   # 多取些历史: 供 60d 涨幅 + MA60 摘要 + 图上 MA 前置数据(展示50根需+20根算MA20)
     market, symbol = split_stock_code(raw)
     _ff = _pos_float
     allbars: list = []  # [(date_str, close, high|None, low|None, vol|None, open|None)] 升序
@@ -645,7 +645,7 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
         try:
             from services import chart_render
             png = await asyncio.to_thread(
-                chart_render.render_trend_chart, allbars[-50:],
+                chart_render.render_trend_chart, allbars[-78:],
                 code=bare6, name="", structure=structure)
             if png:
                 out["chart_url"] = chart_render.save_png(png)
