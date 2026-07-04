@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { createChart, CandlestickSeries, HistogramSeries, LineSeries, CrosshairMode } from 'lightweight-charts'
+import { createChart, CandlestickSeries, HistogramSeries, LineSeries, CrosshairMode, LineStyle } from 'lightweight-charts'
 import { fetchJSON } from '../hooks/useApi'
 
 const UP = '#cf5c5c', DOWN = '#5fa86c'   // A股 红涨绿跌
@@ -82,6 +82,7 @@ export default function ProKline({ code, days = 250, height = 460 }) {
   const wrapRef = useRef(null)
   const chartRef = useRef(null)
   const seriesRef = useRef({})
+  const prevCloseLineRef = useRef(null)
   const [legend, setLegend] = useState(null)
   const [err, setErr] = useState('')
   const [loading, setLoading] = useState(true)
@@ -136,6 +137,15 @@ export default function ProKline({ code, days = 250, height = 460 }) {
         vol.setData(bars.map(b => ({ time: b.time, value: b.volume, color: b.close >= b.open ? 'rgba(207,92,92,0.5)' : 'rgba(95,168,108,0.5)' })))
         mas.forEach((s, i) => s.setData(maLine(bars, MA_DEFS[i].n)))
         gapPrim?.setGaps(detectGaps(bars))
+        // 昨收线: 最新一根的前一日收盘 → 一眼看出今天这根(哪怕收红阳线)是否还在昨收下方
+        if (prevCloseLineRef.current) { candle.removePriceLine(prevCloseLineRef.current); prevCloseLineRef.current = null }
+        const prevClose = bars.length >= 2 ? bars[bars.length - 2].close : null
+        if (prevClose != null) {
+          prevCloseLineRef.current = candle.createPriceLine({
+            price: prevClose, color: '#c8a876', lineWidth: 1, lineStyle: LineStyle.Dashed,
+            axisLabelVisible: true, title: '昨收',
+          })
+        }
         chartRef.current?.timeScale().fitContent()
       })
       .catch(e => alive && setErr(e?.message || '加载失败'))
@@ -154,7 +164,7 @@ export default function ProKline({ code, days = 250, height = 460 }) {
               <span>低<span className="text-bull">{fmt(legend.l)}</span></span>
               <span>收<span className={legend.c >= legend.o ? 'text-bear' : 'text-bull'}>{fmt(legend.c)}</span></span>
             </span>
-          : <span className="text-text-muted">{MA_DEFS.map(m => `MA${m.n}`).join(' / ')} · 滚轮缩放 · 拖动平移</span>}
+          : <span className="text-text-muted">{MA_DEFS.map(m => `MA${m.n}`).join(' / ')} · <span style={{ color: '#c8a876' }}>┄ 昨收</span> · 滚轮缩放 · 拖动平移</span>}
       </div>
       <div ref={wrapRef} style={{ width: '100%', height }} />
       {err && <div className="absolute inset-0 flex items-center justify-center text-[12px] text-text-dim">{err}</div>}
