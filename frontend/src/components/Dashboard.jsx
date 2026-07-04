@@ -160,7 +160,7 @@ export default function Dashboard({ holdings }) {
   const totalPnlPct = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0
 
   return (
-    <div className="flex items-center gap-4 px-4 py-2 border-b border-border-subtle bg-surface/40 overflow-x-auto"
+    <div className="flex items-center gap-4 px-4 py-2 border-b border-border-subtle bg-surface/40 overflow-x-auto overflow-y-hidden"
       style={{ animation: 'fade-up 0.25s ease-out' }}>
 
       {/* Total (combined stock + external) */}
