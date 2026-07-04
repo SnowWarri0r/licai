@@ -651,16 +651,32 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
 async def _tool_chain_quote(stocks: list) -> dict:
     """批量取一组票的多周期量价摘要(产业链全景/横向对比用): 一次拿整条链每只的 5d/20d/60d/距20高/均线排列/量能。
     stocks: 名称或代码列表。仅 A 股给量价(链上标的基本是 A 股)。"""
-    from services.market_data import get_historical_data, is_a_share, normalize_stock_code
+    from services.market_data import get_historical_data, is_a_share, normalize_stock_code, get_realtime_quotes
+    from datetime import datetime as _dt
     if not isinstance(stocks, list) or not stocks:
         return {"error": "需要传 stocks 列表(股票名称或代码)"}
     stocks = [str(s).strip() for s in stocks if str(s).strip()][:24]
 
-    async def one(s: str) -> dict:
+    # 先并发解析代码, 再一次性批量取实时报价(校正各票"今天"那根 close: 日K源当日可能是盘中/延迟脏值)
+    async def resolve(s: str):
         try:
             r = await _tool_resolve_stock(s)
-            code = r.get("code")
-            name = r.get("name") or s
+            return s, r.get("code"), (r.get("name") or s)
+        except Exception:
+            return s, None, s
+    resolved = await asyncio.gather(*[resolve(s) for s in stocks])
+    a_raws = [normalize_stock_code(c) for _, c, _ in resolved
+              if c and is_a_share(normalize_stock_code(c))]
+    rt = {}
+    if a_raws:
+        try:
+            rt = await get_realtime_quotes(a_raws)
+        except Exception:
+            rt = {}
+    today = _dt.now().strftime("%Y-%m-%d")
+
+    async def one(s: str, code, name: str) -> dict:
+        try:
             if not code:
                 return {"input": s, "name": name, "error": "未解析到代码"}
             raw = normalize_stock_code(code)
@@ -673,15 +689,20 @@ async def _tool_chain_quote(stocks: list) -> dict:
             closes = [float(c) for c in df["收盘"].tolist() if c]
             vcol = df["成交量"].tolist() if "成交量" in df.columns else []
             vols = [_pos_float(v) for v in vcol] if vcol else []
+            # 用实时报价覆盖今天的 close(实时为当日权威); 仅当最后一根是今天
+            dts = df["日期"].tolist() if "日期" in df.columns else []
+            rc = _pos_float((rt.get(raw) or {}).get("price"))
+            if rc and closes and dts and str(dts[-1])[:10] == today:
+                closes[-1] = rc
             summ = _trend_summary(closes, vols)
             return {"input": s, "code": bare, "name": name, **summ}
         except Exception as e:
             return {"input": s, "error": str(e)[:60]}
 
-    rows = await asyncio.gather(*[one(s) for s in stocks])
+    rows = await asyncio.gather(*[one(s, c, n) for s, c, n in resolved])
     return {"stocks": rows,
             "note": "每只: pct_5d/pct_20d/pct_60d 涨幅%、dist_20high 距20日高%(<=0)、ma 均线排列(全多头/多头/短多头/纠缠/空头)、vol 量能(放量/平/缩量)。"
-                    "产业链全景按上游→下游环节排列各标的, 量价强弱横向比。数据为最新交易日快照。"}
+                    "产业链全景按上游→下游环节排列各标的, 量价强弱横向比。当日 close 已用实时报价校正。"}
 
 
 _readurl_cache: dict = {}
