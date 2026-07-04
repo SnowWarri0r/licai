@@ -585,28 +585,34 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
         return {"error": "走势暂不支持该市场"}
     if len(allbars) < 2:
         return {"error": "无历史数据"}
-    # 校正"今天"这根: 日K历史源(尤其ETF)的当日 close 可能是盘中/延迟脏值(O/H/L 已是全天值但
-    # close 滞后), 实时报价才是当日权威。最后一根是今天时用实时 O/H/L/C 覆盖, 保证今日涨跌幅与行情一致。
-    if is_a_share(raw):
-        from datetime import datetime as _dt
-        if allbars[-1][0] == _dt.now().strftime("%Y-%m-%d"):
-            try:
-                from services.market_data import get_realtime_quotes
-                rq = (await get_realtime_quotes([raw])).get(raw) or {}
-                rc = _ff(rq.get("price"))
-                if rc:
-                    d, c, h, l, v, o = allbars[-1]
-                    ro = _ff(rq.get("open")) or o
-                    rh = _ff(rq.get("high")) or h
-                    rl = _ff(rq.get("low")) or l
-                    # 量保留历史源那根(全天量, 单位与历史一致); 实时 volume 单位不同会污染 vol_ratio
-                    allbars[-1] = (d, rc, max(rh, rc), min(rl, rc) if rl else rc, v, ro)
-            except Exception as e:
-                print(f"[trend] realtime graft failed for {raw}: {e}")
+    # 校正/补"今天"这根: 前复权日K源盘中常只到昨天(今天那根还没生成), 实时报价才是当日权威。
+    # 末根已是今天 → 用实时 O/H/L/C 覆盖; 末根还是昨天而今天已开盘 → 用实时补一根今天(量未知留 None, 避免单位串号)。
+    from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+    _cst = _dt.now(_tz.utc) + _td(hours=8)
+    _today_cst = _cst.strftime("%Y-%m-%d")
+    try:
+        from services.market_data import _is_a_share_trading_day
+        _td_today = _is_a_share_trading_day(_cst.date())
+    except Exception:
+        _td_today = _cst.weekday() < 5
+    _opened = _td_today and (_cst.hour * 60 + _cst.minute) >= 570   # 9:30 起今天报价才有效
+    if is_a_share(raw) and allbars and _opened:
+        try:
+            from services.market_data import get_realtime_quotes
+            rq = (await get_realtime_quotes([raw])).get(raw) or {}
+            rc = _ff(rq.get("price"))
+            if rc:
+                ro, rh, rl = _ff(rq.get("open")), _ff(rq.get("high")), _ff(rq.get("low"))
+                hi, lo = max(rh or rc, rc), min(rl or rc, rc)
+                if allbars[-1][0] == _today_cst:
+                    v0, o0 = allbars[-1][4], allbars[-1][5]   # 量保留历史源(单位一致); 实时 volume 单位不同
+                    allbars[-1] = (_today_cst, rc, hi, lo, v0, ro or o0)
+                else:
+                    allbars.append((_today_cst, rc, hi, lo, None, ro or rc))   # 源缺今天 → 补一根(量未知)
+        except Exception as e:
+            print(f"[trend] realtime graft/append failed for {raw}: {e}")
     # 盘中: 今天这根的量是"已成交累计"(不完整), 直接比昨天全天必然偏低 → 会误判缩量。
     # 按已走交易时间把末根量折算成全天预估量, 让量比可比; 收盘后 vfrac=1 不动。daily 末条会标"盘中预估"。
-    from datetime import datetime as _dt2, timezone as _tz2, timedelta as _td2
-    _today_cst = (_dt2.now(_tz2.utc) + _td2(hours=8)).strftime("%Y-%m-%d")
     is_intraday, vfrac = _intraday_vol_factor()
     intraday_last = bool(is_intraday and allbars and allbars[-1][0] == _today_cst and vfrac < 1)
     vols_calc = [b[4] for b in allbars]
@@ -646,7 +652,7 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
         prior = [v for v in vols[max(0, i - 5):i] if v]
         if vols[i] and prior:
             e["vol_ratio"] = round(vols[i] / (sum(prior) / len(prior)), 2)
-        if intraday_last and i == len(bars) - 1:
+        if intraday_last and i == len(bars) - 1 and "vol_ratio" in e:
             e["量_盘中预估"] = True   # 今天未收盘, vol_ratio 是按已走时间折算的全天预估量比, 缩/放量待收盘确认
         shape = _candle_shape(o, c, h, l)
         if shape:
