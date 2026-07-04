@@ -143,6 +143,14 @@ async def _tool_resolve_stock(query: str) -> dict:
     hits = [(nm, cd) for nm, cd in n2c.items() if q in nm][:5]
     if hits:
         return {"candidates": [{"name": nm, "code": cd} for nm, cd in hits]}
+    # 3) 6位数字代码但不在A股个股全表(如 ETF/LOF/可转债) → 直接当作代码, 实时查名
+    if q.isdigit() and len(q) == 6:
+        try:
+            from services.market_data import get_stock_name
+            nm = await get_stock_name(q)
+        except Exception:
+            nm = ""
+        return {"code": q, "name": nm or "", "in_holdings": False}
     return {"error": f"找不到 {q}"}
 
 
