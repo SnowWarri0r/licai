@@ -432,9 +432,9 @@ async def _tool_fund_flow(code: str) -> dict:
     out = await asyncio.to_thread(_fetch_fund_flow_sync, raw)
     if "error" not in out:
         t = out["today"]
-        out["note"] = (f"今日主力净{'流入' if t['main'] >= 0 else '流出'}{abs(t['main'])}亿"
+        out["note"] = (f"最新交易日主力净{'流入' if t['main'] >= 0 else '流出'}{abs(t['main'])}亿"
                        f"(超大单{t['xlarge']}/大单{t['big']}/中单{t['mid']}/小单{t['small']}亿); "
-                       "主力=超大单+大单, 正=资金净买入。")
+                       "主力=超大单+大单, 正=资金净买入; 该值具体属哪个交易日见系统提示的交易日状态。")
     return out
 
 
@@ -892,7 +892,7 @@ def _fetch_peers_sync(code: str) -> dict:
                     me = [r for r in rows if r["code"] == code]
                     top = (top[:11] + me) if me else top
                 out = {"行业": ind, "板块": bk, "peers": top,
-                       "note": f"同属【{ind}】板块, 按今日主力净流入排序; PE/PB 横向比可看谁贵谁便宜, 涨跌幅看谁领涨。主力净流入亿为榜单实时快照, 用于榜内横向比较; 单只票的精确金额以 get_fund_flow 为准。"}
+                       "note": f"同属【{ind}】板块, 按最新交易日主力净流入排序; PE/PB 横向比可看谁贵谁便宜, 涨跌幅看谁领涨。主力净流入亿为榜单快照, 用于榜内横向比较; 单只票的精确金额以 get_fund_flow 为准。"}
                 _peers_cache[ck] = (out, _t.time())
                 return out
         except Exception:
@@ -1351,7 +1351,7 @@ async def _tool_sector_momentum(days: int = 10) -> dict:
         if not rows:
             return {"error": "板块矩阵暂无数据"}
         def brief(r):
-            return {"板块": r["name"], "今日": r.get("today_pct"), f"近{m.get('days')}日累计": r.get("cum_pct"),
+            return {"板块": r["name"], "最新交易日涨幅%": r.get("today_pct"), f"近{m.get('days')}日累计": r.get("cum_pct"),
                     "连涨天": r.get("streak"), "净流入亿": r.get("net_inflow")}
         return {"days": m.get("days"), "intraday": m.get("intraday"),
                 "走强top": [brief(r) for r in rows[:8]],
@@ -1405,7 +1405,7 @@ async def _tool_hot_concepts(top: int = 15) -> dict:
     out = await asyncio.to_thread(_fetch_hot_concepts_sync, int(top or 15))
     if not out:
         return {"error": "概念榜暂不可达(东财源抖动), 请改用行业级 get_sector_momentum"}
-    return {"top_concepts": out, "note": "按今日涨幅排序; 主力净流入正=资金流入"}
+    return {"top_concepts": out, "note": "按最新交易日涨幅排序; 主力净流入正=资金流入"}
 
 
 _board_list_cache: dict = {}
@@ -1487,7 +1487,7 @@ def _fetch_board_stocks_sync(name: str, top: int = 12) -> dict:
                         continue
                 if rows:
                     return {"板块": std, "类型": kind, "code": bk, "top_stocks": rows,
-                            "note": f"「{std}」成分股按今日涨幅排序; 主力净流入正=资金净买入(榜单实时快照, 用于看资金集中在哪几只; 单只票精确金额以 get_fund_flow 为准)。"}
+                            "note": f"「{std}」成分股按最新交易日涨幅排序; 主力净流入正=资金净买入(榜单快照, 用于看资金集中在哪几只; 单只票精确金额以 get_fund_flow 为准)。"}
         except Exception:
             _t.sleep(0.3)
     return {"error": f"「{std}」成分股暂不可达(东财源抖动)"}
@@ -1762,8 +1762,15 @@ def _system() -> str:
     d = _dt.date.today()
     wk = "一二三四五六日"[d.weekday()]
     monday = (d - _dt.timedelta(days=d.weekday())).isoformat()
+    weekend = d.weekday() >= 5  # 周六/周日 A股休市(节假日未单列, 以工具返回日期为准)
+    last_trade = d - _dt.timedelta(days=d.weekday() - 4) if weekend else d
+    ltwk = "一二三四五六日"[last_trade.weekday()]
+    mkt = (f"今天周末休市, 行情/资金/情绪类工具返回的是最近交易日 周{ltwk}({last_trade.isoformat()}) 的收盘快照。"
+           f"引用这些数据时, 用'周{ltwk}收盘'或具体日期({last_trade.isoformat()})指代, 当前问题里以'今日/今天/盘中'指代的均换算为该交易日, 周末无盘中数据。"
+           if weekend else
+           "今天是交易日, 行情类工具盘中返回实时滚动值、收盘后返回当日收盘值, 可用'今日'指代。")
     return _SYSTEM + (f"\n【今天】{d.isoformat()} 周{wk}; 本周一={monday}, 本月1号={d.replace(day=1).isoformat()}。"
-                      "用户问时间范围时据此换算 start/end。")
+                      f"用户问时间范围时据此换算 start/end。\n【交易日状态】{mkt}")
 
 
 _TOOL_CN = {
