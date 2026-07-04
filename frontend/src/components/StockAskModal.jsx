@@ -14,11 +14,16 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
   const [q, setQ] = useState('')
   const [loading, setLoading] = useState(false)
   const [history, setHistory] = useState([])   // [{q, steps, answer, typed, done, sources, charts, err}]
+  const [shown, setShown] = useState(false)     // 滑入动画: 挂载后置 true → 从右侧划出
   const abortRef = useRef(null)
   const typer = useRef(null)
   const scrollBox = useRef(null)
   const follow = useRef(true)
   const started = useRef(false)
+  const closeTimer = useRef(null)
+
+  // 先播放滑出动画再卸载
+  const close = () => { setShown(false); clearTimeout(closeTimer.current); closeTimer.current = setTimeout(onClose, 280) }
 
   const patchLast = (fn) => setHistory(h => h.map((it, i) => i === h.length - 1 ? fn(it) : it))
 
@@ -64,23 +69,27 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
     })
   }
 
-  // 打开即自动问第一句
+  // 挂载后触发滑入; 打开即自动问第一句
   useEffect(() => {
+    const t = setTimeout(() => setShown(true), 10)
     if (!started.current && initialQuestion && stock) { started.current = true; ask(initialQuestion) }
+    return () => clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape') onClose() }
+    const onKey = (e) => { if (e.key === 'Escape') close() }
     window.addEventListener('keydown', onKey)
-    return () => { window.removeEventListener('keydown', onKey); abortRef.current?.abort(); clearInterval(typer.current) }
-  }, [onClose])
+    return () => { window.removeEventListener('keydown', onKey); abortRef.current?.abort(); clearInterval(typer.current); clearTimeout(closeTimer.current) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   if (!stock) return null
 
   return createPortal(
-    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
-      <div className="bg-surface-2 border border-border rounded-xl w-[780px] max-w-[94vw] h-[82vh] flex flex-col" onClick={e => e.stopPropagation()}>
+    <div className={`fixed inset-0 z-[200] flex justify-end bg-black/60 backdrop-blur-sm transition-opacity duration-300 ${shown ? 'opacity-100' : 'opacity-0'}`} onClick={close}>
+      <div className={`bg-surface-2 border-l border-border w-[520px] max-w-[94vw] h-full flex flex-col shadow-2xl transition-transform duration-300 ease-out ${shown ? 'translate-x-0' : 'translate-x-full'}`}
+        onClick={e => e.stopPropagation()}>
         {/* header */}
         <div className="flex items-baseline gap-2 px-4 py-3 border-b border-border-subtle shrink-0">
           <span className="text-[15px] font-semibold text-text-bright">{stock.name}</span>
@@ -89,8 +98,7 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
             <span className={`text-[13px] font-mono font-semibold ${pctColor(stock.pct)}`}>{stock.pct >= 0 ? '+' : ''}{stock.pct}%</span>
           )}
           {stock['行业'] && <span className="text-[10.5px] text-text-dim ml-1">{stock['行业']}</span>}
-          <span className="text-[10.5px] text-text-muted ml-2 hidden sm:inline">AI 自取行情/走势/资金/消息后客观解读</span>
-          <button onClick={onClose} className="ml-auto text-text-dim hover:text-text text-[20px] leading-none px-1">×</button>
+          <button onClick={close} className="ml-auto text-text-dim hover:text-text text-[20px] leading-none px-1">×</button>
         </div>
 
         {/* 对话流 */}
