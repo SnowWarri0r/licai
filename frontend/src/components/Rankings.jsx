@@ -158,7 +158,7 @@ export default function Rankings() {
                   <span className={`block text-[12.5px] font-mono font-semibold ${pctColor(r.pct)}`}>{r.pct >= 0 ? '+' : ''}{r.pct}%</span>
                   <span className="block text-[10px] text-text-muted font-mono">
                     {tab === 'coiled'
-                      ? `横盘${r['横盘日']}日·量${r['放量倍数']}x`
+                      ? `${r['标签'] || ''}·横盘${r['横盘日']}日·量${r['放量倍数']}x`
                       : tab === 'by_amount'
                       ? `${r['成交额亿']}亿`
                       : r.is_new ? '新股·无涨停'
