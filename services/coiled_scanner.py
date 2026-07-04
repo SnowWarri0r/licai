@@ -171,6 +171,17 @@ async def _stage2(c: dict) -> dict | str:
     width = (bh / bl - 1) * 100
     if width > 30:                                     # 箱体上限(龙头池内放宽)
         return "箱体过宽"
+    # 横盘要求"平": 光在箱体内不够(箱子够宽, 趋势也装得下)。窗口前后半均值漂移小才是横, 爬坡/阴跌都拒
+    half_c = len(prev_c) // 2
+    drift = (sum(prev_c[half_c:]) / (len(prev_c) - half_c)) / (sum(prev_c[:half_c]) / half_c) - 1
+    if abs(drift) * 100 > 6:
+        return "窗口内有趋势(非横盘)"
+    # 横盘还要求"静": 大开大合的宽幅震荡(日收益σ大)不是蓄势基座。安静基座σ≈1.5-2, 野震荡≥2.5
+    rets = [prev_c[i] / prev_c[i - 1] - 1 for i in range(1, len(prev_c))]
+    mean_r = sum(rets) / len(rets)
+    sd = (sum((r - mean_r) ** 2 for r in rets) / len(rets)) ** 0.5 * 100
+    if sd > 2.2:
+        return "宽幅震荡(非安静横盘)"
     last_close = closes[-1]
     base_vol = sum(prev_v) / len(prev_v)
     if base_vol <= 0:
