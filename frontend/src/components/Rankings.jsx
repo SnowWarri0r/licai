@@ -141,6 +141,7 @@ export default function Rankings() {
                 <span className="min-w-0 flex-1">
                   <span className="flex items-center gap-1.5">
                     <span className="text-[12.5px] text-text-bright truncate">{r.name}</span>
+                    {r.is_new && <span className="text-[8.5px] px-1 rounded bg-accent/15 text-accent shrink-0" title="上市前5日无涨跌幅限制">新</span>}
                     {r.is_st && <span className="text-[8.5px] px-1 rounded bg-bear/15 text-bear-bright shrink-0">ST</span>}
                   </span>
                   <span className="text-[10px] text-text-muted font-mono">{boardOf(r.code)} · {r.code} · {r['行业'] || '—'}</span>
@@ -150,6 +151,7 @@ export default function Rankings() {
                   <span className="block text-[10px] text-text-muted font-mono">
                     {tab === 'by_amount'
                       ? `${r['成交额亿']}亿`
+                      : r.is_new ? '新股·无涨停'
                       : (r['涨停占比%'] != null ? `占停${r['涨停占比%']}%` : `量比${r['量比'] ?? '—'}`)}
                   </span>
                 </span>

@@ -6,6 +6,7 @@
 LLM 只把画像总结成人话 + 落到用户持仓, 便宜可复现。
 """
 from __future__ import annotations
+import re as _re
 import time as _t
 from collections import Counter
 
@@ -15,6 +16,11 @@ _TTL = 120  # 盘中 2 分钟
 _FS_ALL_A = "m:0 t:6,m:0 t:80,m:1 t:2,m:1 t:23,m:0 t:7,m:1 t:3"   # 沪深A股(不含北交所/B股)
 _FIELDS = "f2,f3,f6,f8,f10,f12,f14,f20,f100,f103"
 _HOSTS = ["push2.eastmoney.com", "push2delay.eastmoney.com", "1.push2.eastmoney.com"]
+
+
+def _is_new_stock(name: str) -> bool:
+    """N=上市首日 / C=次日至第5日: 注册制下前5个交易日无涨跌幅限制, 涨停占比对它们无意义。"""
+    return bool(_re.match(r"^[NC][一-鿿]", name or ""))
 
 
 def _limit_pct(bare: str, name: str) -> float:
@@ -79,8 +85,8 @@ def scan_strong_stocks() -> dict:
     if not up:
         return {"error": "榜单源暂不可达(东财抖动)"}
 
-    # 涨停数(按各自板块涨停幅度判, 含一字/触板回封都算)
-    limit_up = [r for r in up if r["pct"] >= r["limit"] - 0.3]
+    # 涨停数(按各自板块涨停幅度判, 含一字/触板回封都算; 新股前5日无涨跌停, 只计入大涨梯队)
+    limit_up = [r for r in up if not _is_new_stock(r["name"]) and r["pct"] >= r["limit"] - 0.3]
     # 大涨梯队
     strong = [r for r in up if r["pct"] >= 5]
     # 板块扎堆(涨幅榜里行业出现次数)
@@ -131,14 +137,16 @@ def _rank_row(x: dict) -> dict | None:
         return None
     if not code:
         return None
-    lim = _limit_pct(code, name)
+    new = _is_new_stock(name)
+    lim = None if new else _limit_pct(code, name)
     return {"code": code, "name": name, "pct": round(pct, 2),
             "成交额亿": round(float(x.get("f6") or 0) / 1e8, 2),
             "换手": x.get("f8"), "量比": x.get("f10"),
             "市值亿": round(float(x.get("f20") or 0) / 1e8, 0),
             "行业": x.get("f100") or "",
             "limit": lim,
-            "涨停占比%": round(pct / lim * 100, 1) if lim else None,   # 涨幅占该板块涨停幅度的比例(100=涨停), 跨板块可比
+            "涨停占比%": round(pct / lim * 100, 1) if lim else None,   # 涨幅占该板块涨停幅度的比例(100=涨停), 跨板块可比; 新股无涨跌停→None
+            "is_new": new,
             "is_st": ("ST" in name.upper() or "退" in name)}
 
 
@@ -153,9 +161,13 @@ def top_rankings(limit: int = 100) -> dict:
     # 必须拉大池子(只按 raw 涨幅取 top, 10%涨停的主板会被20%板挤光), 再用占比重排。
     pool = [r for r in (_rank_row(x) for x in _clist("f3", max(pz * 8, 800))) if r]
     # 占比封顶100(涨停因报价跳动会微过线100.x%, 不封顶则各板块涨停按零头排, 又把主板挤掉);
-    # 涨停统一并列, 二级用成交额(板块中性), 让主板涨停与创业/科创涨停真正平起
-    up = sorted([r for r in pool if r.get("涨停占比%") is not None],
-                key=lambda r: (min(r["涨停占比%"], 100.0), r["成交额亿"]), reverse=True)[:pz]
+    # 涨停统一并列, 二级用成交额(板块中性), 让主板涨停与创业/科创涨停真正平起。
+    # 新股(N/C, 前5日无涨跌停)没有占比, 用 raw 涨幅同尺度封顶参与排序: 大涨新股与涨停股并列后拼成交额。
+    def _key(r):
+        base = r["涨停占比%"] if r.get("涨停占比%") is not None else r["pct"]
+        return (min(base, 100.0), r["成交额亿"])
+    up = sorted([r for r in pool if r.get("涨停占比%") is not None or r.get("is_new")],
+                key=_key, reverse=True)[:pz]
     amt = [r for r in (_rank_row(x) for x in _clist("f6", pz)) if r][:pz]
     if not up and not amt:
         return {"error": "榜单源暂不可达(东财抖动)"}
