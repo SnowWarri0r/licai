@@ -197,6 +197,8 @@ export default function StockAsk({ page = false }) {
   const [sessions, setSessions] = useState([])      // 历史会话列表
   const [showHist, setShowHist] = useState(false)   // 历史抽屉开关
   const [copied, setCopied] = useState(false)
+  const [pendImgs, setPendImgs] = useState([])      // 待发送图片(data URL), 随下条问题一起发
+  const fileRef = useRef(null)
   const sessionId = useRef(null)                    // 当前会话 id(首次保存时由后端分配)
   const abortRef = useRef(null)
   const typer = useRef(null)
@@ -213,6 +215,39 @@ export default function StockAsk({ page = false }) {
   }, [])
 
   const patchLast = (fn) => setHistory(h => h.map((it, i) => i === h.length - 1 ? fn(it) : it))
+
+  // 图片缩放到最长边 ≤1280 + JPEG 质量 0.82, 控制 base64 体积; 返回 data URL
+  const downscaleImage = (file) => new Promise((resolve) => {
+    const fr = new FileReader()
+    fr.onload = () => {
+      const img = new Image()
+      img.onload = () => {
+        const max = 1280
+        let { width: w, height: h } = img
+        if (Math.max(w, h) > max) { const r = max / Math.max(w, h); w = Math.round(w * r); h = Math.round(h * r) }
+        const cv = document.createElement('canvas'); cv.width = w; cv.height = h
+        cv.getContext('2d').drawImage(img, 0, 0, w, h)
+        resolve(cv.toDataURL('image/jpeg', 0.82))
+      }
+      img.onerror = () => resolve(null)
+      img.src = fr.result
+    }
+    fr.onerror = () => resolve(null)
+    fr.readAsDataURL(file)
+  })
+
+  const addImages = async (files) => {
+    const imgs = [...files].filter(f => f.type.startsWith('image/')).slice(0, 4)
+    for (const f of imgs) {
+      const url = await downscaleImage(f)
+      if (url) setPendImgs(p => [...p, url].slice(0, 4))   // 最多 4 张
+    }
+  }
+
+  const onPaste = (e) => {
+    const imgs = [...(e.clipboardData?.items || [])].filter(it => it.type.startsWith('image/')).map(it => it.getAsFile()).filter(Boolean)
+    if (imgs.length) { e.preventDefault(); addImages(imgs) }
+  }
 
   const loadSessions = () => fetchJSON('/api/ask/sessions').then(d => setSessions(d.sessions || [])).catch(() => {})
 
@@ -303,19 +338,20 @@ export default function StockAsk({ page = false }) {
 
   const ask = async (question) => {
     const text = (question ?? q).trim()
-    if (!text || loading) return
+    const imgs = pendImgs
+    if ((!text && !imgs.length) || loading) return
     // 把已完成的历史轮次(最近4轮)作为上下文带给后端, 支持追问("它/明天呢")
     const hist = history.filter(it => it.answer && !it.err).slice(-4)
       .flatMap(it => [{ role: 'user', content: it.q }, { role: 'assistant', content: it.answer }])
-    setQ(''); setLoading(true)
+    setQ(''); setPendImgs([]); setLoading(true)
     follow.current = true
-    setHistory(h => [...h, { q: text, steps: [], thought: '', answer: null, typed: '', done: false, sources: [] }])
+    setHistory(h => [...h, { q: text || '(看图)', images: imgs, steps: [], thought: '', answer: null, typed: '', done: false, sources: [] }])
     abortRef.current?.abort()
     const ctrl = new AbortController(); abortRef.current = ctrl
     try {
       const resp = await fetch('/api/ask/stock/stream', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: text, history: hist }), signal: ctrl.signal,
+        body: JSON.stringify({ question: text, history: hist, images: imgs }), signal: ctrl.signal,
       })
       const reader = resp.body.getReader(); const dec = new TextDecoder()
       let buf = ''
@@ -419,6 +455,13 @@ export default function StockAsk({ page = false }) {
         {history.map((it, i) => (
           <div key={i}>
             <div className="text-[12px] text-text-bright bg-surface-3 rounded-lg px-3 py-1.5 inline-block">{it.q}</div>
+            {it.images?.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mt-1.5">
+                {it.images.map((src, k) => (
+                  <img key={k} src={src} alt="" className="h-20 w-auto rounded-lg border border-border-subtle object-cover" />
+                ))}
+              </div>
+            )}
             <div className="mt-2 px-3 py-2.5 rounded-lg bg-accent/8 border border-accent/25">
               {/* 步骤实时流: 工具调用胶囊 */}
               {it.steps.length > 0 && (() => {
@@ -475,18 +518,37 @@ export default function StockAsk({ page = false }) {
         ))}
       </div>
 
+      {pendImgs.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {pendImgs.map((src, k) => (
+            <div key={k} className="relative">
+              <img src={src} alt="" className="h-14 w-auto rounded-lg border border-border" />
+              <button onClick={() => setPendImgs(p => p.filter((_, j) => j !== k))}
+                className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-surface-raise border border-border text-text-dim text-[10px] leading-none hover:text-bear-bright">×</button>
+            </div>
+          ))}
+        </div>
+      )}
       <div className="flex gap-2">
-        <input value={q} onChange={e => setQ(e.target.value)}
+        <input ref={fileRef} type="file" accept="image/*" multiple className="hidden"
+          onChange={e => { addImages(e.target.files); e.target.value = '' }} />
+        <button onClick={() => fileRef.current?.click()} disabled={loading} title="发图给 AI 看(截图/K线/持仓)"
+          className="text-[12px] px-2.5 py-2 rounded-lg bg-surface-3 border border-border text-text-dim hover:text-text hover:border-accent/40 disabled:opacity-50 shrink-0">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="4" width="18" height="16" rx="2" /><circle cx="8.5" cy="9" r="1.5" /><path d="M21 16l-5-5L5 20" />
+          </svg>
+        </button>
+        <input value={q} onChange={e => setQ(e.target.value)} onPaste={onPaste}
           onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) ask() }} disabled={loading}
-          placeholder="例: 这周市场什么风格 / 洛阳钼业今天为什么涨 / 资金主线在哪"
+          placeholder="例: 这周市场什么风格 / 洛阳钼业为什么涨 / 也可贴图问"
           className="flex-1 text-[12px] px-3 py-2 rounded-lg bg-surface-3 border border-border text-text placeholder:text-text-muted focus:border-accent/50 outline-none disabled:opacity-50" />
-        <button onClick={() => ask()} disabled={loading || !q.trim()}
+        <button onClick={() => ask()} disabled={loading || (!q.trim() && !pendImgs.length)}
           className="text-[12px] px-3.5 py-2 rounded-lg bg-accent/20 text-accent border border-accent/40 hover:bg-accent/30 disabled:opacity-40 disabled:cursor-not-allowed">
           {loading ? '分析中' : '问'}
         </button>
       </div>
       <div className="text-[10px] text-text-muted pt-2.5 mt-2 border-t border-border-subtle">
-        Agent 自取行情/走势/新闻/大盘情绪后客观解读 · 纯解读不构成任何买卖建议
+        Agent 自取行情/走势/新闻/大盘情绪后客观解读 · 可发图(截图/K线/持仓)让它看 · 纯解读不构成任何买卖建议
       </div>
     </div>
   )

@@ -21,6 +21,7 @@ class Turn(BaseModel):
 class AskIn(BaseModel):
     question: str
     history: Optional[List[Turn]] = None
+    images: Optional[List[str]] = None    # data URL 或裸 base64, 最多 4 张, 走多模态
 
 
 class SessionMsg(BaseModel):
@@ -35,7 +36,7 @@ class SessionMsg(BaseModel):
 async def ask(data: AskIn):
     """自由问个股(为什么涨/跌、最近消息、跟持仓关系)。挂工具的 agent 自取数据后客观解读, 不给买卖建议。"""
     hist = [t.model_dump() for t in (data.history or [])]
-    return await ask_stock(data.question, hist)
+    return await ask_stock(data.question, hist, data.images)
 
 
 @router.post("/stock/stream")
@@ -45,7 +46,7 @@ async def ask_stream(data: AskIn):
 
     async def gen():
         try:
-            async for ev in ask_stock_stream(data.question, hist):
+            async for ev in ask_stock_stream(data.question, hist, data.images):
                 yield f"data: {_json.dumps(ev, ensure_ascii=False)}\n\n"
         except Exception as e:
             yield f"data: {_json.dumps({'type': 'error', 'error': str(e)}, ensure_ascii=False)}\n\n"
