@@ -392,6 +392,36 @@ def _em_secid(stock_code: str) -> str:
     return f"1.{code}" if code[:1] in ("6", "9", "5") else f"0.{code}"
 
 
+def _kline_tencent_a(stock_code: str, datalen: int = 120) -> pd.DataFrame:
+    """腾讯 gtimg A股/ETF 前复权日K(不同提供商, 抗东财 push2his 抽风; ETF 同样支持)。
+    数组: [日期, 开, 收, 高, 低, 量, ...]。"""
+    code = split_stock_code(stock_code)[1]
+    pre = "sh" if code[:1] in ("6", "9", "5") else "sz"
+    sym = pre + code
+    url = (f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+           f"?_var=kline_dayqfq&param={sym},day,,,{max(int(datalen), 1)},qfq")
+    r = _requests.get(url, timeout=10)
+    txt = r.text.strip()
+    eq = txt.find("=")
+    if eq < 0:
+        return pd.DataFrame()
+    import json as _json
+    payload = _json.loads(txt[eq + 1:])
+    sym_data = (payload.get("data") or {}).get(sym) or {}
+    rows = sym_data.get("qfqday") or sym_data.get("day") or []
+    out = []
+    for p in rows:
+        if len(p) < 6:
+            continue
+        try:
+            out.append({"日期": str(p[0]), "开盘": float(p[1]), "收盘": float(p[2]),
+                        "最高": float(p[3]), "最低": float(p[4]), "成交量": float(p[5]),
+                        "成交额": 0, "振幅": 0, "涨跌幅": 0, "涨跌额": 0, "换手率": 0})
+        except (TypeError, ValueError):
+            continue
+    return pd.DataFrame(out)
+
+
 def _fetch_history_em(stock_code: str, days: int) -> pd.DataFrame:
     """东财 push2his 日K, 前复权(fqt=1)。历史序列连续 — 除权/份额折算不再断崖。
     股票/ETF 通用。Sina 的 getKLineData 是不复权, ETF 拆分日会劈一刀, 故改用这条做主源。"""
@@ -504,6 +534,21 @@ async def get_historical_data(stock_code: str, days: int = 60) -> pd.DataFrame:
     # Fallback to AKShare
     end_date = datetime.now().strftime("%Y%m%d")
     start_date = (datetime.now() - timedelta(days=days * 2)).strftime("%Y%m%d")
+    # ETF/LOF 专用源: stock_zh_a_hist 是个股接口不覆盖基金, 个别 ETF(如512480)东财 kline 主源
+    # 偶发返回空时, 个股接口也兜不住 → 用 fund_etf_hist_em(前复权)专门兜 ETF。列名与个股一致。
+    if is_etf:
+        try:
+            df = await asyncio.to_thread(
+                ak.fund_etf_hist_em, symbol=stock_code, period="daily",
+                start_date=start_date, end_date=end_date, adjust="qfq",
+            )
+            if df is not None and not df.empty:
+                await save_klines(stock_code, df.to_dict("records"))   # 前复权回写自愈缓存
+                df = df.tail(days)
+                _cache_set(cache_key, df)
+                return df
+        except Exception:
+            pass
     try:
         df = await asyncio.to_thread(
             ak.stock_zh_a_hist, symbol=stock_code, period="daily",
@@ -518,6 +563,17 @@ async def get_historical_data(stock_code: str, days: int = 60) -> pd.DataFrame:
             return df
     except Exception:
         pass
+
+    # 腾讯前复权兜底(不同提供商, 抗东财 push2his 抽风; ETF/个股通用, 也是连续前复权)。
+    try:
+        df = await asyncio.to_thread(_kline_tencent_a, stock_code, max(days, 120))
+        if df is not None and not df.empty:
+            await save_klines(stock_code, df.to_dict("records"))   # 前复权回写自愈缓存
+            df = df.tail(days)
+            _cache_set(cache_key, df)
+            return df
+    except Exception as e:
+        print(f"[market_data] Tencent A history failed for {stock_code}: {e}")
 
     # Last resort: use SQLite cache even if stale
     rows = await get_cached_klines(stock_code, days)
