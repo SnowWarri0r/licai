@@ -1,5 +1,86 @@
 import { useState } from 'react'
 
+// 每个数据工具一套线性 SVG 图标(描边跟随 currentColor, 贴合暖金深色主题)
+const TOOL_ICONS = {
+  resolve_stock: <><circle cx="10.5" cy="10.5" r="6.5" /><path d="M19.5 19.5l-4.2-4.2" /></>,
+  get_quote: <><rect x="5.5" y="8" width="4" height="7" rx="1" /><path d="M7.5 5v3M7.5 15v4" /><rect x="14.5" y="7" width="4" height="6" rx="1" /><path d="M16.5 4v3M16.5 13v4" /></>,
+  get_trend: <><path d="M4 4v16h16" /><path d="M7 14l3-3 3 2 4-6" /><path d="M15.5 7H18v2.5" /></>,
+  get_intraday: <><circle cx="12" cy="12" r="8" /><path d="M12 8v4l3 2" /></>,
+  get_news: <><rect x="5" y="4" width="14" height="16" rx="2" /><path d="M8 9h8M8 12h8M8 15h5" /></>,
+  get_announcements: <><path d="M4 10v4l10 5V5l-10 5z" /><path d="M14 9.5a3 3 0 010 5" /></>,
+  get_fund_flow: <><circle cx="12" cy="12" r="8" /><path d="M9 8l3 3.5L15 8M12 11.5V16M9.5 12.5h5M9.5 14.5h5" /></>,
+  get_lhb: <><path d="M8 4h8v4a4 4 0 01-8 0z" /><path d="M8 5H5v1a3 3 0 003 3M16 5h3v1a3 3 0 01-3 3M10 15h4M9 19.5h6M12 15v4.5" /></>,
+  get_company_profile: <><rect x="4" y="8" width="9" height="12" rx="1" /><path d="M13 12h7v8h-7M7 11h3M7 14h3M7 17h3M16 15h1M16 17.5h1" /></>,
+  get_red_flags: <><path d="M5 21V4M5 4h11l-2 4 2 4H5" /></>,
+  get_stock_concepts: <><path d="M11 3H4v7l9 9 7-7z" /><circle cx="7.5" cy="7.5" r="1.3" /></>,
+  get_fundamentals: <><rect x="5" y="4" width="14" height="16" rx="2" /><path d="M9 14v3M12 10.5v6.5M15 13v4" /></>,
+  get_commodity: <><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z" /><path d="M12 12v9M4 7.5l8 4.5 8-4.5" /></>,
+  get_peers: <><path d="M12 5v15M7 20h10M5 8l7-2 7 2" /><path d="M5 8l-2 5a3 3 0 006 0zM19 8l2 5a3 3 0 01-6 0z" /></>,
+  get_shareholders: <><circle cx="9" cy="8" r="3" /><path d="M3.5 19a5.5 5 0 0111 0" /><path d="M16 6a3 3 0 010 6M20.5 19a5.5 5 0 00-4-5" /></>,
+  get_holdings: <><rect x="4" y="8" width="16" height="11" rx="2" /><path d="M9 8V6a2 2 0 012-2h2a2 2 0 012 2v2M4 13h16" /></>,
+  get_thesis: <><path d="M7 4h8l4 4v12H7zM15 4v4h4M10 13h6M10 16.5h4" /></>,
+  get_asset_allocation: <><circle cx="12" cy="12" r="8" /><path d="M12 12V4M12 12l7 3.5" /></>,
+  get_trades: <><path d="M4 9h12M13 6l3 3-3 3" /><path d="M20 15H8M11 12l-3 3 3 3" /></>,
+  get_market_sentiment: <><path d="M4 16a8 8 0 0116 0" /><path d="M12 16l4.5-4" /><circle cx="12" cy="16" r="1" /></>,
+  get_sector_momentum: <><rect x="4" y="4" width="7" height="7" rx="1" /><rect x="13" y="4" width="7" height="7" rx="1" /><rect x="4" y="13" width="7" height="7" rx="1" /><rect x="13" y="13" width="7" height="7" rx="1" /></>,
+  get_hot_rank: <><path d="M12 3c.5 3 3.5 4 3.5 8a3.5 3.5 0 01-7 0c0-1.5 1-2.5 1.5-3 .3 1.5 2 1 2-5z" /></>,
+  get_hot_concepts: <><path d="M9.5 18h5M10.5 21h3" /><path d="M12 3a6 6 0 00-3.5 10.8c.6.5.9 1.2 1 2.2h5c.1-1 .4-1.7 1-2.2A6 6 0 0012 3z" /></>,
+  get_board_stocks: <><path d="M4 8l3.5 9h9L20 8l-5 4-3-6-3 6z" /></>,
+  get_market_news: <><path d="M4 20h16M6 20V8l6-4 6 4v12M10 20v-5h4v5" /></>,
+  web_search: <><circle cx="12" cy="12" r="8" /><path d="M4 12h16M12 4c2.5 2.4 2.5 13.6 0 16M12 4c-2.5 2.4-2.5 13.6 0 16" /></>,
+  get_chain_quote: <><circle cx="6" cy="6" r="2.2" /><circle cx="18" cy="6" r="2.2" /><circle cx="12" cy="18" r="2.2" /><path d="M8 7l8 0M7 8l4 8M17 8l-4 8" /></>,
+  read_url: <><rect x="5" y="3.5" width="14" height="17" rx="2" /><path d="M8 8h8M8 11.5h8M8 15h5" /></>,
+}
+const DEFAULT_ICON = <><circle cx="12" cy="12" r="2.6" /><path d="M12 4v2.5M12 17.5V20M4 12h2.5M17.5 12H20M6.3 6.3l1.8 1.8M15.9 15.9l1.8 1.8M17.7 6.3l-1.8 1.8M8.1 15.9l-1.8 1.8" /></>
+
+export function ToolIcon({ tool }) {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+      {TOOL_ICONS[tool] || DEFAULT_ICON}
+    </svg>
+  )
+}
+
+// 工具调用流: "调用了N个工具" 标头 + 每个工具的图标胶囊(运行时跳动点, 完成后打勾)。
+// 问问市场 / 排行榜弹窗共用, 保证两处样式一致。
+export function ToolCallStrip({ steps, settled }) {
+  if (!steps || steps.length === 0) return null
+  return (
+    <div className="mb-2">
+      <div className="flex items-center gap-1.5 mb-1.5 text-[10px] text-text-muted">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+          <path d="M14.5 4.5a4 4 0 00-5 5L4 15v5h5l5.5-5.5a4 4 0 005-5l-3 3-2.5-2.5z" />
+        </svg>
+        <span>{settled ? '调用了' : '正在取数据'}</span>
+        <span className="font-mono text-text-dim">{steps.length}</span>
+        <span>个工具</span>
+        {!settled && <span className="flex gap-0.5 ml-0.5">
+          <span className="w-1 h-1 rounded-full bg-accent animate-bounce" style={{ animationDelay: '0ms' }} />
+          <span className="w-1 h-1 rounded-full bg-accent animate-bounce" style={{ animationDelay: '150ms' }} />
+          <span className="w-1 h-1 rounded-full bg-accent animate-bounce" style={{ animationDelay: '300ms' }} />
+        </span>}
+        <span className="flex-1 h-px bg-border-subtle ml-1" />
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {steps.map((s, j) => (
+          <span key={j}
+            className={`inline-flex items-center gap-1 text-[10.5px] pl-1.5 pr-2 py-[3px] rounded-full border transition-colors ${
+              settled ? 'bg-accent/8 border-accent/25 text-text-dim' : 'bg-accent/12 border-accent/40 text-text'}`}>
+            <ToolIcon tool={s.tool} />
+            <span>{s.label}</span>
+            {s.arg ? <span className="font-mono text-text-muted">{s.arg}</span> : null}
+            {settled
+              ? <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="text-bull shrink-0"><path d="M5 12.5l4.5 4.5L19 7" /></svg>
+              : <span className="text-accent/50 leading-none">·</span>}
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // 只放行 http(s) 链接, 挡 javascript:/data: 等可执行 scheme
 export function safeUrl(url) {
   try { const u = new URL(url); return (u.protocol === 'https:' || u.protocol === 'http:') ? u.href : null }
@@ -124,11 +205,11 @@ export function SourcesBlock({ sources }) {
   )
 }
 
-// 跑一次单轮分析(SSE): 给定 question, 回调 onStep/onChart/onSource/onAnswer。返回 abort 函数。
-export function streamAnalysis(question, { onStep, onChart, onSource, onAnswer, onDone, onError, signal } = {}) {
+// 跑一次单轮分析(SSE): 给定 question(可带 history 支持追问), 回调 onStep/onChart/onSource/onAnswer。
+export function streamAnalysis(question, { onStep, onChart, onSource, onAnswer, onDone, onError, signal, history } = {}) {
   fetch('/api/ask/stock/stream', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question }), signal,
+    body: JSON.stringify({ question, history: history || [] }), signal,
   }).then(async (resp) => {
     const reader = resp.body.getReader(); const dec = new TextDecoder()
     let buf = ''

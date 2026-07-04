@@ -1,7 +1,7 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { fetchJSON } from '../hooks/useApi'
 import ProKline from './ProKline'
-import { MiniMarkdown, SourcesBlock, streamAnalysis } from './askShared'
+import StockAskModal from './StockAskModal'
 
 const TABS = [
   { key: 'gainers', label: '涨幅榜' },
@@ -24,45 +24,24 @@ function boardOf(code) {
 }
 const BOARDS = ['全部', '主板', '创业板', '科创板', '北交所']
 
-// 右侧面板: 选中股票先看 K线; 想问再在底部输入框问(可选), 才跑 AI 分析
+// 右侧面板: 选中股票看 K线(铺满); 想问就点"问 AI"或底部输入框 → 弹出式对话(与问问市场样式一致)
 function StockPanel({ stock }) {
-  const [q, setQ] = useState('')
-  const [asking, setAsking] = useState(false)
-  const [answer, setAnswer] = useState('')
-  const [charts, setCharts] = useState([])
-  const [sources, setSources] = useState([])
-  const [steps, setSteps] = useState([])
-  const abortRef = useRef(null)
+  const [askOpen, setAskOpen] = useState(false)
+  const [seed, setSeed] = useState('')
+  const [draft, setDraft] = useState('')
 
-  // 切换股票: 清空问答、停掉进行中的请求
-  useEffect(() => {
-    setQ(''); setAnswer(''); setCharts([]); setSources([]); setSteps([]); setAsking(false)
-    return () => abortRef.current?.abort()
-  }, [stock])
+  // 切换股票: 关弹窗、清空草稿
+  useEffect(() => { setAskOpen(false); setSeed(''); setDraft('') }, [stock])
 
-  const ask = () => {
-    const question = q.trim()
-    if (!question || asking || !stock) return
-    abortRef.current?.abort()
-    const ctrl = new AbortController(); abortRef.current = ctrl
-    setAsking(true); setAnswer(''); setCharts([]); setSources([]); setSteps([])
-    streamAnalysis(`${stock.name}(${stock.code}): ${question}`, {
-      signal: ctrl.signal,
-      onStep: (e) => setSteps(s => [...s, { label: e.label }]),
-      onChart: (e) => setCharts(c => [...c, e.url]),
-      onSource: (arr) => setSources(s => [...s, ...arr]),
-      onAnswer: (t) => setAnswer(t),
-      onError: () => setAsking(false),
-      onDone: () => setAsking(false),
-    })
-  }
+  const openAsk = (question = '') => { setSeed(question); setAskOpen(true) }
+  const submitDraft = () => { const t = draft.trim(); if (t) { openAsk(t); setDraft('') } }
 
   if (!stock) {
     return (
       <div className="h-full flex items-center justify-center text-center px-6">
         <div className="text-text-muted text-[13px] leading-relaxed">
           点左侧任意一只股票看 K 线<br />
-          <span className="text-[11px] text-text-dim">想问什么(为什么涨/量价/消息)在下面输入框问</span>
+          <span className="text-[11px] text-text-dim">想问什么(为什么涨/量价/消息)点「问 AI」</span>
         </div>
       </div>
     )
@@ -77,52 +56,30 @@ function StockPanel({ stock }) {
           {stock.pct >= 0 ? '+' : ''}{stock.pct}%
         </span>
         {stock['行业'] && <span className="text-[10.5px] text-text-dim ml-1">{stock['行业']}</span>}
-      </div>
-
-      {/* K线固定在上方, 不随对话流滚动 */}
-      <div className="shrink-0 px-3 pt-2 pb-1 border-b border-border-subtle">
-        <ProKline code={stock.code} height={380} />
-      </div>
-
-      {/* 对话流单独滚动 */}
-      <div className="flex-1 overflow-y-auto px-3 py-2 min-h-0">
-        {(asking || answer || steps.length > 0) ? (
-          <div>
-            {asking && !answer && (
-              <div className="flex flex-wrap gap-1.5 mb-1 items-center">
-                <span className="text-[11px] text-text-dim">分析中…</span>
-                {steps.slice(-6).map((s, i) => (
-                  <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-surface-3 text-text-dim border border-border-subtle">{s.label}</span>
-                ))}
-              </div>
-            )}
-            {charts.map((src, k) => (
-              <a key={k} href={src} target="_blank" rel="noreferrer" className="block mb-2">
-                <img src={src} alt="K线图" loading="lazy" className="w-full rounded-lg border border-border-subtle" />
-              </a>
-            ))}
-            {answer && <MiniMarkdown text={answer} sources={sources} />}
-            {answer && <SourcesBlock sources={sources} />}
-            {answer && <div className="mt-2 pt-2 border-t border-border-subtle text-[10px] text-text-muted">仅客观分析，不构成买卖建议</div>}
-          </div>
-        ) : (
-          <div className="h-full flex items-center justify-center text-[11px] text-text-dim">
-            想问点 {stock.name} 什么，在下面输入框问
-          </div>
-        )}
-      </div>
-
-      <div className="shrink-0 border-t border-border px-3 py-2 flex gap-2">
-        <input value={q} onChange={e => setQ(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) ask() }}
-          disabled={asking}
-          placeholder={`想问点 ${stock.name} 什么?(可选) 例: 今天为什么涨 / 量价怎么看`}
-          className="flex-1 text-[12px] px-3 py-2 rounded-lg bg-surface-3 border border-border text-text placeholder:text-text-muted focus:border-accent/50 outline-none disabled:opacity-50" />
-        <button onClick={ask} disabled={asking || !q.trim()}
-          className="text-[12px] px-3.5 py-2 rounded-lg bg-accent/20 text-accent border border-accent/40 hover:bg-accent/30 disabled:opacity-40 disabled:cursor-not-allowed">
-          {asking ? '分析中' : '问'}
+        <button onClick={() => openAsk('')}
+          className="ml-auto text-[11px] px-2.5 py-1 rounded-lg bg-accent/20 text-accent border border-accent/40 hover:bg-accent/30">
+          问 AI 分析
         </button>
       </div>
+
+      {/* K线铺满面板 */}
+      <div className="flex-1 min-h-0 px-3 py-2">
+        <ProKline code={stock.code} fill />
+      </div>
+
+      {/* 底部快捷提问: 回车/点问 → 弹出对话 */}
+      <div className="shrink-0 border-t border-border px-3 py-2 flex gap-2">
+        <input value={draft} onChange={e => setDraft(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) submitDraft() }}
+          placeholder={`想问点 ${stock.name} 什么?例: 今天为什么这么走 / 量价怎么看`}
+          className="flex-1 text-[12px] px-3 py-2 rounded-lg bg-surface-3 border border-border text-text placeholder:text-text-muted focus:border-accent/50 outline-none" />
+        <button onClick={submitDraft} disabled={!draft.trim()}
+          className="text-[12px] px-3.5 py-2 rounded-lg bg-accent/20 text-accent border border-accent/40 hover:bg-accent/30 disabled:opacity-40 disabled:cursor-not-allowed">
+          问
+        </button>
+      </div>
+
+      {askOpen && <StockAskModal stock={stock} initialQuestion={seed} onClose={() => setAskOpen(false)} />}
     </div>
   )
 }
