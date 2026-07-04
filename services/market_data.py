@@ -108,6 +108,9 @@ def normalize_stock_code(stock_code: str) -> str:
         rest = raw[2:].strip()
         if rest:
             return f"US.{rest.upper()}"
+    # 裸美股 ticker(纯字母 1-5 位, 如 AAPL/NVDA) → US. 前缀; A股/港股代码都是数字, 不冲突
+    if re.fullmatch(r"[A-Za-z]{1,5}", raw) and raw != "USD":
+        return f"US.{raw}"
     return raw
 
 
