@@ -12,7 +12,7 @@ import time as _time
 import services.llm_client as _llm
 
 _MODEL = "claude-opus-4-8"
-_MAX_ROUNDS = 8
+_MAX_ROUNDS = 14
 
 # A 股 代码↔名称 表 (akshare, 缓存 12h, 供按名字解析)
 _code_name_cache: tuple[dict, dict, float] | None = None
@@ -1603,7 +1603,7 @@ _TOOLS = [
     {"name": "get_market_news", "description": "全市场财经快讯(含政策面/国家调控: 货币财政、央行、证监会/部委监管、产业政策、行业调控、出口管制/关税、国常会/政治局等重要会议)。分析市场背景、判断政策驱动/调控影响时必看; policy_news 是政策相关筛选。",
      "input_schema": {"type": "object", "properties": {"limit": {"type": "integer", "description": "默认40"}}}},
     # Anthropic 服务端联网搜索: 本地工具查不到/可能过期的事实(海外公司是否上市/IPO/代码/政策/最新消息)用它核实, 以联网结果为准而非凭记忆。
-    {"type": "web_search_20250305", "name": "web_search", "max_uses": 4},
+    {"type": "web_search_20250305", "name": "web_search", "max_uses": 12},
 ]
 
 _EXECUTORS = {
@@ -1744,8 +1744,9 @@ _SYSTEM = (
     "本地工具值与联网值、或两条联网结果明显不一致时, 列出两个数值并指明'两源不一致, 倾向以X为准(原因)/暂存疑', 将分歧呈现给用户; 一致时正常引用。单一来源获取的如实标注[联网]单源, 据实说明未经交叉验证。\n"
     "【时效——分清'行情'和'消息面'两类数据, 各按各的节奏取】问'这两天/最近/周末在炒什么、情绪、还在发酵吗'这类时:\n"
     "  · 消息面(新闻/政策/社媒情绪/研报)不随交易日休市, 周末持续更新。周末时主动调用 web_search, 按日期检索周六周日及最近几天的新消息, 这是研判下周开盘前题材酝酿的关键窗口。检索到周末或近几天日期的新催化, 即为当前正在发酵的题材, 据实陈述。\n"
-    "  · 【广覆盖·多次检索】研判'在炒什么/情绪/发酵'这类全市场问题, 单次检索覆盖有限, 从多个角度并行发起多次 web_search(至少 4-6 次), 各角度独立成词条: ① 大盘情绪与赚钱效应、② 当周资金主线板块/概念、③ 政策面与重要会议、④ 海外市场与地缘扰动、⑤ 热门题材的具体催化(逐个题材单独搜)、⑥ 突发与龙头个股异动。"
-    "每个角度用'日期/本周末/最新 + 关键词'组织检索词(如'2026年6月27日 A股 周末 利好消息''本周末 半导体 政策 最新'), 汇总各角度结果后按热度与对下周开盘的影响排序呈现, 覆盖广度优先于单条深度。\n"
+    "  · 【广覆盖·密集检索】研判'在炒什么/情绪/发酵'这类全市场问题, 单次检索覆盖有限, 发起 8-12 次 web_search 做广覆盖, 各角度独立成词条: ① 大盘情绪与赚钱效应、② 当周资金主线板块/概念、③ 政策面与重要会议、④ 海外市场与地缘扰动、⑤ 热门题材的具体催化(每个题材各单独搜一次, 有几个搜几个)、⑥ 突发与龙头个股异动、⑦ 机构周末策略与下周展望、⑧ 行业涨价/订单/数据等基本面催化。"
+    "在同一轮里一次并行发起多个 web_search(每轮 4-6 个), 用 2-3 轮把 8-12 个角度全部检索完, 充分利用并行检索。"
+    "每个角度用'日期/本周末/最新 + 关键词'组织检索词(如'2026年6月27日 A股 周末 利好消息''本周末 半导体 政策 最新''机构 下周 A股 策略'), 汇总各角度结果后按热度与对下周开盘的影响排序呈现, 覆盖广度优先于单条深度。\n"
     "  · 行情数据(价格/资金流/涨跌/情绪温度)在周末定格于上一交易日收盘快照: get_market_sentiment/get_sector_momentum/get_hot_concepts 周末返回周五读数, 引用时统一表述为'周五收盘快照', 当前热度以这份周五读数为准陈述。\n"
     "  · 每个事件标注真实日期: 数月前的政策/数据/价格归入背景脉络并标注真实月份(如1月出口管制、2月钨价同比), 周末及近几天新增的消息归入正在发酵, 两者分段陈述。\n"
     "  · 仅在检索后确认近几天无新进展时, 表述为'近两天无新消息, 以下为更早的背景脉络', 即先检索后陈述。\n"
@@ -1807,7 +1808,7 @@ async def ask_stock_stream(question: str, history: list | None = None):
     for rnd in range(_MAX_ROUNDS):
         try:
             resp = await asyncio.to_thread(
-                _llm.call_claude_messages, messages, _system(), _MODEL, 2048, _active_tools())
+                _llm.call_claude_messages, messages, _system(), _MODEL, 4096, _active_tools())
         except Exception as e:
             yield {"type": "error", "error": str(e)}
             return
@@ -1852,7 +1853,7 @@ async def ask_stock(question: str, history: list | None = None) -> dict:
     for rnd in range(_MAX_ROUNDS):
         try:
             resp = await asyncio.to_thread(
-                _llm.call_claude_messages, messages, _system(), _MODEL, 2048, _active_tools())
+                _llm.call_claude_messages, messages, _system(), _MODEL, 4096, _active_tools())
         except Exception as e:
             return {"answer": "", "error": str(e), "tools_used": tools_used, "rounds": rnd}
         content = resp.get("content", [])
