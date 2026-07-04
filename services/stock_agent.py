@@ -553,6 +553,24 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
         return {"error": "走势暂不支持该市场"}
     if len(allbars) < 2:
         return {"error": "无历史数据"}
+    # 校正"今天"这根: 日K历史源(尤其ETF)的当日 close 可能是盘中/延迟脏值(O/H/L 已是全天值但
+    # close 滞后), 实时报价才是当日权威。最后一根是今天时用实时 O/H/L/C 覆盖, 保证今日涨跌幅与行情一致。
+    if is_a_share(raw):
+        from datetime import datetime as _dt
+        if allbars[-1][0] == _dt.now().strftime("%Y-%m-%d"):
+            try:
+                from services.market_data import get_realtime_quotes
+                rq = (await get_realtime_quotes([raw])).get(raw) or {}
+                rc = _ff(rq.get("price"))
+                if rc:
+                    d, c, h, l, v, o = allbars[-1]
+                    ro = _ff(rq.get("open")) or o
+                    rh = _ff(rq.get("high")) or h
+                    rl = _ff(rq.get("low")) or l
+                    # 量保留历史源那根(全天量, 单位与历史一致); 实时 volume 单位不同会污染 vol_ratio
+                    allbars[-1] = (d, rc, max(rh, rc), min(rl, rc) if rl else rc, v, ro)
+            except Exception as e:
+                print(f"[trend] realtime graft failed for {raw}: {e}")
     summary = _trend_summary([b[1] for b in allbars], [b[4] for b in allbars])
     try:
         structure = _structure_scan([b[1] for b in allbars], [b[2] for b in allbars],
