@@ -82,8 +82,22 @@ async def _active_holdings() -> list[dict]:
         except Exception:
             pass  # ledger 算不出就退回表里的 shares
         if shares > 0:
-            out.append({**h, "shares": shares, "hold_days": hold_days, "open_date": open_date})
+            out.append({**h, "shares": shares, "hold_days": hold_days,
+                        "open_date": _date_with_weekday(open_date)})
     return out
+
+
+def _date_with_weekday(d: str | None) -> str | None:
+    """把 'YYYY-MM-DD' 标上星期, 省得 LLM 自己换算星期出错(如把周五说成周四)。"""
+    if not d:
+        return d
+    import datetime
+    try:
+        dt = datetime.date.fromisoformat(d[:10])
+        wk = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][dt.weekday()]
+        return f"{d}({wk})"
+    except Exception:
+        return d
 
 
 async def _tool_resolve_stock(query: str) -> dict:
@@ -1262,7 +1276,7 @@ async def _tool_get_holdings() -> dict:
                               "shares": h.get("shares"),
                               "持有天数": h.get("hold_days"), "开仓日": h.get("open_date")} for h in hs],
                 "note": "仅当前在持(已清仓的票不在此列, 按综合成本法现算 shares>0)。"
-                        "持有天数=资金加权持有天数(0=今天才开/加的仓); 开仓日=当前持仓段最早一笔买入日(=今天则是今日新开仓)。"}
+                        "持有天数=资金加权持有天数(0=今天才开/加的仓); 开仓日=当前持仓段最早一笔买入日(=今天则是今日新开仓), 已带好星期, 说开仓是周几时照此抄, 别自己换算。"}
     except Exception as e:
         return {"error": str(e)}
 
