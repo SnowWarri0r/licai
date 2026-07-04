@@ -61,10 +61,11 @@ function CiteMark({ n, src }) {
 }
 
 // 给带符号涨跌数字上色(A股 红涨绿跌): +X% / -X% → 红 / 绿。在表格和正文里都生效。
+// 前界排除数字/冒号/点、后界排除冒号, 避免把时间段(10:30-11:00)/日期(2024-06)/代码区间误当负数。
 function colorizeSigned(text, kp) {
-  return text.split(/([+-]\d[\d,.]*%?)/g).map((seg, j) => {
-    const m = seg.match(/^([+-])[\d,.]+%?$/)
-    if (m) return <span key={`${kp}-s${j}`} className={m[1] === '+' ? 'text-bear' : 'text-bull'}>{seg}</span>
+  return text.split(/((?<![\d:.])[+-]\d[\d,.]*%?(?!:))/g).map((seg, j) => {
+    const m = seg.match(/^([+-])\d[\d,.]*%?$/)
+    if (m && !seg.endsWith(':')) return <span key={`${kp}-s${j}`} className={m[1] === '+' ? 'text-bear' : 'text-bull'}>{seg}</span>
     return seg
   })
 }
