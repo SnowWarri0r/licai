@@ -1,7 +1,11 @@
 const ICONS = {
   dashboard: <><path d="M4 4v16h16" /><path d="M7 14l3-3 3 2 4-6" /><path d="M15.5 7H18v2.5" /></>,
   portfolio: <><rect x="4" y="8" width="16" height="11" rx="2" /><path d="M9 8V6a2 2 0 012-2h2a2 2 0 012 2v2M4 13h16" /></>,
+  sector: <><rect x="4" y="4" width="7" height="7" rx="1" /><rect x="13" y="4" width="7" height="7" rx="1" /><rect x="4" y="13" width="7" height="7" rx="1" /><rect x="13" y="13" width="7" height="7" rx="1" /></>,
   rankings: <><path d="M8 4h8v4a4 4 0 01-8 0z" /><path d="M8 5H5v1a3 3 0 003 3M16 5h3v1a3 3 0 01-3 3M10 15h4M9 19.5h6M12 15v4.5" /></>,
+  macro: <><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z" /><path d="M12 12v9M4 7.5l8 4.5 8-4.5" /></>,
+  news: <><rect x="5" y="4" width="14" height="16" rx="2" /><path d="M8 9h8M8 12h8M8 15h5" /></>,
+  review: <><path d="M7 4h8l4 4v12H7zM15 4v4h4M10 13h6M10 16.5h4" /></>,
   ask: <><rect x="4" y="5" width="16" height="12" rx="2" /><path d="M8 21l4-4M8 9h8M8 12h5" /></>,
   settings: <><circle cx="12" cy="12" r="3" /><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" /></>,
 }
@@ -9,7 +13,11 @@ const ICONS = {
 const NAV = [
   { key: 'dashboard', label: '仪表盘' },
   { key: 'portfolio', label: '持仓' },
+  { key: 'sector', label: '板块' },
   { key: 'rankings', label: '榜单' },
+  { key: 'macro', label: '宏观' },
+  { key: 'news', label: '资讯' },
+  { key: 'review', label: '复盘' },
   { key: 'ask', label: '问问市场' },
   { key: 'settings', label: '设置' },
 ]
@@ -25,7 +33,7 @@ export default function Sidebar({ active, onNav, open, onToggle }) {
         {open && <span className="text-[12px]">收起</span>}
       </button>
 
-      <nav className="flex-1 py-2">
+      <nav className="flex-1 py-2 overflow-y-auto">
         {NAV.map(n => {
           const on = active === n.key
           return (
