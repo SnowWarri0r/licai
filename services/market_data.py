@@ -515,22 +515,6 @@ async def get_historical_data(stock_code: str, days: int = 60) -> pd.DataFrame:
             _cache_set(cache_key, df)
             return df
 
-    # Fetch fresh data from Sina (不复权: ETF 份额折算/拆分会断崖 → ETF 跳过, 只用前复权源)
-    if not is_etf:
-        try:
-            # Fetch more than needed so we accumulate history
-            fetch_days = max(days, 120)
-            df = await asyncio.to_thread(_fetch_history_sina, stock_code, fetch_days)
-            if df is not None and not df.empty:
-                # Sina 是不复权, 只服务本次请求, 不写回 SQLite。SQLite 定位为前复权连续序列的持久层,
-                # 不复权写回会与历史前复权行混成除权断崖(INSERT OR REPLACE 部分覆盖), 污染阶梯式上行
-                # 结构识别(误判破位/台阶错位)。主源(东财)或 akshare(qfq)恢复后会以前复权重填, 此处仅临时降级。
-                df = df.tail(days)
-                _cache_set(cache_key, df)
-                return df
-        except Exception as e:
-            print(f"[market_data] Sina history failed for {stock_code}: {e}")
-
     # Fallback to AKShare
     end_date = datetime.now().strftime("%Y%m%d")
     start_date = (datetime.now() - timedelta(days=days * 2)).strftime("%Y%m%d")
@@ -574,6 +558,18 @@ async def get_historical_data(stock_code: str, days: int = 60) -> pd.DataFrame:
             return df
     except Exception as e:
         print(f"[market_data] Tencent A history failed for {stock_code}: {e}")
+
+    # 最后的实时兜底: Sina 不复权(非ETF)。排在所有前复权源之后——不复权在除权/送转日会露断崖,
+    # 只有 EM/akshare/腾讯前复权全失败时才用它, 且只服务本次不写回 SQLite(避免把断崖污染进缓存)。
+    if not is_etf:
+        try:
+            df = await asyncio.to_thread(_fetch_history_sina, stock_code, max(days, 120))
+            if df is not None and not df.empty:
+                df = df.tail(days)
+                _cache_set(cache_key, df)
+                return df
+        except Exception as e:
+            print(f"[market_data] Sina history failed for {stock_code}: {e}")
 
     # Last resort: use SQLite cache even if stale
     rows = await get_cached_klines(stock_code, days)
