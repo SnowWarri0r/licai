@@ -84,6 +84,7 @@ export default function Jin10Flash() {
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="text-[10.5px] text-text-muted shrink-0 tabular-nums">{hm(it.time)}</span>
                       {it.important && <span className="text-[9.5px] px-1 rounded bg-accent/15 text-accent border border-accent/30">重要</span>}
+                      {it.tag && <span className="text-[9.5px] px-1 rounded bg-accent/10 text-accent/90 border border-accent/25">{it.tag}</span>}
                       {it.related && <span className="text-[9.5px] px-1 rounded" style={{ background: 'var(--color-up)18', color: 'var(--color-up)', border: '1px solid var(--color-up)50' }}>关联</span>}
                       {it.url && <a href={it.url} target="_blank" rel="noreferrer" className="text-[9.5px] text-text-muted hover:text-accent">原文↗</a>}
                     </div>
@@ -91,6 +92,13 @@ export default function Jin10Flash() {
                       className={`text-[12px] leading-relaxed mt-0.5 cursor-pointer hover:text-accent transition-colors ${it.important ? 'text-text-bright font-medium' : it.related ? 'text-text' : 'text-text-dim'}`}>
                       {it.title}
                     </div>
+                    {it.image && (
+                      <a href={it.url || it.image} target="_blank" rel="noreferrer" className="block mt-1.5">
+                        <img src={it.image} alt="" loading="lazy"
+                          className="rounded-lg border border-border-subtle max-h-44 w-auto object-cover hover:border-accent/40"
+                          onError={(e) => { e.currentTarget.style.display = 'none' }} />
+                      </a>
+                    )}
                   </div>
                 </div>
               )
