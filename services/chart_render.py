@@ -83,7 +83,7 @@ def render_trend_chart(bars: list, *, code: str = "", name: str = "",
 
     kwargs = dict(type="candle", volume=True, mav=(5, 10, 20), style=style,
                   figsize=(10, 6.2), returnfig=True, tight_layout=True,
-                  ylabel="", ylabel_lower="量", datetime_format="%m-%d", xrotation=0,
+                  ylabel="", ylabel_lower="", datetime_format="%m-%d", xrotation=0,
                   update_width_config=dict(candle_linewidth=0.7, candle_width=0.62))
     if hlines:
         kwargs["hlines"] = dict(hlines=hlines, colors=hcolors, linestyle="--", linewidths=1.0, alpha=0.9)
