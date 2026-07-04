@@ -19,7 +19,7 @@ export default function NewsDetailModal({ item, onClose }) {
     setLoading(true)
     fetch('/api/news/interpret', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: item.title, content: item.content || '', code: item.code || null, name: item.name || null, source: item.source || null, time: item.time || null }),
+      body: JSON.stringify({ title: item.title, content: item.content || '', code: item.code || null, name: item.name || null, source: item.source || null, time: item.time || null, url: item.url || null }),
     }).then(r => r.json()).then(d => { _cache.set(cacheKey, d); setInterp(d) })
       .catch(() => setInterp({ error: '解读暂不可用' }))
       .finally(() => setLoading(false))
@@ -54,11 +54,17 @@ export default function NewsDetailModal({ item, onClose }) {
           )}
         </div>
 
-        {item.content ? (
-          <div className="text-[12px] text-text-dim leading-relaxed whitespace-pre-wrap">{item.content}</div>
-        ) : (
-          <div className="text-[11px] text-text-muted">仅标题，无正文片段。</div>
-        )}
+        {(() => {
+          const body = item.content || interp?.body || ''
+          if (body) return (
+            <div className="text-[12px] text-text-dim leading-relaxed whitespace-pre-wrap">
+              {interp?.body && !item.content && <span className="text-[10px] text-text-muted block mb-1">原文摘录 ↓</span>}
+              {body}
+            </div>
+          )
+          if (loading && hasUrl) return <div className="text-[11px] text-text-muted animate-pulse">抓取原文中…</div>
+          return <div className="text-[11px] text-text-muted">仅标题，无正文片段{hasUrl ? '（原文未抓到）' : ''}。</div>
+        })()}
 
         <div className="flex justify-end pt-1">
           <button disabled={!hasUrl}
