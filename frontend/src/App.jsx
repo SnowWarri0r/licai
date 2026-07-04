@@ -11,6 +11,25 @@ import StockAsk from './components/StockAsk'
 import Settings from './components/Settings'
 import EditModal from './components/EditModal'
 import TransactionHistory from './components/TransactionHistory'
+// 板块
+import MorningBriefing from './components/MorningBriefing'
+import SentimentThermometer from './components/SentimentThermometer'
+import SectorMatrix from './components/SectorMatrix'
+import HotRank from './components/HotRank'
+import SectorRadar from './components/SectorRadar'
+import SectorOpportunities from './components/SectorOpportunities'
+// 宏观
+import MacroDashboard from './components/MacroDashboard'
+// 资讯
+import Jin10Flash from './components/Jin10Flash'
+import DailyReview from './components/DailyReview'
+import PortfolioNews from './components/PortfolioNews'
+// 复盘
+import AITradeReview from './components/AITradeReview'
+import BenchmarkCompare from './components/BenchmarkCompare'
+import Cashflow from './components/Cashflow'
+import AllocationAdvisor from './components/AllocationAdvisor'
+import AShareSectorGap from './components/AShareSectorGap'
 
 export default function App() {
   const [holdings, setHoldings] = useState([])
@@ -18,7 +37,7 @@ export default function App() {
   const [editTarget, setEditTarget] = useState(null)
   const [historyTarget, setHistoryTarget] = useState(null)
   const [lastUpdate, setLastUpdate] = useState(null)
-  const _VIEWS = ['dashboard', 'portfolio', 'rankings', 'ask', 'settings']
+  const _VIEWS = ['dashboard', 'portfolio', 'sector', 'rankings', 'macro', 'news', 'review', 'ask', 'settings']
   const [view, _setView] = useState(() => {
     const h = (window.location.hash || '').slice(1)
     return _VIEWS.includes(h) ? h : 'dashboard'
@@ -102,9 +121,44 @@ export default function App() {
             </div>
           )}
 
+          {view === 'sector' && (
+            <div className={`${PAD} space-y-3 md:space-y-4`}>
+              <MorningBriefing />
+              <SentimentThermometer />
+              <SectorMatrix />
+              <HotRank />
+              <SectorRadar />
+              <SectorOpportunities />
+            </div>
+          )}
+
           {view === 'rankings' && (
             <div className={PAD}>
               <Rankings />
+            </div>
+          )}
+
+          {view === 'macro' && (
+            <div className={`${PAD} space-y-3 md:space-y-4`}>
+              <MacroDashboard />
+            </div>
+          )}
+
+          {view === 'news' && (
+            <div className={`${PAD} space-y-3 md:space-y-4`}>
+              <Jin10Flash />
+              <DailyReview />
+              <PortfolioNews />
+            </div>
+          )}
+
+          {view === 'review' && (
+            <div className={`${PAD} space-y-3 md:space-y-4`}>
+              <AITradeReview />
+              <BenchmarkCompare />
+              <Cashflow />
+              <AllocationAdvisor />
+              <AShareSectorGap />
             </div>
           )}
 
