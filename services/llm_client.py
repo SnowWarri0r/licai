@@ -102,6 +102,8 @@ if _env_map:
 _MAX_RETRIES = int(os.environ.get("LLM_MAX_RETRIES", "3"))           # 总尝试次数 = 1 + retries
 _RETRY_INITIAL_BACKOFF_S = float(os.environ.get("LLM_RETRY_BACKOFF", "1.0"))  # 首次退避秒
 _RETRY_MAX_BACKOFF_S = float(os.environ.get("LLM_RETRY_MAX_BACKOFF", "8.0"))  # 最大退避秒
+# (连接超时, 读超时): 连接快失败重试; 读放宽, 因 server 端 web_search 多次检索会把单次响应拉长到分钟级
+_HTTP_TIMEOUT = (10, float(os.environ.get("LLM_READ_TIMEOUT", "180")))
 # 可重试的 HTTP 状态码 (server-side transient)
 _RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504}
 # 可重试的网络异常
@@ -315,9 +317,9 @@ def _post_with_fallback(headers: dict, payload: dict) -> requests.Response:
     """POST to API, falling back to direct if proxy errors."""
     api_url = _build_api_url()
     try:
-        return _llm_session.post(api_url, headers=headers, json=payload, timeout=60)
+        return _llm_session.post(api_url, headers=headers, json=payload, timeout=_HTTP_TIMEOUT)
     except requests.exceptions.ProxyError:
-        return _direct_session.post(api_url, headers=headers, json=payload, timeout=60)
+        return _direct_session.post(api_url, headers=headers, json=payload, timeout=_HTTP_TIMEOUT)
 
 
 def _compute_backoff(attempt: int, retry_after: str | None) -> float:
@@ -353,11 +355,11 @@ def _post_with_retry(headers: dict, payload: dict) -> requests.Response:
 
     for attempt in range(_MAX_RETRIES + 1):
         try:
-            resp = _llm_session.post(api_url, headers=headers, json=payload, timeout=60)
+            resp = _llm_session.post(api_url, headers=headers, json=payload, timeout=_HTTP_TIMEOUT)
         except requests.exceptions.ProxyError:
             # Proxy unreachable, try direct session once per attempt
             try:
-                resp = _direct_session.post(api_url, headers=headers, json=payload, timeout=60)
+                resp = _direct_session.post(api_url, headers=headers, json=payload, timeout=_HTTP_TIMEOUT)
             except _RETRYABLE_EXC as e:
                 last_exc = e
                 if attempt >= _MAX_RETRIES:
