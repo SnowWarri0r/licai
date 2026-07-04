@@ -41,19 +41,33 @@ function ToolIcon({ tool }) {
   )
 }
 
-// 极简 markdown 渲染 (## 标题 / **粗** / - 列表 / 段落), 不引依赖
-function renderInline(text, kp) {
-  return text.split(/(\*\*[^*]+\*\*)/g).map((p, i) =>
-    p.startsWith('**') && p.endsWith('**')
-      ? <strong key={`${kp}-${i}`} className="text-text-bright">{p.slice(2, -2)}</strong>
-      : <span key={`${kp}-${i}`}>{p}</span>)
+// 正文内联引用角标: ⟦N⟧ → 可点上标, 跳到第 N 条联网来源原文
+function CiteMark({ n, src }) {
+  const cls = "align-super text-[8.5px] font-medium text-accent/90 hover:text-accent px-[1px]"
+  if (!src) return <sup className={cls}>[{n}]</sup>
+  return (
+    <a href={src.url} target="_blank" rel="noopener noreferrer" title={src.title}
+      className={`${cls} no-underline hover:underline cursor-pointer`}>[{n}]</a>
+  )
+}
+
+// 极简 markdown 渲染 (## 标题 / **粗** / - 列表 / ⟦N⟧引用 / 段落), 不引依赖
+function renderInlineBase(text, kp, sources) {
+  return text.split(/(\*\*[^*]+\*\*|⟦\d+⟧)/g).map((p, i) => {
+    if (p.startsWith('**') && p.endsWith('**'))
+      return <strong key={`${kp}-${i}`} className="text-text-bright">{p.slice(2, -2)}</strong>
+    const m = p.match(/^⟦(\d+)⟧$/)
+    if (m) { const n = parseInt(m[1], 10); return <CiteMark key={`${kp}-${i}`} n={n} src={sources && sources[n - 1]} /> }
+    return <span key={`${kp}-${i}`}>{p}</span>
+  })
 }
 // 表格行: 以 | 开头/结尾且含分隔; 分隔行: |---|:--|... (全是 - 和 : 和 |)
 const isTableRow = (t) => t.startsWith('|') && t.indexOf('|', 1) > 0
 const isTableSep = (t) => /^\|?[\s:|-]+\|[\s:|-]*$/.test(t) && t.includes('-')
 const splitCells = (t) => t.replace(/^\||\|$/g, '').split('|').map(c => c.trim())
 
-function MiniMarkdown({ text }) {
+function MiniMarkdown({ text, sources }) {
+  const renderInline = (t, kp) => renderInlineBase(t, kp, sources)
   // 模型偶尔内联 <cite index="x">...</cite> 引用标签, 去掉只留文字(后端已剥, 这里兜底)
   const lines = (text || '').replace(/<\/?cite[^>]*>/g, '').split('\n')
   const out = []
@@ -322,7 +336,7 @@ export default function StockAsk({ page = false }) {
                 : it.answer == null
                   ? (it.steps.length === 0 && <div className="text-[11.5px] text-text-dim">分析中…</div>)
                   : <div className="relative">
-                      <MiniMarkdown text={it.typed} />
+                      <MiniMarkdown text={it.typed} sources={it.sources} />
                       {!it.done && <span className="inline-block w-1.5 h-3.5 bg-accent/70 align-middle animate-pulse ml-0.5" />}
                       {it.done && <SourcesBlock sources={it.sources} />}
                     </div>}
