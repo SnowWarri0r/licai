@@ -1488,13 +1488,32 @@ async def _tool_get_thesis(code: str) -> dict:
 async def _tool_get_holdings() -> dict:
     try:
         hs = await _active_holdings()
-        return {"holdings": [{"code": h.get("stock_code"), "name": h.get("stock_name"),
-                              "shares": h.get("shares"), "综合成本": h.get("cost_price"),
-                              "每股已收分红": h.get("每股已收分红"),
-                              "持有天数": h.get("hold_days"), "开仓日": h.get("open_date")} for h in hs],
-                "note": "仅当前在持(已清仓的票不在此列, 按综合成本法现算 shares>0)。"
-                        "综合成本=含手续费+分红摊薄(对齐券商口径); 每股已收分红=持有期吃到的现金分红(已从成本扣)。"
-                        "持有天数=资金加权持有天数(0=今天才开/加的仓); 开仓日=当前持仓段最早一笔买入日(=今天则是今日新开仓), 已带好星期, 说开仓是周几时以括号内星期为准照抄。"}
+        a_shares = [{"code": h.get("stock_code"), "name": h.get("stock_name"),
+                     "shares": h.get("shares"), "综合成本": h.get("cost_price"),
+                     "每股已收分红": h.get("每股已收分红"),
+                     "持有天数": h.get("hold_days"), "开仓日": h.get("open_date")} for h in hs]
+        # 场外资产: 基金/场内ETF/理财/现金/加密/机器人 —— 持仓不止 A 股, 一并读出来
+        other = {}
+        try:
+            from database import list_external_assets
+            for x in await list_external_assets():
+                at = x.get("asset_type")
+                sh = x.get("shares")
+                mv = x.get("manual_value")
+                if at == "FUND" and not (sh and sh > 0):   # 已赎回(shares=0)的基金不算在持
+                    continue
+                row = {"name": x.get("name"), "code": x.get("code") or ""}
+                if sh and sh > 0:
+                    row["份额"] = round(float(sh), 2)
+                if mv is not None:
+                    row["金额元"] = round(float(mv), 2)
+                other.setdefault(_ASSET_CLASS_CN.get(at, at), []).append(row)
+        except Exception:
+            pass
+        return {"A股": a_shares, "场外资产": other,
+                "note": "我的全部在持: A股(holdings) + 场外资产(基金/场内ETF/理财/现金/加密/机器人, 来自资产看板)。已清仓/已赎回的不在此列。"
+                        "A股: 综合成本=含手续费+分红摊薄(对齐券商); 持有天数=资金加权(0=今天才开仓); 开仓日已带星期照抄。"
+                        "场外: 基金/ETF 给份额, 现金/理财/机器人给金额(元)。要各大类占比/现金理财结构分析用 get_asset_allocation。"}
     except Exception as e:
         return {"error": str(e)}
 
@@ -1801,7 +1820,7 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_shareholders", "description": "筹码面: 十大流通股东及增减持、北向(香港中央结算)持股变动、未来限售解禁(抛压)。回答'谁在持股、控股股东/国家队/北向在加还是减、有没有解禁压力'时用。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
-    {"name": "get_holdings", "description": "查用户当前持仓列表(代码/名称/股数), 用于回答跟用户持仓的关系。",
+    {"name": "get_holdings", "description": "查用户当前**全部**在持: A股(代码/名称/股数/综合成本/持有天数) + 场外资产(基金/场内ETF/理财/现金/加密/机器人, 含份额或金额)。回答'我的持仓/我有什么/我持有啥/跟我持仓的关系'时用——持仓不止A股, 用户还有基金/ETF/现金/理财/机器人。要各大类占比或现金理财结构分析则用 get_asset_allocation。",
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_thesis", "description": "读用户当初记录的买入逻辑(为什么买这只)。回答'我当初为什么买X、X的逻辑还成立吗、帮我复盘X'时用: 拿到 thesis 后对照现价/基本面/消息/红线, 客观说每条理由还成不成立。不传 code 看全部持仓的逻辑。仅当用户记过才有。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选, 留空看全部"}}}},
