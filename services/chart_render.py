@@ -138,16 +138,18 @@ def render_trend_chart(bars: list, *, code: str = "", name: str = "",
                 lo_, hi_ = min(g), max(g)
                 ax.axhspan(lo_, hi_, color=col, alpha=0.13, zorder=0)
                 ax.text(0.6, (lo_ + hi_) / 2, "缺口", color=col, fontsize=7.5, va="center", **_tkw)
-        # 摆动高/低点标记
+        # 摆动高/低点标记(稍偏出K线, 放大便于看清)
+        span = (max(Hs) - min(Ls)) or 1
+        off = span * 0.015
         for i, hv in shi:
-            ax.scatter(i, hv, marker="v", s=24, color="#e08a8a", zorder=6, edgecolors="none")
+            ax.scatter(i, hv + off, marker="v", s=70, color="#e88a8a", zorder=6, edgecolors="none")
         for i, lv in slo:
-            ax.scatter(i, lv, marker="^", s=24, color="#6fb36f", zorder=6, edgecolors="none")
+            ax.scatter(i, lv - off, marker="^", s=70, color="#74bd74", zorder=6, edgecolors="none")
         # 结构线右端标名称+价位(自解释, 不靠图例)
         for lv, col, lb in line_specs:
             ax.text(n - 0.5, lv, f" {lb} {lv}", color=col, fontsize=8, va="center", ha="left", **_tkw)
         buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=110, facecolor=_BG, bbox_inches="tight")
+        fig.savefig(buf, format="png", dpi=160, facecolor=_BG, bbox_inches="tight")
         plt.close(fig)
     return buf.getvalue()
 
