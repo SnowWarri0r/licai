@@ -1817,6 +1817,35 @@ def _collect_sources(content: list, acc: list, seen: set) -> list:
     return fresh
 
 
+def _assemble_cited_text(content: list, sources: list, seen: set) -> str:
+    """拼接最终答案文本, 在每个带结构化 citations 的文字段尾插入 ⟦N⟧ 角标。
+    N = 该来源在 sources 列表中的 1-based 序号(与底部'联网来源'列表同号, 前端渲染成可点上标)。
+    citations 引到但 web_search_tool_result 没收录的 url, 补进 sources 末尾。"""
+    url2idx = {s["url"]: i + 1 for i, s in enumerate(sources)}
+    parts = []
+    for b in content:
+        if b.get("type") != "text":
+            continue
+        parts.append(b.get("text") or "")
+        cits = b.get("citations")
+        if not isinstance(cits, list) or not cits:
+            continue
+        marks, here = [], set()
+        for ci in cits:
+            url = (ci.get("url") or "").strip()
+            if not url or url in here:
+                continue
+            here.add(url)
+            if url not in url2idx:
+                sources.append({"title": (ci.get("title") or url).strip(), "url": url, "age": None})
+                seen.add(url)
+                url2idx[url] = len(sources)
+            marks.append(f"⟦{url2idx[url]}⟧")
+        if marks:
+            parts.append("".join(marks))
+    return _clean_answer("".join(parts))
+
+
 def _seed_messages(question: str, history: list | None) -> list:
     """把前端传来的多轮历史(只含 role+text 的简化对话)接到当前问题前面, 让 agent 有上下文。"""
     msgs = []
@@ -1860,8 +1889,11 @@ async def ask_stock_stream(question: str, history: list | None = None):
             yield {"type": "sources", "sources": fresh}
         tus = [b for b in content if b.get("type") == "tool_use"]
         if not tus:
-            text = "".join(b.get("text", "") for b in content if b.get("type") == "text")
-            yield {"type": "answer", "text": _clean_answer(text)}
+            before = len(sources)
+            text = _assemble_cited_text(content, sources, seen_urls)
+            if len(sources) > before:        # citations 引到的新 url 补推一条 sources 事件, 保证角标可解析
+                yield {"type": "sources", "sources": sources[before:]}
+            yield {"type": "answer", "text": text}
             yield {"type": "done"}
             return
         # 先把这一轮模型的简短思考文本(若有)推出去当“正在做什么”的旁白
@@ -1905,8 +1937,8 @@ async def ask_stock(question: str, history: list | None = None) -> dict:
         _collect_sources(content, sources, seen_urls)
         tus = [b for b in content if b.get("type") == "tool_use"]
         if not tus:
-            text = "".join(b.get("text", "") for b in content if b.get("type") == "text")
-            return {"answer": _clean_answer(text), "tools_used": tools_used, "rounds": rnd + 1, "sources": sources}
+            text = _assemble_cited_text(content, sources, seen_urls)
+            return {"answer": text, "tools_used": tools_used, "rounds": rnd + 1, "sources": sources}
         tools_used.extend(tu.get("name", "") for tu in tus)
         # 同一轮里的工具并发跑(相互独立), 顺序保留, 单个失败不连累其他
         outs = await asyncio.gather(*[_run_tool(tu) for tu in tus])
