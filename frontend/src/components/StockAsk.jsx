@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { fetchJSON } from '../hooks/useApi'
 import { MiniMarkdown, SourcesBlock, ToolCallStrip } from './askShared'
+import ImageZoom from './ImageZoom'
 
 // 能力展示型推荐问题 (page 模式空态用), 覆盖 市场风格/资金主线/政策/基本面/同行/筹码
 const MARKET_SUGGESTIONS = [
@@ -282,7 +283,7 @@ export default function StockAsk({ page = false }) {
             {it.images?.length > 0 && (
               <div className="flex flex-wrap gap-1.5 mt-1.5">
                 {it.images.map((src, k) => (
-                  <img key={k} src={src} alt="" className="h-20 w-auto rounded-lg border border-border-subtle object-cover" />
+                  <ImageZoom key={k} src={src} className="h-20 w-auto rounded-lg border border-border-subtle object-cover" />
                 ))}
               </div>
             )}
@@ -294,10 +295,8 @@ export default function StockAsk({ page = false }) {
               {(it.charts || []).length > 0 && (
                 <div className="flex flex-col gap-2 mb-2">
                   {it.charts.map((src, k) => (
-                    <a key={k} href={src} target="_blank" rel="noreferrer" className="block">
-                      <img src={src} alt="K线图" loading="lazy"
-                        className="w-full max-w-[640px] rounded-lg border border-border-subtle" />
-                    </a>
+                    <ImageZoom key={k} src={src} alt="K线图"
+                      className="w-full max-w-[640px] rounded-lg border border-border-subtle block" />
                   ))}
                 </div>
               )}
