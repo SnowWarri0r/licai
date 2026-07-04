@@ -78,7 +78,7 @@ class GapPrimitive {
 }
 
 // 券商式可拖动/缩放 K线(TradingView lightweight-charts): 蜡烛 + 量能 + MA5/10/20, 滚轮缩放/拖动平移/十字光标。
-export default function ProKline({ code, days = 250, height = 460 }) {
+export default function ProKline({ code, days = 250, height = 460, fill = false }) {
   const wrapRef = useRef(null)
   const chartRef = useRef(null)
   const seriesRef = useRef({})
@@ -154,8 +154,8 @@ export default function ProKline({ code, days = 250, height = 460 }) {
   }, [code, days])
 
   return (
-    <div className="relative">
-      <div className="flex items-center gap-3 mb-1 text-[10.5px] h-4">
+    <div className={fill ? 'relative flex flex-col h-full' : 'relative'}>
+      <div className="flex items-center gap-3 mb-1 text-[10.5px] h-4 shrink-0">
         {legend
           ? <span className="font-mono text-text-dim flex gap-2.5 flex-wrap">
               <span className="text-text-muted">{legend.time}</span>
@@ -166,7 +166,7 @@ export default function ProKline({ code, days = 250, height = 460 }) {
             </span>
           : <span className="text-text-muted">{MA_DEFS.map(m => `MA${m.n}`).join(' / ')} · <span style={{ color: '#c8a876' }}>┄ 昨收</span> · 滚轮缩放 · 拖动平移</span>}
       </div>
-      <div ref={wrapRef} style={{ width: '100%', height }} />
+      <div ref={wrapRef} className={fill ? 'flex-1 min-h-0' : ''} style={fill ? { width: '100%' } : { width: '100%', height }} />
       {err && <div className="absolute inset-0 flex items-center justify-center text-[12px] text-text-dim">{err}</div>}
       {loading && !err && <div className="absolute inset-x-0 top-1/2 text-center text-[12px] text-text-dim">加载 K 线…</div>}
     </div>
