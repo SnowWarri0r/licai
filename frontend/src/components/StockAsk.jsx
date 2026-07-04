@@ -41,12 +41,19 @@ function ToolIcon({ tool }) {
   )
 }
 
+// 只放行 http(s) 链接, 挡 javascript:/data: 等可执行 scheme(来源是联网搜索结果, 纵深防御)
+function safeUrl(url) {
+  try { const u = new URL(url); return (u.protocol === 'https:' || u.protocol === 'http:') ? u.href : null }
+  catch { return null }
+}
+
 // 正文内联引用角标: ⟦N⟧ → 可点上标, 跳到第 N 条联网来源原文
 function CiteMark({ n, src }) {
   const cls = "align-super text-[8.5px] font-medium text-accent/90 hover:text-accent px-[1px]"
-  if (!src) return <sup className={cls}>[{n}]</sup>
+  const href = src && safeUrl(src.url)
+  if (!href) return <sup className={cls}>[{n}]</sup>
   return (
-    <a href={src.url} target="_blank" rel="noopener noreferrer" title={src.title}
+    <a href={href} target="_blank" rel="noopener noreferrer" title={src.title}
       className={`${cls} no-underline hover:underline cursor-pointer`}>[{n}]</a>
   )
 }
@@ -138,18 +145,24 @@ function SourcesBlock({ sources }) {
       </button>
       {open && (
         <ol className="mt-1.5 space-y-1 max-h-52 overflow-y-auto pr-1">
-          {sources.map((s, i) => (
-            <li key={i} className="flex gap-1.5 text-[11px] leading-snug">
-              <span className="text-text-muted font-mono shrink-0 w-4 text-right">{i + 1}</span>
-              <a href={s.url} target="_blank" rel="noopener noreferrer"
-                className="group min-w-0 flex-1 hover:text-accent text-text-dim">
-                <span className="block truncate group-hover:underline">{s.title}</span>
-                <span className="block truncate text-[9.5px] text-text-muted">
-                  {domainOf(s.url)}{s.age ? ` · ${s.age}` : ''}
-                </span>
-              </a>
-            </li>
-          ))}
+          {sources.map((s, i) => {
+            const href = safeUrl(s.url)
+            const inner = (<>
+              <span className="block truncate group-hover:underline">{s.title}</span>
+              <span className="block truncate text-[9.5px] text-text-muted">
+                {domainOf(s.url)}{s.age ? ` · ${s.age}` : ''}
+              </span>
+            </>)
+            return (
+              <li key={i} className="flex gap-1.5 text-[11px] leading-snug">
+                <span className="text-text-muted font-mono shrink-0 w-4 text-right">{i + 1}</span>
+                {href
+                  ? <a href={href} target="_blank" rel="noopener noreferrer"
+                      className="group min-w-0 flex-1 hover:text-accent text-text-dim">{inner}</a>
+                  : <span className="group min-w-0 flex-1 text-text-dim">{inner}</span>}
+              </li>
+            )
+          })}
         </ol>
       )}
     </div>
