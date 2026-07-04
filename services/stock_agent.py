@@ -597,6 +597,20 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
         _td_today = _cst.weekday() < 5
     _opened = _td_today and (_cst.hour * 60 + _cst.minute) >= 570   # 9:30 起今天报价才有效
     if is_a_share(raw) and allbars and _opened:
+        # 东财主源盘中缺今天那根时, 整条改用腾讯日K(含盘中今日bar+真实量)。必须整条换源:
+        # 东财量是"股"、腾讯是"手"(差100倍), 混用会污染量比; 全序列同源则单位自洽, vol_ratio(比值)不受影响。
+        if allbars[-1][0] != _today_cst:
+            try:
+                from services.market_data import _kline_tencent_a
+                tdf = await asyncio.to_thread(_kline_tencent_a, raw, max(need, 80))
+                if (tdf is not None and not tdf.empty and len(tdf) >= 20
+                        and str(tdf["日期"].tolist()[-1])[:10] == _today_cst):
+                    allbars = [(str(d)[:10], float(c), _ff(h), _ff(l), _ff(v), _ff(o))
+                               for d, c, h, l, v, o in zip(tdf["日期"], tdf["收盘"], tdf["最高"],
+                                                           tdf["最低"], tdf["成交量"], tdf["开盘"])]
+            except Exception as e:
+                print(f"[trend] tencent intraday refetch failed for {raw}: {e}")
+        # 实时报价校正今天的 close(最权威, 比日K源更新): 末根是今天→覆盖close并扩H/L、保留当根真实量; 否则补一根(量留空兜底)
         try:
             from services.market_data import get_realtime_quotes
             rq = (await get_realtime_quotes([raw])).get(raw) or {}
@@ -605,10 +619,10 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
                 ro, rh, rl = _ff(rq.get("open")), _ff(rq.get("high")), _ff(rq.get("low"))
                 hi, lo = max(rh or rc, rc), min(rl or rc, rc)
                 if allbars[-1][0] == _today_cst:
-                    v0, o0 = allbars[-1][4], allbars[-1][5]   # 量保留历史源(单位一致); 实时 volume 单位不同
-                    allbars[-1] = (_today_cst, rc, hi, lo, v0, ro or o0)
+                    _, _, h0, l0, v0, o0 = allbars[-1]
+                    allbars[-1] = (_today_cst, rc, max(hi, h0 or rc), min(lo, l0 or rc), v0, ro or o0)
                 else:
-                    allbars.append((_today_cst, rc, hi, lo, None, ro or rc))   # 源缺今天 → 补一根(量未知)
+                    allbars.append((_today_cst, rc, hi, lo, None, ro or rc))   # 腾讯也没有时最后兜底(量留空)
         except Exception as e:
             print(f"[trend] realtime graft/append failed for {raw}: {e}")
     # 盘中: 今天这根的量是"已成交累计"(不完整), 直接比昨天全天必然偏低 → 会误判缩量。
