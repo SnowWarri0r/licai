@@ -1402,7 +1402,8 @@ async def _tool_sector_momentum(days: int = 10) -> dict:
             return {"error": "板块矩阵暂无数据"}
         def brief(r):
             return {"板块": r["name"], "最新交易日涨幅%": r.get("today_pct"), f"近{m.get('days')}日累计": r.get("cum_pct"),
-                    "连涨天": r.get("streak"), "净流入亿": r.get("net_inflow")}
+                    "连涨天": r.get("streak"), "净流入亿": r.get("net_inflow"),
+                    "量能趋势": r.get("vol_trend"), "量价": r.get("vp_read")}
         return {"days": m.get("days"), "intraday": m.get("intraday"),
                 "走强top": [brief(r) for r in rows[:8]],
                 "退潮bottom": [brief(r) for r in rows[-5:]]}
@@ -1642,10 +1643,10 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选; 留空看全部"}, "start": {"type": "string", "description": "可选, 起始日 YYYY-MM-DD"}, "end": {"type": "string", "description": "可选, 截止日 YYYY-MM-DD"}}}},
     {"name": "get_market_sentiment", "description": "查大盘打板情绪(涨停数/连板高度/炸板率/赚钱效应/热点板块), 判断是个股原因还是大盘普涨普跌; 也用于判断市场风格(打板赚钱效应高=追涨/动量有效; 炸板率高+亏钱效应=高位分歧/反转)。",
      "input_schema": {"type": "object", "properties": {}}},
-    {"name": "get_sector_momentum", "description": "板块趋势矩阵: 各行业近N日累计涨跌/连涨动能/净流入。看哪些板块在持续走强(动量延续)、哪些冲高回落(退潮), 判断市场是动量风格还是高低切/轮动, 资金主线在哪。days 默认10。",
+    {"name": "get_sector_momentum", "description": "板块趋势矩阵: 各行业近N日累计涨跌/连涨动能/净流入 + 量能趋势(近3日均量/前段均量, >1.2量能放大、<0.8萎缩)和量价 tag(放量上行=量价配合趋势健康/缩量上行=动能衰减/放量下跌=抛压重等)。判断板块是真上升趋势(涨+量价配合+资金顺)还是虚涨(涨但缩量/资金流出)。days 趋势窗口可传 5(短线)/10(中期)/20(中长期), 默认10; 问'短期/这几天'传5, '近一个月趋势'传20。",
      "input_schema": {"type": "object", "properties": {"days": {"type": "integer"}}}},
     {"name": "get_hot_rank", "description": "资金人气榜(东财): 关注度最高的个股, 标出哪些在用户持仓。看资金主线/抱团方向。",
-     "input_schema": {"type": "object", "properties": {}}},
+     "input_schema": {"type": "object", "properties": {"days": {"type": "integer", "description": "趋势窗口交易日数, 5/10/20, 默认10"}}}},
     {"name": "get_hot_concepts", "description": "今日热门概念板块榜(概念粒度, 比行业更细, 如 CPO/HBM/先进封装/玻璃基板/固态电池等): 涨幅+主力净流入。回答'量化/资金这几天在冲哪个具体概念、概念怎么切'时用它。",
      "input_schema": {"type": "object", "properties": {"top": {"type": "integer", "description": "默认15"}}}},
     {"name": "get_board_stocks", "description": "查某个板块/概念里今日涨幅 top-N 的个股(龙头): 涨跌幅/现价/换手/主力净流入。找到主线概念后看里面哪几只领涨、资金集中在谁身上。board 传概念或行业名(如 玻璃基板/CPO/光通信/小金属)或 BK 代码。",
