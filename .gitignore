@@ -3,6 +3,7 @@ portfolio.db
 portfolio.db-*
 backups/
 *.db
+ask_media/
 
 # --- Python ---
 venv/

@@ -1,14 +1,52 @@
 """问股票为什么涨/跌 — agent 问答端点。"""
 from __future__ import annotations
 import json as _json
+import os
+import re
+import base64
+import uuid
 from typing import List, Optional
 from fastapi import APIRouter
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse, Response
 from pydantic import BaseModel
 
+from config import config
 from services.stock_agent import ask_stock, ask_stock_stream
 from database import (create_ask_session, add_ask_message, list_ask_sessions,
                       get_ask_session, delete_ask_session)
+
+# 会话图片落盘目录(跟 DB 同级), 存压缩 JPG 文件, DB 只留 URL — 不把 base64 塞进库
+_MEDIA_DIR = os.path.join(os.path.dirname(os.path.abspath(config.db_path)) or ".", "ask_media")
+
+
+def _persist_images(meta: Optional[dict]) -> Optional[dict]:
+    """把 meta.images 里的 data URL 落盘成文件, 替换为 /api/ask/image/<name> URL。已是 URL 的原样保留。"""
+    if not isinstance(meta, dict):
+        return meta
+    imgs = meta.get("images")
+    if not isinstance(imgs, list) or not imgs:
+        return meta
+    os.makedirs(_MEDIA_DIR, exist_ok=True)
+    out = []
+    for s in imgs:
+        if not isinstance(s, str) or not s:
+            continue
+        if s.startswith("/api/ask/image/"):
+            out.append(s); continue
+        if s.startswith("data:"):
+            try:
+                head, b64 = s.split(",", 1)
+                m = re.search(r"image/(\w+)", head)
+                ext = (m.group(1) if m else "jpg").replace("jpeg", "jpg")
+                name = f"{uuid.uuid4().hex}.{ext}"
+                with open(os.path.join(_MEDIA_DIR, name), "wb") as f:
+                    f.write(base64.b64decode(b64))
+                out.append(f"/api/ask/image/{name}")
+            except Exception:
+                continue
+    meta = dict(meta)
+    meta["images"] = out
+    return meta
 
 router = APIRouter(prefix="/api/ask", tags=["ask"])
 
@@ -63,9 +101,19 @@ async def save_message(m: SessionMsg):
     sid = m.session_id
     if not sid:
         sid = await create_ask_session((m.title or m.content)[:80])
-    meta = _json.dumps(m.meta, ensure_ascii=False) if m.meta else ""
+    meta_obj = _persist_images(m.meta)   # base64 落盘 → URL, DB 不存 base64
+    meta = _json.dumps(meta_obj, ensure_ascii=False) if meta_obj else ""
     await add_ask_message(sid, m.role, m.content, meta)
     return {"session_id": sid}
+
+
+@router.get("/image/{name}")
+async def get_ask_image(name: str):
+    """读会话图片(落盘的压缩JPG)。basename 防目录穿越。"""
+    path = os.path.join(_MEDIA_DIR, os.path.basename(name))
+    if not os.path.isfile(path):
+        return Response(status_code=404)
+    return FileResponse(path)
 
 
 @router.get("/sessions")
