@@ -271,7 +271,7 @@ export default function StockAsk({ page = false }) {
       <div className="flex items-baseline gap-2 mb-3">
         <h3 className={`${page ? 'text-[16px]' : 'text-[14px]'} font-semibold text-text-bright m-0`}>问问市场</h3>
         <span className="text-[10.5px] text-text-muted">
-          {page ? '挂了19个数据工具的AI · 个股资金流/基本面/同行/筹码 · 市场风格/资金主线/政策面' : '个股涨跌/消息 · 这周市场什么风格 · 资金主线'}
+          {page ? '挂了28个数据工具的AI · 裸K量价/资金流/基本面/筹码 · 产业链全景 · 联网带来源' : '个股涨跌/消息 · 这周市场什么风格 · 资金主线'}
         </span>
       </div>
 
