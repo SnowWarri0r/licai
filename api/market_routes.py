@@ -145,6 +145,13 @@ async def market_rankings(limit: int = 100):
     return await _aio.to_thread(market_review.top_rankings, limit)
 
 
+@router.get("/coiled")
+async def market_coiled(force: bool = False):
+    """横盘蓄势扫描: 长期箱体横盘 + 今日放量上攻(贴近/突破上沿)的结构筛选。10min 缓存。"""
+    from services.coiled_scanner import scan_coiled
+    return await scan_coiled(force=force)
+
+
 @router.get("/quote/{stock_code}")
 async def get_quote(stock_code: str):
     stock_code = normalize_stock_code(stock_code)
