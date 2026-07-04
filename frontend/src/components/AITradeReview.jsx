@@ -127,6 +127,14 @@ export default function AITradeReview() {
             </div>
           )}
 
+          {/* 今日市场风格对照(仅当日复盘且当天有市场画像时) */}
+          {d.market_fit && (
+            <div className="mb-3 px-3 py-2.5 rounded-lg bg-accent/8 border border-accent/25">
+              <div className="text-[10px] text-accent/90 mb-1 tracking-wider">操作 vs 今日市场风格</div>
+              <div className="text-[12px] text-text-dim leading-relaxed">{d.market_fit}</div>
+            </div>
+          )}
+
           {/* 正文 */}
           {d.narrative && (
             <div className="text-[12.5px] text-text leading-relaxed whitespace-pre-line border-t border-border-subtle pt-3">

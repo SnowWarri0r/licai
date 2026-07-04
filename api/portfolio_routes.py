@@ -551,7 +551,25 @@ async def trade_review_ai(period: str = "all", force: int = 0):
                     if t.get("current") and t.get("pct") is not None else "")
             amt = f" 约¥{t['amount']:.0f}" if t.get("amount") else ""
             lines.append(f"  [{tag}] {t['date']} {kd} {t['name']} @{t['price']}×{sh_s}{amt}{tail}")
-        data_block = "\n".join(lines)
+        # 当日复盘 + 复盘的就是今天的交易 → 注入今日市场画像, 对照"操作 vs 今天市场奖励的风格/主线"
+        market_ctx = ""
+        if period == "day" and anchor == today.isoformat():
+            try:
+                from services.market_review import scan_strong_stocks
+                mr = await asyncio.to_thread(scan_strong_stocks)
+                if "error" not in mr:
+                    inds = "、".join(f"{b['行业']}({b['上榜数']})" for b in mr.get("板块扎堆", [])[:5])
+                    cons = "、".join(b["概念"] for b in mr.get("概念扎堆", [])[:6])
+                    sty = mr.get("风格", {})
+                    small = sty.get("小盘(<50亿)占比%") or 0
+                    style_tag = "小盘高换手/题材投机" if small > 40 else "中大盘赛道/趋势"
+                    market_ctx = (f"\n\n【今日市场画像(对照你今天操作合不合市场风格, 客观非建议)】\n"
+                                  f"涨停{mr.get('涨停数')}家、大涨(≥5%){mr.get('大涨数(≥5%)')}家; "
+                                  f"板块扎堆: {inds}; 概念主线: {cons}; "
+                                  f"强势股均换手{sty.get('强势股均换手%')}%、小盘占比{small}%/大盘{sty.get('大盘(>500亿)占比%')}% → {style_tag}风格。")
+            except Exception:
+                pass
+        data_block = "\n".join(lines) + market_ctx
         system_prompt = (
             f"你是交易复盘教练。这是用户【{label}】这个时间窗内实际发生的买卖动作, 复盘他这一段的交易节奏和纪律。\n"
             "每笔前面标了资产类型, 不同类型用不同标准评, 别一套尺子量到底:\n"
@@ -565,8 +583,12 @@ async def trade_review_ai(period: str = "all", force: int = 0):
             "JSON 输出: {\"summary\":\"一句话点评这段\", \"good\":[\"做对的(用数据)\"], "
             "\"discipline\":[{\"problem\":\"问题\",\"evidence\":\"数据举证\",\"why\":\"什么习惯\"}], "
             "\"binchuan\":[{\"principle\":\"对照的交易原则\",\"verdict\":\"契合/违背\",\"detail\":\"对照\"}], "
+            "\"market_fit\":\"你今天操作与今日市场风格/主线的客观对照(无市场画像时留空)\", "
             "\"narrative\":\"1-2段复盘正文\"}。只输出 JSON。"
         )
+        if market_ctx:
+            system_prompt += ("附了【今日市场画像】时, 客观对照'他今天买/卖的方向 vs 今天市场在奖励的风格与主线板块'是否合拍"
+                              "(如市场奖励赛道趋势他却追小盘妖股, 或他买的正好在今日主线上), 写进 market_fit 字段; 这是客观对照不是操作建议。")
         user_prompt = f"复盘我{label}的交易:\n\n{data_block}"
         try:
             raw = await asyncio.to_thread(llm_client.call_claude, user_prompt, system_prompt, "claude-opus-4-8", 1800)
@@ -579,6 +601,7 @@ async def trade_review_ai(period: str = "all", force: int = 0):
             "good": parsed.get("good", []) if isinstance(parsed.get("good"), list) else [],
             "discipline": parsed.get("discipline", []) if isinstance(parsed.get("discipline"), list) else [],
             "binchuan": parsed.get("binchuan", []) if isinstance(parsed.get("binchuan"), list) else [],
+            "market_fit": parsed.get("market_fit", "") if isinstance(parsed.get("market_fit"), str) else "",
             "narrative": parsed.get("narrative", ""),
             "n_buy": nb, "n_sell": ns, "n_trades": len(ptrades),
             "generated_at": time.time(),
