@@ -304,6 +304,26 @@ export default function Dashboard({ holdings }) {
         </>
       )}
 
+      {/* 大盘指数 (上证/深成/有色 — 有色跟持仓直接相关) */}
+      {indices.length > 0 && (
+        <>
+          <div className="w-px h-4 bg-border shrink-0" />
+          <div className="flex items-center gap-3 shrink-0">
+            {indices.map(ix => (
+              <div key={ix.symbol} className="flex items-baseline gap-1.5 shrink-0">
+                <span className="text-[11px] text-text-muted">{ix.name}</span>
+                <span className="text-[12px] font-mono text-text">
+                  {ix.price != null ? ix.price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '--'}
+                </span>
+                <span className={`text-[11px] font-mono ${priceColor(ix.change_pct)}`}>
+                  {ix.change_pct >= 0 ? '+' : ''}{Number(ix.change_pct ?? 0).toFixed(2)}%
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
     </div>
   )
 }
