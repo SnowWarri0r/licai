@@ -251,8 +251,8 @@ def _fetch_global_jin10(pages: int = 6, want: int = 80) -> list[dict]:
         title = (d.get("title") or "").strip() or text
         if not title:
             continue
-        # type=2(图文)用 pic 当配图、link 当原文; type=0 用 source_link
-        image = (d.get("pic") or "") if typ == 2 else ""
+        # pic 两种都可能有: type=2 是图文配图; type=0 的"金十图示/持仓报告"图就是正文本身。
+        image = (d.get("pic") or "").strip()
         url = (d.get("link") or d.get("source_link") or "") if typ == 2 else (d.get("source_link") or "")
         it = _item("金十", title, text, str(x.get("time") or ""), url, image)
         if it:
