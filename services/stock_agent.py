@@ -277,7 +277,7 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
             return f if f > 0 else None
         except (TypeError, ValueError):
             return None
-    bars: list = []  # [(date_str, close, high|None, low|None)] 升序; date 可能为空(数据源缺)
+    bars: list = []  # [(date_str, close, high|None, low|None, vol|None)] 升序; date 可能为空(数据源缺)
     if is_a_share(raw):
         df = await get_historical_data(raw, days + 5)
         if df is None or df.empty:
@@ -286,15 +286,17 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
         dcol = df["日期"].tolist() if "日期" in df.columns else [""] * n
         hcol = df["最高"].tolist() if "最高" in df.columns else [None] * n
         lcol = df["最低"].tolist() if "最低" in df.columns else [None] * n
-        bars = [(str(d)[:10], float(c), _ff(h), _ff(l))
-                for d, c, h, l in zip(dcol, df["收盘"].tolist(), hcol, lcol)]
+        vcol = df["成交量"].tolist() if "成交量" in df.columns else (
+               df["成交额"].tolist() if "成交额" in df.columns else [None] * n)
+        bars = [(str(d)[:10], float(c), _ff(h), _ff(l), _ff(v))
+                for d, c, h, l, v in zip(dcol, df["收盘"].tolist(), hcol, lcol, vcol)]
     elif market == "HK":
         rows = await asyncio.to_thread(_kline_tencent_hk, f"hk{symbol.zfill(5)}", days + 5)
-        bars = [(str(r.get("date") or "")[:10], float(r["close"]), _ff(r.get("high")), _ff(r.get("low")))
+        bars = [(str(r.get("date") or "")[:10], float(r["close"]), _ff(r.get("high")), _ff(r.get("low")), _ff(r.get("volume")))
                 for r in (rows or []) if r.get("close")]
     elif market == "US":
         rows = await asyncio.to_thread(_us_daily_k_sync, symbol, days)
-        bars = [(str(r.get("date") or "")[:10], float(r["close"]), _ff(r.get("high")), _ff(r.get("low")))
+        bars = [(str(r.get("date") or "")[:10], float(r["close"]), _ff(r.get("high")), _ff(r.get("low")), _ff(r.get("volume")))
                 for r in (rows or []) if r.get("close")]
     else:
         return {"error": "走势暂不支持该市场"}
@@ -303,7 +305,9 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
         return {"error": "无历史数据"}
     code = raw
     closes = [b[1] for b in bars]
+    vols = [b[4] for b in bars]
     # 每条逐日涨跌挂真实日期 + 当天最高/最低相对昨收的幅度(看历史某天日内摸没摸到涨停/封板还是冲高回落, 无需分时)
+    # + 量比(当日量/前5日均量): >1.5 明显放量, <0.7 缩量 —— 配合 pct 看量价(放量上涨/放量滞涨/缩量回调)
     daily = []
     for i in range(1, len(bars)):
         pc = closes[i - 1]
@@ -313,6 +317,9 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
             e["high_pct"] = round((h / pc - 1) * 100, 2)
         if l and pc > 0:
             e["low_pct"] = round((l / pc - 1) * 100, 2)
+        prior = [v for v in vols[max(0, i - 5):i] if v]
+        if vols[i] and prior:
+            e["vol_ratio"] = round(vols[i] / (sum(prior) / len(prior)), 2)
         daily.append(e)
     cum = round((closes[-1] / closes[0] - 1) * 100, 2)
     up = sum(1 for d in daily if d["pct"] > 0)
@@ -1556,7 +1563,7 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"query": {"type": "string", "description": "股票名字或代码"}}, "required": ["query"]}},
     {"name": "get_quote", "description": "查个股实时行情: 现价/当日涨跌幅/开高低/成交额/换手。code 直接用 resolve_stock 返回的 code 原样传(A股是裸6位如 600667 / 000657; 港美股 HK.00700 / US.AAPL), 保持原样、A股无需 sh/sz 前缀。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
-    {"name": "get_trend", "description": "查个股近 N 个交易日走势: 累计涨跌/逐日涨跌/上涨天数。支持 A 股/港股/美股。daily_pct 每条是 {date, pct, high_pct, low_pct}: date 是该日真实交易日(YYYY-MM-DD), pct 是收盘涨跌, high_pct/low_pct 是当日最高/最低相对昨收的幅度。最后一条即 last_date(最新交易日)。引用某天涨跌时日期以 date 字段为准。判断历史某天日内有没有摸到涨停/封板还是冲高回落: 看 high_pct——high_pct≈涨停幅度(主板10/创业板科创20)且 pct=high_pct 即收在涨停(封板), high_pct 到了涨停而 pct 明显更低即日内触板后回落。这样无需分时即可还原历史某天盘中。",
+    {"name": "get_trend", "description": "查个股近 N 个交易日走势: 累计涨跌/逐日涨跌/上涨天数。支持 A 股/港股/美股。daily_pct 每条是 {date, pct, high_pct, low_pct, vol_ratio}: date 是该日真实交易日(YYYY-MM-DD), pct 是收盘涨跌, high_pct/low_pct 是当日最高/最低相对昨收的幅度, vol_ratio 是当日量比(成交量/前5日均量, >1.5 明显放量、<0.7 缩量)。最后一条即 last_date(最新交易日)。引用某天涨跌时日期以 date 字段为准。判断历史某天日内有没有摸到涨停/封板还是冲高回落: 看 high_pct——high_pct≈涨停幅度(主板10/创业板科创20)且 pct=high_pct 即收在涨停(封板), high_pct 到了涨停而 pct 明显更低即日内触板后回落。配合 pct 与 vol_ratio 读量价: 放量上涨=量价齐升、放量滞涨/冲高回落=分歧、缩量回调=惜售、高位放量=兑现。这样无需分时即可还原历史某天盘中量价。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}, "days": {"type": "integer", "description": "默认20"}}, "required": ["code"]}},
     {"name": "get_intraday", "description": "当日分时走势(开盘/最高及时间/最低及时间/现价 + 冲高回落幅度 + 路径采样): 判断盘中是不是冲高回落/炸板/尾盘拉升时用, 比日K细。需启用 TDX 数据源, 仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
@@ -1564,7 +1571,7 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_announcements", "description": "查个股公告(分红/回购/增减持/业绩预告/重组/股权激励/关联交易等), 结构化且比新闻权威。看公司层面有没有实质事件驱动。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
-    {"name": "get_fund_flow", "description": "查个股主力资金流(谁在买/卖): 今日主力/超大单/大单/中单/小单净额(亿, 实时, 与榜单 f62 同源) + 近几日主力净流入趋势。今日值盘中实时滚动, 主力=超大单+大单。回答'为什么涨/跌、是不是主力在拉、资金进还是出'的关键。仅 A 股。",
+    {"name": "get_fund_flow", "description": "查个股资金流: 主力/超大单/大单/中单/小单净额(亿, 与榜单 f62 同源) + 近几日趋势。按单笔金额分档(超大单+大单=主力)。重要口径提示: 当下普遍拆单 + 多子账户操作, 大单常被拆成中小单分散在多账户, 单笔分档已无法等同真实主力意图, 净流入只是参考线索而非定论。务必与 get_trend 的量价(pct+vol_ratio)和K线位置配合解读, 不单凭净流入下结论。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_lhb", "description": "龙虎榜: 传 code→该股近期是否上榜及净买额/机构还是游资席位/上榜原因(看是谁在拉); 不传 code→最近交易日资金净买额榜(主力/游资当天在打哪些票, 看资金主线)。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选; 留空看全市场榜"}}}},
@@ -1665,7 +1672,7 @@ _SYSTEM = (
     "get_fundamentals(基本面+估值:营收净利/ROE/PE/PB)、get_commodity(关联金属期货价)、"
     "get_holdings(用户持仓)、get_market_sentiment(大盘打板情绪)、get_sector_momentum(板块趋势矩阵:动量/退潮/资金流)、"
     "get_hot_concepts(热门概念榜)、get_hot_rank(资金人气榜)、get_market_news(政策面)。\n"
-    "【个股问题】先 resolve_stock 取代码, 再 get_quote+get_trend; 分析涨跌原因时调用 get_fund_flow(主力资金净流向、主导买卖的资金类型)"
+    "【个股问题】先 resolve_stock 取代码, 再 get_quote+get_trend(get_trend 同时给量价: 每日 pct + vol_ratio 量比); 分析涨跌原因时把量价(价格行为+量比)作为主轴, get_fund_flow(资金分档)作为辅助线索"
     "+get_news(消息面)+get_announcements(公司公告: 分红回购/业绩预告/重组/股权激励等实质事件, 权威性高于新闻), 异动明显时调用 get_lhb(是否登榜、游资还是机构主导); 用 get_stock_concepts 确认所属概念, "
     "再与 get_hot_concepts/get_sector_momentum 交叉判断是否处于当下资金主线; 需要时用 get_market_sentiment 区分个股事件还是大盘普涨跌; "
     "  · 【说明公司主营与背景】问题涉及某只票时(尤其'为什么涨/两只票对比/值不值得关注'), 调用 get_company_profile 取主营业务+细分行业+主营构成+控股/实控背景, "
@@ -1676,8 +1683,10 @@ _SYSTEM = (
     "  · 【说明市场在追捧的题材】涨跌/对比类问题落到驱动题材: 用 get_stock_concepts(所属概念)+get_hot_concepts(近几日资金主攻的概念)+get_news/get_market_news(催化: 政策/涨价/新品/业绩/事件)交叉, "
     "明确指出'本轮资金追捧的题材为 XX/催化为 XX'(如国产替代、存储涨价、算力、设备验证突破), 落到具体题材与催化, 而非笼统表述。\n"
     "若该票或所属板块对政策敏感(有色/小金属/地产/半导体/医药/军工/新能源/平台经济等), 另调 get_market_news 确认有无政策催化或调控压制。\n"
-    "  · 【单只个股的主力净流入数字以 get_fund_flow 为准】其 today 值盘中实时滚动(当天累计主力净额, 收盘定格), 与榜单 f62 同源同口径, 另带超大单/大单/中单/小单拆解和近几日趋势, 是该股资金流的权威口径。"
+    "  · 【单只个股的主力净流入数字以 get_fund_flow 为准】其 today 值盘中实时滚动(当天累计主力净额, 收盘定格), 与榜单 f62 同源同口径, 另带超大单/大单/中单/小单拆解和近几日趋势。"
     "get_peers/get_board_stocks/get_hot_concepts 中的'主力净流入亿'用于榜单内横向比较强弱; 表述单只票'今日主力净流入/流出金额'时, 引用 get_fund_flow 的 today 值, 全篇保持同一数值。\n"
+    "  · 【量价配合, 资金流仅作线索】资金流分档(超大单/大单=主力)在当下拆单 + 多子账户操作下已会失真——大单常被拆成中小单分散到多账户, 单笔金额分档不再等于真实主力意图。因此净流入数字只作参考线索, 必须与 get_trend 的量价(每日 pct + vol_ratio 量比)和K线位置配合解读, 不单凭净流入下'主力在进/出'的结论。"
+    "读量价: 放量(vol_ratio>1.5)上涨=量价齐升、放量滞涨或冲高回落(high_pct 高而 pct 收低)=分歧出货迹象、缩量(vol_ratio<0.7)回调=惜售、高位放量=兑现压力、地量=关注度低。把'价(pct/位置)+ 量(vol_ratio)+ 资金分档(参考)'三者合起来描述, 三者背离时点明背离、以量价为主。\n"
     "【基本面/估值】问'估值高低、业绩优劣、盈利质地、有无业绩拐点'时调用 get_fundamentals"
     "(营收/净利及同比、ROE/毛利率/净利率、资产负债率、PE/PB/总市值); 即便仅问涨跌, 涉及'涨幅能否支撑当前估值、估值是否偏高'时, 一并对照基本面位置。"
     "有色/资源股涨跌可另调 get_commodity 查对应金属期货价(铜铝金锌镍锡), 判断是否同步驱动。\n"
