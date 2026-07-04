@@ -264,6 +264,42 @@ def _us_daily_k_sync(symbol: str, datalen: int) -> list:
             for d in arr[-(datalen + 1):] if d.get("c")]
 
 
+def _candle_shape(o, c, h, l):
+    """单根K线裸K形态(纯客观描述价格行为, 不含买卖判断)。o/c/h/l=开收高低。"""
+    if None in (o, c, h, l) or h <= l or o <= 0:
+        return None
+    rng = h - l
+    mid = (h + l) / 2
+    if mid > 0 and rng / mid < 0.005:           # 振幅极小 ≈ 一字
+        return "一字线"
+    body = abs(c - o)
+    bp = body / rng                              # 实体占振幅
+    up = (h - max(o, c)) / rng                   # 上影占振幅
+    lo = (min(o, c) - l) / rng                   # 下影占振幅
+    color = "阳" if c > o else ("阴" if c < o else "平")
+    if bp < 0.15:                                # 小实体 = 星线/十字
+        if up > 0.4 and lo > 0.4:
+            return "十字星(多空分歧)"
+        if up > 0.55:
+            return "长上影十字(冲高回落)"
+        if lo > 0.55:
+            return "长下影十字(探底回升)"
+        return "小实体星线(分歧)"
+    if bp >= 0.7:                                # 大实体
+        if up < 0.08 and lo < 0.08:
+            return f"光头光脚{color}线(实体饱满)"
+        if up < 0.08:
+            return f"光头{color}线(收在高点)"
+        if lo < 0.08:
+            return f"光脚{color}线(开在低点)"
+        return f"大{color}线"
+    if up > 0.45 and up > lo:
+        return f"长上影{color}线(上方有压力)"
+    if lo > 0.45 and lo > up:
+        return f"长下影{color}线(下方有承接)"
+    return f"{color}线"
+
+
 async def _tool_get_trend(code: str, days: int = 20) -> dict:
     """近 N 日走势: 每日涨跌幅 + 累计。A 股走新浪历史; 港股走腾讯日K; 美股走新浪 US 日K。"""
     from services.market_data import (get_historical_data, normalize_stock_code, is_a_share,
@@ -277,7 +313,7 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
             return f if f > 0 else None
         except (TypeError, ValueError):
             return None
-    bars: list = []  # [(date_str, close, high|None, low|None, vol|None)] 升序; date 可能为空(数据源缺)
+    bars: list = []  # [(date_str, close, high|None, low|None, vol|None, open|None)] 升序; date 可能为空(数据源缺)
     if is_a_share(raw):
         df = await get_historical_data(raw, days + 5)
         if df is None or df.empty:
@@ -286,17 +322,18 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
         dcol = df["日期"].tolist() if "日期" in df.columns else [""] * n
         hcol = df["最高"].tolist() if "最高" in df.columns else [None] * n
         lcol = df["最低"].tolist() if "最低" in df.columns else [None] * n
+        ocol = df["开盘"].tolist() if "开盘" in df.columns else [None] * n
         vcol = df["成交量"].tolist() if "成交量" in df.columns else (
                df["成交额"].tolist() if "成交额" in df.columns else [None] * n)
-        bars = [(str(d)[:10], float(c), _ff(h), _ff(l), _ff(v))
-                for d, c, h, l, v in zip(dcol, df["收盘"].tolist(), hcol, lcol, vcol)]
+        bars = [(str(d)[:10], float(c), _ff(h), _ff(l), _ff(v), _ff(o))
+                for d, c, h, l, v, o in zip(dcol, df["收盘"].tolist(), hcol, lcol, vcol, ocol)]
     elif market == "HK":
         rows = await asyncio.to_thread(_kline_tencent_hk, f"hk{symbol.zfill(5)}", days + 5)
-        bars = [(str(r.get("date") or "")[:10], float(r["close"]), _ff(r.get("high")), _ff(r.get("low")), _ff(r.get("volume")))
+        bars = [(str(r.get("date") or "")[:10], float(r["close"]), _ff(r.get("high")), _ff(r.get("low")), _ff(r.get("volume")), _ff(r.get("open")))
                 for r in (rows or []) if r.get("close")]
     elif market == "US":
         rows = await asyncio.to_thread(_us_daily_k_sync, symbol, days)
-        bars = [(str(r.get("date") or "")[:10], float(r["close"]), _ff(r.get("high")), _ff(r.get("low")), _ff(r.get("volume")))
+        bars = [(str(r.get("date") or "")[:10], float(r["close"]), _ff(r.get("high")), _ff(r.get("low")), _ff(r.get("volume")), _ff(r.get("open")))
                 for r in (rows or []) if r.get("close")]
     else:
         return {"error": "走势暂不支持该市场"}
@@ -308,11 +345,14 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
     vols = [b[4] for b in bars]
     # 每条逐日涨跌挂真实日期 + 当天最高/最低相对昨收的幅度(看历史某天日内摸没摸到涨停/封板还是冲高回落, 无需分时)
     # + 量比(当日量/前5日均量): >1.5 明显放量, <0.7 缩量 —— 配合 pct 看量价(放量上涨/放量滞涨/缩量回调)
+    # + open_pct(开盘相对昨收) + shape(裸K形态: 光头光脚/长上影/十字星 等), 让 agent 读单根K线
     daily = []
     for i in range(1, len(bars)):
         pc = closes[i - 1]
-        e = {"date": bars[i][0], "pct": round((closes[i] / pc - 1) * 100, 2)}
-        h, l = bars[i][2], bars[i][3]
+        o, c, h, l = bars[i][5], bars[i][1], bars[i][2], bars[i][3]
+        e = {"date": bars[i][0], "pct": round((c / pc - 1) * 100, 2)}
+        if o and pc > 0:
+            e["open_pct"] = round((o / pc - 1) * 100, 2)
         if h and pc > 0:
             e["high_pct"] = round((h / pc - 1) * 100, 2)
         if l and pc > 0:
@@ -320,6 +360,9 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
         prior = [v for v in vols[max(0, i - 5):i] if v]
         if vols[i] and prior:
             e["vol_ratio"] = round(vols[i] / (sum(prior) / len(prior)), 2)
+        shape = _candle_shape(o, c, h, l)
+        if shape:
+            e["shape"] = shape
         daily.append(e)
     cum = round((closes[-1] / closes[0] - 1) * 100, 2)
     up = sum(1 for d in daily if d["pct"] > 0)
@@ -1563,7 +1606,7 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"query": {"type": "string", "description": "股票名字或代码"}}, "required": ["query"]}},
     {"name": "get_quote", "description": "查个股实时行情: 现价/当日涨跌幅/开高低/成交额/换手。code 直接用 resolve_stock 返回的 code 原样传(A股是裸6位如 600667 / 000657; 港美股 HK.00700 / US.AAPL), 保持原样、A股无需 sh/sz 前缀。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
-    {"name": "get_trend", "description": "查个股近 N 个交易日走势: 累计涨跌/逐日涨跌/上涨天数。支持 A 股/港股/美股。daily_pct 每条是 {date, pct, high_pct, low_pct, vol_ratio}: date 是该日真实交易日(YYYY-MM-DD), pct 是收盘涨跌, high_pct/low_pct 是当日最高/最低相对昨收的幅度, vol_ratio 是当日量比(成交量/前5日均量, >1.5 明显放量、<0.7 缩量)。最后一条即 last_date(最新交易日)。引用某天涨跌时日期以 date 字段为准。判断历史某天日内有没有摸到涨停/封板还是冲高回落: 看 high_pct——high_pct≈涨停幅度(主板10/创业板科创20)且 pct=high_pct 即收在涨停(封板), high_pct 到了涨停而 pct 明显更低即日内触板后回落。配合 pct 与 vol_ratio 读量价: 放量上涨=量价齐升、放量滞涨/冲高回落=分歧、缩量回调=惜售、高位放量=兑现。这样无需分时即可还原历史某天盘中量价。",
+    {"name": "get_trend", "description": "查个股近 N 个交易日走势(裸K + 量): 累计涨跌/逐日涨跌/上涨天数。支持 A 股/港股/美股。daily_pct 每条是 {date, open_pct, pct, high_pct, low_pct, vol_ratio, shape}: date 是该日真实交易日(YYYY-MM-DD), open_pct/pct 是开盘/收盘相对昨收, high_pct/low_pct 是当日最高/最低相对昨收, vol_ratio 是当日量比(成交量/前5日均量, >1.5 放量、<0.7 缩量), shape 是这根K线的裸K形态(如 光头光脚阳线/长上影阴线/十字星)。最后一条即 last_date(最新交易日)。引用某天涨跌时日期以 date 字段为准。看封板/炸板: high_pct≈涨停幅度(主板10/创业板科创20)且 pct=high_pct 即收在涨停(封板), high_pct 到涨停而 pct 明显更低即触板回落。读裸K量价: 用 open_pct/pct/high_pct/low_pct 还原每根K线的开收高低位置 + shape 形态 + vol_ratio 量, 描述放量光头大阳=量价齐升、放量长上影=冲高回落分歧、缩量十字=观望、高位放量长上影=兑现等。无需分时即可还原历史每天盘中量价形态。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}, "days": {"type": "integer", "description": "默认20"}}, "required": ["code"]}},
     {"name": "get_intraday", "description": "当日分时走势(开盘/最高及时间/最低及时间/现价 + 冲高回落幅度 + 路径采样): 判断盘中是不是冲高回落/炸板/尾盘拉升时用, 比日K细。需启用 TDX 数据源, 仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
@@ -1685,8 +1728,10 @@ _SYSTEM = (
     "若该票或所属板块对政策敏感(有色/小金属/地产/半导体/医药/军工/新能源/平台经济等), 另调 get_market_news 确认有无政策催化或调控压制。\n"
     "  · 【单只个股的主力净流入数字以 get_fund_flow 为准】其 today 值盘中实时滚动(当天累计主力净额, 收盘定格), 与榜单 f62 同源同口径, 另带超大单/大单/中单/小单拆解和近几日趋势。"
     "get_peers/get_board_stocks/get_hot_concepts 中的'主力净流入亿'用于榜单内横向比较强弱; 表述单只票'今日主力净流入/流出金额'时, 引用 get_fund_flow 的 today 值, 全篇保持同一数值。\n"
-    "  · 【量价配合, 资金流仅作线索】资金流分档(超大单/大单=主力)在当下拆单 + 多子账户操作下已会失真——大单常被拆成中小单分散到多账户, 单笔金额分档不再等于真实主力意图。因此净流入数字只作参考线索, 必须与 get_trend 的量价(每日 pct + vol_ratio 量比)和K线位置配合解读, 不单凭净流入下'主力在进/出'的结论。"
-    "读量价: 放量(vol_ratio>1.5)上涨=量价齐升、放量滞涨或冲高回落(high_pct 高而 pct 收低)=分歧出货迹象、缩量(vol_ratio<0.7)回调=惜售、高位放量=兑现压力、地量=关注度低。把'价(pct/位置)+ 量(vol_ratio)+ 资金分档(参考)'三者合起来描述, 三者背离时点明背离、以量价为主。\n"
+    "  · 【裸K量价为主, 资金流仅作线索】判断走势以裸K + 量为主轴: get_trend 每条带 open_pct/pct/high_pct/low_pct(还原开收高低位置)、shape(单根K形态)、vol_ratio(量比)。"
+    "用这些直接读价格行为本身——支撑压力、趋势位置、K线形态心里有数, 不依赖均线/MACD/KDJ 这类从价量算出来的滞后衍生指标(均线自在心中, 不报二手信号)。"
+    "读裸K量价: 放量(vol_ratio>1.5)光头大阳=量价齐升承接强、放量长上影或冲高回落(high_pct 高而 pct 收低)=分歧出货迹象、缩量(vol_ratio<0.7)十字/小阴=观望惜售、高位放量长上影=兑现压力、地量=关注度低; 连续几根K的形态+量比串起来看节奏(连阴缩量磨底 vs 放量反包)。"
+    "资金流分档(超大单/大单=主力)在当下拆单 + 多子账户操作下已失真——大单常被拆成中小单分散到多账户, 净流入只作参考线索, 不单凭它下'主力在进/出'结论; 与裸K量价背离时点明背离、以裸K量价为主。\n"
     "【基本面/估值】问'估值高低、业绩优劣、盈利质地、有无业绩拐点'时调用 get_fundamentals"
     "(营收/净利及同比、ROE/毛利率/净利率、资产负债率、PE/PB/总市值); 即便仅问涨跌, 涉及'涨幅能否支撑当前估值、估值是否偏高'时, 一并对照基本面位置。"
     "有色/资源股涨跌可另调 get_commodity 查对应金属期货价(铜铝金锌镍锡), 判断是否同步驱动。\n"
