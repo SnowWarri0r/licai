@@ -361,6 +361,73 @@ def _trend_summary(closes: list, vols: list) -> dict:
     return s
 
 
+def _fractals(seq, low: bool, w: int = 3, gap: int = 3) -> list:
+    """分型拐点: 某根为左右各 w 根内的最低(low=True)/最高(low=False)。相邻 gap 根内合并取更极端。
+    返回 [(idx, value), ...] 升序(已确认, 末尾 w 根不计)。"""
+    pts = []
+    for i in range(w, len(seq) - w):
+        seg = seq[i - w:i + w + 1]
+        if seq[i] is None or any(x is None for x in seg):
+            continue
+        if (low and seq[i] == min(seg)) or (not low and seq[i] == max(seg)):
+            pts.append((i, seq[i]))
+    if not pts:
+        return []
+    out = [pts[0]]
+    for idx, val in pts[1:]:
+        if idx - out[-1][0] <= gap:
+            if (low and val < out[-1][1]) or (not low and val > out[-1][1]):
+                out[-1] = (idx, val)
+        else:
+            out.append((idx, val))
+    return out
+
+
+def _structure_scan(closes: list, highs: list, lows: list, vols: list) -> dict:
+    """阶梯式上行结构识别(进二退三框架, 纯客观描述, 不含买卖结论):
+    抬高高点+抬高低点=阶梯式上行; 台阶支撑=最近确认的上行低点; 回调量能性质; 跌破抬高低点=结构破位。
+    买/卖决策留给用户。"""
+    n = len(closes)
+    if n < 25:
+        return {}
+    H = [h if h is not None else closes[i] for i, h in enumerate(highs)]
+    L = [l if l is not None else closes[i] for i, l in enumerate(lows)]
+    slo = _fractals(L, low=True)
+    shi = _fractals(H, low=False)
+    last = closes[-1]
+    ma20 = sum(closes[-20:]) / 20
+    out: dict = {}
+    higher_lows = len(slo) >= 2 and slo[-1][1] > slo[-2][1]
+    higher_highs = len(shi) >= 2 and shi[-1][1] > shi[-2][1]
+    if higher_lows and higher_highs and last > ma20:
+        out["阶梯式上行"] = True   # 抬高高点+抬高低点+价在MA20上方(进二退三式)
+    elif higher_lows and last > ma20:
+        out["抬高低点"] = True     # 仅低点逐级抬高(上行结构雏形)
+    if slo:
+        sup = slo[-1][1]
+        out["台阶支撑"] = round(sup, 3)   # 最近确认的上行台阶(swing low)价位
+        out["距支撑%"] = round((last / sup - 1) * 100, 1)
+        if higher_lows and last < slo[-2][1]:
+            out["结构破位"] = True   # 收盘跌破上一抬高低点, 阶梯式上行结构被破坏
+        elif last < sup * 0.99:
+            out["跌破近台阶"] = True   # 跌破最近台阶但尚未破坏整体抬高低点
+    if shi:
+        peak = shi[-1][1]
+        vv = [v for v in vols if v]
+        if last < peak * 0.99 and len(vv) >= 8:   # 处在近期高点下方=回调中
+            recent = sum(vv[-3:]) / 3
+            base = sum(vv[-8:-3]) / 5
+            if base:
+                r = recent / base
+                if r < 0.75:
+                    out["回调量能"] = "缩量"   # 抛压衰竭(洗盘特征)
+                elif r > 1.4:
+                    out["回调量能"] = "放量"   # 回调放量(分歧/抛压)
+                else:
+                    out["回调量能"] = "平量"
+    return out
+
+
 async def _tool_get_trend(code: str, days: int = 20) -> dict:
     """近 N 日走势: 每日涨跌幅 + 累计。A 股走新浪历史; 港股走腾讯日K; 美股走新浪 US 日K。"""
     from services.market_data import (get_historical_data, normalize_stock_code, is_a_share,
@@ -397,6 +464,11 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
     if len(allbars) < 2:
         return {"error": "无历史数据"}
     summary = _trend_summary([b[1] for b in allbars], [b[4] for b in allbars])
+    try:
+        structure = _structure_scan([b[1] for b in allbars], [b[2] for b in allbars],
+                                     [b[3] for b in allbars], [b[4] for b in allbars]) if is_a_share(raw) else {}
+    except Exception:
+        structure = {}
     bars = allbars[-(days + 1):]
     code = raw
     closes = [b[1] for b in bars]
@@ -446,6 +518,8 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
         "last_date": bars[-1][0], "last_close": round(closes[-1], 3),
         # 多周期量价摘要: pct_5d/pct_20d/pct_60d 涨幅、dist_20high 距20日高、ma 均线排列、vol 量能
         "summary": summary,
+        # 阶梯式上行结构(进二退三框架, 客观事实): 阶梯式上行/抬高低点、台阶支撑(价位)+距支撑%、回调量能(缩量=洗盘/放量=分歧)、结构破位(跌破抬高低点)
+        "structure": structure,
         # 最近 10 日逐日涨跌, 每条带 date + high_pct/low_pct + 板(涨跌停标记, 已按该股真实涨停幅度判)。最后一条即最新交易日。
         "daily_pct": daily[-min(10, len(daily)):],
     }
@@ -1819,7 +1893,7 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"query": {"type": "string", "description": "股票名字或代码"}}, "required": ["query"]}},
     {"name": "get_quote", "description": "查个股实时行情: 现价/当日涨跌幅/开高低/成交额/换手。code 直接用 resolve_stock 返回的 code 原样传(A股是裸6位如 600667 / 000657; 港美股 HK.00700 / US.AAPL), 保持原样、A股无需 sh/sz 前缀。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
-    {"name": "get_trend", "description": "查个股近 N 个交易日走势(裸K + 量): 累计涨跌/逐日涨跌/上涨天数。支持 A 股/港股/美股。daily_pct 每条是 {date, open_pct, pct, high_pct, low_pct, vol_ratio, shape}: date 是该日真实交易日(YYYY-MM-DD), open_pct/pct 是开盘/收盘相对昨收, high_pct/low_pct 是当日最高/最低相对昨收, vol_ratio 是当日量比(成交量/前5日均量, >1.5 放量、<0.7 缩量), shape 是这根K线的裸K形态(如 光头光脚阳线/长上影阴线/十字星)。最后一条即 last_date(最新交易日)。limit_pct=该股涨跌停幅度%(科创板688/创业板30开头=20, 北交所8/4开头=30, ST=5, 沪深主板=10), 别按10%默认。daily_pct 每条已带 板 字段(收在涨停封板/盘中触及涨停后回落/跌停, 已按该股真实涨停幅度判好, 直接用别自己算)。引用某天涨跌时日期以 date 字段为准。读裸K量价: 用 open_pct/pct/high_pct/low_pct 还原每根K线的开收高低位置 + shape 形态 + vol_ratio 量, 描述放量光头大阳=量价齐升、放量长上影=冲高回落分歧、缩量十字=观望、高位放量长上影=兑现等。无需分时即可还原历史每天盘中量价形态。",
+    {"name": "get_trend", "description": "查个股近 N 个交易日走势(裸K + 量): 累计涨跌/逐日涨跌/上涨天数。支持 A 股/港股/美股。daily_pct 每条是 {date, open_pct, pct, high_pct, low_pct, vol_ratio, shape}: date 是该日真实交易日(YYYY-MM-DD), open_pct/pct 是开盘/收盘相对昨收, high_pct/low_pct 是当日最高/最低相对昨收, vol_ratio 是当日量比(成交量/前5日均量, >1.5 放量、<0.7 缩量), shape 是这根K线的裸K形态(如 光头光脚阳线/长上影阴线/十字星)。最后一条即 last_date(最新交易日)。limit_pct=该股涨跌停幅度%(科创板688/创业板30开头=20, 北交所8/4开头=30, ST=5, 沪深主板=10), 别按10%默认。daily_pct 每条已带 板 字段(收在涨停封板/盘中触及涨停后回落/跌停, 已按该股真实涨停幅度判好, 直接用别自己算)。引用某天涨跌时日期以 date 字段为准。读裸K量价: 用 open_pct/pct/high_pct/low_pct 还原每根K线的开收高低位置 + shape 形态 + vol_ratio 量, 描述放量光头大阳=量价齐升、放量长上影=冲高回落分歧、缩量十字=观望、高位放量长上影=兑现等。无需分时即可还原历史每天盘中量价形态。structure 字段给阶梯式上行结构识别(进二退三框架, A股): 阶梯式上行(抬高高点+抬高低点)/抬高低点、台阶支撑(最近确认的上行低点价位)+距支撑%、回调量能(缩量=抛压衰竭洗盘特征/放量=分歧)、结构破位(收盘跌破上一抬高低点, 上行结构被破坏)。用这些字段客观描述该股所处的趋势结构与所在台阶, 把方向性决策留给用户。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}, "days": {"type": "integer", "description": "默认20"}}, "required": ["code"]}},
     {"name": "get_intraday", "description": "当日分时走势(开盘/最高及时间/最低及时间/现价 + 冲高回落幅度 + 路径采样): 判断盘中是不是冲高回落/炸板/尾盘拉升时用, 比日K细。需启用 TDX 数据源, 仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
