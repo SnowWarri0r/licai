@@ -2,9 +2,12 @@
 from __future__ import annotations
 import asyncio
 import hashlib
+import ipaddress
 import json as _json
 import re
+import socket
 import time
+from urllib.parse import urlparse
 from fastapi import APIRouter
 from pydantic import BaseModel
 
@@ -692,6 +695,26 @@ async def daily_review(force: bool = False):
 _INTERPRET_CACHE: dict[str, dict] = {}
 
 
+def _url_is_safe_public(url: str) -> bool:
+    """SSRF 防护: 只放行 http(s) 且解析到公网 IP 的 URL, 挡环回/内网/链路本地(含云元数据 169.254.x)/组播/保留地址。
+    抓取虽由外部 Firecrawl/Jina 代抓(不直连内网), 仍做纵深防御, 避免本端点被当开放抓取代理指向内部目标。"""
+    try:
+        u = urlparse(url)
+        if u.scheme not in ("http", "https"):
+            return False
+        host = (u.hostname or "").strip().rstrip(".").lower()
+        if not host:
+            return False
+        for info in socket.getaddrinfo(host, None):
+            ip = ipaddress.ip_address(info[4][0])
+            if (ip.is_private or ip.is_loopback or ip.is_link_local
+                    or ip.is_multicast or ip.is_reserved or ip.is_unspecified):
+                return False
+        return True
+    except Exception:
+        return False
+
+
 class InterpretIn(BaseModel):
     title: str
     content: Optional[str] = ""
@@ -752,7 +775,8 @@ async def interpret_news(data: InterpretIn):
     content = (data.content or "").strip()
     body_excerpt = ""
     # 正文薄(金十很多快讯只有一行)且带原文链接时, 抓全文补足 → 解读基于全文而非一句话摘要
-    if data.url and len(content) < 40 and (data.url.startswith("http://") or data.url.startswith("https://")):
+    # 只对解析到公网地址的 URL 抓取(SSRF 防护)
+    if data.url and len(content) < 40 and await asyncio.to_thread(_url_is_safe_public, data.url):
         try:
             from services.stock_agent import _fetch_url_markdown_sync
             md = await asyncio.to_thread(_fetch_url_markdown_sync, data.url)
