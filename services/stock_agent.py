@@ -1610,7 +1610,9 @@ async def _tool_trades(code: str = "", start: str = "", end: str = "") -> dict:
                 q = (code or "").strip()
                 for a in await list_external_assets():
                     ac, an = str(a.get("code") or ""), (a.get("name") or "")
-                    if a.get("asset_type") == "FUND" and (q == ac or q in an or q == bare):
+                    atype = (a.get("asset_type") or "").upper()
+                    # 按该资产自己的代码/名称匹配(q==bare 是自比恒真, 去掉; 否则任意基金都会误命中)
+                    if atype in ("FUND", "ETF") and ac and (q == ac or bare == ac or (len(q) >= 2 and q in an)):
                         fa = {"BUY": "申购", "ADD": "加仓", "REDEEM": "赎回",
                               "DEPOSIT": "转入", "WITHDRAW": "转出"}
                         recs = []
