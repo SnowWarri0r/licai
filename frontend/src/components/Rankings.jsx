@@ -1,52 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { fetchJSON } from '../hooks/useApi'
-import { CandleChart, MA_WARMUP } from './StockKlineModal'
+import ProKline from './ProKline'
 import { MiniMarkdown, SourcesBlock, streamAnalysis } from './askShared'
-
-const PERIODS = [{ label: '30日', days: 30 }, { label: '60日', days: 60 }, { label: '半年', days: 120 }, { label: '1年', days: 250 }]
-
-// 复用持仓那套丰富 K线(蜡烛+MA+量能/MACD/KDJ), 不传成本/买卖点, 只看行情
-function StockKline({ code }) {
-  const [days, setDays] = useState(60)
-  const [series, setSeries] = useState([])
-  const [warmup, setWarmup] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [err, setErr] = useState('')
-
-  useEffect(() => {
-    if (!code) return
-    let alive = true
-    setLoading(true); setErr('')
-    fetchJSON(`/api/market/history/${encodeURIComponent(code)}?days=${days + MA_WARMUP}`)
-      .then(k => {
-        if (!alive) return
-        if (!Array.isArray(k) || !k.length) { setErr('暂无 K 线数据'); setSeries([]); setWarmup([]); return }
-        const all = k.map(x => ({ date: x.time, open: x.open, high: x.high, low: x.low, close: x.close, volume: x.volume }))
-        const cut = Math.max(0, all.length - days)
-        setWarmup(all.slice(0, cut).map(b => b.close))
-        setSeries(all.slice(cut))
-      })
-      .catch(e => alive && setErr(e?.message || '加载失败'))
-      .finally(() => alive && setLoading(false))
-    return () => { alive = false }
-  }, [code, days])
-
-  return (
-    <div>
-      <div className="flex gap-1 mb-2">
-        {PERIODS.map(p => (
-          <button key={p.days} onClick={() => setDays(p.days)}
-            className={`text-[11px] px-2 py-0.5 rounded border ${days === p.days ? 'bg-accent/20 text-accent border-accent/40' : 'bg-surface-3 text-text-dim border-transparent hover:text-text'}`}>
-            {p.label}
-          </button>
-        ))}
-      </div>
-      {err && <div className="text-[12px] text-text-dim py-6 text-center">{err}</div>}
-      {!err && loading && series.length === 0 && <div className="text-[12px] text-text-dim py-6 text-center">加载 K 线…</div>}
-      {!err && series.length > 0 && <CandleChart series={series} warmup={warmup} />}
-    </div>
-  )
-}
 
 const TABS = [
   { key: 'gainers', label: '涨幅榜' },
@@ -58,8 +13,6 @@ function pctColor(v) {
   if (v < 0) return 'text-bull'
   return 'text-text-dim'
 }
-
-const fmtVal = (v) => v == null ? '--' : Math.abs(v) >= 100 ? v.toFixed(1) : Math.abs(v) >= 10 ? v.toFixed(2) : v.toFixed(3)
 
 // 右侧面板: 选中股票先看 K线; 想问再在底部输入框问(可选), 才跑 AI 分析
 function StockPanel({ stock }) {
@@ -117,7 +70,7 @@ function StockPanel({ stock }) {
       </div>
 
       <div className="flex-1 overflow-y-auto px-3 py-2 min-h-0">
-        <StockKline code={stock.code} />
+        <ProKline code={stock.code} />
 
         {(asking || answer || steps.length > 0) && (
           <div className="mt-3 pt-3 border-t border-border-subtle">
