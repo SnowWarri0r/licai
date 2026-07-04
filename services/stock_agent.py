@@ -110,6 +110,27 @@ def _date_with_weekday(d: str | None) -> str | None:
         return d
 
 
+async def _tool_global_indices(query: str = "") -> dict:
+    """全球指数/汇率/商品实时行情(宏观仪表盘同源): A股大盘、恒生系、道纳标、日经/KOSPI/富时、
+    汇率、金属、能化。query 为空返回全部分组; 非空按 指标名/组名 子串过滤。"""
+    from services.market_data import get_macro_quotes
+    groups = await get_macro_quotes()
+    if not groups:
+        return {"error": "宏观行情暂不可达(源抖动), 稍后再试"}
+    q = (query or "").strip().lower()
+    out: dict = {}
+    for grp, items in groups.items():
+        rows = [{"name": it["name"], "price": it["price"], "涨跌%": it["change_pct"]} for it in items]
+        if q:
+            rows = [r for r in rows if q in r["name"].lower() or q in grp.lower()]
+        if rows:
+            out[grp] = rows
+    if not out:
+        return {"error": f"没有匹配 {query} 的指标; 可用分组: {', '.join(groups.keys())}"}
+    out["note"] = "实时快照(Sina/东财), A股大盘/海外指数/汇率/商品同一时点; 涨跌%相对昨收。"
+    return out
+
+
 # 常见美股中文名 → ticker(resolve_stock 用; 生僻的靠用户/LLM 直接给 ticker)
 _US_NAME_MAP = {
     "苹果": "AAPL", "微软": "MSFT", "英伟达": "NVDA", "特斯拉": "TSLA",
@@ -2214,6 +2235,8 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"limit": {"type": "integer", "description": "默认40"}}}},
     {"name": "get_chain_quote", "description": "批量取一组票的多周期量价摘要(产业链全景/多票横向对比专用): 一次返回每只的 pct_5d/pct_20d/pct_60d 涨幅、dist_20high 距20日高、ma 均线排列(全多头/多头/短多头/纠缠/空头)、vol 量能(放量/平/缩量)。做'X产业链上游到下游量价一览'时: 先 web_search 拿到该产业链各环节代表公司, 把这串代码/名称一次传进来即可拿到整条链量价, 无需逐只 get_trend。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"stocks": {"type": "array", "items": {"type": "string"}, "description": "股票名称或代码列表, 最多24只"}}, "required": ["stocks"]}},
+    {"name": "get_global_indices", "description": "全球指数/汇率/商品实时行情: A股大盘(上证/深成/沪深300/创业板/科创50/科创100/北证50)、港股(恒生/恒科/国企)、美股(道琼斯/纳斯达克/标普)、海外(日经225/韩国KOSPI/伦敦FTSE)、汇率(USDCNH等)、贵金属/工业金属/能化期货。问大盘、外围市场、某国指数、汇率、金铜油价时用它, 不用 web_search。query 传指标名子串(如 KOSPI/纳斯达克/沪金)只取匹配项, 留空返回全部。",
+     "input_schema": {"type": "object", "properties": {"query": {"type": "string", "description": "指标名/组名子串过滤, 空=全部"}}}},
     {"name": "read_url", "description": "抓取某个网页的正文全文(干净 markdown)。web_search 给的是摘要片段, 当需要某篇文章的完整内容时用它读全——尤其: 产业链/行业深度梳理研报(把各环节代表公司抽全更准)、核实某条事实的原文细节、读公告/政策原文。先用 web_search 拿到 url, 再对最相关的 1-2 篇 read_url 读全。",
      "input_schema": {"type": "object", "properties": {"url": {"type": "string", "description": "要抓取的 http(s) 网页链接"}}, "required": ["url"]}},
     # Anthropic 服务端联网搜索: 本地工具查不到/可能过期的事实(海外公司是否上市/IPO/代码/政策/最新消息)用它核实, 以联网结果为准而非凭记忆。
@@ -2249,6 +2272,7 @@ _EXECUTORS = {
     "get_chain_quote": lambda a: _tool_chain_quote(a.get("stocks", [])),
     "read_url": lambda a: _tool_read_url(a.get("url", "")),
     "get_market_news": lambda a: _tool_market_news(a.get("limit", 40)),
+    "get_global_indices": lambda a: _tool_global_indices(a.get("query", "")),
 }
 
 
@@ -2449,7 +2473,7 @@ _TOOL_CN = {
     "get_holdings": "看持仓", "get_thesis": "看买入逻辑", "get_asset_allocation": "看资产配置", "get_trades": "查成交记录", "get_market_sentiment": "看大盘情绪", "get_market_review": "复盘强势股",
     "get_sector_momentum": "看板块动量", "get_hot_rank": "看资金热度",
     "get_hot_concepts": "看热门概念", "get_board_stocks": "查板块龙头", "get_market_news": "看政策快讯", "web_search": "联网搜索",
-    "get_chain_quote": "产业链量价", "read_url": "读网页全文",
+    "get_chain_quote": "产业链量价", "read_url": "读网页全文", "get_global_indices": "看全球指数",
 }
 
 
