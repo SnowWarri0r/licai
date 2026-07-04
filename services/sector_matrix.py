@@ -25,6 +25,27 @@ def _strip_proxy():
             os.environ.pop(k, None)
 
 
+def _vol_price_read(daily: list, cum: float):
+    """板块量价: 量能趋势(近3日均量 / 之前均量) + 量价配合 tag。daily 末尾可能含无量的今日实时格, 只用有量的 bar。"""
+    bars = [d for d in daily if d.get("vol")]
+    if len(bars) < 5:
+        return None, None
+    recent = [d["vol"] for d in bars[-3:]]
+    base = [d["vol"] for d in bars[-8:-3]] or [d["vol"] for d in bars[:-3]]
+    if not base:
+        return None, None
+    vt = round((sum(recent) / len(recent)) / (sum(base) / len(base)), 2)  # 量能趋势 >1 放大 <1 萎缩
+    expand = vt >= 1.2
+    shrink = vt <= 0.8
+    if cum > 0:
+        tag = "放量上行(量价配合)" if expand else ("缩量上行(动能衰减)" if shrink else "温和上行")
+    elif cum < 0:
+        tag = "放量下跌(抛压重)" if expand else ("缩量回调(抛压不重)" if shrink else "温和回落")
+    else:
+        tag = "放量横盘(分歧)" if expand else "缩量横盘(观望)"
+    return vt, tag
+
+
 def _fetch_matrix_sync(days: int) -> dict | None:
     _strip_proxy()
     import akshare as ak
@@ -93,27 +114,6 @@ def _fetch_matrix_sync(days: int) -> dict | None:
             return daily
         except Exception:
             return None
-
-
-def _vol_price_read(daily: list, cum: float):
-    """板块量价: 量能趋势(近3日均量 / 之前均量) + 量价配合 tag。daily 末尾可能含无量的今日实时格, 只用有量的 bar。"""
-    bars = [d for d in daily if d.get("vol")]
-    if len(bars) < 5:
-        return None, None
-    recent = [d["vol"] for d in bars[-3:]]
-    base = [d["vol"] for d in bars[-8:-3]] or [d["vol"] for d in bars[:-3]]
-    if not base:
-        return None, None
-    vt = round((sum(recent) / len(recent)) / (sum(base) / len(base)), 2)  # 量能趋势 >1 放大 <1 萎缩
-    expand = vt >= 1.2
-    shrink = vt <= 0.8
-    if cum > 0:
-        tag = "放量上行(量价配合)" if expand else ("缩量上行(动能衰减)" if shrink else "温和上行")
-    elif cum < 0:
-        tag = "放量下跌(抛压重)" if expand else ("缩量回调(抛压不重)" if shrink else "温和回落")
-    else:
-        tag = "放量横盘(分歧)" if expand else "缩量横盘(观望)"
-    return vt, tag
 
     rows = []
     for name in universe:
