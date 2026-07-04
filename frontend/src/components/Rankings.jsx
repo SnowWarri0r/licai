@@ -6,7 +6,7 @@ import StockAskModal from './StockAskModal'
 const TABS = [
   { key: 'gainers', label: '涨幅榜' },
   { key: 'by_amount', label: '成交额榜' },
-  { key: 'coiled', label: '蓄势突破' },
+  { key: 'coiled', label: '横盘蓄势' },
 ]
 
 function pctColor(v) {
@@ -135,7 +135,7 @@ export default function Rankings() {
         <div className="flex-1 overflow-y-auto min-h-0">
           {!loading && !err && list.length === 0 && (
             <div className="text-center py-8 text-text-dim text-[12px] px-4 leading-relaxed">
-              {tab === 'coiled' ? '今天没有满足"横盘≥20日 + 放量攻箱体上沿"结构的票（震荡市里这种结构本来就稀缺）' : `榜单 top100 里暂无${board}标的`}
+              {tab === 'coiled' ? '龙头池里今天没有满足"窄/平/静、横盘≥20日且仍在箱体内"的蓄势基座（大波动市里稀缺属正常）' : `榜单 top100 里暂无${board}标的`}
             </div>
           )}
           {loading && <div className="text-center py-8 text-text-dim text-[12px]">{tab === 'coiled' ? '全市场扫描中…（首扫约20秒, 之后10分钟缓存秒开）' : '加载榜单…'}</div>}
@@ -194,7 +194,7 @@ export default function Rankings() {
 
         {tab === 'coiled' && !loading && list.length > 0 && (
           <div className="shrink-0 px-3 py-1.5 border-t border-border-subtle text-[9.5px] text-text-muted leading-relaxed">
-            结构筛选：40日箱体≤25%、横盘≥20日 + 温和放量攻箱体上沿 · 突破可能失败（假突破回落）· 仅客观结构，非买卖建议
+            蓄势观察池：40日箱体窄/平/静、横盘≥20日、仍在箱体内（已突破=偏晚不进正选）· AI看图复核 · 横盘也可能向下解决 · 仅客观结构，非买卖建议
           </div>
         )}
       </div>

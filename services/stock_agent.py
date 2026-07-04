@@ -2241,7 +2241,7 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"limit": {"type": "integer", "description": "默认40"}}}},
     {"name": "get_chain_quote", "description": "批量取一组票的多周期量价摘要(产业链全景/多票横向对比专用): 一次返回每只的 pct_5d/pct_20d/pct_60d 涨幅、dist_20high 距20日高、ma 均线排列(全多头/多头/短多头/纠缠/空头)、vol 量能(放量/平/缩量)。做'X产业链上游到下游量价一览'时: 先 web_search 拿到该产业链各环节代表公司, 把这串代码/名称一次传进来即可拿到整条链量价, 无需逐只 get_trend。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"stocks": {"type": "array", "items": {"type": "string"}, "description": "股票名称或代码列表, 最多24只"}}, "required": ["stocks"]}},
-    {"name": "get_coiled_stocks", "description": "横盘蓄势扫描(全市场结构筛选): 找'近60日窄幅箱体横盘 + 今日温和放量上攻(贴近/突破箱体上沿)'的票, 返回每只的横盘天数/箱体振幅/缩量比/放量倍数/距上沿%/行业。用户问'有哪些横盘蓄势/平台突破/准备启动的票'时用它; 结果是客观结构描述, 突破可能失败, 表述时保持结构层面。",
+    {"name": "get_coiled_stocks", "description": "横盘蓄势观察池(龙头池内结构筛选+AI看图复核): 找'仍在安静横盘蓄势中(突破前)'的百亿机构票, 返回每只的横盘天数/箱体振幅/缩量比/距上沿%/近3日量能/AI贴合度与判词。用户问'有哪些在横盘蓄势/打底/准备启动的票'时用它; 结果是客观结构描述, 横盘可能向下解决, 表述时保持结构层面。",
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_global_indices", "description": "全球指数/汇率/商品实时行情: A股大盘(上证/深成/沪深300/创业板/科创50/科创100/北证50)、港股(恒生/恒科/国企)、美股(道琼斯/纳斯达克/标普)、海外(日经225/韩国KOSPI/伦敦FTSE)、汇率(USDCNH等)、贵金属/工业金属/能化期货。问大盘、外围市场、某国指数、汇率、金铜油价时用它, 不用 web_search。query 传指标名子串(如 KOSPI/纳斯达克/沪金)只取匹配项, 留空返回全部。",
      "input_schema": {"type": "object", "properties": {"query": {"type": "string", "description": "指标名/组名子串过滤, 空=全部"}}}},

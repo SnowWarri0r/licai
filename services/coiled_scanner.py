@@ -162,84 +162,69 @@ async def _stage2(c: dict) -> dict | str:
         lows = [float(v) for v in df["最低"]]
     except Exception:
         highs = lows = []
-    prev_c, prev_v = closes[-45:-5], vols[-45:-5]     # 箱体窗口: 近40日, 排除最近5日(启动段)
+    # 观察池定位: 找"仍在横盘蓄势中"的(突破前), 已突破/已启动的属于"偏晚"不进正选。
+    # 箱体窗口 = 近40日(含最新, 因为目标状态就是"现在还横着")
+    prev_c, prev_v = closes[-40:], vols[-40:]
     if len(prev_c) < 35:
         return "K线不足"
     bh, bl = max(prev_c), min(prev_c)
     if bl <= 0:
         return "K线不足"
     width = (bh / bl - 1) * 100
-    if width > 35:                                     # 箱体上限(龙头池内放宽)
+    if width > 25:                                     # 蓄势基座要窄
         return "箱体过宽"
-    # 横盘要求"平": 光在箱体内不够(箱子够宽, 趋势也装得下)。窗口前后半均值漂移小才是横, 爬坡/阴跌都拒
+    # 平: 窗口前后半均值漂移小(箱子够宽, 趋势也装得下, 光在箱体内不算横)
     half_c = len(prev_c) // 2
     drift = (sum(prev_c[half_c:]) / (len(prev_c) - half_c)) / (sum(prev_c[:half_c]) / half_c) - 1
-    if abs(drift) * 100 > 10:
+    if abs(drift) * 100 > 6:
         return "窗口内有趋势(非横盘)"
-    # 横盘还要求"静": 大开大合的宽幅震荡(日收益σ大)不是蓄势基座。安静基座σ≈1.5-2, 野震荡≥2.5
+    # 静: 日收益σ小(安静基座σ≈1.5-2, 宽幅过山车≥2.5)
     rets = [prev_c[i] / prev_c[i - 1] - 1 for i in range(1, len(prev_c))]
     mean_r = sum(rets) / len(rets)
     sd = (sum((r - mean_r) ** 2 for r in rets) / len(rets)) ** 0.5 * 100
-    if sd > 3.0:
+    if sd > 2.4:
         return "宽幅震荡(非安静横盘)"
     last_close = closes[-1]
-    base_vol = sum(prev_v) / len(prev_v)
+    base_vol = sum(prev_v[:-3]) / max(len(prev_v) - 3, 1)
     if base_vol <= 0:
         return "K线不足"
-    # 突破事件: 近5根内有一根 放量(≥1.3x横盘均量)且收盘攻到箱体上沿(≥0.985×上沿)
-    bk_i, bk_vm = None, 0.0
-    for i in range(-5, 0):
-        vm_i = vols[i] / base_vol
-        if closes[i] >= bh * 0.975 and vm_i >= 1.2 and vm_i > bk_vm:
-            bk_i, bk_vm = i, vm_i
-    if bk_i is None:
-        return "未到上沿" if max(closes[-5:]) < bh * 0.975 else "放量不足"
-    if last_close < bh * 0.96:                         # 突破后又跌回箱体深处 = 假突破已证伪
-        return "突破后跌回"
-    vol_mult = max(bk_vm, (sum(vols[-3:]) / 3) / base_vol)
-    if (last_close / closes[-6] - 1) * 100 > 20:       # 近5日已经飞了, 不是"准备窜"
-        return "近5日已飞"
-    # 启动新鲜度: V型反转/多日爬坡(箱底一路拉回上沿)在触到上沿前涨幅已兑现大半, 不是"准备窜"。
-    # 近20日最低点算起的累计拉升 ≤12% 才算刚启动; 两半均值查不出V型(前高后高中间低会互相抵消), 用这条兜
-    run_up = (last_close / min(closes[-20:]) - 1) * 100
-    if run_up > 18:
-        return "已拉升多日(非新启动)"
-    # 突破日收盘强度: (收-低)/(高-低)。长上影(冲高被砸回)= 假突破笔, 直接拒
-    if len(highs) == len(closes) and highs and highs[bk_i] > lows[bk_i]:
-        strength = round((closes[bk_i] - lows[bk_i]) / (highs[bk_i] - lows[bk_i]), 2)
-    else:
-        strength = 1.0
-    if strength < 0.3:
-        return "冲高回落(上影)"
-    # 横盘时长: 从启动段前往回数, 收盘都落在箱体(±2%容差)内的连续天数
+    # 位置: 还在箱体内(观察目标); 已放量越过上沿的属于"突破(偏晚)", 跌到下沿边缘的属于破位风险
+    if last_close > bh * 0.995 and (last_close / min(closes[-10:]) - 1) * 100 > 6:
+        return "已突破(偏晚)"
+    if last_close < bl * 1.02:
+        return "贴箱体下沿(有破位风险)"
+    # 近5日已明显启动的也偏晚
+    if (last_close / closes[-6] - 1) * 100 > 8:
+        return "已启动(偏晚)"
+    # 横盘时长: 从最新往回数, 收盘都落在箱体(±2%容差)内的连续天数
     lo, hi = bl * 0.98, bh * 1.02
     days_flat = 0
-    for cl in reversed(closes[:-5]):
+    for cl in reversed(closes):
         if lo <= cl <= hi:
             days_flat += 1
         else:
             break
-    if days_flat < 12:                                 # 横盘时长下限(龙头池内放宽)
+    if days_flat < 20:                                 # 真横盘至少一个月
         return "横盘太短"
-    # 缩量蓄势: 横盘后半均量 / 前半均量 (<1 = 越盘越缩, 蓄势特征)
+    # 缩量蓄势: 箱体后半均量 / 前半均量 (<1 = 越盘越缩)
     half = len(prev_v) // 2
     contraction = round((sum(prev_v[half:]) / (len(prev_v) - half)) / (sum(prev_v[:half]) / half), 2)
     dist = round((last_close / bh - 1) * 100, 1)
-    tag = ("突破后回踩" if dist < -1.5 else "临界(贴上沿)" if dist < 0
-           else "刚突破" if dist <= 3 else "突破延伸")
-    # 综合评分(0-110): 横盘越久+箱体越窄+越缩量+放量甜区(2-4x)+收盘实体强+刚好在突破位+机构覆盖
-    score = (min(days_flat, 60) / 60 * 25
-             + (30 - min(width, 30)) / 30 * 10
-             + (15 if contraction <= 0.8 else 10 if contraction <= 0.95 else 5 if contraction <= 1.1 else 0)
-             + (25 if 2 <= vol_mult <= 4 else 18 if vol_mult < 2 else 15 if vol_mult <= 6 else 8)
-             + strength * 15
-             + (15 if 0 <= dist <= 3 else 12 if -1.5 <= dist < 0 else 8)
+    # 初动迹象: 近3日均量相对基座均量温和放大(还没突破, 但量先热了)
+    warm = round((sum(vols[-3:]) / 3) / base_vol, 2)
+    pos_tag = "贴上沿" if dist >= -3 else ("箱体中部" if dist >= -12 else "箱体下部")
+    tag = pos_tag + ("·量在暖" if warm >= 1.3 else "")
+    # 蓄势质量分(0-105): 横盘越久+箱体越窄+越缩量+越贴上沿+量开始暖+机构覆盖
+    score = (min(days_flat, 60) / 60 * 30
+             + (25 - min(width, 25)) / 25 * 20
+             + (18 if contraction <= 0.8 else 12 if contraction <= 0.95 else 6 if contraction <= 1.1 else 0)
+             + (15 if dist >= -3 else 10 if dist >= -8 else 5)
+             + (12 if 1.3 <= warm <= 3 else 6 if warm >= 1.1 else 0)
              + (5 if (c.get("基金家数") or 0) >= 100 else 0))
     return {**c,
             "横盘日": days_flat, "箱体振幅%": round(width, 1),
-            "缩量比": contraction, "放量倍数": round(vol_mult, 1),
-            "收盘强度": strength, "距上沿%": dist, "标签": tag,
-            "近20日拉升%": round(run_up, 1),
+            "缩量比": contraction, "近3日量比基座": warm,
+            "距上沿%": dist, "标签": tag,
             "评分": round(score),
             "箱体上沿": round(bh, 2), "箱体下沿": round(bl, 2), "现价": round(last_close, 2)}
 
@@ -247,16 +232,16 @@ async def _stage2(c: dict) -> dict | str:
 _ai_cache: dict = {}   # (code, last_date, 标签) → 审核结果; 同日同形态复用, 不重复花钱
 
 _AI_SYS = (
-    "你是K线形态审核员, 任务是给K线图的『安静横盘基座 + 刚放量启动(仍处起跳窗口)』形态打贴合度分。\n"
-    "审核范围只限两段(图上金色虚线=箱体下沿, 蓝色虚线=箱体上沿, 即基座区):\n"
-    "· 基座段 = 最近约两个月(不含最后几根): 要求价格重心走平、波动收敛、大体在箱体内运行。"
-    "更早的历史走势(基座之前的下跌或上涨)属于背景, 只影响背景分析、独立于基座质量之外——先跌一波再筑底再启动是标准形态之一;\n"
-    "· 启动段 = 最近1-5根: 要求出现放量向上、收盘攻至或刚越过箱体上沿。突破日起1-5根内(含突破次日的回踩)都算起跳窗口;"
-    "抵达上沿之前已连续拉升两周以上或V型反转收复大半跌幅的, 属于行情已走一段, 大幅扣分。\n"
+    "你是K线形态审核员, 任务是给K线图的『安静横盘蓄势基座(仍在箱体内, 突破尚未发生)』形态打贴合度分。\n"
+    "审核范围(图上金色虚线=箱体下沿, 蓝色虚线=箱体上沿):\n"
+    "· 基座 = 最近约两个月: 要求价格重心走平、波动收敛、大体在箱体内运行、成交量平稳或渐缩。"
+    "更早的历史走势(基座之前的下跌或上涨)属于背景, 独立于基座质量之外——先跌一波再筑底属标准形态之一;\n"
+    "· 当前位置 = 最新几根K线仍在箱体内(贴近上沿或箱体中部都可), 已放量越过上沿并连续拉升的属于突破已发生, 大幅扣分;"
+    "近期跌破下沿走弱的同样大幅扣分。\n"
+    "加分项: 横盘时间长、箱体窄、越盘量越缩、近几日量能温和转暖但价格未动(蓄势末端特征)。\n"
     "以图形整体观感为准, 数字指标仅作参考。输出严格 JSON(只输出 JSON):\n"
     '{"贴合度": 0到100整数, "理由": "一句话, 指出图上的关键依据"}\n'
-    "贴合度标定: ≥80=教科书级基座+新鲜启动; 60-79=基座或启动有瑕疵但形态成立; "
-    "40-59=形态勉强、瑕疵明显; <40=不是该形态。"
+    "贴合度标定: ≥80=教科书级安静蓄势基座; 60-79=基座成立但有瑕疵; 40-59=形态勉强; <40=不是该形态。"
 )
 
 
@@ -286,8 +271,8 @@ async def _ai_judge(row: dict) -> dict | None:
         import re as _re
         stats = (f"候选: {row['name']}({row['code']}) {row.get('行业','')}\n"
                  f"规则侧指标: 横盘{row.get('横盘日')}日, 箱体振幅{row.get('箱体振幅%')}%, "
-                 f"放量{row.get('放量倍数')}x, 距箱体上沿{row.get('距上沿%')}%, "
-                 f"近20日自低点拉升{row.get('近20日拉升%', '?')}%。\n请按标准审核这张K线图。")
+                 f"缩量比{row.get('缩量比')}, 距箱体上沿{row.get('距上沿%')}%, "
+                 f"近3日量/基座量{row.get('近3日量比基座', '?')}。\n请按标准审核这张K线图。")
         messages = [{"role": "user", "content": [
             {"type": "image", "source": {"type": "base64", "media_type": "image/png",
                                          "data": _b64.b64encode(png).decode()}},
@@ -362,10 +347,10 @@ async def scan_coiled(force: bool = False) -> dict:
     out = {"as_of": time.strftime("%Y-%m-%d %H:%M"), "rows": rows[:40],
            "ai_dropped": dropped[:12],   # AI 判不符合的边缘候选(带分数判词), 折叠展示供人工过目
            "scanned": len(pool), "universe": len(universe), "rejected": dict(rejected),
-           "note": "龙头池(百亿+≥30家基金+盈利, 全市场含北交所) → 规则宽召回(箱体/横盘/放量攻上沿/新鲜度) "
-                   "→ AI看图精判(渲染K线交模型审核'安静基座+刚启动'形态, 判不符合的剔除; AI置信=模型给的把握)。"
-                   "标签: 突破后回踩/临界(贴上沿)/刚突破/突破延伸。"
-                   "纯客观结构描述, 突破可能失败(假突破回落), 不构成任何买卖建议。"}
+           "note": "横盘蓄势观察池: 龙头池(百亿+≥30家基金+盈利, 全市场含北交所) → 规则召回仍在箱体内的"
+                   "安静横盘(窄/平/静/横盘≥20日, 未突破——已突破/已启动的判偏晚剔除) → AI看图按'安静蓄势基座'"
+                   "贴合度精判。标签: 贴上沿/箱体中部/箱体下部, ·量在暖=近3日量能温和转暖(蓄势末端特征)。"
+                   "纯客观结构描述, 横盘可能向下解决而非向上, 不构成任何买卖建议。"}
     _cache["coiled"] = (out, time.time())
     return out
 
