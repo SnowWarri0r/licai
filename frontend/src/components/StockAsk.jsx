@@ -194,6 +194,10 @@ export default function StockAsk({ page = false }) {
   const [loading, setLoading] = useState(false)
   const [history, setHistory] = useState([])   // [{q, steps, thought, answer, typed, done, err}]
   const [holdings, setHoldings] = useState([])
+  const [sessions, setSessions] = useState([])      // 历史会话列表
+  const [showHist, setShowHist] = useState(false)   // 历史抽屉开关
+  const [copied, setCopied] = useState(false)
+  const sessionId = useRef(null)                    // 当前会话 id(首次保存时由后端分配)
   const abortRef = useRef(null)
   const typer = useRef(null)
   const scrollBox = useRef(null)
@@ -209,6 +213,63 @@ export default function StockAsk({ page = false }) {
   }, [])
 
   const patchLast = (fn) => setHistory(h => h.map((it, i) => i === h.length - 1 ? fn(it) : it))
+
+  const loadSessions = () => fetchJSON('/api/ask/sessions').then(d => setSessions(d.sessions || [])).catch(() => {})
+
+  const openHist = () => { loadSessions(); setShowHist(true) }
+
+  const newChat = () => {
+    abortRef.current?.abort(); clearInterval(typer.current)
+    sessionId.current = null; setHistory([]); setShowHist(false); setLoading(false)
+  }
+
+  // 载入历史会话 → 还原成对话(user/assistant 配对成一轮)
+  const loadSession = async (id) => {
+    try {
+      const s = await fetchJSON(`/api/ask/sessions/${id}`)
+      const turns = []
+      for (const m of (s.messages || [])) {
+        if (m.role === 'user') turns.push({ q: m.content, steps: [], thought: '', answer: null, typed: '', done: true, sources: [] })
+        else if (turns.length) {
+          const t = turns[turns.length - 1]
+          t.answer = m.content; t.typed = m.content; t.sources = (m.meta && m.meta.sources) || []
+        }
+      }
+      sessionId.current = id; setHistory(turns); setShowHist(false)
+    } catch { /* ignore */ }
+  }
+
+  const deleteSession = async (id, e) => {
+    e?.stopPropagation()
+    try { await fetch(`/api/ask/sessions/${id}`, { method: 'DELETE' }) } catch { /* ignore */ }
+    if (sessionId.current === id) newChat()
+    loadSessions()
+  }
+
+  // 持久化一轮(user + assistant)。assistant 带 tools_used/sources 进 meta。
+  const persistTurn = async (question, item) => {
+    try {
+      const r1 = await fetch('/api/ask/messages', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId.current, role: 'user', content: question, title: question }),
+      })
+      const j1 = await r1.json(); sessionId.current = j1.session_id
+      await fetch('/api/ask/messages', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: sessionId.current, role: 'assistant', content: item.answer || '',
+          meta: { tools_used: (item.steps || []).map(s => s.tool), sources: item.sources || [] },
+        }),
+      })
+    } catch { /* 持久化失败不影响使用 */ }
+  }
+
+  // 复制整段对话为纯文本(贴给开发者优化用)
+  const copyConversation = () => {
+    const txt = history.filter(it => it.answer != null).map(it =>
+      `【我问】${it.q}\n【AI答】${it.answer}`).join('\n\n――――――\n\n')
+    navigator.clipboard?.writeText(txt).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500) }).catch(() => {})
+  }
 
   // 用户手动滚动: 贴近底部(<48px)就重新开启跟随, 往上拖就停跟随
   const onScroll = () => {
@@ -258,6 +319,7 @@ export default function StockAsk({ page = false }) {
       })
       const reader = resp.body.getReader(); const dec = new TextDecoder()
       let buf = ''
+      let fAnswer = null; const fSources = []; const fSteps = []   // 本地累计, 供持久化
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
@@ -266,9 +328,14 @@ export default function StockAsk({ page = false }) {
         for (const p of parts) {
           const line = p.split('\n').find(l => l.startsWith('data: '))
           if (!line) continue
-          try { handleEv(JSON.parse(line.slice(6))) } catch { /* skip */ }
+          let ev; try { ev = JSON.parse(line.slice(6)) } catch { continue }
+          if (ev.type === 'answer') fAnswer = ev.text
+          else if (ev.type === 'sources') fSources.push(...(ev.sources || []))
+          else if (ev.type === 'step') fSteps.push({ tool: ev.tool })
+          handleEv(ev)
         }
       }
+      if (fAnswer != null) persistTurn(text, { answer: fAnswer, steps: fSteps, sources: fSources })
     } catch (e) {
       if (e.name !== 'AbortError') patchLast(it => it.answer == null ? { ...it, err: '连接中断', done: true } : it)
     } finally {
@@ -280,10 +347,48 @@ export default function StockAsk({ page = false }) {
     <div className="bg-surface-2 border border-border rounded-xl p-4 md:p-5">
       <div className="flex items-baseline gap-2 mb-3">
         <h3 className={`${page ? 'text-[16px]' : 'text-[14px]'} font-semibold text-text-bright m-0`}>问问市场</h3>
-        <span className="text-[10.5px] text-text-muted">
+        <span className="text-[10.5px] text-text-muted hidden sm:inline">
           {page ? '挂了28个数据工具的AI · 裸K量价/资金流/基本面/筹码 · 产业链全景 · 联网带来源' : '个股涨跌/消息 · 这周市场什么风格 · 资金主线'}
         </span>
+        <div className="ml-auto flex items-center gap-1">
+          {history.some(it => it.answer != null) && (
+            <button onClick={copyConversation} title="复制整段对话(贴给开发者优化)"
+              className="text-[10.5px] px-2 py-1 rounded-md border border-border text-text-dim hover:text-text hover:border-accent/40">
+              {copied ? '已复制' : '复制'}
+            </button>
+          )}
+          <button onClick={newChat} title="开始新对话"
+            className="text-[10.5px] px-2 py-1 rounded-md border border-border text-text-dim hover:text-text hover:border-accent/40">
+            新对话
+          </button>
+          <button onClick={openHist} title="历史会话"
+            className="text-[10.5px] px-2 py-1 rounded-md border border-border text-text-dim hover:text-text hover:border-accent/40">
+            历史
+          </button>
+        </div>
       </div>
+
+      {showHist && (
+        <div className="mb-3 border border-border rounded-lg bg-surface-3/60 max-h-[42vh] overflow-y-auto">
+          <div className="flex items-center justify-between px-3 py-2 border-b border-border-subtle sticky top-0 bg-surface-3">
+            <span className="text-[11.5px] text-text-bright font-semibold">历史会话</span>
+            <button onClick={() => setShowHist(false)} className="text-[11px] text-text-muted hover:text-text">关闭</button>
+          </div>
+          {sessions.length === 0
+            ? <div className="px-3 py-4 text-[11px] text-text-muted">还没有历史会话</div>
+            : sessions.map(s => (
+              <div key={s.id} onClick={() => loadSession(s.id)}
+                className="flex items-center gap-2 px-3 py-2 border-b border-border-subtle hover:bg-accent/8 cursor-pointer">
+                <div className="min-w-0 flex-1">
+                  <div className="text-[12px] text-text-dim truncate">{s.title || '(无标题)'}</div>
+                  <div className="text-[9.5px] text-text-muted font-mono">{(s.updated_at || '').slice(0, 16).replace('T', ' ')} · {s.msg_count} 条</div>
+                </div>
+                <button onClick={(e) => deleteSession(s.id, e)}
+                  className="text-[10px] text-text-muted hover:text-bear-bright shrink-0 px-1">删除</button>
+              </div>
+            ))}
+        </div>
+      )}
 
       {history.length === 0 && (
         <div className="flex flex-col gap-2 mb-3">

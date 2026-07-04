@@ -191,6 +191,23 @@ CREATE TABLE IF NOT EXISTS position_thesis (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS ask_session (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT DEFAULT '',                    -- 用首个问题做标题
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS ask_message (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL,
+    role TEXT NOT NULL,                        -- user | assistant
+    content TEXT NOT NULL,
+    meta TEXT DEFAULT '',                      -- JSON: {tools_used, sources}
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_ask_message_session ON ask_message(session_id, id);
 """
 
 
@@ -580,6 +597,70 @@ async def delete_thesis(code: str):
     db = await get_db()
     try:
         await db.execute("DELETE FROM position_thesis WHERE code = ?", (code,))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+# --- 问问市场 会话历史 CRUD ---
+
+async def create_ask_session(title: str = "") -> int:
+    db = await get_db()
+    try:
+        cur = await db.execute("INSERT INTO ask_session (title) VALUES (?)", (title[:80],))
+        await db.commit()
+        return cur.lastrowid
+    finally:
+        await db.close()
+
+
+async def add_ask_message(session_id: int, role: str, content: str, meta: str = "") -> None:
+    db = await get_db()
+    try:
+        await db.execute(
+            "INSERT INTO ask_message (session_id, role, content, meta) VALUES (?, ?, ?, ?)",
+            (session_id, role, content, meta or ""))
+        await db.execute("UPDATE ask_session SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (session_id,))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def list_ask_sessions(limit: int = 50) -> list[dict]:
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT s.id, s.title, s.created_at, s.updated_at, "
+            "(SELECT COUNT(*) FROM ask_message m WHERE m.session_id = s.id) AS msg_count "
+            "FROM ask_session s "
+            "WHERE EXISTS (SELECT 1 FROM ask_message m WHERE m.session_id = s.id) "
+            "ORDER BY s.updated_at DESC LIMIT ?", (limit,))
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        await db.close()
+
+
+async def get_ask_session(session_id: int) -> dict | None:
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT * FROM ask_session WHERE id = ?", (session_id,))
+        s = await cur.fetchone()
+        if not s:
+            return None
+        cur = await db.execute(
+            "SELECT role, content, meta, created_at FROM ask_message WHERE session_id = ? ORDER BY id", (session_id,))
+        msgs = [dict(r) for r in await cur.fetchall()]
+        return {**dict(s), "messages": msgs}
+    finally:
+        await db.close()
+
+
+async def delete_ask_session(session_id: int) -> None:
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM ask_message WHERE session_id = ?", (session_id,))
+        await db.execute("DELETE FROM ask_session WHERE id = ?", (session_id,))
         await db.commit()
     finally:
         await db.close()
