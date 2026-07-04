@@ -143,7 +143,7 @@ export default function Rankings() {
           {!loading && !err && list.map((r, i) => {
             const active = selected?.code === r.code
             return (
-              <button key={r.code} onClick={() => setSelected(r)}
+              <button key={r.code} onClick={() => setSelected(r)} title={r['AI理由'] || undefined}
                 className={`w-full flex items-center gap-2 px-3 py-1.5 text-left border-b border-border-subtle/60 ${active ? 'bg-accent/15' : 'hover:bg-surface-3/60'}`}>
                 <span className="text-[10px] font-mono text-text-muted w-5 shrink-0 text-right">{i + 1}</span>
                 <span className="min-w-0 flex-1">
@@ -158,7 +158,7 @@ export default function Rankings() {
                   <span className={`block text-[12.5px] font-mono font-semibold ${pctColor(r.pct)}`}>{r.pct >= 0 ? '+' : ''}{r.pct}%</span>
                   <span className="block text-[10px] text-text-muted font-mono">
                     {tab === 'coiled'
-                      ? `${r['标签'] || ''}·横盘${r['横盘日']}日·量${r['放量倍数']}x`
+                      ? `${r['AI置信'] != null ? `AI${r['AI置信']}·` : ''}${r['标签'] || ''}·横盘${r['横盘日']}日`
                       : tab === 'by_amount'
                       ? `${r['成交额亿']}亿`
                       : r.is_new ? '新股·无涨停'

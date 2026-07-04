@@ -174,13 +174,13 @@ async def _stage2(c: dict) -> dict | str:
     # 横盘要求"平": 光在箱体内不够(箱子够宽, 趋势也装得下)。窗口前后半均值漂移小才是横, 爬坡/阴跌都拒
     half_c = len(prev_c) // 2
     drift = (sum(prev_c[half_c:]) / (len(prev_c) - half_c)) / (sum(prev_c[:half_c]) / half_c) - 1
-    if abs(drift) * 100 > 6:
+    if abs(drift) * 100 > 8:
         return "窗口内有趋势(非横盘)"
     # 横盘还要求"静": 大开大合的宽幅震荡(日收益σ大)不是蓄势基座。安静基座σ≈1.5-2, 野震荡≥2.5
     rets = [prev_c[i] / prev_c[i - 1] - 1 for i in range(1, len(prev_c))]
     mean_r = sum(rets) / len(rets)
     sd = (sum((r - mean_r) ** 2 for r in rets) / len(rets)) ** 0.5 * 100
-    if sd > 2.2:
+    if sd > 2.6:
         return "宽幅震荡(非安静横盘)"
     last_close = closes[-1]
     base_vol = sum(prev_v) / len(prev_v)
@@ -202,14 +202,14 @@ async def _stage2(c: dict) -> dict | str:
     # 启动新鲜度: V型反转/多日爬坡(箱底一路拉回上沿)在触到上沿前涨幅已兑现大半, 不是"准备窜"。
     # 近20日最低点算起的累计拉升 ≤12% 才算刚启动; 两半均值查不出V型(前高后高中间低会互相抵消), 用这条兜
     run_up = (last_close / min(closes[-20:]) - 1) * 100
-    if run_up > 12:
+    if run_up > 16:
         return "已拉升多日(非新启动)"
     # 突破日收盘强度: (收-低)/(高-低)。长上影(冲高被砸回)= 假突破笔, 直接拒
     if len(highs) == len(closes) and highs and highs[bk_i] > lows[bk_i]:
         strength = round((closes[bk_i] - lows[bk_i]) / (highs[bk_i] - lows[bk_i]), 2)
     else:
         strength = 1.0
-    if strength < 0.4:
+    if strength < 0.35:
         return "冲高回落(上影)"
     # 横盘时长: 从启动段前往回数, 收盘都落在箱体(±2%容差)内的连续天数
     lo, hi = bl * 0.98, bh * 1.02
@@ -219,7 +219,7 @@ async def _stage2(c: dict) -> dict | str:
             days_flat += 1
         else:
             break
-    if days_flat < 15:                                 # 横盘时长下限(龙头池内放宽)
+    if days_flat < 12:                                 # 横盘时长下限(龙头池内放宽)
         return "横盘太短"
     # 缩量蓄势: 横盘后半均量 / 前半均量 (<1 = 越盘越缩, 蓄势特征)
     half = len(prev_v) // 2
@@ -239,8 +239,78 @@ async def _stage2(c: dict) -> dict | str:
             "横盘日": days_flat, "箱体振幅%": round(width, 1),
             "缩量比": contraction, "放量倍数": round(vol_mult, 1),
             "收盘强度": strength, "距上沿%": dist, "标签": tag,
+            "近20日拉升%": round(run_up, 1),
             "评分": round(score),
-            "箱体上沿": round(bh, 2), "现价": round(last_close, 2)}
+            "箱体上沿": round(bh, 2), "箱体下沿": round(bl, 2), "现价": round(last_close, 2)}
+
+
+_ai_cache: dict = {}   # (code, last_date, 标签) → 审核结果; 同日同形态复用, 不重复花钱
+
+_AI_SYS = (
+    "你是K线形态审核员, 任务是给K线图的『安静横盘基座 + 刚放量启动(仍处起跳窗口)』形态打贴合度分。\n"
+    "审核范围只限两段(图上金色虚线=箱体下沿, 蓝色虚线=箱体上沿, 即基座区):\n"
+    "· 基座段 = 最近约两个月(不含最后几根): 要求价格重心走平、波动收敛、大体在箱体内运行。"
+    "更早的历史走势(基座之前的下跌或上涨)属于背景, 只影响背景分析、独立于基座质量之外——先跌一波再筑底再启动是标准形态之一;\n"
+    "· 启动段 = 最近1-5根: 要求出现放量向上、收盘攻至或刚越过箱体上沿。突破日起1-5根内(含突破次日的回踩)都算起跳窗口;"
+    "抵达上沿之前已连续拉升两周以上或V型反转收复大半跌幅的, 属于行情已走一段, 大幅扣分。\n"
+    "以图形整体观感为准, 数字指标仅作参考。输出严格 JSON(只输出 JSON):\n"
+    '{"贴合度": 0到100整数, "理由": "一句话, 指出图上的关键依据"}\n'
+    "贴合度标定: ≥80=教科书级基座+新鲜启动; 60-79=基座或启动有瑕疵但形态成立; "
+    "40-59=形态勉强、瑕疵明显; <40=不是该形态。"
+)
+
+
+async def _ai_judge(row: dict) -> dict | None:
+    """AI 看图精判一只候选。返回 {符合, 置信, 理由} 或 None(渲染/LLM不可用, 上层 fail-open)。"""
+    from services.market_data import get_historical_data
+    try:
+        df = await get_historical_data(row["code"], days=90)
+        if df is None or len(df) < 50:
+            return None
+        last_date = str(df["日期"].iloc[-1])[:10]
+        key = (row["code"], last_date, row.get("标签"))
+        if key in _ai_cache:
+            return _ai_cache[key]
+        bars = [(str(d)[:10], c, h, l, v, o) for d, c, h, l, v, o in zip(
+            df["日期"], df["收盘"], df["最高"], df["最低"], df["成交量"], df["开盘"])]
+        from services.chart_render import render_trend_chart
+        # 把箱体上下沿画进图里(复用结构线通道: 台阶支撑=金色虚线→下沿, 颈线=蓝色虚线→上沿), AI 按线审基座
+        box = {"台阶支撑": row.get("箱体下沿"), "颈线": row.get("箱体上沿")}
+        png = await asyncio.to_thread(render_trend_chart, bars, code=row["code"],
+                                      name=row["name"], structure={k: v for k, v in box.items() if v},
+                                      display=70)
+        if not png:
+            return None
+        import base64 as _b64
+        import json as _json
+        import re as _re
+        stats = (f"候选: {row['name']}({row['code']}) {row.get('行业','')}\n"
+                 f"规则侧指标: 横盘{row.get('横盘日')}日, 箱体振幅{row.get('箱体振幅%')}%, "
+                 f"放量{row.get('放量倍数')}x, 距箱体上沿{row.get('距上沿%')}%, "
+                 f"近20日自低点拉升{row.get('近20日拉升%', '?')}%。\n请按标准审核这张K线图。")
+        messages = [{"role": "user", "content": [
+            {"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                         "data": _b64.b64encode(png).decode()}},
+            {"type": "text", "text": stats},
+        ]}]
+        from services.llm_client import call_claude_messages
+        # sonnet-5 先输出 thinking 块再给正文, thinking 长度不定; 预算被吃光(text空)时加倍重试一次
+        text = ""
+        for budget in (1600, 4000):
+            resp = await asyncio.to_thread(call_claude_messages, messages, _AI_SYS, "claude-sonnet-5", budget)
+            text = "".join(p.get("text", "") for p in resp.get("content", []) if p.get("type") == "text")
+            if text.strip():
+                break
+        m = _re.search(r"\{.*\}", text, _re.S)
+        if not m:
+            return None
+        j = _json.loads(m.group(0))
+        out = {"贴合度": int(j.get("贴合度") or 0),
+               "理由": str(j.get("理由") or "").strip()[:120]}
+        _ai_cache[key] = out
+        return out
+    except Exception:
+        return None
 
 
 async def scan_coiled(force: bool = False) -> dict:
@@ -264,11 +334,37 @@ async def scan_coiled(force: bool = False) -> dict:
     rows.sort(key=lambda r: -r["评分"])
     from collections import Counter
     rejected = Counter(r for r in results if isinstance(r, str))
+
+    # AI 看图精判(规则只做宽召回, 形态是格式塔, 死阈值精度不够): 渲染K线图交模型审核,
+    # 判不符合的剔除并计数; LLM 不可用时 fail-open 保留规则结果并标注未复核
+    rows = rows[:20]
+    ai_sem = asyncio.Semaphore(3)
+
+    async def _judge_one(r):
+        async with ai_sem:
+            return await _ai_judge(r)
+
+    verdicts = await asyncio.gather(*[_judge_one(r) for r in rows], return_exceptions=True)
+    kept = []
+    ai_rejected = 0
+    for r, v in zip(rows, verdicts):
+        if isinstance(v, dict):
+            if v["贴合度"] < 55:
+                ai_rejected += 1
+                continue
+            r["AI置信"] = v["贴合度"]; r["AI理由"] = v["理由"]
+        else:
+            r["AI置信"] = None; r["AI理由"] = "AI未复核(渲染/LLM不可用), 仅规则筛选"
+        kept.append(r)
+    kept.sort(key=lambda r: (-(r["AI置信"] if r["AI置信"] is not None else -1), -r["评分"]))
+    rows = kept
+    if ai_rejected:
+        rejected["AI看图判不符合"] = ai_rejected
+
     out = {"as_of": time.strftime("%Y-%m-%d %H:%M"), "rows": rows[:40],
            "scanned": len(pool), "universe": len(universe), "rejected": dict(rejected),
-           "note": "龙头池结构筛选: 池=百亿市值+≥30家基金持有+盈利(全市场含北交所, 机构认可的正规公司); "
-                   "结构=近40日箱体≤30%、横盘≥15日、近5日内放量(≥1.3x)攻箱体上沿、未跌回、收盘强度≥0.4。"
-                   "评分=横盘时长+箱体窄+缩量蓄势+放量甜区(2-4x)+收盘实体+突破位置+机构覆盖。"
+           "note": "龙头池(百亿+≥30家基金+盈利, 全市场含北交所) → 规则宽召回(箱体/横盘/放量攻上沿/新鲜度) "
+                   "→ AI看图精判(渲染K线交模型审核'安静基座+刚启动'形态, 判不符合的剔除; AI置信=模型给的把握)。"
                    "标签: 突破后回踩/临界(贴上沿)/刚突破/突破延伸。"
                    "纯客观结构描述, 突破可能失败(假突破回落), 不构成任何买卖建议。"}
     _cache["coiled"] = (out, time.time())
