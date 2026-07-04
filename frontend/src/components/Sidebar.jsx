@@ -11,7 +11,6 @@ const ICONS = {
 }
 
 const NAV = [
-  { key: 'dashboard', label: '仪表盘' },
   { key: 'portfolio', label: '持仓' },
   { key: 'sector', label: '板块' },
   { key: 'rankings', label: '榜单' },
