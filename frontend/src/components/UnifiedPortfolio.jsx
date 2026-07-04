@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { api, fetchJSON } from '../hooks/useApi'
 import { fmtMoney, fmtPct, fmtPrice, priceColor, fundPassthroughType, isOnchainEtf, loadBrokers, estimateFee } from '../helpers'
 import Tooltip from './Tooltip'
+import SkeletonCard from './Skeleton'
 import StockKlineModal from './StockKlineModal'
 
 // ============================================================
@@ -1061,10 +1062,7 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
 
   const isEmpty = rows.length === 0
   if (isEmpty && !assetsLoaded) {
-    return (
-      <section className="rounded-xl border border-border bg-surface/60 px-4 py-8 text-center text-text-dim text-[12px]"
-        style={{ animation: 'fade-up 0.4s ease-out' }}>加载中...</section>
-    )
+    return <SkeletonCard rows={8} label="持仓加载中" />
   }
 
   return (
