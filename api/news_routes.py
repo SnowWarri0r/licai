@@ -748,12 +748,14 @@ _END_MARKERS = (
 
 def _trim_article_tail(text: str) -> str:
     """从正文里砍掉尾部页面噪声(版权/点赞收藏/分享/评论/热门排行/下载App 等)。
-    取最早命中的尾标志处截断; 标志出现在极靠前(<80)时不截, 避免误伤短正文。"""
+    尾标志必须在行首(允许 markdown 修饰符)才算数 —— 页面尾部区块都是自成一行的
+    标题/声明, 而正文句子中间提到'微信公众号/热门排行'属于内容, 不能拦腰截断。
+    取最早命中处截断; 命中极靠前(<80)时不截, 避免误伤短正文。"""
     cut = len(text)
     for mk in _END_MARKERS:
-        i = text.find(mk)
-        if 80 <= i < cut:
-            cut = i
+        m = re.search(r"(?m)^[#>*\-\s]{0,6}" + re.escape(mk), text)
+        if m and 80 <= m.start() < cut:
+            cut = m.start()
     return text[:cut].strip()
 
 
