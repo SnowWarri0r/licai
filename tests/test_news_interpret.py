@@ -66,3 +66,14 @@ def test_skip_page_head_h1_anchor_and_prose_safety():
     # 短但带句读的正文行不算导航
     assert not _is_nav_line("央行今日宣布:降准0.5个百分点。")
     assert not _is_nav_line("特朗普表示,关税将于下周生效")
+
+
+def test_is_nav_line_short_punct_noise():
+    """东财页头的'方便，快捷/提示：/小中大'带句读也是噪声; 极短行一律按噪声跳。"""
+    from api.news_routes import _is_nav_line
+    assert _is_nav_line("方便，快捷")
+    assert _is_nav_line("提示：")
+    assert _is_nav_line("小中大")
+    assert _is_nav_line("朋友圈")
+    # 长度够的真句子仍放行
+    assert not _is_nav_line("央行今日宣布:降准0.5个百分点。")
