@@ -848,9 +848,7 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
   const settlePending = useCallback(async () => {
     setSettling(true); setSettleMsg('')
     try {
-      const res = await fetch('/api/assets/settle-pending', { method: 'POST' })
-      const d = await res.json()
-      if (!res.ok) throw new Error(d.detail || '确认失败')
+      const d = await fetchJSON('/api/assets/settle-pending', { method: 'POST' })
       const parts = [`确认 ${d.settled || 0} 笔`]
       if (d.skipped > 0) parts.push(`${d.skipped} 笔净值未出, 留着下次`)
       setSettleMsg(parts.join(' · '))
@@ -864,9 +862,7 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
   const recomputeDca = useCallback(async () => {
     setSettling(true); setSettleMsg('')
     try {
-      const res = await fetch('/api/assets/recompute-dca', { method: 'POST' })
-      const d = await res.json()
-      if (!res.ok) throw new Error(d.detail || '重算失败')
+      const d = await fetchJSON('/api/assets/recompute-dca', { method: 'POST' })
       setSettleMsg(d.recomputed > 0 ? `重算 ${d.recomputed} 笔` : '没有需要重算的（份额已是最新）')
       await loadAssets()
     } catch (e) {
@@ -3044,12 +3040,9 @@ function ReduceLotRow({ asset, onDone, onCancel }) {
         const ip = parseFloat(interestPart) || 0
         if (ip > 0) body.interest_part = Number(ip.toFixed(2))
       }
-      const res = await fetch(`/api/assets/${asset.id}/reduce-lot`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+      await fetchJSON(`/api/assets/${asset.id}/reduce-lot`, {
+        method: 'POST', body: JSON.stringify(body),
       })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || '减仓失败')
       onDone?.()
     } catch (e) {
       setErr(e.message)
@@ -3204,7 +3197,7 @@ function AssetActionsModal({ asset, onClose, onChanged }) {
 
   const deleteAction = async (id) => {
     if (!confirm('确定删除这条流水？后续 cost/shares 会按剩余流水重新计算')) return
-    await fetch(`/api/assets/${asset.id}/actions/${id}`, { method: 'DELETE' })
+    await fetchJSON(`/api/assets/${asset.id}/actions/${id}`, { method: 'DELETE' })
     onChanged?.()
     reload()
   }
@@ -3217,12 +3210,9 @@ function AssetActionsModal({ asset, onClose, onChanged }) {
     if (!v || v <= 0) { alert('金额必须为正数'); return }
     if (Math.abs(v - cur) < 0.005) return
     try {
-      const res = await fetch(`/api/assets/${asset.id}/actions/${a.id}`, {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ amount: v }),
+      await fetchJSON(`/api/assets/${asset.id}/actions/${a.id}`, {
+        method: 'PATCH', body: JSON.stringify({ amount: v }),
       })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || '改金额失败')
       onChanged?.()
       reload()
     } catch (e) { alert(e.message) }
@@ -3432,12 +3422,9 @@ function EditActionModal({ asset, action, onClose, onDone }) {
     if (Object.keys(body).length === 0) { onClose(); return }
     setBusy(true)
     try {
-      const res = await fetch(`/api/assets/${asset.id}/actions/${action.id}`, {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+      await fetchJSON(`/api/assets/${asset.id}/actions/${action.id}`, {
+        method: 'PATCH', body: JSON.stringify(body),
       })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || '保存失败')
       onDone?.()
     } catch (e) { setErr(e.message) }
     finally { setBusy(false) }
@@ -3580,12 +3567,9 @@ function ConfirmActionModal({ asset, action, onClose, onDone }) {
       if (s > 0) body.shares = s
       if (u > 0) body.unit_price = u
       if (effFee > 0) body.fee = effFee
-      const res = await fetch(`/api/assets/${asset.id}/actions/${action.id}/confirm`, {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+      await fetchJSON(`/api/assets/${asset.id}/actions/${action.id}/confirm`, {
+        method: 'PUT', body: JSON.stringify(body),
       })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || '确认失败')
       onDone?.()
     } catch (e) { setErr(e.message) }
     finally { setBusy(false) }
