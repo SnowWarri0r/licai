@@ -155,6 +155,18 @@ def compute_external_state(
             realized_pnl += amount
             income_realized += amount
 
+        elif t == "SPLIT" and is_share_based:
+            # 份额拆分/折算 (1份→F份): factor 存在 shares 字段。当时全部 lot 份额×F、
+            # 单价÷F, 成本一分不动 —— 拆分不是交易, 不产生任何盈亏; 逐 lot 缩放保证
+            # 之后的部分赎回按拆分后单价 FIFO 配对, 已实现盈亏口径不被拆分扭曲。
+            f = float(shares) if shares else 0.0
+            if f > 0 and abs(f - 1) > 1e-9:
+                for lot in lots:
+                    if lot.get("shares"):
+                        lot["shares"] *= f
+                        if lot.get("unit_price"):
+                            lot["unit_price"] /= f
+
     cost_amount = sum(l["amount"] for l in lots)
     shares_total = sum(l["shares"] for l in lots if l.get("shares") is not None) if is_share_based else 0.0
 
