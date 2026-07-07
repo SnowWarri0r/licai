@@ -143,7 +143,7 @@ export default function Rankings() {
           {!loading && !err && list.map((r, i) => {
             const active = selected?.code === r.code
             return (
-              <button key={r.code} onClick={() => setSelected(r)} title={r['AI理由'] || undefined}
+              <button key={r.code} onClick={() => setSelected(r)} title={[r['业绩预告'], r['AI理由']].filter(Boolean).join(' · ') || undefined}
                 className={`w-full flex items-center gap-2 px-3 py-1.5 text-left border-b border-border-subtle/60 ${active ? 'bg-accent/15' : 'hover:bg-surface-3/60'}`}>
                 <span className="text-[10px] font-mono text-text-muted w-5 shrink-0 text-right">{i + 1}</span>
                 <span className="min-w-0 flex-1">
@@ -194,7 +194,7 @@ export default function Rankings() {
 
         {tab === 'coiled' && !loading && list.length > 0 && (
           <div className="shrink-0 px-3 py-1.5 border-t border-border-subtle text-[9.5px] text-text-muted leading-relaxed">
-            蓄势观察池：40日箱体窄/平/静（高波动成长股按"比自己此前安静"的收敛度判）、横盘≥20日、仍在箱体内（已突破=偏晚不进正选）· AI看图复核、送审位按行业限流 · 横盘也可能向下解决 · 仅客观结构，非买卖建议
+            蓄势观察池：40日箱体窄/平/静（高波动成长股按"比自己此前安静"的收敛度判）、横盘≥20日、仍在箱体内（已突破=偏晚不进正选）· AI看图复核、送审位按行业限流 · 中报预喜/预警=业绩预告凭据，悬停看详情（未标注=未披露，预告只对大幅变动强制）· 横盘也可能向下解决 · 仅客观结构，非买卖建议
           </div>
         )}
       </div>
