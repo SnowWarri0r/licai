@@ -296,4 +296,6 @@ licai/
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=SnowWarri0r/licai&type=Date)](https://star-history.com/#SnowWarri0r/licai&Date)
+![Star History Chart](docs/star-history.svg)
+
+> GitHub 2026 年 7 月起收紧了 stargazers 接口权限,star-history.com 的嵌图对非协作者失效——这张图由仓库内 [GitHub Action](.github/workflows/star-chart.yml) 每日自渲染,不依赖第三方服务、不需要 token。
