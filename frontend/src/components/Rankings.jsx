@@ -143,7 +143,7 @@ export default function Rankings() {
           {!loading && !err && list.map((r, i) => {
             const active = selected?.code === r.code
             return (
-              <button key={r.code} onClick={() => setSelected(r)} title={[r['业绩预告'], r['AI理由']].filter(Boolean).join(' · ') || undefined}
+              <button key={r.code} onClick={() => setSelected(r)} title={r['AI理由'] || undefined}
                 className={`w-full flex items-center gap-2 px-3 py-1.5 text-left border-b border-border-subtle/60 ${active ? 'bg-accent/15' : 'hover:bg-surface-3/60'}`}>
                 <span className="text-[10px] font-mono text-text-muted w-5 shrink-0 text-right">{i + 1}</span>
                 <span className="min-w-0 flex-1">
@@ -153,6 +153,9 @@ export default function Rankings() {
                     {r.is_st && <span className="text-[8.5px] px-1 rounded bg-bear/15 text-bear-bright shrink-0">ST</span>}
                   </span>
                   <span className="text-[10px] text-text-muted font-mono">{boardOf(r.code)} · {r.code} · {r['行业'] || '—'}</span>
+                  {tab === 'coiled' && r['业绩预告'] && (
+                    <span className="block text-[9.5px] text-text-dim truncate">{r['业绩预告']}</span>
+                  )}
                 </span>
                 <span className="text-right shrink-0">
                   <span className={`block text-[12.5px] font-mono font-semibold ${pctColor(r.pct)}`}>{r.pct >= 0 ? '+' : ''}{r.pct}%</span>
@@ -181,6 +184,7 @@ export default function Rankings() {
                   <span className="min-w-0 flex-1">
                     <span className="text-[12px] text-text-dim truncate block">{r.name}</span>
                     <span className="text-[9.5px] text-text-muted font-mono">{r.code} · {r['行业'] || '—'}</span>
+                    {r['业绩预告'] && <span className="block text-[9px] text-text-dim truncate">{r['业绩预告']}</span>}
                   </span>
                   <span className="text-right shrink-0">
                     <span className={`block text-[12px] font-mono ${pctColor(r.pct)}`}>{r.pct >= 0 ? '+' : ''}{r.pct}%</span>
@@ -194,7 +198,7 @@ export default function Rankings() {
 
         {tab === 'coiled' && !loading && list.length > 0 && (
           <div className="shrink-0 px-3 py-1.5 border-t border-border-subtle text-[9.5px] text-text-muted leading-relaxed">
-            蓄势观察池：40日箱体窄/平/静（高波动成长股按"比自己此前安静"的收敛度判）、横盘≥20日、仍在箱体内（已突破=偏晚不进正选）· AI看图复核、送审位按行业限流 · 中报预喜/预警=业绩预告凭据，悬停看详情（未披露预告的显示最近一期实绩同比，预告只对大幅变动强制）· 横盘也可能向下解决 · 仅客观结构，非买卖建议
+            蓄势观察池：40日箱体窄/平/静（高波动成长股按"比自己此前安静"的收敛度判）、横盘≥20日、仍在箱体内（已突破=偏晚不进正选）· AI看图复核、送审位按行业限流 · 中报预喜/预警=业绩预告凭据（未披露预告的显示最近一期实绩同比，预告只对大幅变动强制）· 横盘也可能向下解决 · 仅客观结构，非买卖建议
           </div>
         )}
       </div>
