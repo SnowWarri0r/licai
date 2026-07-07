@@ -106,3 +106,13 @@ def test_etf_xray_compound_theme_matches_via_substring_key():
     assert _matches("科创创新药", "化学制药", "百利天恒")
     assert _matches("科创创新药", "生物制品", "君实生物")
     assert not _matches("科创创新药", "半导体", "寒武纪")
+
+
+def test_etf_xray_industry_overrides_stock_name():
+    """行业已知时行业说了算: 名字带主题词但行业偏题的股票判偏题(信维通信案)。"""
+    from services.etf_xray import _matches
+    assert not _matches("通信", "消费电子", "信维通信")
+    assert not _matches("半导体", "汽车零部件", "XX半导体")
+    # 行业查不到(港股/北交所)才允许名字兜底
+    assert _matches("通信", "非A股/未知", "中国通信服务")
+    assert not _matches("通信", "非A股/未知", "腾讯控股")
