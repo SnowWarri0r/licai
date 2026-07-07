@@ -135,7 +135,7 @@ export default function Rankings() {
         <div className="flex-1 overflow-y-auto min-h-0">
           {!loading && !err && list.length === 0 && (
             <div className="text-center py-8 text-text-dim text-[12px] px-4 leading-relaxed">
-              {tab === 'coiled' ? '龙头池里今天没有满足"窄/平/静(高波动股按自身收敛度)、横盘≥20日且仍在箱体内"的蓄势基座（大波动市里稀缺属正常）' : `榜单 top100 里暂无${board}标的`}
+              {tab === 'coiled' ? '龙头池里今天没有满足"窄/平/静(高波动股按自身收敛度)、横盘≥45日且仍在箱体内"的蓄势基座（大波动市里稀缺属正常）' : `榜单 top100 里暂无${board}标的`}
             </div>
           )}
           {loading && <div className="text-center py-8 text-text-dim text-[12px]">{tab === 'coiled' ? '全市场扫描中…（首扫约20秒, 之后10分钟缓存秒开）' : '加载榜单…'}</div>}
@@ -198,7 +198,7 @@ export default function Rankings() {
 
         {tab === 'coiled' && !loading && list.length > 0 && (
           <div className="shrink-0 px-3 py-1.5 border-t border-border-subtle text-[9.5px] text-text-muted leading-relaxed">
-            蓄势观察池：40日箱体窄/平/静（高波动成长股按"比自己此前安静"的收敛度判）、横盘≥20日、仍在箱体内（已突破=偏晚不进正选）· AI看图复核、送审位按行业限流 · 中报预喜/预警=业绩预告凭据（未披露预告的显示最近一期实绩同比，预告只对大幅变动强制）· 横盘也可能向下解决 · 仅客观结构，非买卖建议
+            蓄势观察池：40日箱体窄/平/静（高波动成长股按"比自己此前安静"的收敛度判）、横盘≥45日、仍在箱体内（已突破=偏晚不进正选）· AI看图复核、送审位按行业限流 · 中报预喜/预警=业绩预告凭据（未披露预告的显示最近一期实绩同比，预告只对大幅变动强制）· 横盘也可能向下解决 · 仅客观结构，非买卖建议
           </div>
         )}
       </div>
