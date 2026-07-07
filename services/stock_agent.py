@@ -1963,6 +1963,17 @@ _ASSET_CLASS_CN = {"CASH": "现金", "WEALTH": "理财", "FUND": "基金",
                    "CRYPTO": "加密", "BOT": "量化机器人"}
 
 
+async def _tool_etf_xray(query: str = "") -> dict:
+    """ETF 题材透视: 代码→单只; 主题词→该主题规模前5; 空→在持全部。"""
+    from services import etf_xray
+    q = (query or "").strip()
+    if not q:
+        return await etf_xray.my_etf_scan()
+    if len(q) == 6 and q.isdigit():
+        return await asyncio.to_thread(etf_xray.analyze_etf, q)
+    return await etf_xray.theme_scan(q, 5)
+
+
 async def _tool_asset_allocation() -> dict:
     """全量资产配置快照: 各大类(股票/现金/理财/基金/加密/机器人)市值+占比 + 现金/理财逐笔明细(金额/年化/持有天数)。
     供'现金理财怎么分/应急金够不够/结构合不合理'这类资产配置讨论, 不涉及个股买卖。单位元(CNY)。"""
@@ -2280,6 +2291,7 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选; 留空看全部"}, "start": {"type": "string", "description": "可选, 起始日 YYYY-MM-DD"}, "end": {"type": "string", "description": "可选, 截止日 YYYY-MM-DD"}}}},
     {"name": "get_market_sentiment", "description": "查大盘打板情绪(涨停数/连板高度/炸板率/赚钱效应/热点板块), 判断是个股原因还是大盘普涨普跌; 也用于判断市场风格(打板赚钱效应高=追涨/动量有效; 炸板率高+亏钱效应=高位分歧/反转)。",
      "input_schema": {"type": "object", "properties": {}}},
+    {"name": "get_etf_xray", "description": "ETF 题材透视(避雷): 用基金季报真实成分股对照名称宣称的主题, 给出 主题匹配权重%/警示(贴题·有偏离·偏离显著)/行业分布/前十大成分(逐只标贴题与否)。query 传主题词(如 红利/家电/半导体)时 = 找该主题规模最大的前5只逐只透视(只看大规模的, 小盘ETF流动性差); 传6位基金代码 = 透视这一只; 留空 = 透视用户在持的全部场内ETF。回答'这只ETF名不副实吗/XX主题买哪只ETF靠谱/我的ETF成分是啥/有没有挂羊头卖狗肉'时用。宽基/风格类(红利等)会标注行业口径不适用, 看行业分布与成分即可。数据=季报(滞后一季度), 表述时注明。"},
     {"name": "get_market_review", "description": "今日强势股复盘画像(扫全市场涨幅榜+成交额榜聚合): 涨停数、板块/概念扎堆(资金主线)、风格(小盘高换手妖股 vs 大盘低换手趋势)、领涨样本、吸金榜。回答'今天什么风格的票在涨/今天强势股有什么共性/资金扎堆在哪/帮我复盘今天市场'时用。比 get_market_sentiment 多了'强势股结构与扎堆方向'这层。结合 get_holdings 可点出用户持仓沾不沾今日主线。",
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_sector_momentum", "description": "板块趋势矩阵: 各行业近N日累计涨跌/连涨动能/净流入 + 量能趋势(近3日均量/前段均量, >1.2量能放大、<0.8萎缩)和量价 tag(放量上行=量价配合趋势健康/缩量上行=动能衰减/放量下跌=抛压重等)。判断板块是真上升趋势(涨+量价配合+资金顺)还是虚涨(涨但缩量/资金流出)。days 趋势窗口可传 5(短线)/10(中期)/20(中长期), 默认10; 问'短期/这几天'传5, '近一个月趋势'传20。",
@@ -2325,6 +2337,7 @@ _EXECUTORS = {
     "get_asset_allocation": lambda a: _tool_asset_allocation(),
     "get_trades": lambda a: _tool_trades(a.get("code", ""), a.get("start", ""), a.get("end", "")),
     "get_market_sentiment": lambda a: _tool_market_sentiment(),
+    "get_etf_xray": lambda a: _tool_etf_xray(a.get("query", "")),
     "get_market_review": lambda a: _tool_market_review(),
     "get_sector_momentum": lambda a: _tool_sector_momentum(a.get("days", 10)),
     "get_hot_rank": lambda a: _tool_hot_rank(),
