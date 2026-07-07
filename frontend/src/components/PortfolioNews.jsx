@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { fetchJSON } from '../hooks/useApi'
 import NewsDetailModal from './NewsDetailModal'
 import ImageZoom from './ImageZoom'
+import SkeletonCard from './Skeleton'
 
 const KIND_LABEL = {
   news: { label: '新闻', color: '#85a0b4' },
@@ -83,7 +84,7 @@ function DigestCard() {
       {!collapsed && (
         <div className="px-3 md:px-5 pb-3">
           {loading && !data ? (
-            <div className="text-[11px] text-text-dim">LLM 摘要生成中... (约 10-30 秒)</div>
+            <SkeletonCard bare rows={3} label="LLM 摘要生成中…（约 10-30 秒）" />
           ) : err && !data?.highlights?.length ? (
             <div className="text-[11px] text-bear">{err}</div>
           ) : data?.summary || data?.highlights?.length ? (
@@ -167,11 +168,7 @@ export default function PortfolioNews() {
   const data = cache.portfolio
 
   if (loading && !active) {
-    return (
-      <section className="rounded-xl border border-border bg-surface/60 px-3 md:px-5 py-3 text-[12px] text-text-dim">
-        资讯加载中... (首次拉取 akshare 可能要 5-10 秒)
-      </section>
-    )
+    return <SkeletonCard rows={8} label="资讯加载中…（首次拉取约 5-10 秒）" />
   }
   if (err) {
     return (
