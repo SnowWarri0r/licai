@@ -342,6 +342,19 @@ async def _tool_intraday(code: str) -> dict:
     hi = max(prices, key=lambda x: x[0])
     lo = min(prices, key=lambda x: x[0])
     open_p, last_p = prices[0][0], prices[-1][0]
+    # 分时点是逐分钟快照, 分钟内的瞬时极值探不到(会差一个 tick);
+    # 当日数据以交易所行情的最高/最低为准, 时间取分时路径上最接近该价的点
+    from datetime import date as _date
+    if str(m.get("date") or "").replace("-", "") == _date.today().strftime("%Y%m%d"):
+        try:
+            from services.market_data import get_realtime_quotes
+            q = (await get_realtime_quotes([bare])).get(bare) or {}
+            if q.get("high"):
+                hi = (q["high"], min(prices, key=lambda x: abs(x[0] - q["high"]))[1])
+            if q.get("low"):
+                lo = (q["low"], min(prices, key=lambda x: abs(x[0] - q["low"]))[1])
+        except Exception:
+            pass
     # 每 ~30 分钟取一个采样点, 给 LLM 看大致路径(避免 240 点刷屏)
     step = max(1, len(pts) // 8)
     path = [{"time": pts[i]["time"], "price": pts[i]["price"]} for i in range(0, len(pts), step)]
