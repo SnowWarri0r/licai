@@ -10,13 +10,22 @@ const KIND_LABEL = {
   market: { label: '市场', color: '#7a9b8e' },
 }
 
-const SOURCES = ['jin10', 'portfolio', 'market', 'smallmetal']
-const SOURCE_LABEL = { jin10: '快讯', portfolio: '持仓·公告', market: '全市场要闻', smallmetal: '小金属' }
+const SOURCES = ['jin10', 'portfolio', 'market', 'smallmetal', 'events']
+const SOURCE_LABEL = { jin10: '快讯', portfolio: '持仓·公告', market: '全市场要闻', smallmetal: '小金属', events: '事件日历' }
 const SOURCE_API = {
   jin10: '/api/news/jin10?limit=80',
   portfolio: '/api/news/portfolio',
   market: '/api/news/market',
   smallmetal: '/api/news/small-metal',
+  events: '/api/news/events',
+}
+
+// 事件类型配色(客观事件, 无方向暗示)
+const EVENT_TYPE_META = {
+  '财报披露': { color: '#c8a876' },
+  '除权除息': { color: '#85a0b4' },
+  '股权登记': { color: '#85a0b4' },
+  '解禁':    { color: '#d4a05c' },
 }
 
 // 简化时间显示: "2026-05-20 09:30:00" → "今天 09:30" / "昨天 09:30" / "05-18 09:30"
@@ -128,6 +137,9 @@ function DigestCard() {
 export default function PortfolioNews() {
   const [cache, setCache] = useState({})  // source -> data
   const [source, setSource] = useState(() => {
+    // deep-link: #news?src=events 直达指定源
+    const q = new URLSearchParams((window.location.hash.split('?')[1] || ''))
+    if (SOURCES.includes(q.get('src'))) return q.get('src')
     const s = localStorage.getItem('newsSource')
     return SOURCES.includes(s) ? s : 'jin10'
   })
@@ -220,6 +232,8 @@ export default function PortfolioNews() {
               <>金十快讯 · {active?.items?.length || 0} 条 · 30s 刷新 · 关联 {(active?.items || []).filter(x => x.related).length}</>
             ) : source === 'portfolio' ? (
               <>跟踪 {codes.length} 只 A 股 · 新闻 {counts.news || 0} · 公告 {counts.notice || 0}</>
+            ) : source === 'events' ? (
+              <>监控 {active?.watch_count || 0} 只标的 · 未来 75 天 {active?.events?.length || 0} 件</>
             ) : (
               <>{active?.count || 0} 条 · 财联社 + 东财 + 同花顺</>
             )}
@@ -273,8 +287,36 @@ export default function PortfolioNews() {
         </div>
       </div>
 
-      <DigestCard />
+      {source !== 'events' && <DigestCard />}
 
+      {source === 'events' ? (
+        <div className="max-h-[640px] overflow-y-auto">
+          {(active?.events || []).length === 0 ? (
+            <div className="text-center text-text-dim text-[11.5px] py-6">未来 75 天没有已知事件</div>
+          ) : (active.events.map((e, i) => {
+            const tm = EVENT_TYPE_META[e.type] || { color: '#b08d57' }
+            return (
+              <div key={i} className="flex items-baseline gap-2 px-3 md:px-5 py-2 border-b border-border-subtle flex-wrap">
+                <span className="text-[11px] font-mono text-text">{e.date}</span>
+                <span className="text-[9.5px] px-1 rounded bg-surface-3 text-text-muted font-mono">
+                  {e.days === 0 ? '今天' : `+${e.days}天`}
+                </span>
+                <span className="text-[9.5px] px-1 py-[1px] rounded font-medium tracking-wider"
+                  style={{ background: tm.color + '20', color: tm.color, border: '1px solid ' + tm.color + '40' }}>
+                  {e.type}
+                </span>
+                <span className="text-[12px] text-text-bright">{e.name}</span>
+                <span className="text-[10.5px] font-mono text-text-muted">{e.code}</span>
+                <span className="text-[10px] text-text-dim">{e.via}</span>
+                <span className="text-[10.5px] text-text-muted w-full md:w-auto md:ml-auto">{e.detail}</span>
+              </div>
+            )
+          }))}
+          {active?.note && (
+            <div className="px-3 md:px-5 py-2 text-[9.5px] text-text-dim leading-relaxed">{active.note}</div>
+          )}
+        </div>
+      ) : (
       <div className="max-h-[640px] overflow-y-auto">
         {items.length === 0 ? (
           <div className="text-center text-text-dim text-[11.5px] py-6">无匹配条目</div>
@@ -318,12 +360,15 @@ export default function PortfolioNews() {
           )
         })}
       </div>
+      )}
 
       <div className="px-3 md:px-5 py-2 bg-surface-2/40 text-[10.5px] text-text-muted leading-relaxed">
         {source === 'jin10'
           ? '金十数据实时快讯 · 关联=命中持仓个股名或 ETF 主题词 · 点条目看 AI 解读.'
           : source === 'portfolio'
           ? '持仓股新闻 + 公告 (akshare 东财). 5min 缓存. 点条目查看解读.'
+          : source === 'events'
+          ? '持仓相关未来事件 (A股直持 + 场内ETF前十大成分≥3%): 财报披露 / 除权除息 / 解禁. 预约日期以交易所最新公告为准.'
           : '全市场要闻 (akshare 财联社 + 东财 + 同花顺). 5min 缓存. 部分源不带链接. 点条目查看解读.'}
         仅展示信息, 不做"该买/该卖"判断 — 信号识别交给你自己.
       </div>

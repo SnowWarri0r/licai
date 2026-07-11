@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { fetchJSON } from '../hooks/useApi'
 import DailyReview from './DailyReview'
+import PortfolioCurve from './PortfolioCurve'
 import SkeletonCard from './Skeleton'
 
 const PERIODS = [
@@ -11,7 +12,12 @@ const PERIODS = [
 ]
 
 export default function AITradeReview() {
-  const [period, setPeriod] = useState('day')
+  const [period, setPeriod] = useState(() => {
+    // deep-link: #review?p=all 直达指定周期
+    const q = new URLSearchParams((window.location.hash.split('?')[1] || ''))
+    const p = q.get('p')
+    return PERIODS.some(x => x.key === p) ? p : 'day'
+  })
   const [cache, setCache] = useState({})   // period -> data
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState(false)
@@ -49,6 +55,12 @@ export default function AITradeReview() {
       {period === 'day' && (
         <div className="mb-4 pb-3 border-b border-border-subtle">
           <DailyReview bare />
+        </div>
+      )}
+
+      {period === 'all' && (
+        <div className="mb-4 pb-3 border-b border-border-subtle">
+          <PortfolioCurve />
         </div>
       )}
 
