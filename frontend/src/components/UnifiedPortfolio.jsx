@@ -651,7 +651,7 @@ function TypeMiniInfo({ row }) {
 // ============================================================
 // Hover action buttons
 // ============================================================
-function RowActions({ row, visible, onEdit, onHistory, onRemove, onAddLot, onReduceLot, onShowActions, onKline, onThesis, hasThesis }) {
+function RowActions({ row, visible, onEdit, onHistory, onRemove, onAddLot, onReduceLot, onShowActions, onKline, onThesis, hasThesis, onCashAdjust }) {
   // 桌面: hover 才显示 (opacity 控制); 移动: 始终显示, 1 字按钮
   const btnBase = 'rounded border border-border-med bg-surface-2 text-text-dim ' +
     'hover:border-accent hover:text-accent transition-colors cursor-pointer whitespace-nowrap'
@@ -678,7 +678,10 @@ function RowActions({ row, visible, onEdit, onHistory, onRemove, onAddLot, onRed
         price_change_pct: row.today,
       }) })
     }
-    if (row.type === 'F' || row.type === 'C' || row.type === 'W' || row.type === 'M') {
+    if (row.type === 'M') {
+      // 现金就是一个余额数字: 直接调整(支持 +/- 增减或输新余额), 免交易流水逻辑
+      actions.push({ short: '调', label: '调余额', fn: () => onCashAdjust?.(row) })
+    } else if (row.type === 'F' || row.type === 'C' || row.type === 'W') {
       actions.push({ short: '加', label: '加仓', fn: () => onAddLot?.(row) })
       actions.push({ short: '减', label: '减仓', fn: () => onReduceLot?.(row) })
       const pendingN = row._raw?.pending_actions_count || 0
@@ -818,6 +821,7 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
   const [editAsset, setEditAsset] = useState(null)
   const [addLotAsset, setAddLotAsset] = useState(null)
   const [reduceAsset, setReduceAsset] = useState(null)
+  const [cashAdjustAsset, setCashAdjustAsset] = useState(null)
   const [actionsAsset, setActionsAsset] = useState(null)
   const [klineHolding, setKlineHolding] = useState(null)
   const [thesisTarget, setThesisTarget] = useState(null)
@@ -1215,6 +1219,12 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
           onCancel={() => setReduceAsset(null)} />
       )}
 
+      {cashAdjustAsset && (
+        <CashAdjustRow asset={cashAdjustAsset}
+          onDone={() => { setCashAdjustAsset(null); loadAssets() }}
+          onCancel={() => setCashAdjustAsset(null)} />
+      )}
+
       {actionsAsset && (
         <AssetActionsModal asset={actionsAsset}
           onClose={() => setActionsAsset(null)}
@@ -1495,6 +1505,7 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
                         onEdit={handleEdit} onHistory={onHistory} onRemove={removeAsset}
                         onAddLot={handleAddLot} onReduceLot={handleReduceLot}
                         onShowActions={handleShowActions}
+                        onCashAdjust={(r) => setCashAdjustAsset(r._raw)}
                         onKline={setKlineHolding}
                         onThesis={setThesisTarget} hasThesis={thesisCodes.has(row.code)} />
                     </div>
@@ -2586,6 +2597,73 @@ function EditAssetRow({ asset, onDone, onCancel, brokers = [] }) {
 }
 
 // ============================================================
+// CashAdjustRow — 现金直接调余额。现金模型就是一个数字 (cost_amount = manual_value =
+// balance), 挪入挪出/消费不是投资交易, 免加减仓流水: 输新余额, 或以 +/- 开头输增减额。
+function CashAdjustRow({ asset, onDone, onCancel }) {
+  const current = Number(asset.manual_value ?? asset.cost_amount ?? 0)
+  const [input, setInput] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const rootRef = React.useRef(null)
+  useEffect(() => { rootRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }) }, [])
+
+  const trimmed = input.trim()
+  const isDelta = /^[+-]/.test(trimmed)
+  const num = parseFloat(trimmed)
+  const valid = trimmed !== '' && Number.isFinite(num)
+  const next = valid ? Math.round((isDelta ? current + num : num) * 100) / 100 : null
+  const nextBad = next != null && next < 0
+
+  const save = async () => {
+    if (!valid || nextBad || busy) return
+    setBusy(true); setErr('')
+    try {
+      await fetchJSON(`/api/assets/${asset.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ cost_amount: next, manual_value: next }),
+      })
+      onDone?.()
+    } catch (e) {
+      setErr(String(e?.message || e))
+    } finally { setBusy(false) }
+  }
+
+  const inp = 'bg-bg border border-border rounded px-2 py-1 text-[12px] text-text font-mono outline-none focus:border-accent'
+  return (
+    <div ref={rootRef}
+      className="px-6 py-3 border-b-2 border-accent bg-accent/5 flex flex-wrap gap-3 items-end"
+      style={{ animation: 'fade-up 0.2s ease-out' }}>
+      <span className="text-[11px] text-accent font-semibold mr-2 basis-full">
+        ± 调整余额 <span className="text-text-bright">{asset.name}</span>
+        <span className="text-text-dim font-normal ml-2">当前 ¥{current.toLocaleString('zh-CN', { minimumFractionDigits: 2 })}</span>
+      </span>
+      <label className="flex flex-col gap-1 text-[10.5px] text-text-dim">
+        新余额 / 增减额
+        <input autoFocus value={input} onChange={e => setInput(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') onCancel?.() }}
+          placeholder="12000 或 +2000 / -500"
+          className={`${inp} w-44`} />
+      </label>
+      <span className="text-[11.5px] font-mono pb-1.5 min-w-[120px]">
+        {next != null && (
+          nextBad
+            ? <span className="text-bear-bright">余额会变成负数</span>
+            : <span className="text-text-dim">→ <span className="text-text-bright">¥{next.toLocaleString('zh-CN', { minimumFractionDigits: 2 })}</span>
+                {isDelta && <span className="ml-1">({num >= 0 ? '+' : ''}{num.toLocaleString('zh-CN')})</span>}</span>
+        )}
+      </span>
+      <button onClick={save} disabled={!valid || nextBad || busy}
+        className="text-[12px] px-3.5 py-1.5 rounded-lg bg-accent/20 text-accent border border-accent/40 hover:bg-accent/30 disabled:opacity-40 disabled:cursor-not-allowed">
+        {busy ? '...' : '保存'}
+      </button>
+      <button onClick={onCancel} className="text-[12px] px-3 py-1.5 rounded-lg text-text-dim hover:text-text border border-border">
+        取消
+      </button>
+      {err && <span className="text-[11px] text-bear-bright basis-full">{err}</span>}
+    </div>
+  )
+}
+
 // AddLotRow — 加仓 modal. 与 ReduceLotRow 对称.
 // OTC 基金 (场外): 只填本金 + 日期, 写 pending 流水, T+1 净值出来后回流水"确认"补份额
 // 场内 ETF / CRYPTO: 三选二 (本金/份额/单价) + 手续费 + 日期, 立即 confirmed
