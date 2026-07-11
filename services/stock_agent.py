@@ -1775,11 +1775,23 @@ async def _tool_trades(code: str = "", start: str = "", end: str = "") -> dict:
                         # 按时间排序, 算每笔后的净份额余额(只计已确认), 让"卖了多少/还剩多少/占比"有准数, 不靠脑算
                         allx = sorted(await list_external_actions(a["id"]),
                                       key=lambda r: (act_date(r), r.get("id") or 0))
+                        # 每笔之后发生的拆分因子之积: 拆分前的价/份额 折算到现行标度,
+                        # 与现价直接可比(算均价/盈亏用调整后的数)
+                        fac_after = [1.0] * len(allx)
+                        fac = 1.0
+                        for i in range(len(allx) - 1, -1, -1):
+                            fac_after[i] = fac
+                            xi = allx[i]
+                            if (xi.get("action_type") or "").upper() == "SPLIT" and \
+                                    (xi.get("status") or "confirmed") == "confirmed":
+                                f = float(xi.get("shares") or 0)
+                                if f > 0:
+                                    fac *= f
                         net = 0.0
                         today_in = today_out = 0.0
                         pre_today_bal = None                # 今日首笔动作前的余额(=盘前份额)
                         recs = []
-                        for x in allx:
+                        for i, x in enumerate(allx):
                             at = (x.get("action_type") or "").upper()
                             sh = float(x.get("shares") or 0)
                             confirmed = (x.get("status") or "confirmed") == "confirmed"
@@ -1810,6 +1822,14 @@ async def _tool_trades(code: str = "", start: str = "", end: str = "") -> dict:
                                  "note": x.get("note") or ""}
                             if at == "SPLIT":
                                 r["拆分比"] = f"1:{sh:g}"
+                            elif fac_after[i] != 1.0:
+                                # 该笔之后发生过拆分: 给现行标度的调整价/调整份额
+                                try:
+                                    if x.get("unit_price") is not None:
+                                        r["调整价"] = round(float(x["unit_price"]) / fac_after[i], 4)
+                                    r["调整份额"] = round(sh * fac_after[i], 2)
+                                except (TypeError, ValueError):
+                                    pass
                             if not confirmed:
                                 r["状态"] = "待确认(T+1未出净值)"
                             recs.append(r)
@@ -1818,9 +1838,11 @@ async def _tool_trades(code: str = "", start: str = "", end: str = "") -> dict:
                         out = {"code": ac, "name": an, "asset_class": "基金/ETF",
                                "当前份额": cur, "trades": recs,
                                "range": {"start": s or None, "end": e or None},
-                               "note": "基金/ETF 申赎流水; 每条带 余额=该笔后的累计净份额(已确认, 份额拆分行按拆分比折算,"
-                                       "拆分前后的份额不同标度)。说'卖了多少/还剩多少/减仓占比'一律用 余额/今日 里的数。"
-                                       "综合成本/盈亏用看板。"}
+                               "note": "基金/ETF 申赎流水; 每条带 余额=该笔后的累计净份额(已确认, 份额拆分行按拆分比折算)。"
+                                       "说'卖了多少/还剩多少/减仓占比'一律用 余额/今日 里的数。"
+                                       "拆分前的交易带 调整价/调整份额(已折算到现行标度, 与现价直接可比)——"
+                                       "算均价、对比现价、算每笔浮盈一律用调整后的数, price 仅是当时的原始成交价。"
+                                       "整体成本与盈亏以 get_holdings 返回的 摊薄成本 为准。"}
                         if today_in or today_out:
                             out["今日"] = {"净买入份额": round(today_in, 2), "净卖出份额": round(today_out, 2),
                                            "盘前份额": pre_today, "当前份额": cur,
@@ -1936,7 +1958,8 @@ async def _tool_get_holdings() -> dict:
         # 场外资产: 基金/场内ETF/理财/现金/加密/机器人 —— 持仓不止 A 股, 一并读出来
         other = {}
         try:
-            from database import list_external_assets
+            from database import list_external_assets, list_external_actions
+            from services.external_ledger import compute_external_state
             for x in await list_external_assets():
                 at = x.get("asset_type")
                 sh = x.get("shares")
@@ -1948,13 +1971,26 @@ async def _tool_get_holdings() -> dict:
                     row["份额"] = round(float(sh), 2)
                 if mv is not None:
                     row["金额元"] = round(float(mv), 2)
+                # 基金/ETF: 从流水账本算权威摊薄成本(拆分/减仓已折算), 与现价同标度,
+                # 直接给单价——盈亏 = (现价 − 摊薄成本) × 份额
+                if at in ("FUND", "CRYPTO") and sh and sh > 0:
+                    try:
+                        st = compute_external_state(await list_external_actions(x["id"]), at)
+                        led_sh = st.get("shares") or 0
+                        if led_sh > 0:
+                            row["份额"] = round(led_sh, 2)
+                            row["摊薄成本"] = round((st.get("diluted_cost") or 0) / led_sh, 4)
+                    except Exception:
+                        pass
                 other.setdefault(_ASSET_CLASS_CN.get(at, at), []).append(row)
         except Exception:
             pass
         return {"A股": a_shares, "场外资产": other,
                 "note": "我的全部在持: A股(holdings) + 场外资产(基金/场内ETF/理财/现金/加密/机器人, 来自资产看板)。已清仓/已赎回的不在此列。"
                         "A股: 综合成本=含手续费+分红摊薄(对齐券商); 持有天数=资金加权(0=今天才开仓); 开仓日已带星期照抄。"
-                        "场外: 基金/ETF 给份额, 现金/理财/机器人给金额(元)。要各大类占比/现金理财结构分析用 get_asset_allocation。"}
+                        "场外: 基金/ETF 给份额+摊薄成本(单价, 份额拆分与减仓已实现均已折算, 与现价同标度, 对齐券商口径);"
+                        "浮动盈亏=(现价−摊薄成本)×份额, 成本一律以本字段为准。现金/理财/机器人给金额(元)。"
+                        "要各大类占比/现金理财结构分析用 get_asset_allocation。"}
     except Exception as e:
         return {"error": str(e)}
 
