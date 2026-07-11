@@ -48,6 +48,8 @@ def compute_external_state(
         # BOT 不走 ledger
         return {
             "cost_amount": 0.0,
+            "cycle_realized": 0.0,
+            "diluted_cost": 0.0,
             "shares": 0.0,
             "realized_pnl": 0.0,
             "lots": [],
@@ -71,6 +73,10 @@ def compute_external_state(
     income_realized = 0.0
     total_acquired_cost = 0.0
     total_release_proceeds = 0.0
+    # 当前持仓周期内的已实现(券商摊薄成本口径): 减仓盈亏摊进剩余成本;
+    # 隔夜空仓视为清仓重置, 日内卖光再买回不重置(与招商实测行为一致)
+    cycle_realized = 0.0
+    flat_date = None
 
     for a in sorted_actions:
         t = (a.get("action_type") or "").upper()
@@ -80,6 +86,10 @@ def compute_external_state(
         ad = _parse_date(a.get("trade_date") or a.get("created_at"))
 
         if t in ACQUIRE_TYPES:
+            if is_share_based and flat_date is not None:
+                if ad > flat_date:
+                    cycle_realized = 0.0        # 隔夜空仓 → 新周期, 老盈亏不再摊
+                flat_date = None
             if is_share_based:
                 # 必须知道 shares (没填 unit_price 时由 amount/shares 推)
                 lot_shares = shares
@@ -123,7 +133,10 @@ def compute_external_state(
                 if proceeds == 0 and unit_price and unit_price > 0:
                     proceeds = consume_shares * unit_price
                 realized_pnl += proceeds - consumed_cost
+                cycle_realized += proceeds - consumed_cost
                 total_release_proceeds += proceeds
+                if not lots:
+                    flat_date = ad              # 卖光了: 若隔夜未买回, 下次买入重置周期
             else:
                 # principal-based: 按 CNY 配对
                 if proceeds <= 0:
@@ -154,6 +167,8 @@ def compute_external_state(
             # INTEREST / DIVIDEND 直接进 realized, 不动 lot
             realized_pnl += amount
             income_realized += amount
+            if is_share_based:
+                cycle_realized += amount        # 现金分红降低摊薄成本
 
         elif t == "SPLIT" and is_share_based:
             # 份额拆分/折算 (1份→F份): factor 存在 shares 字段。当时全部 lot 份额×F、
@@ -169,9 +184,14 @@ def compute_external_state(
 
     cost_amount = sum(l["amount"] for l in lots)
     shares_total = sum(l["shares"] for l in lots if l.get("shares") is not None) if is_share_based else 0.0
+    if not lots:
+        cycle_realized = 0.0                    # 当前没持仓就没有"周期内"概念
 
     return {
         "cost_amount": round(cost_amount, 4),
+        "cycle_realized": round(cycle_realized, 2),
+        # 摊薄成本(券商口径): 剩余lot成本 − 周期内已实现(亏损为负 → 成本抬高)
+        "diluted_cost": round(cost_amount - cycle_realized, 4),
         "shares": round(shares_total, 6) if is_share_based else 0.0,
         "realized_pnl": round(realized_pnl, 2),
         "income_realized": round(income_realized, 2),

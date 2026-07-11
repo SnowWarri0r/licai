@@ -175,6 +175,8 @@ async def _enrich(asset: dict) -> dict:
                     out["cost_amount"] = ledger_state["cost_amount"]
                 if t in ("FUND", "CRYPTO"):
                     out["shares"] = ledger_state["shares"]
+                    out["cycle_realized"] = ledger_state.get("cycle_realized") or 0.0
+                    out["diluted_cost"] = ledger_state.get("diluted_cost")
                 realized_pnl = ledger_state["realized_pnl"]
                 total_released = float(ledger_state.get("total_release_proceeds") or 0)
         except Exception as e:
@@ -192,6 +194,8 @@ async def _enrich(asset: dict) -> dict:
                     ledger_state = compute_external_state(actions, t)
                     out["shares"] = ledger_state["shares"]
                     out["cost_amount"] = ledger_state["cost_amount"]
+                    out["cycle_realized"] = ledger_state.get("cycle_realized") or 0.0
+                    out["diluted_cost"] = ledger_state.get("diluted_cost")
             except Exception as e:
                 print(f"[split-sync] {asset.get('code')} failed: {e}")
         quote = await get_fund_quote(asset["code"])
@@ -351,6 +355,11 @@ async def _enrich(asset: dict) -> dict:
         return out
 
     cost = float(out.get("cost_amount") or 0)
+    # PnL 基准: FUND/CRYPTO 用摊薄成本(券商口径) —— 当前持仓周期内的减仓盈亏摊进
+    # 剩余成本(卖亏了成本抬高), 隔夜清仓才重置; 与 A股 的综合成本法同一约定,
+    # 行内盈亏和券商 App 显示一致。其余资产仍用剩余 lot 成本。
+    if t in ("FUND", "CRYPTO") and out.get("diluted_cost") is not None:
+        cost = float(out["diluted_cost"])
     # PnL 只看已确认 lot vs 已确认成本: 从 current_value 里把 pending 剔出去再减 cost.
     # current_value 仍含 pending (资产总额视角); pnl 用 (mv - pending) - cost 算.
     pending_for_pnl = float(out.get("pending_amount") or 0) if t in ("FUND", "CRYPTO") else 0
@@ -383,7 +392,8 @@ async def list_assets():
     # NOTE: total_pnl 必须等于 Σ a["pnl"] (= 每个资产 (current_value - pending) - cost).
     # 不能简单 total_value - total_cost — current_value 含 pending 但 cost 不含,
     # 会让顶部 SummaryStrip 比持仓表多算 Σ pending_amount.
-    total_cost = sum(float(a.get("cost_amount") or 0) for a in enriched)
+    # cost 口径与行内 pnl 基准一致: FUND/CRYPTO 用摊薄成本(diluted_cost), 其余剩余lot成本
+    total_cost = sum(float((a.get("diluted_cost") if a.get("diluted_cost") is not None else a.get("cost_amount")) or 0) for a in enriched)
     total_value = sum((a.get("current_value") or 0) for a in enriched)
     total_pnl = sum((a.get("pnl") or 0) for a in enriched)
 
@@ -393,7 +403,7 @@ async def list_assets():
         t = a["asset_type"]
         if t not in by_type:
             by_type[t] = {"cost": 0.0, "value": 0.0, "pnl": 0.0, "count": 0}
-        by_type[t]["cost"] += float(a.get("cost_amount") or 0)
+        by_type[t]["cost"] += float((a.get("diluted_cost") if a.get("diluted_cost") is not None else a.get("cost_amount")) or 0)
         by_type[t]["value"] += a.get("current_value") or 0
         by_type[t]["pnl"] += a.get("pnl") or 0
         by_type[t]["count"] += 1
@@ -439,6 +449,8 @@ async def assets_realized():
             "code": a.get("code") or "",
             "name": a.get("name") or "",
             "realized_pnl": rp,
+            # 已平仓周期的已实现: 当前周期部分已摊进行内摊薄成本, 总账只补这块(防重复计)
+            "closed_realized": round(rp - float(state.get("cycle_realized") or 0), 2),
             "income_realized": float(state.get("income_realized") or 0),
             "still_holding": (state.get("cost_amount") or 0) > 0,
         })

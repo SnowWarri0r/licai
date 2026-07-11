@@ -56,3 +56,29 @@ def test_split_factor_detection():
 
     # 无拆分的普通波动不误报
     assert _split_factor_from_series(dates, qfq, qfq) is None
+
+
+def test_cycle_realized_dilutes_cost_same_day_rebuy():
+    """日内卖光再买回: 亏损摊进新仓摊薄成本(不重置)。"""
+    acts = [
+        _act(1, "BUY", 7661.72, 5700, 1.3441, "2026-07-01"),
+        _act(2, "REDEEM", 7005.3, 5700, 1.229, "2026-07-06"),   # 亏 -656.42, 卖光
+        _act(3, "ADD", 4224.73, 3500, 1.2071, "2026-07-06"),    # 同日买回 → 周期延续
+    ]
+    st = compute_external_state(acts, "FUND")
+    assert abs(st["cycle_realized"] - (-656.07)) < 0.01   # FIFO按lot单价配成本
+    assert abs(st["diluted_cost"] - (4224.73 + 656.07)) < 0.01   # 亏损抬高摊薄成本
+    assert abs(st["realized_pnl"] - (-656.07)) < 0.01            # 总已实现口径不变
+
+
+def test_cycle_realized_resets_after_overnight_flat():
+    """隔夜空仓 → 新周期: 老盈亏不再摊进成本, 但仍在 realized_pnl 总账里。"""
+    acts = [
+        _act(1, "BUY", 2424.2, 1400, 1.7316, "2026-06-03"),
+        _act(2, "REDEEM", 2254.0, 1400, 1.61, "2026-06-12"),    # 亏 -170.2, 卖光
+        _act(3, "BUY", 6616.13, 3800, 1.741, "2026-06-17"),     # 隔了几天再建仓 → 重置
+    ]
+    st = compute_external_state(acts, "FUND")
+    assert st["cycle_realized"] == 0
+    assert abs(st["diluted_cost"] - 6616.13) < 0.01              # 新周期摊薄 = lot 成本
+    assert abs(st["realized_pnl"] - (-170.24)) < 0.01
