@@ -110,6 +110,9 @@ async def _holdings_proxy(fund_code: str) -> dict | None:
     if total_w <= 0:
         return None
     weighted = sum(q["change_pct"] * q["weight"] for q in valid) / total_w
+    # 绝对口径: 未覆盖部分按持平算(债基适用——股票袋只占净值一小截, 其余是债券当日基本不动,
+    # 归一化外推会把股票袋的波动冒充整只基金)
+    abs_weighted = sum(q["change_pct"] * q["weight"] for q in valid)
     label = f"top{len(valid)} 持仓加权 (覆盖 {total_w*100:.0f}% 净值)"
     proxies_out = [
         {
@@ -123,6 +126,7 @@ async def _holdings_proxy(fund_code: str) -> dict | None:
         "fund_code": fund_code,
         "label": label,
         "weighted_change_pct": round(weighted, 2),
+        "abs_weighted_change_pct": round(abs_weighted, 2),
         "proxies": proxies_out,
         "method": "holdings",
         "coverage_pct": round(total_w * 100, 1),
