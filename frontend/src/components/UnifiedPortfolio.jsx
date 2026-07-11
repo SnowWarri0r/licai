@@ -1453,6 +1453,16 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
                             </Tooltip>
                           )
                         })()}
+                        {row.type !== 'A' && row.type !== 'M' && Math.abs(row._raw?.realized_pnl || 0) > 0.5 && (() => {
+                          const total = (row.pnl || 0) + row._raw.realized_pnl
+                          return (
+                            <Tooltip content="全周期真实盈亏 = 当前浮动 + 已实现(卖出/赎回的配对盈亏 + 利息分红)。卖掉部分的亏赚不在浮动里, 这里补齐——卖亏了再低位买回时, 浮动转正但真实口径仍记着那笔亏。">
+                              <div className={`font-mono text-[9.5px] ${priceColor(total)} opacity-90 cursor-help`}>
+                                真实 {total >= 0 ? '+' : ''}{fmtMoney(total)}
+                              </div>
+                            </Tooltip>
+                          )
+                        })()}
                       </>
                     )}
                   </div>
