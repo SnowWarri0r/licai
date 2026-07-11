@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { fetchJSON } from '../hooks/useApi'
 import NewsDetailModal from './NewsDetailModal'
+import StockAskModal from './StockAskModal'
 import ImageZoom from './ImageZoom'
 import SkeletonCard from './Skeleton'
 
@@ -148,6 +149,7 @@ export default function PortfolioNews() {
   const [filter, setFilter] = useState('all')  // all | news | notice
   const [codeFilter, setCodeFilter] = useState('')
   const [detail, setDetail] = useState(null)
+  const [eventAsk, setEventAsk] = useState(null)   // 事件行点击 → 问AI(带事件上下文)
 
   const fetchSource = useCallback(async (s, force = false) => {
     if (!force && cache[s]) return
@@ -296,7 +298,10 @@ export default function PortfolioNews() {
           ) : (active.events.map((e, i) => {
             const tm = EVENT_TYPE_META[e.type] || { color: '#b08d57' }
             return (
-              <div key={i} className="flex items-baseline gap-2 px-3 md:px-5 py-2 border-b border-border-subtle flex-wrap">
+              <div key={i} role="button" tabIndex={0}
+                onClick={() => setEventAsk(e)}
+                onKeyDown={ev => { if (ev.key === 'Enter') setEventAsk(e) }}
+                className="flex items-baseline gap-2 px-3 md:px-5 py-2 border-b border-border-subtle flex-wrap cursor-pointer hover:bg-surface-2/40 transition-colors">
                 <span className="text-[11px] font-mono text-text">{e.date}</span>
                 <span className="text-[9.5px] px-1 rounded bg-surface-3 text-text-muted font-mono">
                   {e.days === 0 ? '今天' : `+${e.days}天`}
@@ -309,6 +314,7 @@ export default function PortfolioNews() {
                 <span className="text-[10.5px] font-mono text-text-muted">{e.code}</span>
                 <span className="text-[10px] text-text-dim">{e.via}</span>
                 <span className="text-[10.5px] text-text-muted w-full md:w-auto md:ml-auto">{e.detail}</span>
+                <span className="text-[9.5px] text-accent/70 shrink-0">问AI ›</span>
               </div>
             )
           }))}
@@ -373,6 +379,15 @@ export default function PortfolioNews() {
         仅展示信息, 不做"该买/该卖"判断 — 信号识别交给你自己.
       </div>
       {detail && <NewsDetailModal item={detail} onClose={() => setDetail(null)} />}
+      {eventAsk && (
+        <StockAskModal
+          stock={{ code: eventAsk.code, name: eventAsk.name }}
+          initialQuestion={
+            `${eventAsk.name}(${eventAsk.code}) 是做什么的?它 ${eventAsk.date} 有一个「${eventAsk.type}」事件(${eventAsk.detail}), 这类事件对它意味着什么?` +
+            (eventAsk.via === '直接持有' ? ' 我直接持有这只票。' : ` 我${eventAsk.via}间接持有它, 顺便说下它在该ETF里的权重。`)
+          }
+          onClose={() => setEventAsk(null)} />
+      )}
     </section>
   )
 }
