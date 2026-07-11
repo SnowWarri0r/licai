@@ -1,15 +1,16 @@
 import { useState, useEffect, useCallback } from 'react'
 import { fetchJSON } from '../hooks/useApi'
+import DailyReview from './DailyReview'
 
 const PERIODS = [
-  { key: 'all', label: '总览', desc: '全周期' },
-  { key: 'day', label: '日', desc: '当日' },
+  { key: 'day', label: '今日', desc: '当日' },
   { key: 'week', label: '周', desc: '本周' },
   { key: 'month', label: '月', desc: '本月' },
+  { key: 'all', label: '总览', desc: '全周期' },
 ]
 
 export default function AITradeReview() {
-  const [period, setPeriod] = useState('all')
+  const [period, setPeriod] = useState('day')
   const [cache, setCache] = useState({})   // period -> data
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState(false)
@@ -31,8 +32,8 @@ export default function AITradeReview() {
     <div className="bg-surface-2 border border-border rounded-xl p-4 md:p-5">
       <div className="flex items-baseline justify-between gap-2 mb-3 flex-wrap">
         <div className="flex items-baseline gap-2">
-          <h3 className="text-[14px] font-semibold text-text-bright m-0">AI 交易复盘</h3>
-          <span className="text-[10.5px] text-text-muted">纪律 · 照镜子</span>
+          <h3 className="text-[14px] font-semibold text-text-bright m-0">复盘</h3>
+          <span className="text-[10.5px] text-text-muted">组合归因 · 交易纪律 · 照镜子</span>
         </div>
         <div className="flex gap-1">
           {PERIODS.map(p => (
@@ -43,6 +44,14 @@ export default function AITradeReview() {
           ))}
         </div>
       </div>
+
+      {period === 'day' && (
+        <div className="mb-4 pb-3 border-b border-border-subtle">
+          <DailyReview bare />
+        </div>
+      )}
+
+      {period === 'day' && <div className="text-[11px] text-text-muted mb-1.5 tracking-wider">当日交易纪律</div>}
 
       {loading && <div className="text-center py-6 text-text-dim text-[12px]">AI 复盘中…<span className="text-text-muted">（约 30–60 秒）</span></div>}
 
