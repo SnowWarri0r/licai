@@ -586,8 +586,9 @@ async def daily_review(force: bool = False):
             other_moves.append({"name": nm, "cls": "加密", "change_pct": q.get("change_pct"),
                                 "suffix": "(24h)", "mv": round(mv)})
         elif t == "BOT":
+            stale = q.get("auto_synced") is False
             other_moves.append({"name": nm, "cls": "机器人", "change_pct": a.get("pnl_pct"),
-                                "suffix": "(累计)", "mv": round(mv)})
+                                "suffix": "(累计, 同步断连·旧快照)" if stale else "(累计)", "mv": round(mv)})
         # WEALTH/CASH 无"今日行情", 不进复盘
     other_moves.sort(key=lambda x: -abs(x["change_pct"] if x["change_pct"] is not None else 0))
 

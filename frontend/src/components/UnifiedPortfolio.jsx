@@ -254,6 +254,7 @@ function normalizeAsset(a) {
       amount: a.shares,
       lockUntil: null,
       okxSynced: q?.auto_synced,
+      syncError: q?.sync_error,
       okxPnlPct: q?.pnl_pct,
       // OKX 马丁: 总预算 / 已投入 / 未投入 (反推自策略参数 initOrdAmt + safetyOrdAmt × volMult^k)
       okxInvestmentUsdt: q?.investment_usdt,
@@ -1317,8 +1318,14 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
                         </Tooltip>
                       )}
                       {row.extra?.okxSynced === false && (
-                        <Tooltip content="OKX 凭证失效，请到设置重新配置">
-                          <span className="text-warn cursor-help text-[12px] leading-none">⚠︎</span>
+                        <Tooltip content={
+                          <div>
+                            <div className="text-text-bright font-semibold mb-1">同步断连 · 数字为旧快照</div>
+                            <div>{row.extra?.syncError || 'OKX 不可达或凭证失效'}</div>
+                            <div className="mt-1 text-text-dim text-[10.5px]">盈亏非实时。常见原因: 代理软件没开 → 打开后到 设置→代理 点自动探测</div>
+                          </div>
+                        }>
+                          <span className="text-warn cursor-help text-[11px] leading-none px-1 rounded bg-warn/15 border border-warn/40 shrink-0">⚠ 同步断</span>
                         </Tooltip>
                       )}
                       {insights.overlapRowIds.has(row.id) && (
