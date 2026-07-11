@@ -287,6 +287,17 @@ async def _tool_get_quote(code: str) -> dict:
     return out
 
 
+async def _stock_display_name(code: str) -> str:
+    """标的显示名(A股/ETF/港美股通用): 实时行情缓存里取, 拿不到返回空。"""
+    try:
+        from services.market_data import get_realtime_quotes, normalize_stock_code
+        norm = normalize_stock_code(code)
+        q = (await get_realtime_quotes([norm])).get(norm) or {}
+        return q.get("stock_name") or ""
+    except Exception:
+        return ""
+
+
 async def _tool_intraday(code: str) -> dict:
     """当日分时(TDX): 开盘/最高(及时间)/最低(及时间)/现价 + 是否冲高回落 + 关键点。需启用 TDX 数据源, 仅 A 股。"""
     import services.tdx_client as _tdx
@@ -309,7 +320,8 @@ async def _tool_intraday(code: str) -> dict:
     # 每 ~30 分钟取一个采样点, 给 LLM 看大致路径(避免 240 点刷屏)
     step = max(1, len(pts) // 8)
     path = [{"time": pts[i]["time"], "price": pts[i]["price"]} for i in range(0, len(pts), step)]
-    return {"date": m.get("date"), "开盘": open_p, "现价/收盘": last_p,
+    return {"code": bare, "name": await _stock_display_name(bare),
+            "date": m.get("date"), "开盘": open_p, "现价/收盘": last_p,
             "最高": {"price": hi[0], "time": hi[1]}, "最低": {"price": lo[0], "time": lo[1]},
             "较最高回落%": round((hi[0] - last_p) / hi[0] * 100, 2) if hi[0] else None,
             "路径采样": path,
@@ -740,7 +752,8 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
     cum = round((closes[-1] / closes[0] - 1) * 100, 2)
     up = sum(1 for d in daily if d["pct"] > 0)
     out = {
-        "code": code, "days": len(daily), "limit_pct": limit_pct,   # 涨跌停幅度% (科创/创业=20, 主板含ST=10, 北交=30)
+        "code": code, "name": await _stock_display_name(code),
+        "days": len(daily), "limit_pct": limit_pct,   # 涨跌停幅度% (科创/创业=20, 主板含ST=10, 北交=30)
         "cum_pct": cum, "up_days": up, "down_days": len(daily) - up,
         "last_date": bars[-1][0], "last_close": round(closes[-1], 3),
         # 多周期量价摘要: pct_5d/pct_20d/pct_60d 涨幅、dist_20high 距20日高、ma 均线排列、vol 量能
@@ -2435,6 +2448,8 @@ _SYSTEM = (
     "分时不可用时把表述收敛到极值本身(今日最高X最低Y现价Z), 时间顺序留白。\n"
     "【外围指数取实时工具值】KOSPI/日经/道纳标/恒生/汇率/金铜油的当前点位与涨跌, 以 get_global_indices 的实时快照为准; "
     "web_search 用来补事件背景与原因, 检索结果与工具值冲突时以工具当下快照为准并按工具值表述。\n"
+    "【标的一律名称与代码成对】提及任何股票/ETF/基金, 用 名称(代码) 格式表述, 表格里名称列放在代码前; "
+    "工具返回的 name 字段直接采用, 缺 name 时先用 resolve_stock 或行情工具取到名称再落笔。\n"
     "【涨停跌停按该股真实幅度判】称某票'涨停/跌停/封板'以工具返回的判定字段为准(get_quote 的 盘口、get_trend 的 板、"
     "get_market_review 样本行的 涨停 字段); 各板块涨停幅度不同——创业板(30开头)与科创板(68开头)为 20%、北交所为 30%、"
     "沪深主板含 ST 均为 10%——创业板/科创板涨 10% 属于'大涨', 达到该股自身幅度才是涨停, 表述用'大涨N%'或'涨停'按字段区分。\n"
