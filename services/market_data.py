@@ -476,6 +476,40 @@ def _fetch_history_em(stock_code: str, days: int) -> pd.DataFrame:
 
 
 async def get_historical_data(stock_code: str, days: int = 60) -> pd.DataFrame:
+    """Get historical daily OHLCV data(带盘中今日 bar 兜底)。"""
+    df = await _get_historical_data_inner(stock_code, days)
+    try:
+        df = await _append_live_bar_if_missing(stock_code, df)
+    except Exception:
+        pass
+    return df
+
+
+async def _append_live_bar_if_missing(stock_code: str, df: pd.DataFrame) -> pd.DataFrame:
+    """交易日盘中/盘后, 序列末根缺今日时用实时行情合成一根今日 bar 接上。
+    EM 前复权主源正常时自带今日盘中 bar; 它抽风退回 SQLite/兜底源时今日缺失,
+    K线右端断一天、当天的买卖标记无蜡烛可挂。实时行情的昨收由交易所按除权
+    (含份额拆分)调整, 与前复权序列同标度, 拼接无缝(兜底 bar, 下次主源成功即被真数覆盖)。"""
+    if df is None or df.empty or "日期" not in df.columns:
+        return df
+    cst = _cst_now()
+    if not _is_a_share_trading_day(cst.date()) or (cst.hour * 60 + cst.minute) < 570:   # 9:30 开盘后才有今日bar
+        return df
+    today = cst.strftime("%Y-%m-%d")
+    if str(df["日期"].iloc[-1])[:10] >= today:
+        return df
+    q = (await get_realtime_quotes([stock_code])).get(normalize_stock_code(stock_code)) or {}
+    o, h, l, c = q.get("open"), q.get("high"), q.get("low"), q.get("price")
+    if not (o and h and l and c):
+        return df
+    row = {col: 0 for col in df.columns}
+    row.update({"日期": today, "开盘": float(o), "最高": float(h), "最低": float(l),
+                "收盘": float(c), "成交量": float(q.get("volume") or 0),
+                "成交额": float(q.get("amount") or 0)})
+    return pd.concat([df, pd.DataFrame([row])], ignore_index=True)
+
+
+async def _get_historical_data_inner(stock_code: str, days: int = 60) -> pd.DataFrame:
     """Get historical daily OHLCV data.
     Layer 1: In-memory cache (5 min TTL)
     Layer 2: SQLite persistent cache (check if up-to-date)
