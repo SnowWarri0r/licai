@@ -148,6 +148,22 @@ _ARTICLE_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.
                "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36")
 
 
+def _host_is_public(host: str) -> bool:
+    """SSRF 防护(与 news_routes._url_is_safe_public 同策): 解析后必须全是公网地址,
+    挡环回/内网/链路本地(含云元数据 169.254.x)/组播/保留段。"""
+    import socket
+    import ipaddress
+    try:
+        for info in socket.getaddrinfo(host, None):
+            ip = ipaddress.ip_address(info[4][0])
+            if (ip.is_private or ip.is_loopback or ip.is_link_local
+                    or ip.is_multicast or ip.is_reserved or ip.is_unspecified):
+                return False
+        return True
+    except Exception:
+        return False
+
+
 def extract_article_text(url: str, timeout: int = 10) -> dict | None:
     """直连抓 HTML, 用 BeautifulSoup 按 <p> 文本密度定位正文容器并抽正文。
     导航/面包屑/分享条/APP推广都在正文容器之外, 整块天然剔除 —— 比对整页
@@ -155,10 +171,27 @@ def extract_article_text(url: str, timeout: int = 10) -> dict | None:
     财联社等)都适用; JS 渲染页抽不到会返回 None, 由上层回退 Firecrawl。"""
     try:
         from bs4 import BeautifulSoup
+        from urllib.parse import urlparse, urljoin
         s = _requests.Session()
         s.trust_env = False          # 中文新闻站直连; 海外站交给上层的 Firecrawl 兜底
-        r = s.get(url, timeout=timeout, headers={"User-Agent": _ARTICLE_UA})
-        if r.status_code != 200 or not r.text:
+        # 重定向手动跟随, 每一跳都做 SSRF 校验(入口校验只覆盖首跳, 302 跳内网就绕过了)
+        cur, r = url, None
+        for _ in range(5):
+            pu = urlparse(cur)
+            if pu.scheme not in ("http", "https") or not pu.hostname or not _host_is_public(pu.hostname):
+                return None
+            r = s.get(cur, timeout=timeout, headers={"User-Agent": _ARTICLE_UA},
+                      allow_redirects=False)
+            if r.is_redirect or r.is_permanent_redirect:
+                loc = r.headers.get("Location")
+                if not loc:
+                    return None
+                cur = urljoin(cur, loc)
+                continue
+            break
+        else:
+            return None              # 重定向超过 5 跳
+        if r is None or r.status_code != 200 or not r.text:
             return None
         if not r.encoding or r.encoding.lower() == "iso-8859-1":   # 未声明字符集时按内容猜(gbk 站常见)
             r.encoding = r.apparent_encoding
