@@ -258,7 +258,6 @@ licai/
 ## 已知限制
 
 - **akshare** 依赖东方财富 API，部分接口（push2.eastmoney.com）会限流，已对这种情况做了 fallback（同花顺 + 硬编码 ETF 兜底）
-- **交易所 DCA 端点** 文档标"读取"但只读 Key 返 50120（已反馈客服）
 - **LibreSSL 老版本** macOS 系统 Python 3.9 用 LibreSSL 2.8.3，跟某些 EM 接口 TLS 握手不稳，已用 subprocess curl 兜底
 - 跑在国内非代理环境，海外接口（Claude API / 交易所）需要自行处理网络
 
