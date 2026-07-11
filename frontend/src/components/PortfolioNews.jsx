@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { fetchJSON } from '../hooks/useApi'
 import NewsDetailModal from './NewsDetailModal'
+import ImageZoom from './ImageZoom'
 
 const KIND_LABEL = {
   news: { label: '新闻', color: '#85a0b4' },
@@ -8,9 +9,10 @@ const KIND_LABEL = {
   market: { label: '市场', color: '#7a9b8e' },
 }
 
-const SOURCES = ['portfolio', 'market', 'smallmetal']
-const SOURCE_LABEL = { portfolio: '持仓相关', market: '全市场要闻', smallmetal: '小金属' }
+const SOURCES = ['jin10', 'portfolio', 'market', 'smallmetal']
+const SOURCE_LABEL = { jin10: '快讯', portfolio: '持仓·公告', market: '全市场要闻', smallmetal: '小金属' }
 const SOURCE_API = {
+  jin10: '/api/news/jin10?limit=80',
   portfolio: '/api/news/portfolio',
   market: '/api/news/market',
   smallmetal: '/api/news/small-metal',
@@ -19,6 +21,10 @@ const SOURCE_API = {
 // 简化时间显示: "2026-05-20 09:30:00" → "今天 09:30" / "昨天 09:30" / "05-18 09:30"
 function fmtTime(s) {
   if (!s) return '--'
+  if (/^\d{2}-\d{2} /.test(s)) {           // 金十: "MM-DD HH:MM:SS"
+    const today = new Date().toISOString().slice(5, 10)
+    return s.startsWith(today) ? '今天 ' + s.slice(6, 11) : s.slice(0, 11)
+  }
   const ts = s.slice(0, 16)
   const today = new Date().toISOString().slice(0, 10)
   const yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10)
@@ -122,7 +128,7 @@ export default function PortfolioNews() {
   const [cache, setCache] = useState({})  // source -> data
   const [source, setSource] = useState(() => {
     const s = localStorage.getItem('newsSource')
-    return SOURCES.includes(s) ? s : 'portfolio'
+    return SOURCES.includes(s) ? s : 'jin10'
   })
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
@@ -141,6 +147,14 @@ export default function PortfolioNews() {
   }, [cache])
 
   useEffect(() => { fetchSource(source) }, [source, fetchSource])
+
+  // 快讯源 30s 自动刷新(滚动流语义)
+  const timer = useRef(null)
+  useEffect(() => {
+    clearInterval(timer.current)
+    if (source === 'jin10') timer.current = setInterval(() => fetchSource('jin10', true), 30000)
+    return () => clearInterval(timer.current)
+  }, [source, fetchSource])
 
   const pickSource = (s) => {
     setSource(s); localStorage.setItem('newsSource', s)
@@ -167,8 +181,12 @@ export default function PortfolioNews() {
 
   let items = (active?.items || [])
   if (source === 'portfolio') {
-    if (filter !== 'all') items = items.filter(x => x.kind === filter)
+    if (filter === 'news' || filter === 'notice') items = items.filter(x => x.kind === filter)
     if (codeFilter) items = items.filter(x => x.code === codeFilter)
+  }
+  if (source === 'jin10') {
+    if (filter === 'important') items = items.filter(x => x.important)
+    if (filter === 'related') items = items.filter(x => x.related)
   }
 
   const codes = source === 'portfolio' ? (data?.tracked_codes || []) : []
@@ -201,7 +219,9 @@ export default function PortfolioNews() {
             ))}
           </div>
           <span className="text-[11px] text-text-dim">
-            {source === 'portfolio' ? (
+            {source === 'jin10' ? (
+              <>金十快讯 · {active?.items?.length || 0} 条 · 30s 刷新 · 关联 {(active?.items || []).filter(x => x.related).length}</>
+            ) : source === 'portfolio' ? (
               <>跟踪 {codes.length} 只 A 股 · 新闻 {counts.news || 0} · 公告 {counts.notice || 0}</>
             ) : (
               <>{active?.count || 0} 条 · 财联社 + 东财 + 同花顺</>
@@ -209,6 +229,18 @@ export default function PortfolioNews() {
           </span>
         </div>
         <div className="flex gap-1 items-center">
+          {source === 'jin10' && (
+            <>
+              {[['all', '全部'], ['important', '重要'], ['related', '关联我']].map(([k, lb]) => (
+                <button key={k} onClick={() => setFilter(k)}
+                  className="px-2 py-[2px] rounded text-[10.5px] cursor-pointer"
+                  style={{ border: '1px solid', borderColor: filter === k ? 'var(--color-accent)' : 'var(--color-border-med)',
+                    color: filter === k ? 'var(--color-accent)' : 'var(--color-text-dim)' }}>
+                  {lb}
+                </button>
+              ))}
+            </>
+          )}
           {source === 'portfolio' && (
             <>
               <button onClick={() => setFilter('all')}
@@ -250,7 +282,7 @@ export default function PortfolioNews() {
         {items.length === 0 ? (
           <div className="text-center text-text-dim text-[11.5px] py-6">无匹配条目</div>
         ) : items.map((it, i) => {
-          const meta = KIND_LABEL[it.kind] || { label: it.kind, color: '#888' }
+          const meta = KIND_LABEL[it.kind] || { label: it.kind || '快讯', color: '#b08d57' }
           return (
             <div key={i} role="button" tabIndex={0}
               onClick={() => setDetail(it)}
@@ -261,6 +293,9 @@ export default function PortfolioNews() {
                   style={{ background: meta.color + '20', color: meta.color, border: '1px solid ' + meta.color + '40' }}>
                   {meta.label}
                 </span>
+                {it.important && <span className="text-[9.5px] px-1 rounded bg-accent/15 text-accent border border-accent/30">重要</span>}
+                {it.related && <span className="text-[9.5px] px-1 rounded" style={{ background: 'var(--color-up)18', color: 'var(--color-up)', border: '1px solid var(--color-up)50' }}>关联</span>}
+                {it.tag && <span className="text-[9.5px] px-1 rounded bg-accent/10 text-accent/90 border border-accent/25">{it.tag}</span>}
                 {it.code && <span className="text-[11px] font-mono text-text-muted">{it.code}</span>}
                 {it.name && <span className="text-[11px] text-text-dim">{it.name}</span>}
                 {it.kind === 'notice' && it.type && (
@@ -271,9 +306,16 @@ export default function PortfolioNews() {
                   <span className="text-[10px] text-text-muted">{it.source}</span>
                 )}
               </div>
-              <div className="text-[12px] text-text leading-snug">{it.title}</div>
-              {it.content && (
+              <div className={`text-[12px] leading-snug ${it.important ? 'text-text-bright font-medium' : 'text-text'}`}>{it.title}</div>
+              {it.content && it.content !== it.title && (
                 <div className="text-[10.5px] text-text-muted leading-snug mt-0.5 line-clamp-2">{it.content}</div>
+              )}
+              {it.image && (
+                <div onClick={e => e.stopPropagation()}>
+                  <ImageZoom src={it.image}
+                    className="rounded-lg border border-border-subtle max-h-44 w-auto object-cover hover:border-accent/40 mt-1.5 block"
+                    imgProps={{ onError: (e) => { e.currentTarget.style.display = 'none' } }} />
+                </div>
               )}
             </div>
           )
@@ -281,7 +323,9 @@ export default function PortfolioNews() {
       </div>
 
       <div className="px-3 md:px-5 py-2 bg-surface-2/40 text-[10.5px] text-text-muted leading-relaxed">
-        {source === 'portfolio'
+        {source === 'jin10'
+          ? '金十数据实时快讯 · 关联=命中持仓个股名或 ETF 主题词 · 点条目看 AI 解读.'
+          : source === 'portfolio'
           ? '持仓股新闻 + 公告 (akshare 东财). 5min 缓存. 点条目查看解读.'
           : '全市场要闻 (akshare 财联社 + 东财 + 同花顺). 5min 缓存. 部分源不带链接. 点条目查看解读.'}
         仅展示信息, 不做"该买/该卖"判断 — 信号识别交给你自己.
