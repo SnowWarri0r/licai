@@ -89,6 +89,66 @@ def _fund_hold_map() -> dict:
     return m
 
 
+_yjyg_cache: dict = {}
+_FC_POS = {"预增", "略增", "扭亏", "续盈", "减亏"}
+_FC_NEG = {"预减", "略减", "首亏", "续亏", "增亏"}
+
+
+def _forecast_map() -> dict:
+    """最新报告期业绩预告(当前=中报) → {code: {类型/幅度%/期/日期}}。
+    每股取一条, 指标优先级: 归母净利 > 净利润 > 扣非。缓存6h; 拉不到返回空(fail-open)。
+    没进表 = 未披露(预告只对大幅变动强制), 与业绩差是两回事。"""
+    c = _yjyg_cache.get("m")
+    if c and time.time() - c[1] < 6 * 3600:
+        return c[0]
+    m: dict = {}
+    try:
+        import os
+        for k in list(os.environ):
+            if "proxy" in k.lower():
+                os.environ.pop(k, None)
+        import akshare as ak
+        d = date.today()
+        ends = sorted(f"{y}{md}" for y in (d.year, d.year - 1)
+                      for md in ("0331", "0630", "0930", "1231"))
+        period = max(e for e in ends if e <= d.strftime("%Y%m%d"))
+        label = {"0331": "一季报", "0630": "中报", "0930": "三季报", "1231": "年报"}[period[4:]]
+        df = ak.stock_yjyg_em(date=period)
+        prio = {"归属于上市公司股东的净利润": 0, "净利润": 1, "扣除非经常性损益后的净利润": 2}
+        for _, r in (df.iterrows() if df is not None else []):
+            code = str(r["股票代码"]).zfill(6)
+            p = prio.get(str(r["预测指标"]), 9)
+            if code in m and m[code]["_p"] <= p:
+                continue
+            try:
+                chg = float(r["业绩变动幅度"])
+            except (TypeError, ValueError):
+                chg = None
+            m[code] = {"_p": p, "类型": str(r["预告类型"]), "幅度%": chg,
+                       "期": label, "日期": str(r["公告日期"])[:10]}
+    except Exception:
+        pass
+    if m:
+        _yjyg_cache["m"] = (m, time.time())
+    return m
+
+
+def _attach_forecast(rows: list[dict], fc_map: dict) -> None:
+    """给候选行挂业绩预告凭据: 展示字段 + 预喜/预警进标签, 温和计分(±6, 蓄势分主体仍是结构)。"""
+    for r in rows:
+        fc = fc_map.get(r["code"])
+        if not fc:
+            continue
+        amp = f" {fc['幅度%']:+.0f}%" if fc.get("幅度%") is not None else ""
+        r["业绩预告"] = f"{fc['期']}{fc['类型']}{amp} ({fc['日期']}披露)"
+        if fc["类型"] in _FC_POS:
+            r["评分"] += 6
+            r["标签"] += f"·{fc['期']}预喜"
+        elif fc["类型"] in _FC_NEG:
+            r["评分"] -= 6
+            r["标签"] += f"·{fc['期']}预警"
+
+
 def _build_universe(rows: list[dict], fund_map: dict | None = None) -> list[dict]:
     """龙头池: 百亿市值 + 机构重仓 + 盈利的正常经营公司。"""
     fund_map = fund_map or {}
@@ -328,8 +388,9 @@ async def scan_coiled(force: bool = False) -> dict:
     c = _cache.get("coiled")
     if not force and c and time.time() - c[1] < _TTL:
         return c[0]
-    pool, fmap = await asyncio.gather(asyncio.to_thread(_clist_pool),
-                                      asyncio.to_thread(_fund_hold_map))
+    pool, fmap, fc_map = await asyncio.gather(asyncio.to_thread(_clist_pool),
+                                              asyncio.to_thread(_fund_hold_map),
+                                              asyncio.to_thread(_forecast_map))
     if not pool:
         return c[0] if c else {"error": "行情源暂不可达(东财抖动)"}
     universe = _build_universe(pool, fmap)
@@ -341,6 +402,7 @@ async def scan_coiled(force: bool = False) -> dict:
 
     results = await asyncio.gather(*[_one(x) for x in universe], return_exceptions=True)
     rows = [r for r in results if isinstance(r, dict)]
+    _attach_forecast(rows, fc_map)
     rows.sort(key=lambda r: -r["评分"])
     from collections import Counter
     rejected = Counter(r for r in results if isinstance(r, str))
@@ -387,7 +449,8 @@ async def scan_coiled(force: bool = False) -> dict:
                    " → 规则召回仍在箱体内的安静横盘(窄/平/静/横盘≥20日, 未突破——已突破/已启动的判偏晚剔除;"
                    " 高波动成长股按'比自己此前安静'的收敛度判, 送审位按行业限流) → AI看图按'安静蓄势基座'"
                    "贴合度精判。标签: 贴上沿/箱体中部/箱体下部, 波动收敛=高波动品种靠自身收敛过闸, "
-                   "·量在暖=近3日量能温和转暖(蓄势末端特征)。"
+                   "·量在暖=近3日量能温和转暖(蓄势末端特征), ·中报预喜/预警=最新报告期业绩预告凭据"
+                   "(预喜+6分/预警-6分, 蓄势分主体仍是结构; 无标注=未披露, 预告只对大幅变动强制, 不代表业绩差)。"
                    "纯客观结构描述, 横盘可能向下解决而非向上, 不构成任何买卖建议。"}
     _cache["coiled"] = (out, time.time())
     return out
