@@ -165,6 +165,31 @@ async def _tool_resolve_stock(query: str) -> dict:
                 return {"code": cd, "name": nm, "in_holdings": True}
     except Exception:
         pass
+    # 1a) 场外资产(基金/场内ETF/加密/理财等)在持匹配 → in_holdings=True
+    # (通信ETF 这类持仓在外部资产账本, 不在 A股 holdings 表; 漏了这层会把真实持仓说成'没有')
+    try:
+        from database import list_external_assets
+        held_hit, cleared_hit = None, None
+        for x in await list_external_assets():
+            nm = x.get("name") or ""
+            cd = str(x.get("code") or "")
+            if not (q == nm or (cd and q == cd) or (q in nm) or (cd and q in cd)):
+                continue
+            sh = float(x.get("shares") or 0)
+            at = x.get("asset_type")
+            has_bal = (x.get("manual_value") or x.get("cost_amount") or 0) and at not in ("FUND", "CRYPTO")
+            hit = {"code": cd or nm, "name": nm,
+                   "asset_class": _ASSET_CLASS_CN.get(at, "场外资产")}
+            if sh > 0 or has_bal:
+                held_hit = held_hit or {**hit, "in_holdings": True, "note": "在持(场外资产账本)"}
+            else:
+                cleared_hit = cleared_hit or {**hit, "in_holdings": False, "note": "该场外资产已赎回/清仓"}
+        if held_hit:
+            return held_hit
+        if cleared_hit:
+            return cleared_hit
+    except Exception:
+        pass
     # 1b) 持仓表里有但已清仓 → 能解析出代码, 但标记 in_holdings=False
     try:
         for h in await get_all_holdings():
