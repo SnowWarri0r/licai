@@ -700,6 +700,7 @@ _END_MARKERS = (
     "未经正式授权", "未经授权", "侵权必究", "版权声明", "免责声明", "郑重声明",
     "责任编辑", "本文首发", "扫描二维码", "下载界面新闻", "微信公众号",
     "热门排行", "发布评论", "暂无评论", "下一篇", "上一篇", "分享至",
+    "相关阅读", "推荐阅读", "点击排行", "精彩推荐", "热门推荐",
 )
 
 
@@ -712,6 +713,35 @@ def _trim_article_tail(text: str) -> str:
         if 80 <= i < cut:
             cut = i
     return text[:cut].strip()
+
+
+def _is_nav_line(ln: str) -> bool:
+    """站点头部噪声行判定: 栏目菜单(一串短词条空格并排, 如'指数 期指 期权 个股…')、
+    面包屑('首页 > 财经频道 > 正文')、孤立短词(字体/分享/登录/数据中心)。
+    中文正文行带句读且几乎不用空格分词, 形态与菜单行区分稳定。"""
+    s = ln.strip().lstrip("#-*>| ").strip()
+    if not s:
+        return True                       # 头部区的空行一并跳过
+    if re.search(r"[。；！？：，,]", s):
+        return False                      # 有句读 = 正文(抓取正文常用半角逗号, 一并算)
+    toks = s.split()
+    if len(toks) >= 4 and sum(len(t) for t in toks) / len(toks) <= 5:
+        return True                       # 栏目菜单: ≥4 个短词条并排
+    if ">" in s and len(s) <= 30:
+        return True                       # 面包屑: 首页 > 财经频道 > 正文
+    return len(s) < 16                    # 孤立短词/短行(正文标题行通常更长或带句读)
+
+
+def _skip_page_head(full: str) -> str:
+    """跳过站点导航头: 优先从正文首个 H1 起; 无 H1 则逐行跳过菜单/面包屑/短行噪声。"""
+    m = re.search(r"(?m)^#\s", full)
+    if m and m.start() < 2000:
+        return full[m.start():]
+    lines = full.split("\n")
+    for i, ln in enumerate(lines):
+        if not _is_nav_line(ln):
+            return "\n".join(lines[i:])
+    return full
 
 
 def _url_is_safe_public(url: str) -> bool:
@@ -805,15 +835,7 @@ async def interpret_news(data: InterpretIn):
                 full = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", full)        # 去图片 markdown
                 full = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", full)     # 链接只留文字
                 full = re.sub(r"\n{3,}", "\n\n", full).strip()
-                # 跳过站点导航头: 优先从正文首个 H1 起; 无 H1(如金十 xnews)则跳过开头的短行(字体/分享/二维码等菜单)
-                m = re.search(r"(?m)^#\s", full)
-                if m and m.start() < 2000:
-                    full = full[m.start():]
-                else:
-                    lines = full.split("\n")
-                    for i, ln in enumerate(lines):
-                        if len(ln.strip().lstrip("#-*>| ").strip()) >= 16:   # 首个足够长的行=标题/正文
-                            full = "\n".join(lines[i:]); break
+                full = _skip_page_head(full)              # 跳过站点导航头(H1锚点/菜单/面包屑/短行)
                 full = _trim_article_tail(full.strip())   # 砍尾部版权/分享/评论/热门排行等噪声
                 if len(full) > len(content):       # 抓到的比原摘要更全才替换
                     content = full[:3000]          # 喂给 LLM 的正文(限长控 token)
