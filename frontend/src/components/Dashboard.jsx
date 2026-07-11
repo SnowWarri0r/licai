@@ -41,7 +41,7 @@ export default function Dashboard({ holdings }) {
           : (s.items || []).filter(it => !it.still_holding).reduce((sum, it) => sum + (it.realized_pnl || 0), 0)
         const assetExclCash = (a.items || [])
           .filter(it => it.asset_type !== 'CASH')
-          .reduce((sum, it) => sum + (it.realized_pnl || 0), 0)
+          .reduce((sum, it) => sum + (it.closed_realized ?? it.realized_pnl ?? 0), 0)
         setRealized({
           stock: Math.round(stockCarry * 100) / 100,
           asset: Math.round(assetExclCash * 100) / 100,
