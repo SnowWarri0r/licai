@@ -77,3 +77,19 @@ def test_is_nav_line_short_punct_noise():
     assert _is_nav_line("朋友圈")
     # 长度够的真句子仍放行
     assert not _is_nav_line("央行今日宣布:降准0.5个百分点。")
+
+
+def test_trim_tail_line_anchored_no_midbody_cut():
+    """正文句中提到'微信公众号/热门排行'不截断; 自成一行的尾部区块照截。"""
+    from api.news_routes import _trim_article_tail
+    body = (
+        "某公司宣布，其微信公众号粉丝突破千万，并登上平台热门排行榜首，"
+        "带动相关概念股走强。分析人士认为，私域流量价值正在被市场重新定价，"
+        "后续需观察其商业化兑现节奏与广告加载率的平衡。\n\n"
+        "公司还表示，将在三季度推出新的会员体系。\n\n"
+        "热门排行\n\n1. 某某股票大涨\n2. 另一只票跌停\n"
+    )
+    out = _trim_article_tail(body)
+    assert "微信公众号粉丝突破千万" in out          # 句中提及保留
+    assert "会员体系" in out                        # 正文完整
+    assert "某某股票大涨" not in out                 # 行首'热门排行'区块截掉
