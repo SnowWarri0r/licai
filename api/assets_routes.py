@@ -221,8 +221,16 @@ async def _enrich(asset: dict) -> dict:
                 from services.fund_proxy import get_fund_proxy
                 proxy = await get_fund_proxy(asset["code"])
                 if proxy:
-                    quote["proxy_change_pct"] = proxy["weighted_change_pct"]
-                    quote["proxy_label"] = proxy["label"]
+                    nm = asset.get("name") or ""
+                    if (("债" in nm or "固收" in nm)
+                            and proxy.get("abs_weighted_change_pct") is not None):
+                        # 债基: top10 股票袋只占净值一小截(其余是债券, 当日基本持平),
+                        # 归一化外推会把股票袋的-5%冒充整只基金; 用绝对口径(未覆盖按持平)
+                        quote["proxy_change_pct"] = proxy["abs_weighted_change_pct"]
+                        quote["proxy_label"] = proxy["label"] + " · 债基: 未覆盖债券部分按持平估"
+                    else:
+                        quote["proxy_change_pct"] = proxy["weighted_change_pct"]
+                        quote["proxy_label"] = proxy["label"]
                     quote["proxy_details"] = proxy["proxies"]
             except Exception as e:
                 print(f"[fund-proxy] {asset['code']} failed: {e}")
