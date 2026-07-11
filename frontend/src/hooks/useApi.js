@@ -1,11 +1,21 @@
 const BASE = ''
 
+// 数据变更广播: 持仓/资产的写操作成功后通知所有关心的组件(顶部 Dashboard 等)
+// 立即重拉, 免得各自的轮询周期造成"改完了顶条还是旧数"的观感。
+export const MUTATED_EVENT = 'licai:data-mutated'
+
 export async function fetchJSON(path, options) {
   const res = await fetch(`${BASE}${path}`, {
     headers: { 'Content-Type': 'application/json' },
     ...options,
   })
   const data = await res.json().catch(() => ({}))
+  if (res.ok) {
+    const method = (options?.method || 'GET').toUpperCase()
+    if (method !== 'GET' && /^\/api\/(assets|portfolio)/.test(path)) {
+      try { window.dispatchEvent(new CustomEvent(MUTATED_EVENT, { detail: path })) } catch {}
+    }
+  }
   if (!res.ok) {
     // FastAPI/Pydantic 422: {detail: [{loc, msg, type}, ...]}
     // FastAPI HTTPException: {detail: "..."}
