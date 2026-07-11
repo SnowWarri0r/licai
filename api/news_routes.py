@@ -771,6 +771,30 @@ def _trim_article_tail(text: str) -> str:
     return text[:cut].strip()
 
 
+_BOILER_PREFIX_RE = re.compile(r"^(原标题|责任编辑|文章来源|图片来源|校对|编辑|记者|来源)[:：]")
+_BOILER_RE = re.compile(
+    r"(东方财富APP|财富号|微信扫一扫|分享到您?的?朋友圈|手机查看财经快讯|一手掌握市场脉搏|"
+    r"手机上阅读文章|扫描?二维码|APP内打开|点击下载|下载APP|打开APP|收藏本文|举报|"
+    r"方便[,，]快捷|专业[,，]丰富)")
+
+
+def _drop_boiler_lines(text: str) -> str:
+    """全篇行级去站点样板噪声(页头页中都会出现, 不只开头): APP推广/分享条/责编署名等固定
+    chrome, 以及无数字的极短行(小中大/提示：——真实正文段落不会只有几个字)。"""
+    out = []
+    for ln in text.split("\n"):
+        s = ln.strip().lstrip("#-*>| ").strip()
+        if s:
+            if _BOILER_PREFIX_RE.match(s):
+                continue
+            if _BOILER_RE.search(s) and len(s) <= 40:
+                continue
+            if len(s) < 8 and not re.search(r"\d", s):
+                continue
+        out.append(ln)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out))
+
+
 def _is_nav_line(ln: str) -> bool:
     """站点头部噪声行判定: 栏目菜单(一串短词条空格并排, 如'指数 期指 期权 个股…')、
     面包屑('首页 > 财经频道 > 正文')、孤立短词(字体/分享/登录/数据中心)。
@@ -905,6 +929,7 @@ async def interpret_news(data: InterpretIn):
                 else:
                     full = ""
             if full:
+                full = _drop_boiler_lines(full.strip())   # 全篇去 APP推广/分享条/责编署名(DOM 路径也会带进来)
                 full = _trim_article_tail(full.strip())   # 砍尾部版权/分享/评论/热门排行等噪声
                 if len(full) > len(content):       # 抓到的比原摘要更全才替换
                     content = full[:3000]          # 喂给 LLM 的正文(限长控 token)
