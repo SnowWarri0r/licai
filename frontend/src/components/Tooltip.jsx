@@ -6,7 +6,7 @@ import { createPortal } from 'react-dom'
  * - hover ~150ms 后显示, 离开 ~80ms 后隐藏
  * - 自动 flip: 顶部空间不够翻到底；底部空间不够翻到顶；左右同理
  * - 自动 clamp: 横向超出视口边缘自动拉回
- * - 默认 maxWidth 360px; string 内容自动 nowrap
+ * - 默认 maxWidth 360px; 超宽自动换行(不溢出)
  *
  * Props:
  *   - content: JSX | string
@@ -112,7 +112,8 @@ export default function Tooltip({
             boxShadow: '0 6px 18px rgba(0,0,0,.5)',
             maxWidth,
             width: 'max-content',
-            whiteSpace: typeof content === 'string' ? 'nowrap' : 'normal',
+            whiteSpace: 'normal',
+            wordBreak: 'break-word',
             opacity: coords.ready ? 0 : 0,
             animation: coords.ready ? 'tip-in 0.12s ease-out forwards' : 'none',
           }}>
