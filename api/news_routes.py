@@ -764,6 +764,8 @@ def _is_nav_line(ln: str) -> bool:
     s = ln.strip().lstrip("#-*>| ").strip()
     if not s:
         return True                       # 头部区的空行一并跳过
+    if len(s) < 8:
+        return True                       # 极短行(小中大/提示：/方便，快捷)带不带句读都是页头噪声
     if re.search(r"[。；！？：，,]", s):
         return False                      # 有句读 = 正文(抓取正文常用半角逗号, 一并算)
     toks = s.split()
@@ -870,18 +872,29 @@ async def interpret_news(data: InterpretIn):
     # 已是长正文(≥600)就不再抓。只对解析到公网地址的 URL 抓取(SSRF 防护)。
     if data.url and len(content) < 600 and await asyncio.to_thread(_url_is_safe_public, data.url):
         try:
-            from services.stock_agent import _fetch_url_markdown_sync
-            md = await asyncio.to_thread(_fetch_url_markdown_sync, data.url)
-            full = (md or {}).get("markdown") or ""
-            if full and not md.get("error"):
-                full = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", full)        # 去图片 markdown
-                full = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", full)     # 链接只留文字
-                full = re.sub(r"\n{3,}", "\n\n", full).strip()
-                full = _skip_page_head(full)              # 跳过站点导航头(H1锚点/菜单/面包屑/短行)
+            full = ""
+            # 首选 DOM 级提取(bs4 按 <p> 密度定位正文容器, 站点导航/分享条整块剔除)
+            from services.news import extract_article_text
+            art = await asyncio.to_thread(extract_article_text, data.url)
+            if art and len(art.get("text") or "") >= 200:
+                full = art["text"]
+            else:
+                # 回退: Firecrawl/Jina 整页 markdown + 行级启发式清洗(JS 渲染页/海外站)
+                from services.stock_agent import _fetch_url_markdown_sync
+                md = await asyncio.to_thread(_fetch_url_markdown_sync, data.url)
+                full = (md or {}).get("markdown") or ""
+                if full and not md.get("error"):
+                    full = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", full)        # 去图片 markdown
+                    full = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", full)     # 链接只留文字
+                    full = re.sub(r"\n{3,}", "\n\n", full).strip()
+                    full = _skip_page_head(full)          # 跳过站点导航头(H1锚点/菜单/面包屑/短行)
+                else:
+                    full = ""
+            if full:
                 full = _trim_article_tail(full.strip())   # 砍尾部版权/分享/评论/热门排行等噪声
                 if len(full) > len(content):       # 抓到的比原摘要更全才替换
                     content = full[:3000]          # 喂给 LLM 的正文(限长控 token)
-                body_excerpt = full                # 展示给前端的原文全文(已由抓取层截到 7000, 不再二次截断)
+                body_excerpt = full[:7000]         # 展示给前端的原文全文
         except Exception:
             pass
     key = hashlib.sha1(f"{data.title}|{content}|{data.code or ''}|{data.url or ''}".encode("utf-8")).hexdigest()
