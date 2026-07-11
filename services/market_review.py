@@ -66,16 +66,20 @@ def _clist(fid: str, pz: int) -> list[dict]:
 
 
 def _row(x: dict) -> dict | None:
+    def _f(key):
+        try:
+            return float(x.get(key))
+        except (TypeError, ValueError):
+            return None      # 停牌/盘后缺数字段是 '-'
     code = str(x.get("f12") or ""); name = str(x.get("f14") or "")
-    try:
-        pct = float(x.get("f3"))
-    except (TypeError, ValueError):
+    pct = _f("f3")
+    if pct is None:
         return None
     if not code or "ST" in name.upper() or "退" in name:   # 去噪: ST/退市不算强势风向
         return None
-    mktcap = float(x.get("f20") or 0) / 1e8   # 亿
+    mktcap = (_f("f20") or 0) / 1e8   # 亿
     return {"code": code, "name": name, "pct": round(pct, 2),
-            "成交额亿": round(float(x.get("f6") or 0) / 1e8, 1),
+            "成交额亿": round((_f("f6") or 0) / 1e8, 1),
             "换手": x.get("f8"), "量比": x.get("f10"),
             "市值亿": round(mktcap, 0), "行业": x.get("f100") or "",
             "概念": [c for c in str(x.get("f103") or "").split(",") if c],
@@ -142,20 +146,23 @@ def scan_strong_stocks() -> dict:
 
 
 def _rank_row(x: dict) -> dict | None:
-    """榜单行(保留 ST, 打 is_st 标记; 比 _row 宽松, 给 top100 用)。"""
+    """榜单行(保留 ST, 打 is_st 标记; 比 _row 宽松, 给 top100 用)。
+    停牌/盘后部分数字段是 '-', 逐字段安全转换。"""
+    def _f(key):
+        try:
+            return float(x.get(key))
+        except (TypeError, ValueError):
+            return None
     code = str(x.get("f12") or ""); name = str(x.get("f14") or "")
-    try:
-        pct = float(x.get("f3"))
-    except (TypeError, ValueError):
-        return None
-    if not code:
+    pct = _f("f3")
+    if pct is None or not code:
         return None
     new = _is_new_stock(name)
     lim = None if new else _limit_pct(code, name)
     return {"code": code, "name": name, "pct": round(pct, 2),
-            "成交额亿": round(float(x.get("f6") or 0) / 1e8, 2),
+            "成交额亿": round((_f("f6") or 0) / 1e8, 2),
             "换手": x.get("f8"), "量比": x.get("f10"),
-            "市值亿": round(float(x.get("f20") or 0) / 1e8, 0),
+            "市值亿": round((_f("f20") or 0) / 1e8, 0),
             "行业": x.get("f100") or "",
             "limit": lim,
             "涨停占比%": round(pct / lim * 100, 1) if lim else None,   # 涨幅占该板块涨停幅度的比例(100=涨停), 跨板块可比; 新股无涨跌停→None
