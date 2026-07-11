@@ -22,7 +22,6 @@ import SectorOpportunities from './components/SectorOpportunities'
 import MacroDashboard from './components/MacroDashboard'
 // 资讯
 import Jin10Flash from './components/Jin10Flash'
-import DailyReview from './components/DailyReview'
 import PortfolioNews from './components/PortfolioNews'
 // 复盘
 import AITradeReview from './components/AITradeReview'
@@ -149,7 +148,6 @@ export default function App() {
           {view === 'news' && (
             <div className={`${PAD} space-y-3 md:space-y-4`}>
               <Jin10Flash />
-              <DailyReview />
               <PortfolioNews />
             </div>
           )}

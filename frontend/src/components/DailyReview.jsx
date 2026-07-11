@@ -9,7 +9,7 @@ const pctColor = (s) => {
   return v > 0 ? 'text-bear-bright' : 'text-bull-bright'  // A股: 涨红 跌绿
 }
 
-export default function DailyReview() {
+export default function DailyReview({ bare = false }) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
@@ -30,10 +30,10 @@ export default function DailyReview() {
   const has = data && (data.summary || (data.holdings || []).length || (data.global || []).length)
 
   return (
-    <div className="bg-surface-2 border border-border rounded-xl p-4 md:p-5">
+    <div className={bare ? '' : 'bg-surface-2 border border-border rounded-xl p-4 md:p-5'}>
       <div className="flex items-baseline justify-between gap-3 mb-3 flex-wrap">
         <div className="flex items-baseline gap-2">
-          <h3 className="text-[14px] font-semibold text-text-bright m-0">今日复盘</h3>
+          <h3 className={bare ? 'text-[11px] text-text-muted tracking-wider m-0' : 'text-[14px] font-semibold text-text-bright m-0'}>{bare ? '今日组合归因' : '今日复盘'}</h3>
           {data?.date && <span className="text-[11px] font-mono text-text-dim">{data.date}</span>}
           {data?.generated_at && <span className="text-[10px] text-text-muted">{data.generated_at} 生成</span>}
         </div>
