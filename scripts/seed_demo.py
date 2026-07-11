@@ -34,31 +34,37 @@ BACKUP_PATH = ROOT / "portfolio.real.db.bak"
 # ---- 演示数据定义 ----
 
 DEMO_HOLDINGS = [
-    # (code, name, shares, cost_price)
-    ("600519", "贵州茅台",  1,   1620.00),  # 消费 — 白酒龙头, 1 股
-    ("002594", "比亚迪",   200,  220.00),   # 汽车 — 新能源
-    ("600036", "招商银行",  500, 38.00),    # 金融 — 银行
-    ("300750", "宁德时代",  100, 240.00),   # 电气新能源
+    # (code, name, shares, cost_price, buy_days_ago)
+    # 建仓日期分散在过去三个月, 让净值曲线/持有天数/事件日历都有真实素材
+    ("600519", "贵州茅台",  1,   1620.00, 95),  # 消费 — 白酒龙头, 1 股
+    ("002594", "比亚迪",   200,  220.00, 80),   # 汽车 — 新能源
+    ("600036", "招商银行",  500, 38.00,  65),    # 金融 — 银行
+    ("300750", "宁德时代",  100, 240.00, 50),   # 电气新能源
 ]
 
 DEMO_ASSETS = [
-    # FUND (4 只, 含场内 + 场外 + QDII; 真实公开代码方便实时行情可拉)
+    # FUND (5 只, 含场内宽基/行业主题/商品 + 场外 + QDII; 真实公开代码方便实时行情可拉)
+    # buy_days_ago: 初始建仓日, 让份额流水有历史(净值曲线用)
     {
         "asset_type": "FUND", "code": "510300", "name": "沪深300ETF",
-        "platform": "证券账户", "cost_amount": 2100, "shares": 500,
+        "platform": "证券账户", "cost_amount": 2100, "shares": 500, "buy_days_ago": 90,
+    },
+    {
+        "asset_type": "FUND", "code": "512480", "name": "半导体ETF",
+        "platform": "证券账户", "cost_amount": 3200, "shares": 3000, "buy_days_ago": 70,
     },
     {
         "asset_type": "FUND", "code": "518880", "name": "黄金ETF",
-        "platform": "证券账户", "cost_amount": 4500, "shares": 1000,
+        "platform": "证券账户", "cost_amount": 4500, "shares": 1000, "buy_days_ago": 55,
     },
     {
         "asset_type": "FUND", "code": "012922",
         "name": "易方达全球成长精选混合(QDII)人民币C",
-        "platform": "公募平台", "cost_amount": 2500, "shares": 1000,
+        "platform": "公募平台", "cost_amount": 2500, "shares": 1000, "buy_days_ago": 45,
     },
     {
         "asset_type": "FUND", "code": "008702", "name": "华夏黄金ETF联接C",
-        "platform": "公募平台", "cost_amount": 6000, "shares": 3000,
+        "platform": "公募平台", "cost_amount": 6000, "shares": 3000, "buy_days_ago": 40,
     },
     # WEALTH (3 只, 名称泛化)
     {
@@ -101,7 +107,7 @@ DEMO_ASSETS = [
     # CRYPTO (1 只, 通用)
     {
         "asset_type": "CRYPTO", "code": "BTC-USDT", "name": "比特币",
-        "platform": "加密交易所", "cost_amount": 18000, "shares": 0.05,
+        "platform": "加密交易所", "cost_amount": 18000, "shares": 0.05, "buy_days_ago": 85,
     },
 ]
 
@@ -125,29 +131,71 @@ async def seed_into(db_path: Path):
 
         await init_db()
 
+        # 建仓价 = 建仓日真实收盘(拉不到才用表里的兜底价): 净值曲线上不出现"编造成本 vs
+        # 真实行情"的假跳变, demo 的浮盈亏也更像真账户
+        async def _close_on(code_, d_):
+            try:
+                from services.market_data import get_historical_data
+                df = await get_historical_data(code_, days=160)
+                rows = {str(r["日期"])[:10]: float(r["收盘"]) for _, r in df.iterrows()}
+                ks = sorted(k for k in rows if k <= d_)
+                return rows[ks[-1]] if ks else None
+            except Exception:
+                return None
+
         # A 股持仓 (走 holdings + position_actions, 触发综合成本计算)
-        for code, name, shares, cost in DEMO_HOLDINGS:
+        # 建仓日期回填到过去几个月: 净值曲线/持有天数/复盘统计才有真实素材
+        for code, name, shares, cost, days_ago in DEMO_HOLDINGS:
+            buy_date = (date.today() - timedelta(days=days_ago)).strftime("%Y-%m-%d")
+            cost = (await _close_on(code, buy_date)) or cost
             await add_holding(code, name, shares, cost)
-            await add_position_action(code, "BUY", cost, shares, note="initial (demo)")
+            await add_position_action(code, "BUY", cost, shares,
+                                      trade_date=buy_date, note="initial (demo)")
             actions = await get_position_actions(code, limit=500)
             state = compute_position_state(actions, stock_code=code)
             if state["shares"] > 0:
                 await update_holding(code, shares=state["shares"], cost_price=state["cost_price"])
 
-        # 外部资产
+        # 外部资产(基金带日期回填的初始申购流水, 份额账本/净值曲线可用;
+        # 申购价同样按建仓日真实净值/收盘取)
+        from database import add_external_action
+        from services.external_assets import _is_onchain_etf
         for a in DEMO_ASSETS:
-            await add_external_asset(
+            cost_amount, unit = a["cost_amount"], None
+            if a.get("shares") and a.get("buy_days_ago"):
+                d0 = (date.today() - timedelta(days=a["buy_days_ago"])).strftime("%Y-%m-%d")
+                code = a["code"]
+                if a["asset_type"] == "FUND":
+                    if _is_onchain_etf(code):
+                        unit = await _close_on(code, d0)
+                    else:
+                        try:
+                            from services.portfolio_curve import _otc_nav_hist_sync
+                            navs = _otc_nav_hist_sync(code)
+                            ks = sorted(k for k in navs if k <= d0)
+                            unit = navs[ks[-1]] if ks else None
+                        except Exception:
+                            unit = None
+                if unit:
+                    cost_amount = round(unit * a["shares"], 2)
+            aid = await add_external_asset(
                 asset_type=a["asset_type"],
                 code=a["code"],
                 name=a["name"],
                 platform=a.get("platform", ""),
-                cost_amount=a["cost_amount"],
+                cost_amount=cost_amount,
                 shares=a.get("shares"),
                 manual_value=a.get("manual_value"),
                 note=a.get("note", ""),
                 annual_yield_rate=a.get("annual_yield_rate"),
                 start_date=a.get("start_date"),
             )
+            if a.get("shares") and a.get("buy_days_ago"):
+                d0 = (date.today() - timedelta(days=a["buy_days_ago"])).strftime("%Y-%m-%d")
+                await add_external_action(
+                    aid, "BUY", amount=cost_amount, shares=a["shares"],
+                    unit_price=unit or round(cost_amount / a["shares"], 4),
+                    trade_date=d0, note="initial (demo)")
         print(f"✓ 已写入 {len(DEMO_HOLDINGS)} 只 A股 + {len(DEMO_ASSETS)} 笔外部资产到 {db_path.name}")
     finally:
         _config.db_path = original_db
