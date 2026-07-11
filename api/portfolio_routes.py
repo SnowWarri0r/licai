@@ -343,6 +343,47 @@ async def trade_review():
         s["floating"] = round(floating, 2)
         s["total_pnl"] = round(s["realized"] + floating, 2)
 
+    # 场内ETF/场外基金(外部资产账本)也是交易, 并进统计: 胜率/做T/持有天数与个股同口径。
+    # floating 用 lot 口径(=摊薄盈亏-周期内已实现), realized 用全量已实现, 两者相加=全周期真实盈亏,
+    # 与个股'综合成本法 realized+浮动'同一约定。
+    try:
+        from api.assets_routes import list_assets as _list_assets
+        from database import list_external_actions as _lea
+        _ACQ, _REL = {"BUY", "ADD", "DEPOSIT"}, {"REDEEM", "WITHDRAW"}
+        from datetime import date as _date
+        for a in (await _list_assets()).get("assets") or []:
+            if a.get("asset_type") != "FUND":
+                continue
+            acts = [x for x in await _lea(a["id"]) if (x.get("status") or "confirmed") == "confirmed"]
+            n_buy = sum(1 for x in acts if (x.get("action_type") or "").upper() in _ACQ)
+            n_sell = sum(1 for x in acts if (x.get("action_type") or "").upper() in _REL)
+            if not (n_buy or n_sell):
+                continue
+            realized = float(a.get("realized_pnl") or 0)
+            floating = round(float(a.get("pnl") or 0) - float(a.get("cycle_realized") or 0), 2)
+            shares = float(a.get("shares") or 0)
+            dcost = a.get("diluted_cost")
+            # 持有天数: 最早一笔未平买入至今
+            hold_days = 0
+            if shares > 0:
+                buy_dates = sorted(str(x.get("trade_date") or x.get("created_at") or "")[:10]
+                                   for x in acts if (x.get("action_type") or "").upper() in _ACQ)
+                if buy_dates and buy_dates[0]:
+                    try:
+                        hold_days = (_date.today() - _date.fromisoformat(buy_dates[0])).days
+                    except ValueError:
+                        pass
+            stats.append({
+                "code": str(a.get("code") or ""), "name": a.get("name") or "",
+                "realized": round(realized, 2), "shares": shares,
+                "cost_price": round(float(dcost) / shares, 4) if dcost and shares > 0 else 0,
+                "hold_days": hold_days, "n_buy": n_buy, "n_sell": n_sell,
+                "floating": floating, "total_pnl": round(realized + floating, 2),
+                "asset_class": "基金/ETF",
+            })
+    except Exception as e:
+        print(f"[trade-review] fund stats merge failed: {e}")
+
     n = len(stats)
     n_win = sum(1 for s in stats if s["total_pnl"] > 0)
     n_loss = sum(1 for s in stats if s["total_pnl"] < 0)
@@ -351,7 +392,7 @@ async def trade_review():
     worst = [{"name": s["name"], "realized": s["realized"]} for s in by_real[:3] if s["realized"] < 0]
     active = sorted([s for s in stats if s["n_sell"] > 0], key=lambda s: -(s["n_buy"] + s["n_sell"]))[:5]
     active_t = [{"name": s["name"], "n_buy": s["n_buy"], "n_sell": s["n_sell"], "realized": s["realized"]} for s in active]
-    held_days = [s["hold_days"] for s in held if s["hold_days"]]
+    held_days = [s["hold_days"] for s in stats if s["shares"] > 0 and s["hold_days"]]
     avg_hold = round(sum(held_days) / len(held_days)) if held_days else 0
 
     obs = []
