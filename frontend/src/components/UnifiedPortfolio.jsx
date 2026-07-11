@@ -3221,10 +3221,10 @@ function AssetActionsModal({ asset, onClose, onChanged }) {
   const colorByType = {
     BUY: 'text-bull-bright', ADD: 'text-bull-bright', DEPOSIT: 'text-bull-bright',
     REDEEM: 'text-bear-bright', WITHDRAW: 'text-bear-bright',
-    INTEREST: 'text-info', DIVIDEND: 'text-info',
+    INTEREST: 'text-info', DIVIDEND: 'text-info', SPLIT: 'text-accent',
   }
   const labelByType = {
-    BUY: '买入', ADD: '加仓', REDEEM: '赎回',
+    BUY: '买入', ADD: '加仓', REDEEM: '赎回', SPLIT: '份额拆分',
     DEPOSIT: '存入', WITHDRAW: '取出',
     INTEREST: '利息', DIVIDEND: '分红',
   }

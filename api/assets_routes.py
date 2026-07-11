@@ -103,6 +103,44 @@ class LotAdd(BaseModel):
     trade_time: Optional[str] = None        # 成交时刻 HH:MM (可选, 供分时图打点)
 
 
+_split_checked: dict[str, str] = {}   # code -> 已探测日期(每天每只最多探测一次)
+
+
+async def _maybe_sync_etf_split(asset: dict) -> bool:
+    """场内 ETF 份额拆分自动同步: raw/qfq 日K检测到拆分且账本未记录时, 补一条
+    SPLIT 流水(份额×F、单价÷F、成本不动)。返回是否新入账。"""
+    from datetime import date as _d
+    from services.external_assets import detect_etf_split
+    code = asset.get("code") or ""
+    today = _d.today().isoformat()
+    if _split_checked.get(code) == today:
+        return False
+    hit = await asyncio.to_thread(detect_etf_split, code)   # 拉数失败抛异常 → 不打节流标记, 下次再试
+    _split_checked[code] = today                            # 只有检测真正完成才记"今天查过"
+    if not hit:
+        return False
+    split_date, factor = hit
+    actions = await list_external_actions(asset["id"])
+    # 幂等: 该拆分日已记过 SPLIT 不重复; 拆分日前没有任何买入 lot(纯拆分后建仓)也无需入账
+    if any((a.get("action_type") or "").upper() == "SPLIT"
+           and str(a.get("trade_date") or "")[:10] == split_date for a in actions):
+        return False
+    if not any((a.get("action_type") or "").upper() in ("BUY", "ADD", "DEPOSIT")
+               and str(a.get("trade_date") or a.get("created_at") or "")[:10] < split_date
+               for a in actions):
+        return False
+    await add_external_action(asset["id"], "SPLIT", amount=0, shares=factor,
+                              trade_date=split_date,
+                              note=f"份额拆分 1:{factor:g} (raw/qfq 日K检测, 自动同步)")
+    # 行缓存列同步(current_value 等读的是 row.shares, 与 modify_asset 同一套约定)
+    actions = await list_external_actions(asset["id"])
+    state = compute_external_state(actions, "FUND")
+    await update_external_asset(asset["id"], shares=state["shares"], cost_amount=state["cost_amount"])
+    asset["shares"] = state["shares"]; asset["cost_amount"] = state["cost_amount"]
+    print(f"[split-sync] {code} {asset.get('name')}: 份额拆分 1:{factor:g} @ {split_date} 已入账, 份额 {state['shares']:g}")
+    return True
+
+
 async def _enrich(asset: dict) -> dict:
     """Add quote, current_value, pnl for one asset.
 
@@ -145,18 +183,30 @@ async def _enrich(asset: dict) -> dict:
     out["pending_actions_count"] = pending_count
 
     if t == "FUND":
+        # 场内 ETF 份额拆分自动同步(在持仓上, 每天探测一次): 券商份额已×F 而账本还是旧份额时,
+        # 市值会假性腰斩; 检测到就补 SPLIT 流水并重刷 shares/cost
+        if _is_etf_code(asset["code"]) and float(out.get("shares") or 0) > 0:
+            try:
+                if await _maybe_sync_etf_split(asset):
+                    actions = await list_external_actions(asset["id"])
+                    ledger_state = compute_external_state(actions, t)
+                    out["shares"] = ledger_state["shares"]
+                    out["cost_amount"] = ledger_state["cost_amount"]
+            except Exception as e:
+                print(f"[split-sync] {asset.get('code')} failed: {e}")
         quote = await get_fund_quote(asset["code"])
         # current_value 含 pending (资产总额视角: 钱已经投进去了),
         # 但下面算 pnl 时会减去 pending (浮动只看已确认 lot vs 确认成本).
         pending = float(out.get("pending_amount") or 0)
         if asset.get("manual_value") is not None:
             current_value = float(asset["manual_value"])  # 锁定的总市值（已含 pending）
-        elif quote and asset.get("shares"):
+        elif quote and out.get("shares"):
             # 优先用官方公布净值 (nav) 而非盘中估值 (est_nav)，跟支付宝/天天基金 App
             # "持有金额" 计算口径一致；尤其 QDII 隔夜市场盘中估算偏差大。
             # 场内 ETF 的 nav 已经是实时市价（onchain branch 设置），同样优先。
+            # 份额用 ledger overlay 后的 out["shares"](含拆分缩放), 行缓存列可能滞后
             nav = quote.get("nav") or quote.get("est_nav") or 0
-            current_value = round(nav * float(asset["shares"]) + pending, 2)
+            current_value = round(nav * float(out["shares"]) + pending, 2)
         elif pending > 0:
             current_value = round(float(asset.get("cost_amount") or 0) + pending, 2)
         # 附加代理标的行情 (用底层市场实时数据预判基金当日走势)。
@@ -191,8 +241,8 @@ async def _enrich(asset: dict) -> dict:
         pending = float(out.get("pending_amount") or 0)
         if asset.get("manual_value") is not None:
             current_value = float(asset["manual_value"])
-        elif quote and asset.get("shares"):
-            current_value = round(quote["price_cny"] * float(asset["shares"]) + pending, 2)
+        elif quote and out.get("shares"):
+            current_value = round(quote["price_cny"] * float(out["shares"]) + pending, 2)
         elif pending > 0:
             current_value = round(float(asset.get("cost_amount") or 0) + pending, 2)
     elif t == "CASH":
