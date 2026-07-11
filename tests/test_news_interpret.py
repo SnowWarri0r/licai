@@ -36,3 +36,33 @@ def test_interpret_non_json_fallback(monkeypatch):
     assert r.status_code == 200
     d = r.json()
     assert d["what"]
+
+
+def test_skip_page_head_kills_site_nav():
+    """东财风格页头: 栏目菜单(长行短词并排)/数据中心菜单/面包屑 全部砍掉, 正文保留。"""
+    from api.news_routes import _skip_page_head, _trim_article_tail
+    md = (
+        "东方财富网\n\n"
+        "指数 期指 期权 个股 板块 排行 新股 基金 港股 美股 期货 外汇 黄金 自选股 自选基金\n\n"
+        "数据中心\n\n"
+        "资金流向 主力排名 板块资金 个股研报 新股申购 转债申购 北交所申购 AH股比价 年报大全 融资融券 龙虎榜 限售解禁 IPO审核 大宗交易 估值分析\n\n"
+        "首页 >\n\n财经频道 >\n\n正文\n\n"
+        "近期,人民币对美元汇率持续走强,多家外资机构表示看好中国资产的长期配置价值,认为估值仍处低位。\n\n"
+        "业内人士认为,随着政策面持续发力,市场信心正在逐步恢复,北向资金近一个月净流入超过500亿元,后续配置窗口仍在。\n\n"
+        "相关阅读\n\n外资加速流入A股\n"
+    )
+    out = _trim_article_tail(_skip_page_head(md).strip())
+    assert "指数 期指" not in out
+    assert "资金流向 主力排名" not in out
+    assert "首页 >" not in out
+    assert "相关阅读" not in out
+    assert out.startswith("近期,人民币对美元汇率持续走强")
+
+
+def test_skip_page_head_h1_anchor_and_prose_safety():
+    from api.news_routes import _skip_page_head, _is_nav_line
+    # H1 锚点优先
+    assert _skip_page_head("字体\n分享\n# 正文标题\n正文内容").startswith("# 正文标题")
+    # 短但带句读的正文行不算导航
+    assert not _is_nav_line("央行今日宣布:降准0.5个百分点。")
+    assert not _is_nav_line("特朗普表示,关税将于下周生效")
