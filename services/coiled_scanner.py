@@ -403,11 +403,32 @@ async def _ai_judge(row: dict) -> dict | None:
         return None
 
 
+_scan_lock: asyncio.Lock | None = None
+
+
 async def scan_coiled(force: bool = False) -> dict:
-    """横盘蓄势扫描主入口。10 分钟缓存。"""
+    """横盘蓄势扫描主入口。10 分钟缓存。
+    全程持锁单飞: 并发触发(预热循环+手动force)会各扫一遍且 AI 边缘判定有随机性,
+    谁后写完谁覆盖缓存, 结果来回跳还烧双份钱——后到者等锁, 醒来发现缓存已被
+    等待期间完成的扫描刷新过就直接用它。"""
+    global _scan_lock
     c = _cache.get("coiled")
     if not force and c and time.time() - c[1] < _TTL:
         return c[0]
+    if _scan_lock is None:
+        _scan_lock = asyncio.Lock()
+    entered = time.time()
+    async with _scan_lock:
+        c = _cache.get("coiled")
+        if c and c[1] >= entered:
+            return c[0]
+        if not force and c and time.time() - c[1] < _TTL:
+            return c[0]
+        return await _scan_coiled_inner()
+
+
+async def _scan_coiled_inner() -> dict:
+    c = _cache.get("coiled")
     pool, fmap, fc_map = await asyncio.gather(asyncio.to_thread(_clist_pool),
                                               asyncio.to_thread(_fund_hold_map),
                                               asyncio.to_thread(_forecast_map))
