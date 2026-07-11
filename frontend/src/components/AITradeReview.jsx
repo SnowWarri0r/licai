@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { fetchJSON } from '../hooks/useApi'
 import DailyReview from './DailyReview'
+import SkeletonCard from './Skeleton'
 
 const PERIODS = [
   { key: 'day', label: '今日', desc: '当日' },
@@ -53,7 +54,7 @@ export default function AITradeReview() {
 
       {period === 'day' && <div className="text-[11px] text-text-muted mb-1.5 tracking-wider">当日交易纪律</div>}
 
-      {loading && <div className="text-center py-6 text-text-dim text-[12px]">AI 复盘中…<span className="text-text-muted">（约 30–60 秒）</span></div>}
+      {loading && <SkeletonCard bare rows={5} label="AI 复盘中…（约 30–60 秒）" />}
 
       {!loading && err && (
         <div className="flex items-center justify-between">
