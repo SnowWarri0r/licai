@@ -82,3 +82,27 @@ def test_cycle_realized_resets_after_overnight_flat():
     assert st["cycle_realized"] == 0
     assert abs(st["diluted_cost"] - 6616.13) < 0.01              # 新周期摊薄 = lot 成本
     assert abs(st["realized_pnl"] - (-170.24)) < 0.01
+
+
+def test_etf_xray_theme_classify_and_match():
+    """主题分类(行业/宽基/风格/跨境)与成分匹配规则。"""
+    from services.etf_xray import classify_theme, _matches
+    assert classify_theme("通信ETF国泰")[1] == "行业主题"
+    assert classify_theme("红利低波ETF华泰柏瑞")[1] == "风格策略"
+    assert classify_theme("科创50ETF华夏")[1] == "宽基指数"
+    assert classify_theme("黄金ETF华安")[1] == "跨境商品债"
+    assert classify_theme("纳斯达克100ETF联接QDII")[1] == "跨境商品债"
+    # 行业匹配: 同义词表 + 双向包含
+    assert _matches("通信", "通信设备", "中兴通讯")
+    assert not _matches("通信", "消费电子", "工业富联")
+    assert _matches("家电", "白色家电", "美的集团")
+    assert _matches("半导体设备", "半导体", "北方华创")
+    assert _matches("创新药", "生物制品", "百济神州")
+
+
+def test_etf_xray_compound_theme_matches_via_substring_key():
+    """复合主题词(科创创新药)命中同义词表里的子串键(创新药)。"""
+    from services.etf_xray import _matches
+    assert _matches("科创创新药", "化学制药", "百利天恒")
+    assert _matches("科创创新药", "生物制品", "君实生物")
+    assert not _matches("科创创新药", "半导体", "寒武纪")

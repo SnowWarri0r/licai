@@ -690,3 +690,21 @@ async def market_sentiment_detail():
         _senti_detail_cache["d"] = (r, _time.time())
         return r
     return {"date": None, "zt": [], "dt": [], "n_zt": 0, "n_dt": 0}
+
+
+# ============================================================
+# ETF 题材透视(避雷雷达): 季报成分 vs 名称主题
+# ============================================================
+
+@router.get("/etf-xray/mine")
+async def etf_xray_mine():
+    """在持场内 ETF 逐只透视。"""
+    from services.etf_xray import my_etf_scan
+    return await my_etf_scan()
+
+
+@router.get("/etf-xray/theme")
+async def etf_xray_theme(theme: str, top: int = 5):
+    """按主题找规模最大的前 N 只并透视(同主题避雷)。"""
+    from services.etf_xray import theme_scan
+    return await theme_scan(theme, min(max(top, 1), 8))

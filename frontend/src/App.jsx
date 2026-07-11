@@ -20,6 +20,7 @@ import SectorRadar from './components/SectorRadar'
 import SectorOpportunities from './components/SectorOpportunities'
 // 宏观
 import MacroDashboard from './components/MacroDashboard'
+import EtfXray from './components/EtfXray'
 // 资讯
 import PortfolioNews from './components/PortfolioNews'
 // 复盘
@@ -125,6 +126,7 @@ export default function App() {
             <div className={`${PAD} space-y-3 md:space-y-4`}>
               <MorningBriefing />
               <SentimentThermometer />
+              <EtfXray />
               <SectorMatrix />
               <HotRank />
               <SectorRadar />
