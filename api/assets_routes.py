@@ -1205,6 +1205,26 @@ async def list_actions(asset_id: int):
     from database import resolve_action_time
     for a in actions:
         a["at_time"] = resolve_action_time(a)    # 成交时刻(供分时图打点)
+    # 拆分调整价: 前复权K线把历史整条缩到新标度, 老成交价原样标上去会飘出图外。
+    # 每笔交易的调整价 = 成交价 ÷ 之后所有拆分因子之积(份额同理×), 与 qfq K线同标度;
+    # 流水列表仍显示 unit_price 真实成交价, K线标记用 adj_price。
+    splits = [(str(a.get("trade_date") or "")[:10], float(a.get("shares") or 0))
+              for a in actions if (a.get("action_type") or "").upper() == "SPLIT"
+              and float(a.get("shares") or 0) > 0]
+    if splits:
+        for a in actions:
+            if (a.get("action_type") or "").upper() == "SPLIT":
+                continue
+            d = str(a.get("trade_date") or a.get("created_at") or "")[:10]
+            f = 1.0
+            for sd, sf in splits:
+                if d < sd:
+                    f *= sf
+            if f != 1.0:
+                if a.get("unit_price"):
+                    a["adj_price"] = round(float(a["unit_price"]) / f, 6)
+                if a.get("shares"):
+                    a["adj_shares"] = round(float(a["shares"]) * f, 4)
     state = compute_external_state(actions, asset["asset_type"])
     return {"actions": actions, "state": state}
 
