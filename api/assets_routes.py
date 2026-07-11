@@ -341,6 +341,11 @@ async def _enrich(asset: dict) -> dict:
                 quote["budget_source"] = "manual"
             else:
                 quote["budget_source"] = "estimated"
+        else:
+            # OKX 拉不到(代理断/API错/机器人已停): current_value 会退回过时 manual_value,
+            # 数字是冻结快照 —— 显式打标, 前端/复盘据此提示, 不再冒充实时盈亏
+            quote = {"auto_synced": False,
+                     "sync_error": "OKX 不可达(检查设置里的代理)或机器人已停止, 以下为最近一次同步的旧快照"}
     # else BOT: uses manual_value
 
     if t == "CASH":
