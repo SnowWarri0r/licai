@@ -433,3 +433,68 @@ async def test_credentials() -> dict:
     if not result["ok"] and not result["errors"]:
         result["errors"].append("OKX 未返回数据（可能网络问题）")
     return result
+
+
+# ---------------------------------------------------------------------------
+# DNS 自愈: OKX 对国内解析线路故意黑洞(www.okx.com → awscn.okpool.top → 169.254.0.2),
+# TUN 通道本身可达但按假地址连必然 Host is down。系统解析拿到 假地址(链路本地/回环/全零)
+# 时, 走 DoH(dns.google, 经 TUN 可达)取真 IP, 进程内对 OKX 域名生效。
+# ---------------------------------------------------------------------------
+import socket as _socket
+import ipaddress as _ipaddress
+
+_DOH_FIX_HOSTS = {"www.okx.com", "aws.okx.com"}
+_doh_cache: dict = {}          # host → (ip, ts)
+_DOH_TTL = 600
+_real_getaddrinfo = _socket.getaddrinfo
+
+
+def _answer_poisoned(entries) -> bool:
+    try:
+        for e in entries:
+            ip = _ipaddress.ip_address(e[4][0])
+            if not (ip.is_link_local or ip.is_loopback or ip.is_unspecified or ip.is_reserved):
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def _doh_resolve(host: str) -> str | None:
+    c = _doh_cache.get(host)
+    if c and time.time() - c[1] < _DOH_TTL:
+        return c[0]
+    for ep in (f"https://dns.google/resolve?name={host}&type=A",
+               f"https://8.8.8.8/resolve?name={host}&type=A"):
+        try:
+            s = _requests.Session(); s.trust_env = False
+            d = s.get(ep, headers={"accept": "application/dns-json"}, timeout=6).json()
+            ip = next((a["data"] for a in d.get("Answer", []) if a.get("type") == 1), None)
+            if ip and not _answer_poisoned([(None, None, None, None, (ip, 0))]):
+                _doh_cache[host] = (ip, time.time())
+                return ip
+        except Exception:
+            continue
+    return None
+
+
+def _patched_getaddrinfo(host, *args, **kwargs):
+    if isinstance(host, str) and host in _DOH_FIX_HOSTS:
+        try:
+            entries = _real_getaddrinfo(host, *args, **kwargs)
+        except _socket.gaierror:
+            entries = []
+        if entries and not _answer_poisoned(entries):
+            return entries
+        ip = _doh_resolve(host)
+        if ip:
+            # 用真 IP 重建条目; URL 里域名不变 → TLS SNI/证书校验照常通过
+            return _real_getaddrinfo(ip, *args, **kwargs)
+        if entries:
+            return entries
+        raise _socket.gaierror(8, f"nodename {host}: 系统解析被黑洞且 DoH 兜底失败")
+    return _real_getaddrinfo(host, *args, **kwargs)
+
+
+if _socket.getaddrinfo is not _patched_getaddrinfo:
+    _socket.getaddrinfo = _patched_getaddrinfo
