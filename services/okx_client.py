@@ -2,6 +2,9 @@
 
 Credentials stored in macOS Keychain via `security` CLI. Service name: `okx-trading-api`.
 Format: JSON {api_key, secret_key, passphrase}.
+
+设计约束(不可变更): 本客户端只使用只读 API Key, 只读取用户自有账户数据;
+永不添加下单/划转/交易执行类接口 —— 这是本项目的合规边界, 不是待办。
 """
 from __future__ import annotations
 import asyncio
