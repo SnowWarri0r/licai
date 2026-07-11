@@ -551,8 +551,14 @@ export default function StockKlineModal({ holding, onClose }) {
           setSeries(all.slice(cut))
         }
         // 场外 asset 流水: {actions:[{unit_price,...}]} → 归一成 BS 标记要的 {price,...}
+        // 份额拆分后 K 线是前复权标度: 标记优先用后端算的 adj_price/adj_shares(拆分调整),
+        // 原始成交价留在流水列表里; SPLIT 记录本身不是买卖, 不打点
         const raw = Array.isArray(a) ? a : (a?.actions || [])
-        setActions(raw.map(x => ({ ...x, price: x.price ?? x.unit_price })))
+        setActions(raw.filter(x => x.action_type !== 'SPLIT').map(x => ({
+          ...x,
+          price: x.adj_price ?? x.price ?? x.unit_price,
+          shares: x.adj_shares ?? x.shares,
+        })))
       }).catch(e => setErr(e?.message || '加载失败')).finally(done)
     }
   }, [code, tab, days, tdxOn, assetId])
