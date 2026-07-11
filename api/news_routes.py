@@ -540,23 +540,56 @@ async def daily_review(force: bool = False):
     from services.market_data import get_realtime_quotes
     from services.sector_scanner import scan_sectors
 
-    # 1) A 股持仓今日涨跌 (实时)
+    # 1) 全组合今日表现: A股/港美股(holdings 表, 实时) + 基金/加密/机器人(external_assets,
+    #    复用 assets 口径: 场内ETF实时价、场外基金净值或底层代理估、加密24h、机器人累计)
     holdings = await get_all_holdings()
-    a_codes = [h["stock_code"] for h in holdings
-               if _is_a_share(h["stock_code"]) and float(h.get("shares") or 0) > 0]
-    quotes = await get_realtime_quotes(a_codes) if a_codes else {}
-    hold_moves = []
-    for h in holdings:
+    live = [h for h in holdings if float(h.get("shares") or 0) > 0]
+    quotes = await get_realtime_quotes([h["stock_code"] for h in live]) if live else {}
+    a_codes = [h["stock_code"] for h in live if _is_a_share(h["stock_code"])]
+    hold_moves = []    # A股(板块扫描/涨跌统计沿用)
+    other_moves = []   # 港美股 + 基金/ETF + 加密 + 机器人
+    for h in live:
         c = h["stock_code"]
-        if c not in a_codes:
-            continue
         q = quotes.get(c) or {}
-        hold_moves.append({
-            "name": h.get("stock_name", ""), "code": c,
-            "change_pct": q.get("change_pct"),
-            "mv": round((q.get("price") or 0) * float(h.get("shares") or 0), 0),
-        })
+        row = {"name": h.get("stock_name", ""), "code": c,
+               "change_pct": q.get("change_pct"), "suffix": "",
+               "mv": round((q.get("price") or 0) * float(h.get("shares") or 0)
+                           * float(q.get("fx_rate") or 1), 0)}
+        if _is_a_share(c):
+            hold_moves.append(row)
+        else:
+            row["cls"] = "港股" if str(c).upper().startswith("HK") else "美股"
+            other_moves.append(row)
     hold_moves.sort(key=lambda x: (x["change_pct"] if x["change_pct"] is not None else 0))
+    try:
+        from api.assets_routes import list_assets as _list_assets
+        ext = (await _list_assets()).get("assets") or []
+    except Exception as e:
+        print(f"[daily-review] assets enrich failed: {e}")
+        ext = []
+    for a in ext:
+        t, nm = a.get("asset_type"), (a.get("name") or "").strip()
+        mv = float(a.get("current_value") or 0)
+        if not nm or mv <= 0:
+            continue
+        q = a.get("quote") or {}
+        if t == "FUND":
+            if float(a.get("shares") or 0) <= 0:
+                continue
+            tc = q.get("today_change_pct")
+            est = (q.get("nav_date") or "") != today and q.get("proxy_change_pct") is not None
+            other_moves.append({"name": nm, "cls": "基金/ETF", "change_pct": tc,
+                                "suffix": "(按底层估)" if est else "", "mv": round(mv)})
+        elif t == "CRYPTO":
+            if float(a.get("shares") or 0) <= 0:
+                continue
+            other_moves.append({"name": nm, "cls": "加密", "change_pct": q.get("change_pct"),
+                                "suffix": "(24h)", "mv": round(mv)})
+        elif t == "BOT":
+            other_moves.append({"name": nm, "cls": "机器人", "change_pct": a.get("pnl_pct"),
+                                "suffix": "(累计)", "mv": round(mv)})
+        # WEALTH/CASH 无"今日行情", 不进复盘
+    other_moves.sort(key=lambda x: -abs(x["change_pct"] if x["change_pct"] is not None else 0))
 
     # 2) 持仓所属板块今日 (复用板块扫描的 held 标记)
     held_sectors = []
@@ -577,25 +610,29 @@ async def daily_review(force: bool = False):
     except Exception:
         p_heads = []
 
-    if not hold_moves and not g_heads:
+    if not hold_moves and not other_moves and not g_heads:
         return {"summary": "今日无可复盘数据", "holdings": [], "sectors": [], "global": [], "tomorrow": [], "cached": False}
 
     # 4) 拼 prompt
     holds_txt = "\n".join(
         f"  {m['name']}({m['code']}) {('%+.2f%%' % m['change_pct']) if m['change_pct'] is not None else '—'} 市值≈{m['mv']:.0f}"
         for m in hold_moves) or "  (无 A 股持仓)"
+    others_txt = "\n".join(
+        f"  {m['name']} [{m['cls']}] {('%+.2f%%' % m['change_pct']) if m['change_pct'] is not None else '—'}{m['suffix']} 市值≈{m['mv']:.0f}"
+        for m in other_moves) or "  (无)"
     secs_txt = "\n".join(
         f"  {s['name']} 今日{('%+.2f%%' % s['d1']) if s['d1'] is not None else '—'} 5日{('%+.2f%%' % s['d5']) if s['d5'] is not None else '—'}"
         for s in held_sectors) or "  (无)"
     user_prompt = (
         f"今天是 {today}, 收盘后做组合复盘。\n\n"
         f"【我的 A 股持仓今日涨跌】\n{holds_txt}\n\n"
-        f"【持仓所属板块今日】\n{secs_txt}\n\n"
+        f"【我的其余持仓今日】(港美股为实时; 场外基金为净值或按底层持仓估; 加密为24h; 机器人为累计收益)\n{others_txt}\n\n"
+        f"【A股持仓所属板块今日】\n{secs_txt}\n\n"
         f"【持仓相关新闻】\n" + ("\n".join(f"  - {h}" for h in p_heads) or "  (无)") + "\n\n"
         f"【全球财经快讯(标题)】\n" + "\n".join(f"  - {h}" for h in g_heads if h) + "\n\n"
         "请据此生成今日复盘 JSON。"
     )
-    allowed_names = "、".join(m["name"] for m in hold_moves) or "(无)"
+    allowed_names = "、".join([m["name"] for m in hold_moves] + [m["name"] for m in other_moves]) or "(无)"
     allowed_sectors = "、".join(s["name"] for s in held_sectors) or "(无)"
     system_prompt = (
         "你是组合收盘复盘助手。基于给定数据复盘今天, 严禁任何买卖/加减仓/目标价/仓位建议, "
@@ -612,7 +649,8 @@ async def daily_review(force: bool = False):
         f"- sectors 的 name 只能取自我的持仓板块: {allowed_sectors}。不许新增其它板块。\n"
         "- summary 只讲我上面这几只持仓的整体表现, 不要扯无关的大盘/银行热点。\n"
         "- 新闻只用来给【我的持仓】做归因和填 global/tomorrow, 不能把新闻里的别家公司写进 holdings/sectors。\n"
-        "holdings 挑今天动得明显的 3-6 只即可。why/note 要具体, 料不足写'暂无明确催化'不编造。"
+        "holdings 从全部持仓(含基金/加密/机器人)里挑今天动得明显的 4-8 只; 基金的归因可结合其名称指向的行业/底层板块。"
+        "why/note 要具体, 料不足写'暂无明确催化'不编造。"
     )
 
     from services import llm_client
@@ -640,13 +678,16 @@ async def daily_review(force: bool = False):
     # 硬过滤: holdings/sectors 只保留真实持仓/板块, % 用实测覆盖 (LLM 只贡献 why/note),
     # 彻底杜绝 LLM 把新闻里的别家公司(如建设银行)塞进来。
     move_by_name = {m["name"]: m for m in hold_moves}
+    move_by_name.update({m["name"]: m for m in other_moves})
     holdings_out = []
     for h in (parsed.get("holdings") or []):
         nm = (h.get("name") or "").strip()
         if nm not in move_by_name:
             continue
-        cp = move_by_name[nm]["change_pct"]
-        holdings_out.append({"name": nm, "change": (f"{cp:+.2f}%" if cp is not None else "—"),
+        m = move_by_name[nm]
+        cp = m["change_pct"]
+        holdings_out.append({"name": nm,
+                             "change": (f"{cp:+.2f}%{m.get('suffix') or ''}" if cp is not None else "—"),
                              "why": str(h.get("why") or "").strip()})
     sec_by_name = {s["name"]: s for s in held_sectors}
     sectors_out = []
@@ -659,17 +700,18 @@ async def daily_review(force: bool = False):
                             "note": str(s.get("note") or "").strip()})
 
     # summary 用实测确定性生成 (LLM 总览总爱扯无关热点), 叙事交给每只的 why
-    vals = [m for m in hold_moves if m["change_pct"] is not None]
+    vals = [m for m in (hold_moves + other_moves) if m["change_pct"] is not None
+            and m.get("cls") != "机器人"]     # 机器人是累计口径, 不进"今日"涨跌统计
     ups = sum(1 for m in vals if m["change_pct"] > 0)
     downs = sum(1 for m in vals if m["change_pct"] < 0)
-    det = f"{len(hold_moves)} 只持仓 · {ups} 涨 {downs} 跌"
+    det = f"{len(vals)} 项持仓有今日数据 · {ups} 涨 {downs} 跌"
     if vals:
         top = max(vals, key=lambda m: m["change_pct"])
         bot = min(vals, key=lambda m: m["change_pct"])
         if top["change_pct"] > 0:
-            det += f" · 领涨 {top['name']}{top['change_pct']:+.1f}%"
+            det += f" · 领涨 {top['name']}{top['change_pct']:+.1f}%{top.get('suffix') or ''}"
         if bot["change_pct"] < 0:
-            det += f" · 领跌 {bot['name']}{bot['change_pct']:+.1f}%"
+            det += f" · 领跌 {bot['name']}{bot['change_pct']:+.1f}%{bot.get('suffix') or ''}"
 
     from datetime import datetime, timezone, timedelta
     now_cst = (datetime.now(timezone.utc) + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M")
