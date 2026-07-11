@@ -17,6 +17,7 @@ from typing import Any
 
 
 SYSTEM_PROMPT = """你是 A 股持仓盘前信息助手。每天开盘前，基于某只持仓近期的新闻 / 公告 / K 线 / 基本面健康度，做一份**客观信息摘要 + 风险提示**。
+标的可能是个股，也可能是行业/主题 ETF——ETF 的要点侧重其跟踪主题的板块消息、资金动向与指数位置，基本面/公告缺失属正常。
 
 **最重要的规则：只做信息汇总和风险提示，绝不给出买入 / 卖出 / 加仓 / 减仓 / 调档位 / 抄底 / 止盈止损等任何操作建议或价位指令。** 用户自己做决策，你只负责把今天该知道的事讲清楚。
 
@@ -119,18 +120,21 @@ def _strip_to_json(text: str) -> str:
 
 async def generate_briefing_for_stock(stock_code: str, stock_name: str,
                                       cost_price: float, shares: int,
-                                      current_price: float) -> dict:
-    """Build briefing for one stock. Returns dict with verdict + metadata."""
+                                      current_price: float,
+                                      sector_hint: str = "") -> dict:
+    """Build briefing for one stock/场内ETF. sector_hint: ETF 传主题词(半导体设备/通信…)当行业。"""
     from services.market_data import get_historical_data, get_stock_sector
     from services.news import get_stock_news, get_sector_news, get_stock_announcements
     from services.fundamental_score import fetch_health_snapshot
     from services.llm_client import call_claude
 
-    # 先拿真实行业(修掉硬编码"有色金属"), 再据此拉对应行业新闻
-    try:
-        sector = await get_stock_sector(stock_code)
-    except Exception:
-        sector = ""
+    # 先拿真实行业(修掉硬编码"有色金属"), 再据此拉对应行业新闻; ETF 直接用主题词
+    sector = sector_hint
+    if not sector:
+        try:
+            sector = await get_stock_sector(stock_code)
+        except Exception:
+            sector = ""
 
     # Gather inputs concurrently
     hist_task = get_historical_data(stock_code)
@@ -196,15 +200,33 @@ async def generate_briefing_for_stock(stock_code: str, stock_name: str,
 
 
 async def generate_all_briefings() -> list[dict]:
-    """Generate briefings for every A-share holding. Saves each to DB."""
-    from database import get_all_holdings, save_briefing
+    """Generate briefings for every A-share holding + 场内 ETF 持仓. Saves each to DB."""
+    from database import get_all_holdings, save_briefing, list_external_assets, list_external_actions
     from services.market_data import get_realtime_quotes, is_a_share
+    from services.external_assets import _is_onchain_etf, fund_theme_word
+    from services.external_ledger import compute_external_state
 
     holdings = [h for h in await get_all_holdings()
                 if is_a_share(h["stock_code"]) and (h.get("shares") or 0) > 0]
-    if not holdings:
+    # 场内 ETF 持仓(双账本): 成本用摊薄口径(与券商一致), 主题词当行业拉板块新闻
+    etfs = []
+    try:
+        for x in await list_external_assets():
+            code = str(x.get("code") or "")
+            if x.get("asset_type") != "FUND" or not _is_onchain_etf(code):
+                continue
+            st = compute_external_state(await list_external_actions(x["id"]), "FUND")
+            sh = float(st.get("shares") or 0)
+            if sh <= 0:
+                continue
+            etfs.append({"code": code, "name": x.get("name") or code, "shares": sh,
+                         "cost_price": (float(st.get("diluted_cost") or 0) / sh) if sh else 0,
+                         "theme": fund_theme_word(x.get("name") or "")})
+    except Exception as e:
+        print(f"[briefing] etf holdings scan failed: {e}")
+    if not holdings and not etfs:
         return []
-    codes = [h["stock_code"] for h in holdings]
+    codes = [h["stock_code"] for h in holdings] + [e["code"] for e in etfs]
     quotes = await get_realtime_quotes(codes)
 
     today = (datetime.now(timezone.utc) + timedelta(hours=8)).strftime("%Y-%m-%d")
@@ -227,4 +249,20 @@ async def generate_all_briefings() -> list[dict]:
             results.append(briefing)
         except Exception as e:
             print(f"[briefing] {code} failed: {e}")
+    for e in etfs:
+        code = e["code"]
+        q = quotes.get(code) or {}
+        cur = q.get("price") or 0
+        if cur <= 0:
+            cur = e["cost_price"]
+        try:
+            briefing = await generate_briefing_for_stock(
+                code, e["name"], cost_price=e["cost_price"], shares=int(e["shares"]),
+                current_price=cur, sector_hint=e["theme"])
+            briefing["briefing_date"] = today
+            briefing["asset_class"] = "etf"
+            await save_briefing(code, today, json.dumps(briefing, ensure_ascii=False))
+            results.append(briefing)
+        except Exception as ex:
+            print(f"[briefing] etf {code} failed: {ex}")
     return results

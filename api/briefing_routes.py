@@ -35,9 +35,17 @@ async def get_today_briefings():
             rows = await get_briefings_for_date(latest)
             used_date = latest
 
-    # 用户清仓后, 历史日期的简报记录还在; 按当前 holdings 过滤掉已清仓的
-    from database import get_all_holdings
+    # 用户清仓后, 历史日期的简报记录还在; 按当前在持过滤(双账本: A股 + 场内ETF)
+    from database import get_all_holdings, list_external_assets
     active_codes = {h["stock_code"] for h in await get_all_holdings() if (h.get("shares") or 0) > 0}
+    try:
+        from services.external_assets import _is_onchain_etf
+        for x in await list_external_assets():
+            code = str(x.get("code") or "")
+            if x.get("asset_type") == "FUND" and _is_onchain_etf(code) and float(x.get("shares") or 0) > 0:
+                active_codes.add(code)
+    except Exception:
+        pass
 
     briefings = []
     for r in rows:
