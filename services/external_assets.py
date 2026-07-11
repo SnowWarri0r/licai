@@ -292,3 +292,56 @@ async def get_crypto_quote(symbol: str) -> dict | None:
         data["price_cny"] = round(data["price"] * rate, 2)
         _crypto_cache[symbol] = (data, time.time())
     return data
+
+
+# ---------------------------------------------------------------------------
+# 场内 ETF 份额拆分检测: raw 与 qfq 日K对比
+# ---------------------------------------------------------------------------
+
+def _split_factor_from_series(dates: list, raw: list[float], qfq: list[float]) -> tuple[str, float] | None:
+    """纯计算: 拆分日 raw 收盘出现 ~1/F 断崖而 qfq 平滑(复权已抹平),
+    factor = (raw[t-1]/raw[t]) / (qfq[t-1]/qfq[t]) 恰好把当日市场涨跌约掉,
+    剩下的就是拆分比。返回最近一次 (拆分日, F); F 贴近整数(±2%)时取整。"""
+    hit = None
+    for i in range(1, min(len(raw), len(qfq))):
+        if not (raw[i] and raw[i - 1] and qfq[i] and qfq[i - 1]):
+            continue
+        f = (raw[i - 1] / raw[i]) / (qfq[i - 1] / qfq[i])
+        if f >= 1.5:                       # 拆分(1拆2/3/...); 份额合并(F<1)极罕见, 先不自动入账
+            r = round(f)
+            if r >= 2 and abs(f - r) / f <= 0.02:
+                f = float(r)
+            hit = (str(dates[i])[:10], round(f, 4))
+    return hit
+
+
+def detect_etf_split(code: str, lookback_days: int = 30) -> tuple[str, float] | None:
+    """检测场内 ETF 近段是否发生份额拆分。无拆分返回 None;
+    数据拉不到抛异常(与'没有拆分'区分开, 调用方按失败重试)。"""
+    for k in list(os.environ):
+        if "proxy" in k.lower():
+            os.environ.pop(k, None)
+    if True:
+        import akshare as ak
+        from datetime import date, timedelta
+        end = date.today().strftime("%Y%m%d")
+        start = (date.today() - timedelta(days=lookback_days)).strftime("%Y%m%d")
+
+        def _hist(adjust):
+            # 东财历史K接口偶发 RemoteDisconnected/空响应, 重试 4 次
+            for i in range(4):
+                try:
+                    df = ak.fund_etf_hist_em(symbol=code, period="daily",
+                                             start_date=start, end_date=end, adjust=adjust)
+                    if df is not None and len(df) >= 2:
+                        return df
+                except Exception:
+                    pass
+                time.sleep(0.8 * (i + 1))
+            raise RuntimeError(f"etf hist {code} adjust={adjust!r} 拉取失败/为空")
+        raw = _hist("")
+        qfq = _hist("qfq")
+        if len(raw) != len(qfq):
+            raise RuntimeError(f"etf hist {code} raw/qfq 长度不一致 {len(raw)}/{len(qfq)}")
+        return _split_factor_from_series(
+            list(raw["日期"]), [float(v) for v in raw["收盘"]], [float(v) for v in qfq["收盘"]])
