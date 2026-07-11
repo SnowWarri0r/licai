@@ -116,3 +116,25 @@ def test_etf_xray_industry_overrides_stock_name():
     # 行业查不到(港股/北交所)才允许名字兜底
     assert _matches("通信", "非A股/未知", "中国通信服务")
     assert not _matches("通信", "非A股/未知", "腾讯控股")
+
+
+def test_curve_share_balance_split_and_final_scale():
+    """曲线份额时间线: SPLIT 折算余额; 折算到现行标度后与前复权价同标度。"""
+    from services.portfolio_curve import share_balance_series, adjust_to_final_scale
+    dates = ["2026-01-05", "2026-01-06", "2026-01-07"]
+    acts = [
+        {"id": 1, "action_type": "BUY", "shares": 100, "trade_date": "2026-01-05", "status": "confirmed"},
+        {"id": 2, "action_type": "SPLIT", "shares": 2, "trade_date": "2026-01-07", "status": "confirmed"},
+    ]
+    bal = share_balance_series(acts, dates)
+    assert bal == [100, 100, 200]
+    assert adjust_to_final_scale(acts, dates, bal) == [200, 200, 200]
+
+
+def test_curve_twr_ignores_flows():
+    """TWR: 纯入金不产生收益; 无流量时等于市值涨幅。"""
+    from services.portfolio_curve import twr_series, max_drawdown
+    assert twr_series([100, 200, 300], [0, 100, 100]) == [100, 100.0, 100.0]
+    tw = twr_series([100, 200], [0, 0])
+    assert abs(tw[-1] - 200) < 1e-6
+    assert max_drawdown([100, 120, 90, 110]) == -25.0

@@ -1385,6 +1385,13 @@ class ThesisIn(BaseModel):
     name: str = ""
 
 
+@router.get("/curve")
+async def portfolio_curve(days: int = 120):
+    """组合净值曲线: TWR(时间加权收益) + 沪深300 基准 + 区间收益/最大回撤。"""
+    from services.portfolio_curve import build_curve
+    return await build_curve(days)
+
+
 @router.get("/thesis")
 async def list_all_theses():
     """所有持仓逻辑记录(code→thesis), 前端一次拉全用于标记哪些已写。"""

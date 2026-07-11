@@ -536,6 +536,13 @@ async def news_digest(force: bool = False, max_items: int = 80):
 _REVIEW_TTL = 1800  # 30min; force=true 强制重算
 
 
+@router.get("/events")
+async def portfolio_events():
+    """持仓事件日历: A股直持 + 场内ETF前十大成分的 财报披露/除权除息/解禁 时间轴。"""
+    from services.event_calendar import upcoming_events
+    return await upcoming_events()
+
+
 @router.get("/daily-review")
 async def daily_review(force: bool = False):
     """收盘复盘日报: A 股持仓今日涨跌 + 板块异动 + 全球快讯 → LLM 归因复盘。

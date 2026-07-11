@@ -38,7 +38,8 @@ export default function App() {
   const [lastUpdate, setLastUpdate] = useState(null)
   const _VIEWS = ['portfolio', 'sector', 'rankings', 'macro', 'news', 'review', 'ask', 'settings']
   const [view, _setView] = useState(() => {
-    const h = (window.location.hash || '').slice(1)
+    // 支持 #view?k=v 形式的 deep-link(子参数由各组件自行读取)
+    const h = (window.location.hash || '').slice(1).split('?')[0]
     return _VIEWS.includes(h) ? h : 'portfolio'
   })
   const setView = (v) => { _setView(v); try { window.location.hash = v } catch {} }
