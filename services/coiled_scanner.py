@@ -259,14 +259,20 @@ async def _stage2(c: dict) -> dict | str:
         return "箱体过宽"
     if sd > 2.4 and not (converging and sd <= 3.6):
         return "宽幅震荡(非安静横盘)"
-    # 平(不对称): 重心上移=已在启动, 卡严(+5%); 重心缓慢下移=缓跌收敛/下降楔形, 属洗盘蓄势变体,
-    # 容忍到-12%; 更陡的就是阴跌趋势不是盘整
+    # 平(不对称): 重心上移=已在启动, 卡严(+5%); 重心缓慢下移只在"波动同时收敛"时算
+    # 洗盘蓄势变体(下降楔形, 容忍到-12%)——不收敛的缓跌就是阴跌趋势, 不是盘整
     half_c = len(prev_c) // 2
     drift = ((sum(prev_c[half_c:]) / (len(prev_c) - half_c)) / (sum(prev_c[:half_c]) / half_c) - 1) * 100
     if drift > 5:
         return "重心上移(已非蓄势)"
     if drift < -12:
         return "阴跌下行(非横盘)"
+    if drift < -4 and not converging:
+        return "缓跌未收敛(阴跌非蓄势)"
+    # 近期击穿: 近10日曾明显跌穿前段箱体下沿(哪怕弹回来了)——基座已破, 弹回属修复不属蓄势
+    pre_low = min(closes[-40:-10]) if len(closes) >= 40 else bl
+    if min(closes[-10:]) < pre_low * 0.965:
+        return "近期击穿箱体后反弹(基座已破)"
     last_close = closes[-1]
     base_vol = sum(prev_v[:-3]) / max(len(prev_v) - 3, 1)
     if base_vol <= 0:
@@ -287,7 +293,9 @@ async def _stage2(c: dict) -> dict | str:
             days_flat += 1
         else:
             break
-    if days_flat < 20:                                 # 真横盘至少一个月
+    # 近40日收盘天然全在箱体内(上下沿即取自这40日), days_flat 恒≥40;
+    # 真闸在"箱体外还要再往前横": ≥45 = 箱体窗口外至少再横5日
+    if days_flat < 45:
         return "横盘太短"
     # 缩量蓄势: 箱体后半均量 / 前半均量 (<1 = 越盘越缩)
     half = len(prev_v) // 2
@@ -301,11 +309,15 @@ async def _stage2(c: dict) -> dict | str:
     elif width > 25 or sd > 2.4:
         pos_tag = "波动收敛·" + pos_tag       # 高波动品种, 靠相对自身收敛过闸
     tag = pos_tag + ("·量在暖" if warm >= 1.3 else "")
-    # 蓄势质量分(0-105): 横盘越久+窄(或相对收敛深)+越缩量+越贴上沿+量开始暖+机构覆盖
-    narrow_score = ((25 - width) / 25 * 20 if width <= 25
-                    else (12 if sd_prior and sd <= sd_prior * 0.65 else 8))
-    score = (min(days_flat, 60) / 60 * 30
-             + narrow_score
+    # 蓄势质量分(0-115), 权重对齐 AI 审图口径(AI 杀单前两大理由=重心下移/未收敛):
+    # 平度+收敛深度是主轴, 窄度/时长降权; 时长只数箱体窗口外的有效段(窗口内恒满不给分)
+    narrow_score = ((25 - width) / 25 * 15 if width <= 25
+                    else (9 if sd_prior and sd <= sd_prior * 0.65 else 5))
+    flat_score = max(0.0, 1 - abs(drift) / 8) * 15                  # 重心越平越高, |8%|归零
+    conv_score = (max(0.0, min(1.0, (1 - sd / sd_prior) / 0.5)) * 15
+                  if sd_prior else 7)                                # 比前段安静50%=满分
+    score = (min(max(days_flat - 40, 0), 40) / 40 * 20
+             + narrow_score + flat_score + conv_score
              + (18 if contraction <= 0.8 else 12 if contraction <= 0.95 else 6 if contraction <= 1.1 else 0)
              + (15 if dist >= -3 else 10 if dist >= -8 else 5)
              + (12 if 1.3 <= warm <= 3 else 6 if warm >= 1.1 else 0)
@@ -419,15 +431,21 @@ async def scan_coiled(force: bool = False) -> dict:
     # 判不符合的剔除并计数; LLM 不可用时 fail-open 保留规则结果并标注未复核。
     # 送审位按行业限流(≤3只/行业): 评分尺子天然偏爱低波动行业(银行/基建), 限流保证
     # 半导体/医药/军工这类高波动行业的候选同样拿到 AI 复核位
-    picked, per_ind = [], {}
-    for r in rows:
-        k = r.get("行业") or "?"
-        if per_ind.get(k, 0) >= 3:
-            continue
-        per_ind[k] = per_ind.get(k, 0) + 1
-        picked.append(r)
-        if len(picked) >= 30:
-            break
+    # 行业限流只在送审位拥挤时启用(它的作用是防评分尺子偏爱的行业占满坑位;
+    # 候选本来就装得下时全员送审, 白杀没有意义)
+    if len(rows) <= 50:
+        picked = rows
+    else:
+        picked, per_ind = [], {}
+        for r in rows:
+            k = r.get("行业") or "?"
+            if per_ind.get(k, 0) >= 3:
+                continue
+            per_ind[k] = per_ind.get(k, 0) + 1
+            picked.append(r)
+            if len(picked) >= 50:
+                break
+        rejected["规则通过但未获送审位(评分排序+行业限流)"] = len(rows) - len(picked)
     rows = picked
     ai_sem = asyncio.Semaphore(4)
 
@@ -454,7 +472,7 @@ async def scan_coiled(force: bool = False) -> dict:
            "ai_dropped": dropped[:12],   # AI 判不符合的边缘候选(带分数判词), 折叠展示供人工过目
            "scanned": len(pool), "universe": len(universe), "rejected": dict(rejected),
            "note": "横盘蓄势观察池: 龙头池(百亿+≥30家基金+盈利, 机构重仓≥60家免盈利审查, 全市场含北交所)"
-                   " → 规则召回仍在箱体内的安静横盘(窄/平/静/横盘≥20日, 未突破——已突破/已启动的判偏晚剔除;"
+                   " → 规则召回仍在箱体内的安静横盘(窄/平/静/横盘≥45日, 缓跌须收敛、近期击穿箱体的剔除, 未突破——已突破/已启动的判偏晚剔除;"
                    " 高波动成长股按'比自己此前安静'的收敛度判, 送审位按行业限流) → AI看图按'安静蓄势基座'"
                    "贴合度精判。标签: 贴上沿/箱体中部/箱体下部, 波动收敛=高波动品种靠自身收敛过闸, "
                    "·量在暖=近3日量能温和转暖(蓄势末端特征), ·中报预喜/预警=最新报告期业绩预告凭据"
