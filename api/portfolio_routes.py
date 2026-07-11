@@ -480,19 +480,36 @@ async def trade_journal(limit: int = 80):
         except Exception:
             fq = None
         fcur = float((fq or {}).get("nav") or (fq or {}).get("est_nav") or 0)
-        for act in await list_external_actions(a["id"]):
-            if (act.get("status") or "confirmed") != "confirmed":
-                continue
+        acts = [x for x in await list_external_actions(a["id"])
+                if (x.get("status") or "confirmed") == "confirmed"]
+        # 份额拆分调整: 每笔成交按其后所有拆分 价格÷F/份额×F, 与现价同标度 ——
+        # 否则拆分前买入对现价会算出 -70% 假回撤喂给 AI 复盘, 轮次份额也对不上
+        fsplits = [(str(x.get("trade_date") or "")[:10], float(x.get("shares") or 0))
+                   for x in acts if (x.get("action_type") or "").upper() == "SPLIT"
+                   and float(x.get("shares") or 0) > 0]
+
+        def _split_factor_after(d: str) -> float:
+            f = 1.0
+            for sd, sf in fsplits:
+                if d < sd:
+                    f *= sf
+            return f
+
+        for act in acts:
             at = (act.get("action_type") or "").upper()
             kind = "buy" if at in ("BUY", "ADD") else ("sell" if at == "REDEEM" else None)
             price = float(act.get("unit_price") or 0)
             if not kind or price <= 0:
                 continue
+            d = (act.get("trade_date") or "")[:10]
+            fac = _split_factor_after(d)
+            price = price / fac
+            shares = abs(float(act.get("shares") or 0)) * fac
             pct = round((fcur - price) / price * 100, 2) if fcur else None
             hit = ((fcur > price) if kind == "buy" else (fcur < price)) if fcur else None
             trades.append({
-                "date": (act.get("trade_date") or "")[:10], "code": fcode, "name": fname,
-                "kind": kind, "price": round(price, 4), "shares": abs(float(act.get("shares") or 0)),
+                "date": d, "code": fcode, "name": fname,
+                "kind": kind, "price": round(price, 4), "shares": shares,
                 "current": round(fcur, 4) if fcur else None, "pct": pct, "hit": hit,
                 "asset_class": cls, "amount": round(float(act.get("amount") or 0), 2),
             })

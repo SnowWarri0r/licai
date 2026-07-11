@@ -444,7 +444,25 @@ async def sentiment_ai(force: bool = False):
                 held_secs.add(sec)
         except Exception:
             pass
-    held_line = ("我持仓所在板块: " + "、".join(sorted(held_secs))) if held_secs else "（无 A 股持仓）"
+    # 场内 ETF 持仓 → 主题词(半导体设备/通信/科创50…), A股清仓后持仓关联不落空
+    etf_themes = set()
+    try:
+        from database import list_external_assets
+        from services.external_assets import fund_theme_word, _is_onchain_etf
+        for x in await list_external_assets():
+            if x.get("asset_type") == "FUND" and float(x.get("shares") or 0) > 0 \
+                    and _is_onchain_etf(str(x.get("code") or "")):
+                w = fund_theme_word(x.get("name") or "")
+                if w:
+                    etf_themes.add(w)
+    except Exception:
+        pass
+    parts = []
+    if held_secs:
+        parts.append("我持仓所在板块: " + "、".join(sorted(held_secs)))
+    if etf_themes:
+        parts.append("我持仓 ETF 主题: " + "、".join(sorted(etf_themes)))
+    held_line = "; ".join(parts) if parts else "（无 A 股/ETF 持仓）"
 
     data_block = (
         f"数据日期 {s.get('date')}\n"

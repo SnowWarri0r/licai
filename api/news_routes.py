@@ -368,7 +368,8 @@ _PORTFOLIO_SECTOR_KW = _SMALL_METAL_KW + [
 
 
 async def _portfolio_keywords() -> set:
-    """关联判定关键词 = 固定板块词 + 当前在持股票名(让点名个股的快讯也命中)。"""
+    """关联判定关键词 = 固定板块词 + 在持股票名 + 在持基金/ETF 主题词(半导体设备/黄金/通信…)。
+    持仓不止 A股: ETF 用户的关联标记靠主题词命中。"""
     kws = set(_PORTFOLIO_SECTOR_KW)
     try:
         for h in await get_all_holdings():
@@ -376,6 +377,16 @@ async def _portfolio_keywords() -> set:
                 nm = (h.get("stock_name") or "").strip()
                 if len(nm) >= 2:
                     kws.add(nm)
+    except Exception:
+        pass
+    try:
+        from database import list_external_assets
+        from services.external_assets import fund_theme_word
+        for x in await list_external_assets():
+            if x.get("asset_type") == "FUND" and float(x.get("shares") or 0) > 0:
+                w = fund_theme_word(x.get("name") or "")
+                if w:
+                    kws.add(w)
     except Exception:
         pass
     return kws

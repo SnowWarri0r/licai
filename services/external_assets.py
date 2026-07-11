@@ -345,3 +345,18 @@ def detect_etf_split(code: str, lookback_days: int = 30) -> tuple[str, float] | 
             raise RuntimeError(f"etf hist {code} raw/qfq 长度不一致 {len(raw)}/{len(qfq)}")
         return _split_factor_from_series(
             list(raw["日期"]), [float(v) for v in raw["收盘"]], [float(v) for v in qfq["收盘"]])
+
+
+def fund_theme_word(name: str) -> str:
+    """从基金名提炼主题词(半导体设备ETF华夏→半导体设备, 华夏黄金ETF联接C→黄金):
+    供资讯关联/情绪复盘把 ETF 持仓映射到板块主题。提炼不出有效词返回空。"""
+    n = (name or "").strip()
+    # 去基金公司名(常见前后缀均可能出现)
+    for co in ("华夏", "国泰", "易方达", "南方", "华安", "嘉实", "博时", "富国", "汇添富", "广发",
+               "天弘", "招商", "鹏华", "大成", "华泰柏瑞", "国联安", "银华", "工银", "建信", "中欧", "摩根"):
+        n = n.replace(co, "")
+    n = re.sub(r"(ETF|LOF|QDII|联接|指数|增强|发起式|股票型?|混合型?|债券型?|人民币|美元|现汇|现钞|型)", "", n)
+    n = re.sub(r"[()（）]", "", n)
+    n = re.sub(r"[ABCE]$", "", n.strip())
+    n = n.strip()
+    return n if len(n) >= 2 else ""
