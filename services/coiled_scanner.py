@@ -114,6 +114,7 @@ def _forecast_map() -> dict:
         period = max(e for e in ends if e <= d.strftime("%Y%m%d"))
         label = {"0331": "一季报", "0630": "中报", "0930": "三季报", "1231": "年报"}[period[4:]]
         df = ak.stock_yjyg_em(date=period)
+        m["_期"] = label                        # 当期标签, _attach_forecast 兜底文案用
         prio = {"归属于上市公司股东的净利润": 0, "净利润": 1, "扣除非经常性损益后的净利润": 2}
         for _, r in (df.iterrows() if df is not None else []):
             code = str(r["股票代码"]).zfill(6)
@@ -134,19 +135,26 @@ def _forecast_map() -> dict:
 
 
 def _attach_forecast(rows: list[dict], fc_map: dict) -> None:
-    """给候选行挂业绩预告凭据: 展示字段 + 预喜/预警进标签, 温和计分(±6, 蓄势分主体仍是结构)。"""
+    """给候选行挂业绩凭据: 当期预告(预喜/预警进标签, ±6温和计分, 蓄势分主体仍是结构);
+    未披露预告的退一级展示最近一期已披露实绩同比(旧信息, 只展示不计分)。"""
+    plabel = fc_map.get("_期") or "当期"
     for r in rows:
         fc = fc_map.get(r["code"])
-        if not fc:
+        if fc:
+            amp = f" {fc['幅度%']:+.0f}%" if fc.get("幅度%") is not None else ""
+            r["业绩预告"] = f"{fc['期']}{fc['类型']}{amp} ({fc['日期']}披露)"
+            if fc["类型"] in _FC_POS:
+                r["评分"] += 6
+                r["标签"] += f"·{fc['期']}预喜"
+            elif fc["类型"] in _FC_NEG:
+                r["评分"] -= 6
+                r["标签"] += f"·{fc['期']}预警"
             continue
-        amp = f" {fc['幅度%']:+.0f}%" if fc.get("幅度%") is not None else ""
-        r["业绩预告"] = f"{fc['期']}{fc['类型']}{amp} ({fc['日期']}披露)"
-        if fc["类型"] in _FC_POS:
-            r["评分"] += 6
-            r["标签"] += f"·{fc['期']}预喜"
-        elif fc["类型"] in _FC_NEG:
-            r["评分"] -= 6
-            r["标签"] += f"·{fc['期']}预警"
+        parts = [f"净利同比{r['净利同比%']:+.1f}%" if r.get("净利同比%") is not None else "",
+                 f"营收同比{r['营收同比%']:+.1f}%" if r.get("营收同比%") is not None else ""]
+        parts = [p for p in parts if p]
+        if parts:
+            r["业绩预告"] = f"{plabel}预告未披露 · 最近实绩 " + " ".join(parts)
 
 
 def _build_universe(rows: list[dict], fund_map: dict | None = None) -> list[dict]:
@@ -450,7 +458,8 @@ async def scan_coiled(force: bool = False) -> dict:
                    " 高波动成长股按'比自己此前安静'的收敛度判, 送审位按行业限流) → AI看图按'安静蓄势基座'"
                    "贴合度精判。标签: 贴上沿/箱体中部/箱体下部, 波动收敛=高波动品种靠自身收敛过闸, "
                    "·量在暖=近3日量能温和转暖(蓄势末端特征), ·中报预喜/预警=最新报告期业绩预告凭据"
-                   "(预喜+6分/预警-6分, 蓄势分主体仍是结构; 无标注=未披露, 预告只对大幅变动强制, 不代表业绩差)。"
+                   "(预喜+6分/预警-6分, 蓄势分主体仍是结构; 无标注=未披露, 预告只对大幅变动强制, 不代表业绩差,"
+                   " 此时业绩预告字段退一级展示最近一期已披露实绩同比, 旧信息只展示不计分)。"
                    "纯客观结构描述, 横盘可能向下解决而非向上, 不构成任何买卖建议。"}
     _cache["coiled"] = (out, time.time())
     return out
