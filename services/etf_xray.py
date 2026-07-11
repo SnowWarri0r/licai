@@ -3,6 +3,7 @@
 用途: 避雷"标榜红利/电器, 实际重仓别的"的挂羊头 ETF。
 - 每个主题只对比规模最大的前 N 只(小规模 ETF 流动性/清盘风险另算, 不进对比池)
 - 成分股行业用全 A 快照(EM clist f100)映射; 主题↔行业按包含+同义词表匹配
+- 行业已知时只认行业, 股票名回避(名字挂羊头正是要抓的); 行业查不到才用名字兜底
 - 宽基(科创50/沪深300…)与风格类(红利/低波/价值…)不适用行业口径, 明确标注只展示分布
 数据 = 基金季报(滞后至上一季度末), 纯客观结构展示, 不构成任何买卖建议。
 """
@@ -21,10 +22,10 @@ THEME_SYN: dict[str, list[str]] = {
     "半导体": ["半导体", "电子化学品"],
     "半导体设备": ["半导体"],
     "芯片": ["半导体"],
-    "通信": ["通信设备", "通信服务", "元件"],
+    "通信": ["通信设备", "通信服务"],
     "电器": ["白色家电", "黑色家电", "小家电", "厨卫电器", "家电零部件", "照明设备"],
     "家电": ["白色家电", "黑色家电", "小家电", "厨卫电器", "家电零部件", "照明设备"],
-    "创新药": ["化学制药", "生物制品", "中药", "医疗服务"],
+    "创新药": ["化学制药", "生物制品", "医疗服务"],
     "医药": ["化学制药", "生物制品", "中药", "医疗服务", "医药商业"],
     "医疗": ["医疗器械", "医疗服务"],
     "军工": ["航天装备", "航空装备", "地面兵装", "航海装备", "军工电子"],
@@ -178,15 +179,17 @@ def _theme_kws(theme: str) -> list[str]:
 
 
 def _matches(theme: str, industry: str, stock_name: str) -> bool:
-    if not industry and not stock_name:
-        return False
+    """行业已知时行业说了算(名字挂羊头正是要抓的对象, 股票名回避);
+    行业查不到(港股/北交所等不在 A 股行业表)才用股票名兜底。"""
     kws = _theme_kws(theme)
+    if industry and industry != "非A股/未知":
+        for k in kws:
+            if k and (k in industry or industry in k):
+                return True
+        return bool(theme and (theme in industry or industry in theme))
     for k in kws:
-        if k and (k in industry or industry in k or k in stock_name):
+        if k and k in stock_name:
             return True
-    # 无同义词表时的兜底: 主题词与行业互相包含
-    if theme and industry and (theme in industry or industry in theme):
-        return True
     return bool(theme and theme in stock_name)
 
 
@@ -235,6 +238,11 @@ def analyze_etf(code: str, name: str = "", size_yi: float | None = None) -> dict
         out["主题匹配权重%"] = purity
         out["警示"] = ("贴题" if purity is None or purity >= 70
                        else "有偏离" if purity >= 50 else "偏离显著")
+        # 主题比行业分类更细(半导体设备/创新药…): 只能验证到大类, 说清天花板
+        kws = [k for k in dict.fromkeys(_theme_kws(theme)) if k]
+        if kws and not any(theme in k for k in kws):
+            out["note"] = (f"「{theme}」比季报行业分类更细: 只验证了成分股属于"
+                           f"{'、'.join(kws[:4])}大类, 大类内部更细的方向验证不了")
     else:
         out["主题匹配权重%"] = None
         out["警示"] = {"宽基指数": "宽基", "风格策略": "风格", "跨境商品债": "跨境/商品"}[ttype]
