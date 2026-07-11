@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { fetchJSON } from '../hooks/useApi'
+import { fetchJSON, MUTATED_EVENT } from '../hooks/useApi'
 import { fmtMoney, fmtPct, priceColor } from '../helpers'
 import Tooltip from './Tooltip'
 
@@ -50,7 +50,8 @@ export default function Dashboard({ holdings }) {
     }
     load()
     const t = setInterval(load, 30000)
-    return () => clearInterval(t)
+    window.addEventListener(MUTATED_EVENT, load)
+    return () => { clearInterval(t); window.removeEventListener(MUTATED_EVENT, load) }
   }, [])
 
   useEffect(() => {
@@ -70,7 +71,8 @@ export default function Dashboard({ holdings }) {
     load()
     // 24/7 crypto + OKX bots — faster refresh, server caches handle upstream rate limits
     const t = setInterval(load, 20000)
-    return () => clearInterval(t)
+    window.addEventListener(MUTATED_EVENT, load)
+    return () => { clearInterval(t); window.removeEventListener(MUTATED_EVENT, load) }
   }, [])
 
   useEffect(() => {
