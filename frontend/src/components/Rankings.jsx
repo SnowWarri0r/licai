@@ -7,6 +7,7 @@ const TABS = [
   { key: 'gainers', label: '涨幅榜' },
   { key: 'by_amount', label: '成交额榜' },
   { key: 'coiled', label: '横盘蓄势' },
+  { key: 'inst', label: '机构动向' },
 ]
 
 function pctColor(v) {
@@ -86,10 +87,17 @@ function StockPanel({ stock }) {
 }
 
 export default function Rankings() {
-  const [tab, setTab] = useState('gainers')
+  const [tab, setTab] = useState(() => {
+    // deep-link: #rankings?t=inst 直达指定页签
+    const q = new URLSearchParams((window.location.hash.split('?')[1] || ''))
+    const t = q.get('t')
+    return TABS.some(x => x.key === t) ? t : 'gainers'
+  })
   const [board, setBoard] = useState('全部')
   const [data, setData] = useState(null)
   const [coiled, setCoiled] = useState(null)
+  const [inst, setInst] = useState(null)
+  const [instSide, setInstSide] = useState('net_buy')   // net_buy | net_sell
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState(false)
   const [selected, setSelected] = useState(null)
@@ -98,14 +106,18 @@ export default function Rankings() {
     setLoading(true); setErr(false)
     const req = tab === 'coiled'
       ? fetchJSON('/api/market/coiled').then(d => { if (d.error) setErr(true); else setCoiled(d) })
+      : tab === 'inst'
+      ? fetchJSON('/api/market/inst-flow?top=40').then(d => { if (d.error) setErr(true); else setInst(d) })
       : fetchJSON('/api/market/rankings?limit=100').then(d => { if (d.error) setErr(true); else setData(d) })
     req.catch(() => setErr(true)).finally(() => setLoading(false))
   }
   useEffect(() => { load() }, [])
-  // 切到蓄势突破 tab 时懒加载(首扫服务端要 ~20s, 之后 10min 缓存秒回)
-  useEffect(() => { if (tab === 'coiled' && !coiled) load() }, [tab])   // eslint-disable-line react-hooks/exhaustive-deps
+  // 切到蓄势/机构 tab 时懒加载(服务端有缓存, 之后秒回)
+  useEffect(() => { if ((tab === 'coiled' && !coiled) || (tab === 'inst' && !inst)) load() }, [tab])   // eslint-disable-line react-hooks/exhaustive-deps
 
-  const rawList = tab === 'coiled' ? (coiled?.rows || []) : ((data && data[tab]) || [])
+  const rawList = tab === 'coiled' ? (coiled?.rows || [])
+    : tab === 'inst' ? ((inst && inst[instSide]) || []).map(r => ({ ...r, pct: r['距最近上榜%'] }))
+    : ((data && data[tab]) || [])
   const list = board === '全部' ? rawList : rawList.filter(r => boardOf(r.code) === board)
 
   return (
@@ -124,6 +136,17 @@ export default function Rankings() {
 
         {/* 板块筛选 */}
         <div className="flex items-center gap-1 px-3 py-1.5 border-b border-border-subtle flex-wrap">
+          {tab === 'inst' && (
+            <>
+              {[['net_buy', '机构净买入'], ['net_sell', '机构净卖出']].map(([k, lb]) => (
+                <button key={k} onClick={() => setInstSide(k)}
+                  className={`text-[11px] px-2 py-0.5 rounded ${instSide === k ? 'bg-accent/15 text-accent' : 'text-text-dim hover:text-text'}`}>
+                  {lb}
+                </button>
+              ))}
+              <span className="text-text-muted mx-0.5">·</span>
+            </>
+          )}
           {BOARDS.map(b => (
             <button key={b} onClick={() => setBoard(b)}
               className={`text-[11px] px-2 py-0.5 rounded ${board === b ? 'bg-accent/15 text-accent' : 'text-text-dim hover:text-text'}`}>
@@ -152,7 +175,11 @@ export default function Rankings() {
                     {r.is_new && <span className="text-[8.5px] px-1 rounded bg-accent/15 text-accent shrink-0" title="上市前5日无涨跌幅限制">新</span>}
                     {r.is_st && <span className="text-[8.5px] px-1 rounded bg-bear/15 text-bear-bright shrink-0">ST</span>}
                   </span>
-                  <span className="text-[10px] text-text-muted font-mono">{boardOf(r.code)} · {r.code} · {r['行业'] || '—'}</span>
+                  <span className="text-[10px] text-text-muted font-mono">
+                    {boardOf(r.code)} · {r.code} · {tab === 'inst'
+                      ? `净买 ${r['机构净买亿']}亿 · 上榜${r['上榜次数']}次`
+                      : (r['行业'] || '—')}
+                  </span>
                   {tab === 'coiled' && r['业绩预告'] && (
                     <span className="block text-[9.5px] text-text-dim truncate">{r['业绩预告']}</span>
                   )}
@@ -162,6 +189,8 @@ export default function Rankings() {
                   <span className="block text-[10px] text-text-muted font-mono">
                     {tab === 'coiled'
                       ? `${r['AI置信'] != null ? `AI${r['AI置信']}·` : ''}${r['标签'] || ''}·横盘${r['横盘日']}日`
+                      : tab === 'inst'
+                      ? `${(r['最近上榜'] || '').slice(5)}上榜·至今`
                       : tab === 'by_amount'
                       ? `${r['成交额亿']}亿`
                       : r.is_new ? '新股·无涨停'
@@ -196,6 +225,11 @@ export default function Rankings() {
           )}
         </div>
 
+        {tab === 'inst' && !loading && (
+          <div className="shrink-0 px-3 py-1.5 border-t border-border-subtle text-[9.5px] text-text-muted leading-relaxed">
+            近{inst?.window_days || 30}天龙虎榜机构专用席位统计（上榜日才披露，抽样非全量）· 主数字=现价较最近上榜日收盘的涨跌：净买入+至今大跌="机构接在山顶"，净卖出+至今大跌="机构跑对了" · 纯客观数字，非买卖建议
+          </div>
+        )}
         {tab === 'coiled' && !loading && list.length > 0 && (
           <div className="shrink-0 px-3 py-1.5 border-t border-border-subtle text-[9.5px] text-text-muted leading-relaxed">
             蓄势观察池：40日箱体窄/平/静（高波动成长股按"比自己此前安静"的收敛度判）、横盘≥45日、仍在箱体内（已突破=偏晚不进正选）· AI看图复核、送审位按行业限流 · 中报预喜/预警=业绩预告凭据（未披露预告的显示最近一期实绩同比，预告只对大幅变动强制）· 横盘也可能向下解决 · 仅客观结构，非买卖建议
