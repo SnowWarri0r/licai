@@ -824,7 +824,7 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
             from services import chart_render
             png = await asyncio.to_thread(
                 chart_render.render_trend_chart, allbars[-78:],
-                code=bare6, name="", structure=structure)
+                code=bare6, name=out.get("name") or "", structure=structure)
             if png:
                 out["chart_url"] = chart_render.save_png(png)
                 out["_chart_png_b64"] = _b64.b64encode(png).decode()
