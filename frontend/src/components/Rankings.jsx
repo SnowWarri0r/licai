@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { fetchJSON } from '../hooks/useApi'
 import ProKline from './ProKline'
 import StockAskModal from './StockAskModal'
@@ -7,6 +7,7 @@ const TABS = [
   { key: 'gainers', label: '涨幅' },
   { key: 'by_amount', label: '成交额' },
   { key: 'coiled', label: '蓄势' },
+  { key: 'unbroken', label: '强势' },
   { key: 'inst', label: '机构' },
   { key: 'earnings', label: '业绩' },
 ]
@@ -97,6 +98,7 @@ export default function Rankings() {
   const [board, setBoard] = useState('全部')
   const [data, setData] = useState(null)
   const [coiled, setCoiled] = useState(null)
+  const [unbroken, setUnbroken] = useState(null)
   const [inst, setInst] = useState(null)
   const [instSide, setInstSide] = useState('net_buy')   // net_buy | net_sell
   const [earnings, setEarnings] = useState(null)
@@ -104,11 +106,14 @@ export default function Rankings() {
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState(false)
   const [selected, setSelected] = useState(null)
+  const listRef = useRef([])
 
   const load = () => {
     setLoading(true); setErr(false)
     const req = tab === 'coiled'
       ? fetchJSON('/api/market/coiled').then(d => { if (d.error) setErr(true); else setCoiled(d) })
+      : tab === 'unbroken'
+      ? fetchJSON('/api/market/unbroken').then(d => { if (d.error) setErr(true); else setUnbroken(d) })
       : tab === 'inst'
       ? fetchJSON('/api/market/inst-flow?top=40').then(d => { if (d.error) setErr(true); else setInst(d) })
       : tab === 'earnings'
@@ -117,10 +122,30 @@ export default function Rankings() {
     req.catch(() => setErr(true)).finally(() => setLoading(false))
   }
   useEffect(() => { load() }, [])
-  // 切到蓄势/机构/业绩 tab 时懒加载(服务端有缓存, 之后秒回)
-  useEffect(() => { if ((tab === 'coiled' && !coiled) || (tab === 'inst' && !inst) || (tab === 'earnings' && !earnings)) load() }, [tab])   // eslint-disable-line react-hooks/exhaustive-deps
+  // 切到蓄势/强势/机构/业绩 tab 时懒加载(服务端有缓存, 之后秒回)
+  useEffect(() => { if ((tab === 'coiled' && !coiled) || (tab === 'unbroken' && !unbroken) || (tab === 'inst' && !inst) || (tab === 'earnings' && !earnings)) load() }, [tab])   // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ↑↓ 键在列表里快速翻K线(输入框聚焦时不劫持)
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
+      const tag = (document.activeElement?.tagName || '').toLowerCase()
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return
+      setSelected(prev => {
+        if (!listRef.current?.length) return prev
+        const arr = listRef.current
+        const i = arr.findIndex(x => x.code === prev?.code)
+        const ni = e.key === 'ArrowDown' ? Math.min(i + 1, arr.length - 1) : Math.max(i - 1, 0)
+        return arr[ni] || prev
+      })
+      e.preventDefault()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   const rawList = tab === 'coiled' ? (coiled?.rows || [])
+    : tab === 'unbroken' ? (unbroken?.rows || [])
     : tab === 'inst' ? ((inst && inst[instSide]) || []).map(r => ({ ...r, pct: r['距最近上榜%'] }))
     : tab === 'earnings' ? (
         (earnSide === '持仓关联'
@@ -130,6 +155,7 @@ export default function Rankings() {
       )
     : ((data && data[tab]) || [])
   const list = board === '全部' ? rawList : rawList.filter(r => boardOf(r.code) === board)
+  listRef.current = list
 
   return (
     <div className="bg-surface-2 border border-border rounded-xl overflow-hidden flex flex-col lg:flex-row h-[calc(100vh-11rem)] min-h-[480px]">
@@ -208,12 +234,19 @@ export default function Rankings() {
                   {tab === 'coiled' && r['业绩预告'] && (
                     <span className="block text-[9.5px] text-text-dim truncate">{r['业绩预告']}</span>
                   )}
+                  {tab === 'unbroken' && (
+                    <span className="block text-[9.5px] text-text-dim truncate">
+                      {r['标签']}{r['业绩预告'] ? ` · ${r['业绩预告']}` : ''}
+                    </span>
+                  )}
                 </span>
                 <span className="text-right shrink-0">
                   <span className={`block text-[12.5px] font-mono font-semibold ${pctColor(r.pct)}`}>{r.pct >= 0 ? '+' : ''}{r.pct}%</span>
                   <span className="block text-[10px] text-text-muted font-mono">
                     {tab === 'coiled'
                       ? `${r['AI置信'] != null ? `AI${r['AI置信']}·` : ''}${r['标签'] || ''}·横盘${r['横盘日']}日`
+                      : tab === 'unbroken'
+                      ? `距高${r['距60日高%']}%·超额${r['近10日超额%'] >= 0 ? '+' : ''}${r['近10日超额%']}%`
                       : tab === 'inst'
                       ? `${(r['最近上榜'] || '').slice(5)}上榜·至今`
                       : tab === 'earnings'
@@ -252,6 +285,11 @@ export default function Rankings() {
           )}
         </div>
 
+        {tab === 'unbroken' && !loading && (
+          <div className="shrink-0 px-3 py-1.5 border-t border-border-subtle text-[9.5px] text-text-muted leading-relaxed">
+            结构完好观察池（"K线没砸下去"）：龙头池 → 距60日高回撤≤12%、近10日无单日大阴（≥6%）、上行结构未破位、近10日不明显跑输沪深300（同期{unbroken?.bench10 >= 0 ? '+' : ''}{unbroken?.bench10}%）· ↑↓ 键快速翻K线 · 结构完好只是当下事实，随时可能被砸 · 纯客观结构，非买卖建议
+          </div>
+        )}
         {tab === 'inst' && !loading && (
           <div className="shrink-0 px-3 py-1.5 border-t border-border-subtle text-[9.5px] text-text-muted leading-relaxed">
             近{inst?.window_days || 30}天龙虎榜机构专用席位统计（上榜日才披露，抽样非全量）· 主数字=现价较最近上榜日收盘的涨跌：净买入+至今大跌="机构接在山顶"，净卖出+至今大跌="机构跑对了" · 纯客观数字，非买卖建议
