@@ -166,6 +166,40 @@ async def market_unbroken(force: bool = False):
     return await scan_unbroken(force)
 
 
+@router.get("/structure")
+async def market_structure(force: bool = False):
+    """结构观察池(蓄势+强势合并, 按行业分组): 哪个行业在孕育(蓄势), 哪个在推进(强势)。"""
+    import asyncio as _a
+    from services.coiled_scanner import scan_coiled, scan_unbroken
+    c, u = await _a.gather(scan_coiled(force), scan_unbroken(force))
+    rows, seen = [], {}
+    for r in (u.get("rows") or []) if isinstance(u, dict) else []:
+        rr = {**r, "phase": "强势"}
+        seen[r["code"]] = rr
+        rows.append(rr)
+    for r in (c.get("rows") or []) if isinstance(c, dict) else []:
+        if r["code"] in seen:
+            seen[r["code"]]["phase"] = "强势"      # 两边都命中按推进期算
+            continue
+        rows.append({**r, "phase": "蓄势"})
+    groups: dict = {}
+    for r in rows:
+        groups.setdefault(r.get("行业") or "其他", []).append(r)
+    glist = []
+    for ind, rs in groups.items():
+        rs.sort(key=lambda x: (0 if x["phase"] == "强势" else 1, -(x.get("评分") or 0)))
+        glist.append({"行业": ind, "n": len(rs),
+                      "n_强势": sum(1 for x in rs if x["phase"] == "强势"),
+                      "n_蓄势": sum(1 for x in rs if x["phase"] == "蓄势"),
+                      "rows": rs})
+    glist.sort(key=lambda g: (-g["n"], -g["n_强势"]))
+    return {"as_of": _time.strftime("%Y-%m-%d %H:%M"),
+            "groups": glist, "total": len(rows),
+            "note": "结构观察池 = 强势(K线没砸下去: 距60日高≤12%/近10日无大阴/上行结构未破/不跑输大盘)"
+                    " + 蓄势(安静横盘基座, AI看图复核)。按行业分组: 同行业强势多=主线在推进,"
+                    " 蓄势多=可能在孕育。纯客观结构描述, 随时可能被砸, 不构成任何买卖建议。"}
+
+
 @router.get("/coiled")
 async def market_coiled(force: bool = False):
     """横盘蓄势扫描: 长期箱体横盘 + 今日放量上攻(贴近/突破上沿)的结构筛选。10min 缓存。"""
