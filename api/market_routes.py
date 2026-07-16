@@ -153,6 +153,13 @@ async def lhb_detail(stock_code: str, date: str):
     return await lhb_seat_detail(bare, date)
 
 
+@router.get("/lhb-daily")
+async def lhb_daily_list():
+    """最新披露日的龙虎榜全榜单(每天哪些股票上榜, 按净买额排序)。"""
+    from services.lhb_detail import lhb_daily
+    return await lhb_daily()
+
+
 @router.get("/earnings")
 async def market_earnings(top: int = 100):
     """业绩预告看板: 最新报告期(中报)预喜/预警榜 + 持仓关联。"""
