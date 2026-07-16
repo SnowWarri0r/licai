@@ -15,7 +15,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Render star history SVG
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GitHub 2026-07 起 stargazers 端点仅限 owner/协作者个人凭证,
+          # Actions 安装令牌已被排除(403) → 优先用仓库 secret STAR_TOKEN
+          # (fine-grained PAT, 仅本仓库 + Metadata:Read-only)
+          GITHUB_TOKEN: ${{ secrets.STAR_TOKEN || secrets.GITHUB_TOKEN }}
         run: python3 scripts/star_chart.py docs/star-history.svg
       - name: Commit if changed
         run: |
