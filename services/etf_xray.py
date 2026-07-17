@@ -132,27 +132,52 @@ def industry_map() -> dict:
 
 
 def _fetch_holdings_sync(code: str) -> tuple[list[dict], str]:
-    """基金季报股票持仓(akshare)。返回 (rows, 季度标签); 拉不到返回 ([], "")。"""
-    import os
-    for k in list(os.environ):
-        if "proxy" in k.lower():
-            os.environ.pop(k, None)
-    import akshare as ak
+    """基金季报股票持仓(天天基金 fundf10 直连)。返回 (rows, 季度标签); 拉不到返回 ([], "")。
+
+    2026-07 起该接口必须带 Referer, 否则返回反爬页(akshare 版未带, 解析炸), 故自行请求。
+    """
+    import re
     from datetime import date
+    from io import StringIO
+
+    import pandas as pd
+    import requests
+    s = requests.Session()
+    s.trust_env = False
     for year in (date.today().year, date.today().year - 1):
         for attempt in range(3):
             try:
-                df = ak.fund_portfolio_hold_em(symbol=code, date=str(year))
-                if df is None or df.empty:
+                r = s.get("https://fundf10.eastmoney.com/FundArchivesDatas.aspx",
+                          params={"type": "jjcc", "code": code, "topline": "10000",
+                                  "year": str(year), "month": ""},
+                          headers={"Referer": f"https://fundf10.eastmoney.com/ccmx_{code}.html"},
+                          timeout=10)
+                r.encoding = "utf-8"
+                m = re.search(r'content:"(.*?)",arryear', r.text, re.S)
+                content = m.group(1) if m else ""
+                if not content or "暂无数据" in content:
                     break
-                latest = sorted(set(df["季度"]))[-1]
-                sub = df[df["季度"] == latest]
-                rows = [{"code": str(r["股票代码"]), "name": str(r["股票名称"]),
-                         "weight": float(r["占净值比例"])} for _, r in sub.iterrows()]
-                return rows, str(latest).replace("股票投资明细", "")
+                quarters = re.findall(r"(\d{4}年\d季度)股票投资明细", content)
+                tables = pd.read_html(StringIO(content), converters={"股票代码": str})
+                if not tables:
+                    break
+                df = tables[0]                      # 第一张表 = 该年最新一期
+                wcol = next((c for c in df.columns if "占净值" in str(c)), None)
+                if wcol is None:
+                    break
+                rows = []
+                for _, x in df.iterrows():
+                    try:
+                        w = float(str(x[wcol]).rstrip("%"))
+                    except (TypeError, ValueError):
+                        continue
+                    rows.append({"code": str(x["股票代码"]), "name": str(x["股票名称"]), "weight": w})
+                if rows:
+                    return rows, (quarters[0] if quarters else str(year))
+                break
             except Exception:
                 time.sleep(0.6 * (attempt + 1))
-        # 该年份重试尽 → 试上一年
+        # 该年份拿不到 → 试上一年
     return [], ""
 
 
