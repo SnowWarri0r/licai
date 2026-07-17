@@ -1412,6 +1412,16 @@ async def portfolio_correlation(days: int = 60):
     return await correlation_matrix(days)
 
 
+@router.get("/eod-summary")
+async def eod_summary(push: bool = False):
+    """收盘持仓小结(交易日15:10自动推飞书的那份)。push=1 手动补推一次。"""
+    if push:
+        from services.eod_summary import push_eod_summary
+        return await push_eod_summary()
+    from services.eod_summary import build_eod_summary
+    return await build_eod_summary()
+
+
 @router.get("/thesis")
 async def list_all_theses():
     """所有持仓逻辑记录(code→thesis), 前端一次拉全用于标记哪些已写。"""

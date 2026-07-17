@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { createChart, CandlestickSeries, HistogramSeries, LineSeries, CrosshairMode, LineStyle } from 'lightweight-charts'
 import { fetchJSON } from '../hooks/useApi'
 import { MinuteChart } from './StockKlineModal'
+import SeatHistoryModal from './SeatHistoryModal'
 
 const UP = '#cf5c5c', DOWN = '#5fa86c'   // A股 红涨绿跌
 const MA_DEFS = [
@@ -97,6 +98,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
   const [minData, setMinData] = useState(null)
   const [minErr, setMinErr] = useState('')
   const [lhb, setLhb] = useState(null)             // 该日席位明细(懒加载)
+  const [seatQ, setSeatQ] = useState('')           // 点席位名 → 该席位历史弹窗
   const ovBodyRef = useRef(null)
   const [minH, setMinH] = useState(200)            // 分时 viewBox 高: 按浮层实际宽高比算, 铺满不留白
   const intradayRef = useRef(null)
@@ -326,7 +328,12 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
                         <div className={`mb-1 text-[13px] font-semibold ${cls}`}>{side}前五 · 计 {(lhb[`${side}总计万`] / 1e4).toFixed(2)}亿</div>
                         {(lhb[side] || []).map((s, i) => (
                           <div key={i} className="flex items-baseline gap-1.5 py-1.5 border-b border-border-subtle/40">
-                            <span className="text-text truncate flex-1" title={s.席位}>{s.席位.replace(/(股份|有限责任)?公司|证券营业部/g, '')}</span>
+                            {s.席位 === '机构专用' || s.席位.includes('股通')
+                              ? <span className="text-text truncate flex-1" title={s.席位}>{s.席位.replace(/(股份|有限责任)?公司|证券营业部/g, '')}</span>
+                              : <button onClick={() => setSeatQ(s.席位)} title={`${s.席位} · 点击看该席位近90天上榜记录`}
+                                  className="text-text truncate flex-1 text-left cursor-pointer hover:text-accent underline decoration-dotted decoration-border underline-offset-2">
+                                  {s.席位.replace(/(股份|有限责任)?公司|证券营业部/g, '')}
+                                </button>}
                             {s.标签 && <span className="text-[10px] px-1 rounded bg-accent/15 text-accent shrink-0">{s.标签}</span>}
                             <span className="text-[10.5px] text-text-dim font-mono shrink-0">{s['占成交%']}%</span>
                             <span className={`font-mono font-semibold shrink-0 ${cls}`}>{(s.金额万 / 1e4).toFixed(2)}亿</span>
@@ -344,6 +351,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
       </div>
       {err && <div className="absolute inset-0 flex items-center justify-center text-[12px] text-text-dim">{err}</div>}
       {loading && !err && <div className="absolute inset-x-0 top-1/2 text-center text-[12px] text-text-dim">加载 K 线…</div>}
+      {seatQ && <SeatHistoryModal seat={seatQ} onClose={() => setSeatQ('')} />}
     </div>
   )
 }

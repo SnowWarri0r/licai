@@ -166,6 +166,145 @@ async def stock_lhb_dates(code: str) -> list:
     return r
 
 
+_EM_DATA_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+
+
+def _em_data_get(report: str, flt: str, page_size: int = 100,
+                 sort_cols: str = "TRADE_DATE,SECURITY_CODE", sort_types: str = "-1,1") -> list:
+    import requests
+    s = requests.Session()
+    s.trust_env = False
+    for attempt in range(3):
+        try:
+            r = s.get(_EM_DATA_URL, params={
+                "sortColumns": sort_cols, "sortTypes": sort_types,
+                "pageSize": str(page_size), "pageNumber": "1",
+                "reportName": report, "columns": "ALL",
+                "source": "WEB", "client": "WEB", "filter": flt,
+            }, timeout=10).json()
+            return (r.get("result") or {}).get("data") or []
+        except Exception:
+            time.sleep(0.5 * (attempt + 1))
+    return []
+
+
+_active_cache: dict = {}
+
+
+def _active_seats_sync(days: int = 90) -> list:
+    """近 N 天活跃营业部 [(代码, 全名)](RPT_OPERATEDEPT_ACTIVE 一次拉全)。缓存12h。"""
+    c = _active_cache.get("a")
+    if c and time.time() - c[1] < 12 * 3600:
+        return c[0]
+    import datetime
+    start = (datetime.date.today() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
+    rows = _em_data_get("RPT_OPERATEDEPT_ACTIVE", f"(ONLIST_DATE>='{start}')",
+                        page_size=5000, sort_cols="TOTAL_NETAMT,ONLIST_DATE,OPERATEDEPT_CODE",
+                        sort_types="-1,-1,1")
+    seen, out = set(), []
+    for x in rows:
+        code, name = str(x.get("OPERATEDEPT_CODE") or ""), str(x.get("OPERATEDEPT_NAME") or "")
+        if code and name and code not in seen:
+            seen.add(code)
+            out.append((code, name))
+    if out:
+        _active_cache["a"] = (out, time.time())
+    return out
+
+
+def _seat_rows_sync(flt: str) -> list:
+    """某席位最近100条上榜明细(按日期倒序), 带上榜后 1/5/10 日涨跌。"""
+    out = []
+    for x in _em_data_get("RPT_OPERATEDEPT_TRADE_DETAILSNEW", flt):
+        def _f(k):
+            v = x.get(k)
+            try:
+                return round(float(v), 2) if v is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        out.append({
+            "日期": str(x.get("TRADE_DATE") or "")[:10],
+            "code": str(x.get("SECURITY_CODE") or ""),
+            "name": str(x.get("SECURITY_NAME_ABBR") or ""),
+            "当日涨跌%": _f("CHANGE_RATE"),
+            "买入万": round((_f("ACT_BUY") or 0) / 1e4, 1),
+            "卖出万": round((_f("ACT_SELL") or 0) / 1e4, 1),
+            "净额万": round((_f("NET_AMT") or 0) / 1e4, 1),
+            "上榜原因": str(x.get("EXPLANATION") or "")[:30],
+            "后1日%": _f("D1_CLOSE_ADJCHRATE"),
+            "后5日%": _f("D5_CLOSE_ADJCHRATE"),
+            "后10日%": _f("D10_CLOSE_ADJCHRATE"),
+            "席位": str(x.get("ORG_NAME_ABBR") or x.get("OPERATEDEPT_NAME") or ""),
+        })
+    return out
+
+
+_seat_hist_cache: dict = {}
+
+
+async def seat_history(query: str, days: int = 90) -> dict:
+    """席位近期上榜记录+客观统计。query=名录名号(章盟主)/席位名子串/营业部全名。
+
+    交易所只披露营业部, 名号映射来自公开名录(会漂移); 统计为纯历史描述,
+    不构成任何买卖建议。缓存6h。"""
+    q = (query or "").strip()
+    if not q:
+        return {"error": "缺席位名(名号或营业部名)"}
+    ck = f"{q}_{days}"
+    c = _seat_hist_cache.get(ck)
+    if c and time.time() - c[1] < _TTL:
+        return c[0]
+
+    # 名号/子串 → 名录前缀 → 活跃营业部反查代码; 全名(含"营业部")直接精确过滤
+    prefixes = [p for p, nick in _load_seat_names().items() if q in nick or q in p]
+    seats: list = []          # (filter, 显示名)
+    matched_via = ""
+    if prefixes:
+        active = await asyncio.to_thread(_active_seats_sync)
+        for p in prefixes:
+            seats += [(f'(OPERATEDEPT_CODE="{code}")', name)
+                      for code, name in active if p[:12] in name]
+        matched_via = "公开名录"
+    elif "营业部" in q or ("公司" in q and len(q) >= 12):
+        seats = [(f'(OPERATEDEPT_NAME="{q}")', q)]
+        matched_via = "营业部全名"
+    else:
+        active = await asyncio.to_thread(_active_seats_sync)
+        seats = [(f'(OPERATEDEPT_CODE="{code}")', name)
+                 for code, name in active if q in name][:3]
+        matched_via = "活跃营业部名称匹配"
+    if not seats:
+        r = {"query": q, "rows": [], "note": f"没匹配到席位: 名录无此名号, 且近90天活跃营业部里搜不到'{q}'。"
+                                            "名号表 data/seat_names.json 可自行增补。"}
+        return r
+
+    import datetime
+    cutoff = (datetime.date.today() - datetime.timedelta(days=days)).strftime("%Y-%m-%d")
+    rows: list = []
+    for flt, _name in seats[:4]:
+        rows += await asyncio.to_thread(_seat_rows_sync, flt)
+    rows = sorted((r for r in rows if r["日期"] >= cutoff), key=lambda x: x["日期"], reverse=True)[:80]
+
+    buys = [r for r in rows if r["净额万"] > 0]
+    d1 = [r["后1日%"] for r in buys if r["后1日%"] is not None]
+    d5 = [r["后5日%"] for r in buys if r["后5日%"] is not None]
+    stats = {
+        "上榜次数": len(rows), "净买入次数": len(buys),
+        "净买入后1日红盘率%": round(sum(1 for v in d1 if v > 0) / len(d1) * 100) if d1 else None,
+        "净买入后1日平均%": round(sum(d1) / len(d1), 2) if d1 else None,
+        "净买入后5日红盘率%": round(sum(1 for v in d5 if v > 0) / len(d5) * 100) if d5 else None,
+    }
+    r = {"query": q, "匹配方式": matched_via,
+         "席位": sorted({x["席位"] for x in rows}) or [n for _, n in seats],
+         "窗口天数": days, "stats": stats, "rows": rows,
+         "note": "交易所披露的营业部上榜明细。名号→营业部映射来自公开名录, 席位会易主、名录会过时;"
+                 "红盘率为纯历史统计, 不构成任何买卖建议。"}
+    if rows:
+        _seat_hist_cache[ck] = (r, time.time())
+    return r
+
+
 def _fetch_sync(code: str, date: str) -> dict:
     import os
     for k in list(os.environ):
