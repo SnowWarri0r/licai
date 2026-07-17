@@ -452,6 +452,33 @@ def _fetch_sentiment_sync():
     except Exception:
         breadth = None
 
+    # 涨跌分布直方图(沪深两市, 每1%一档, ±11档=涨跌超10%): 东财涨跌分布接口
+    zdfb = None
+    try:
+        import requests as _rq3
+        _s3 = _rq3.Session(); _s3.trust_env = False
+        _fb_raw = _s3.get("http://push2ex.eastmoney.com/getTopicZDFenBu",
+                          params={"ut": "7eea3edcaed734bea9cbfc24409ed989", "dpt": "wz.ztzt"},
+                          timeout=7).json()["data"]
+        _fb = {}
+        for _d in _fb_raw.get("fenbu") or []:
+            _fb.update({int(k): int(v) for k, v in _d.items()})
+
+        def _fb_label(k):
+            if k == 0:
+                return "平盘"
+            if k == 11:
+                return "涨>10%"
+            if k == -11:
+                return "跌>10%"
+            return f"+{k - 1}%~+{k}%" if k > 0 else f"{k}%~{k + 1}%"
+
+        if _fb:
+            zdfb = {"qdate": str(_fb_raw.get("qdate") or ""),
+                    "bins": [{"档": _fb_label(k), "k": k, "家数": _fb[k]} for k in sorted(_fb)]}
+    except Exception:
+        zdfb = None
+
     money_eff, red_rate = None, None
     if prev is not None and "涨跌幅" in prev.columns:
         vals = [float(x) for x in prev["涨跌幅"] if x == x]
@@ -487,7 +514,7 @@ def _fetch_sentiment_sync():
         "money_effect": money_eff, "red_rate": red_rate,
         "mood": mood, "mood_desc": desc,
         "hot_sectors": hot_sectors, "volume": volume,
-        "breadth": breadth,
+        "breadth": breadth, "zdfb": zdfb,
     }
 
 
