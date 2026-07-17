@@ -112,6 +112,14 @@ export default function Rankings() {
   const listRef = useRef([])
   const indsRef = useRef(['全部'])
   const tabRef = useRef('gainers')
+  const deepSelRef = useRef(new URLSearchParams(window.location.hash.split('?')[1] || '').get('s') || '')
+
+  // deep-link: #rankings?t=lhb&s=688008 榜单加载完自动选中该股
+  useEffect(() => {
+    if (!deepSelRef.current) return
+    const r = listRef.current.find(x => x.code === deepSelRef.current)
+    if (r) { deepSelRef.current = ''; setSelected(r) }
+  })
 
   const load = () => {
     setLoading(true); setErr(false)
