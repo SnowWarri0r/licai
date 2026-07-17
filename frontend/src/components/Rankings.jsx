@@ -162,6 +162,11 @@ export default function Rankings() {
   useEffect(() => {
     try { document.querySelector(`[data-ind="${indFilter}"]`)?.scrollIntoView({ inline: 'nearest', block: 'nearest' }) } catch { /* 行业名含引号等极端情况忽略 */ }
   }, [indFilter])
+  // ↑↓ 翻股时把选中行滚进可视区(键盘翻到列表可视区外时跟随滚动)
+  useEffect(() => {
+    if (!selected?.code) return
+    try { document.querySelector(`[data-row="${selected.code}"]`)?.scrollIntoView({ block: 'nearest' }) } catch { /* ignore */ }
+  }, [selected])
   // 切到结构/机构/业绩 tab 时懒加载(服务端有缓存, 之后秒回)
   useEffect(() => { if ((tab === 'structure' && !structure) || (tab === 'inst' && !inst) || (tab === 'earnings' && !earnings) || (tab === 'lhb' && !lhbDaily) || (tab === 'watch' && !watch)) load() }, [tab])   // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -326,7 +331,7 @@ export default function Rankings() {
             }
             const active = selected?.code === r.code
             return (
-              <button key={r.code} onClick={() => setSelected(r)} title={r['AI理由'] || r['上榜原因'] || undefined}
+              <button key={r.code} data-row={r.code} onClick={() => setSelected(r)} title={r['AI理由'] || r['上榜原因'] || undefined}
                 className={`w-full flex items-center gap-2 px-3 py-1.5 text-left border-b border-border-subtle/60 ${active ? 'bg-accent/15' : 'hover:bg-surface-3/60'}`}>
                 <span className="text-[10px] font-mono text-text-muted w-5 shrink-0 text-right">{r._idx ?? i + 1}</span>
                 <span className="min-w-0 flex-1">
