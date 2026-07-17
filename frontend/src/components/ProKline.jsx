@@ -193,6 +193,27 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
     return () => ro.disconnect()
   }, [intraday, ovTab, minData])
 
+  // 基准昨收的复权错位校正: K线昨收是前复权价, TDX 历史分时是当日真实成交价——
+  // 除权日前后两个标度错位, 会算出"主板+13%"的假涨跌。同一天(分时收盘 vs 该日前复权收盘)
+  // 给出错位量: 现金分红除息是**减法**调整(qfq=raw-每股分红), 昨收按差值平移还原;
+  // 送转/拆分才是乘法(错位比例大), 按比值折算。正常日/当日盘中错位≈0 不动。
+  const { adjPrev, adjusted } = (() => {
+    const pc = intraday?.prevClose
+    const pts = minData?.points
+    if (!pc || !pts?.length) return { adjPrev: pc, adjusted: false }
+    const bar = barsRef.current.find(b => b.time === intraday.date)
+    const lastPx = pts[pts.length - 1]?.price
+    if (bar?.close > 0 && lastPx > 0) {
+      const diff = lastPx - bar.close
+      if (Math.abs(diff) > bar.close * 0.004) {
+        return Math.abs(diff) < bar.close * 0.15
+          ? { adjPrev: pc + diff, adjusted: true }                 // 除息(现金分红)
+          : { adjPrev: pc * (lastPx / bar.close), adjusted: true } // 送转/拆分
+      }
+    }
+    return { adjPrev: pc, adjusted: false }
+  })()
+
   useEffect(() => {
     if (!intraday || ovTab !== '龙虎榜' || lhb) return
     let alive = true
@@ -293,7 +314,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
                   {t}
                 </button>
               ))}
-              <span className="text-[9.5px] text-text-dim">{ovTab === '分时' ? `基准=前收 ${fmt(intraday.prevClose)} · ` : ''}点K线空白处收起</span>
+              <span className="text-[9.5px] text-text-dim">{ovTab === '分时' ? `基准=前收 ${fmt(adjPrev)}${adjusted ? '(已除权校正)' : ''} · ` : ''}点K线空白处收起</span>
               <button onClick={() => setIntraday(null)}
                 className="ml-auto text-text-dim hover:text-text text-[15px] leading-none px-1 cursor-pointer">×</button>
             </div>
@@ -302,7 +323,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
                 {minErr && <div className="text-center py-6 text-[11.5px] text-text-dim">{minErr}</div>}
                 {!minErr && !minData && <div className="text-center py-6 text-[11.5px] text-text-dim">分时加载中…</div>}
                 {minData && (
-                  <MinuteChart points={minData.points} prevClose={intraday.prevClose}
+                  <MinuteChart points={minData.points} prevClose={adjPrev}
                     day={minData.date || intraday.date} height={minH} />
                 )}
               </div>
