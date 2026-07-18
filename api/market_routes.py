@@ -39,13 +39,13 @@ async def tdx_orderbook(stock_code: str):
 
 
 @router.get("/tdx/minute/{stock_code}")
-async def tdx_minute(stock_code: str):
-    """当日分时(TDX, 至多 240 点)。"""
+async def tdx_minute(stock_code: str, date: str = ""):
+    """分时(TDX, 至多 240 点)。date=YYYY-MM-DD 取历史某日, 空=今日。"""
     import services.tdx_client as _tdx
     bare = _tdx_bare(stock_code)
     if not _tdx.is_enabled() or not bare:
         return {"enabled": _tdx.is_enabled(), "data": None}
-    return {"enabled": True, "data": await _tdx.minute(bare)}
+    return {"enabled": True, "data": await _tdx.minute(bare, date=date)}
 
 
 @router.get("/tdx/kline/{stock_code}")
