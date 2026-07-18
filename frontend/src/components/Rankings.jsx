@@ -6,6 +6,7 @@ import StockAskModal from './StockAskModal'
 const TABS = [
   { key: 'gainers', label: '涨幅' },
   { key: 'by_amount', label: '成交额' },
+  { key: 'lhb', label: '龙虎榜' },
   { key: 'structure', label: '蓄势/强势' },
   { key: 'inst', label: '机构' },
   { key: 'earnings', label: '业绩' },
@@ -67,7 +68,7 @@ function StockPanel({ stock }) {
 
       {/* K线铺满面板 */}
       <div className="flex-1 min-h-0 px-3 py-2">
-        <ProKline code={stock.code} fill />
+        <ProKline code={stock.code} fill lhbDate={stock._lhbDate || ''} />
       </div>
 
       {/* 底部快捷提问: 回车/点问 → 弹出对话 */}
@@ -104,6 +105,7 @@ export default function Rankings() {
   const [instSide, setInstSide] = useState('net_buy')   // net_buy | net_sell
   const [earnings, setEarnings] = useState(null)
   const [earnSide, setEarnSide] = useState('预喜')       // 预喜 | 预警 | 持仓关联
+  const [lhbDaily, setLhbDaily] = useState(null)         // 最新披露日龙虎榜全榜单
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState(false)
   const [selected, setSelected] = useState(null)
@@ -119,6 +121,8 @@ export default function Rankings() {
       ? fetchJSON('/api/market/inst-flow?top=40').then(d => { if (d.error) setErr(true); else setInst(d) })
       : tab === 'earnings'
       ? fetchJSON('/api/market/earnings?top=100').then(d => { if (d.error) setErr(true); else setEarnings(d) })
+      : tab === 'lhb'
+      ? fetchJSON('/api/market/lhb-daily').then(d => { if (d.error) setErr(true); else setLhbDaily(d) })
       : fetchJSON('/api/market/rankings?limit=100').then(d => { if (d.error) setErr(true); else setData(d) })
     req.catch(() => setErr(true)).finally(() => setLoading(false))
   }
@@ -128,7 +132,7 @@ export default function Rankings() {
     try { document.querySelector(`[data-ind="${indFilter}"]`)?.scrollIntoView({ inline: 'nearest', block: 'nearest' }) } catch { /* 行业名含引号等极端情况忽略 */ }
   }, [indFilter])
   // 切到结构/机构/业绩 tab 时懒加载(服务端有缓存, 之后秒回)
-  useEffect(() => { if ((tab === 'structure' && !structure) || (tab === 'inst' && !inst) || (tab === 'earnings' && !earnings)) load() }, [tab])   // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if ((tab === 'structure' && !structure) || (tab === 'inst' && !inst) || (tab === 'earnings' && !earnings) || (tab === 'lhb' && !lhbDaily)) load() }, [tab])   // eslint-disable-line react-hooks/exhaustive-deps
 
   // ↑↓ 翻K线, ←→ 切行业分类(结构页); 输入框聚焦时不劫持
   useEffect(() => {
@@ -162,6 +166,7 @@ export default function Rankings() {
   }, [])
 
   const rawList = tab === 'inst' ? ((inst && inst[instSide]) || []).map(r => ({ ...r, pct: r['距最近上榜%'] }))
+    : tab === 'lhb' ? ((lhbDaily?.rows) || []).map(r => ({ ...r, pct: r['涨跌幅'], _lhbDate: lhbDaily.date }))
     : tab === 'earnings' ? (
         (earnSide === '持仓关联'
           ? [...(earnings?.['持仓关联预喜'] || []), ...(earnings?.['持仓关联预警'] || [])]
@@ -198,7 +203,7 @@ export default function Rankings() {
               {t.label}
             </button>
           ))}
-          <span className="ml-auto text-[10px] text-text-muted whitespace-nowrap">{(tab === 'structure' ? structure?.as_of : data?.as_of)?.slice(5, 11) || ''}</span>
+          <span className="ml-auto text-[10px] text-text-muted whitespace-nowrap">{(tab === 'structure' ? structure?.as_of : tab === 'lhb' ? lhbDaily?.date : data?.as_of)?.slice(5, 11) || ''}</span>
           <button onClick={load} title="刷新" className="text-[10.5px] px-1.5 py-0.5 rounded border border-border text-text-dim hover:text-text">刷新</button>
         </div>
 
@@ -264,7 +269,9 @@ export default function Rankings() {
         <div className="flex-1 overflow-y-auto min-h-0">
           {!loading && !err && list.length === 0 && (
             <div className="text-center py-8 text-text-dim text-[12px] px-4 leading-relaxed">
-              {tab === 'structure' ? '今天龙头池里没有满足条件的蓄势/强势结构（大波动市里稀缺属正常）' : `榜单 top100 里暂无${board}标的`}
+              {tab === 'structure' ? '今天龙头池里没有满足条件的蓄势/强势结构（大波动市里稀缺属正常）'
+                : tab === 'lhb' ? (lhbDaily?.note || '近10天无龙虎榜披露数据')
+                : `榜单 top100 里暂无${board}标的`}
             </div>
           )}
           {loading && <div className="text-center py-8 text-text-dim text-[12px]">{tab === 'structure' ? '全市场扫描中…（首扫约1分钟, 之后10分钟缓存秒开）' : '加载榜单…'}</div>}
@@ -284,7 +291,7 @@ export default function Rankings() {
             }
             const active = selected?.code === r.code
             return (
-              <button key={r.code} onClick={() => setSelected(r)} title={r['AI理由'] || undefined}
+              <button key={r.code} onClick={() => setSelected(r)} title={r['AI理由'] || r['上榜原因'] || undefined}
                 className={`w-full flex items-center gap-2 px-3 py-1.5 text-left border-b border-border-subtle/60 ${active ? 'bg-accent/15' : 'hover:bg-surface-3/60'}`}>
                 <span className="text-[10px] font-mono text-text-muted w-5 shrink-0 text-right">{r._idx ?? i + 1}</span>
                 <span className="min-w-0 flex-1">
@@ -296,9 +303,11 @@ export default function Rankings() {
                     {r.is_new && <span className="text-[8.5px] px-1 rounded bg-accent/15 text-accent shrink-0" title="上市前5日无涨跌幅限制">新</span>}
                     {r.is_st && <span className="text-[8.5px] px-1 rounded bg-bear/15 text-bear-bright shrink-0">ST</span>}
                   </span>
-                  <span className="text-[10px] text-text-muted font-mono">
+                  <span className={`text-[10px] text-text-muted font-mono ${tab === 'lhb' ? 'block truncate' : ''}`}>
                     {boardOf(r.code)} · {r.code} · {tab === 'inst'
                       ? `净买 ${r['机构净买亿']}亿 · 上榜${r['上榜次数']}次`
+                      : tab === 'lhb'
+                      ? (r['解读'] || r['上榜原因'] || '—')
                       : (r['行业'] || '—')}
                     {tab === 'earnings' && r['持仓关联'] && (
                       <span className="ml-1 px-1 rounded bg-accent/15 text-accent text-[9px]">{r['持仓关联']}</span>
@@ -319,6 +328,8 @@ export default function Rankings() {
                           : `${r['AI置信'] != null ? `AI${r['AI置信']}·` : ''}横盘${r['横盘日']}日`)
                       : tab === 'inst'
                       ? `${(r['最近上榜'] || '').slice(5)}上榜·至今`
+                      : tab === 'lhb'
+                      ? `净买 ${r['净买额亿'] >= 0 ? '+' : ''}${r['净买额亿']}亿`
                       : tab === 'earnings'
                       ? `${r['类型']}·${(r['披露日'] || '').slice(5)}披露`
                       : tab === 'by_amount'
@@ -333,6 +344,11 @@ export default function Rankings() {
 
         </div>
 
+        {tab === 'lhb' && !loading && (
+          <div className="shrink-0 px-3 py-1.5 border-t border-border-subtle text-[9.5px] text-text-muted leading-relaxed">
+            {lhbDaily?.date || '最新披露日'} 全部上榜个股（涨跌幅偏离/换手/振幅触发交易所披露，盘后约17点起更新）· 按龙虎榜净买额排序，同股多榜单口径取金额最大一条 · 点个股直接弹开该日买卖前五席位 · 纯客观数据，非买卖建议
+          </div>
+        )}
         {tab === 'inst' && !loading && (
           <div className="shrink-0 px-3 py-1.5 border-t border-border-subtle text-[9.5px] text-text-muted leading-relaxed">
             近{inst?.window_days || 30}天龙虎榜机构专用席位统计（上榜日才披露，抽样非全量）· 主数字=现价较最近上榜日收盘的涨跌：净买入+至今大跌="机构接在山顶"，净卖出+至今大跌="机构跑对了" · 纯客观数字，非买卖建议
