@@ -146,7 +146,14 @@ export default function ProKline({ code, days = 250, height = 460, fill = false 
             axisLabelVisible: true, title: '昨收',
           })
         }
-        chartRef.current?.timeScale().fitContent()
+        // 初始视窗只看最近约3个月(70根), 更长的历史往左拖/滚轮缩放就有——
+        // fitContent 会把250根全塞进屏幕, 蜡烛细得看不清近期形态
+        const ts = chartRef.current?.timeScale()
+        if (bars.length > 80) {
+          ts?.setVisibleLogicalRange({ from: bars.length - 70, to: bars.length + 3 })
+        } else {
+          ts?.fitContent()
+        }
       })
       .catch(e => alive && setErr(e?.message || '加载失败'))
       .finally(() => alive && setLoading(false))
