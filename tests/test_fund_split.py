@@ -183,3 +183,21 @@ def test_lhb_pick_latest_day_dedupe_and_sort():
     assert sk["净买额亿"] == -3.9                                  # 取绝对值最大那条
     assert "日跌幅偏离" in sk["上榜原因"] and "日换手率达20%" in sk["上榜原因"]
     assert _pick_latest_day([]) == ("", [])
+
+
+def test_exright_raw_price_on_inverse_transform():
+    """除权逆变换: 前复权价 → 历史日真实标度。派息=加法, 送转=乘法, 多事件从近到远。"""
+    import asyncio
+    import time as _t
+    from services import exright
+    # 青岛银行案: 2026-06-24 每股派0.18, 无送转; 04-29 的前复权昨收 5.47 → 真实 5.65
+    exright._ev_cache["T1"] = ([("2026-06-24", 0.18, 0.0)], _t.time())
+    raw, n = asyncio.run(exright.raw_price_on("T1", 5.47, "2026-04-29"))
+    assert (raw, n) == (5.65, 1)
+    # 多事件: 06-24 派0.18 + 05-10 每股送转0.5 → 10 → ×1+0.18=10.18 → ×1.5=15.27
+    exright._ev_cache["T2"] = ([("2026-05-10", 0.0, 0.5), ("2026-06-24", 0.18, 0.0)], _t.time())
+    raw2, n2 = asyncio.run(exright.raw_price_on("T2", 10.0, "2026-05-01"))
+    assert (raw2, n2) == (15.27, 2)
+    # 目标日在事件之后: 不逆变换
+    raw3, n3 = asyncio.run(exright.raw_price_on("T2", 10.0, "2026-06-25"))
+    assert (raw3, n3) == (10.0, 0)
