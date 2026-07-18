@@ -4,11 +4,11 @@ import ProKline from './ProKline'
 import StockAskModal from './StockAskModal'
 
 const TABS = [
-  { key: 'gainers', label: '涨幅榜' },
-  { key: 'by_amount', label: '成交额榜' },
-  { key: 'coiled', label: '横盘蓄势' },
-  { key: 'inst', label: '机构动向' },
-  { key: 'earnings', label: '业绩预告' },
+  { key: 'gainers', label: '涨幅' },
+  { key: 'by_amount', label: '成交额' },
+  { key: 'coiled', label: '蓄势' },
+  { key: 'inst', label: '机构' },
+  { key: 'earnings', label: '业绩' },
 ]
 
 function pctColor(v) {
@@ -137,11 +137,11 @@ export default function Rankings() {
         <div className="flex items-center gap-1 px-3 py-2 border-b border-border-subtle">
           {TABS.map(t => (
             <button key={t.key} onClick={() => setTab(t.key)}
-              className={`text-[12px] px-2.5 py-1 rounded border ${tab === t.key ? 'bg-accent/20 text-accent border-accent/40' : 'bg-surface-3 text-text-dim border-transparent hover:text-text'}`}>
+              className={`text-[12px] px-2 py-1 rounded border whitespace-nowrap shrink-0 ${tab === t.key ? 'bg-accent/20 text-accent border-accent/40' : 'bg-surface-3 text-text-dim border-transparent hover:text-text'}`}>
               {t.label}
             </button>
           ))}
-          <span className="ml-auto text-[10px] text-text-muted">{(tab === 'coiled' ? coiled?.as_of : data?.as_of)?.slice(5) || ''}</span>
+          <span className="ml-auto text-[10px] text-text-muted whitespace-nowrap">{(tab === 'coiled' ? coiled?.as_of : data?.as_of)?.slice(5, 11) || ''}</span>
           <button onClick={load} title="刷新" className="text-[10.5px] px-1.5 py-0.5 rounded border border-border text-text-dim hover:text-text">刷新</button>
         </div>
 
