@@ -1120,13 +1120,17 @@ def _fetch_lhb_sync(code: str = "", days: int = 12) -> dict:
     return out
 
 
-async def _tool_lhb(code: str = "") -> dict:
-    """龙虎榜: code 给定→该股近期上榜(谁买谁卖/机构还是游资); 不给→最近交易日资金净买额榜(主力在打哪些票)。仅 A 股。"""
+async def _tool_lhb(code: str = "", date: str = "") -> dict:
+    """龙虎榜: code+date→该股该上榜日的席位明细(买卖前五营业部+金额+画像);
+    仅 code→该股近期上榜汇总; 都不给→最近交易日资金净买额榜。仅 A 股。"""
     if code:
         from services.market_data import normalize_stock_code, is_a_share
         if not is_a_share(normalize_stock_code(_norm_code(code))):
             return {"error": "龙虎榜仅支持 A 股"}
     try:
+        if code and date:
+            from services.lhb_detail import lhb_seat_detail
+            return await lhb_seat_detail(_norm_code(code), date)
         return await asyncio.to_thread(_fetch_lhb_sync, code or "", 12)
     except Exception as e:
         return {"error": f"龙虎榜获取失败: {e}"}
@@ -2358,8 +2362,8 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_fund_flow", "description": "查个股资金流: 主力/超大单/大单/中单/小单净额(亿, 与榜单 f62 同源) + 近几日趋势。按单笔金额分档(超大单+大单=主力)。重要口径提示: 当下普遍拆单 + 多子账户操作, 大单常被拆成中小单分散在多账户, 单笔分档已无法等同真实主力意图, 净流入只是参考线索而非定论。务必与 get_trend 的量价(pct+vol_ratio)和K线位置配合解读, 不单凭净流入下结论。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
-    {"name": "get_lhb", "description": "龙虎榜: 传 code→该股近期是否上榜及净买额/机构还是游资席位/上榜原因(看是谁在拉); 不传 code→最近交易日资金净买额榜(主力/游资当天在打哪些票, 看资金主线)。仅 A 股。",
-     "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选; 留空看全市场榜"}}}},
+    {"name": "get_lhb", "description": "龙虎榜: code+date→该股该上榜日的席位明细(买卖前五营业部名称+金额+席位画像: 机构/北向/常见量化通道, 回答'那天谁在买谁在砸/是量化砸的吗'); 仅 code→该股近期是否上榜及净买额/上榜原因; 都不传→最近交易日资金净买额榜(资金主线)。仅 A 股。",
+     "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选; 留空看全市场榜"}, "date": {"type": "string", "description": "可选 YYYY-MM-DD, 与code一起给=查该日席位明细"}}}},
     {"name": "get_red_flags", "description": "客观红线清单: 扫近期公告(监管处罚/立案/退市风险/业绩预亏/商誉减值/交易所问询/违规占用/股东减持等) + 解禁抛压 + 基本面健康度, 列出有事实依据的风险点(按高/中/低排)。回答'这票有没有雷/风险/暴雷过吗/能不能放心拿'时用。命中=有该风险事实, 非卖出建议。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_company_profile", "description": "查公司是做什么的 + 什么背景: 公司简介(主营业务) + 细分行业 + 主营构成(各产品/地区收入占比和毛利率) + 控股/实际控制人/前三大股东(判断国资/央企/地方国企/中科院系/民营/外资性质)。回答'这家公司主营什么、靠什么赚钱、谁控股、什么背景、和同行业务差异'时必用。仅 A 股。",
@@ -2422,7 +2426,7 @@ _EXECUTORS = {
     "get_news": lambda a: _tool_get_news(a.get("code", "")),
     "get_announcements": lambda a: _tool_announcements(a.get("code", "")),
     "get_fund_flow": lambda a: _tool_fund_flow(a.get("code", "")),
-    "get_lhb": lambda a: _tool_lhb(a.get("code", "")),
+    "get_lhb": lambda a: _tool_lhb(a.get("code", ""), a.get("date", "")),
     "get_red_flags": lambda a: _tool_red_flags(a.get("code", "")),
     "get_company_profile": lambda a: _tool_company_profile(a.get("code", "")),
     "get_stock_concepts": lambda a: _tool_stock_concepts(a.get("code", "")),
