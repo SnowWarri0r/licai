@@ -145,6 +145,13 @@ async def market_rankings(limit: int = 100):
     return await _aio.to_thread(market_review.top_rankings, limit)
 
 
+@router.get("/earnings")
+async def market_earnings(top: int = 100):
+    """业绩预告看板: 最新报告期(中报)预喜/预警榜 + 持仓关联。"""
+    from services.earnings_board import earnings_board
+    return await earnings_board(top)
+
+
 @router.get("/inst-flow")
 async def market_inst_flow(top: int = 25):
     """机构席位动向: 近30天龙虎榜机构净买入/卖出榜 + 距上榜日涨跌。"""
