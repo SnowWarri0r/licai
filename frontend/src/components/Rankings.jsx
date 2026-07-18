@@ -227,8 +227,7 @@ export default function Rankings() {
 
         {/* 行业快捷条(结构页): 点行业只看该组, 不用往下翻 */}
         {tab === 'structure' && (structure?.groups || []).length > 0 && (
-          <div className="flex gap-1 px-3 py-1.5 border-b border-border-subtle overflow-x-auto whitespace-nowrap shrink-0"
-            style={{ scrollbarWidth: 'thin' }}>
+          <div className="no-scrollbar flex gap-1 px-3 py-1.5 border-b border-border-subtle overflow-x-auto whitespace-nowrap shrink-0">
             <button onClick={() => setIndFilter('全部')}
               className={`text-[10.5px] px-1.5 py-0.5 rounded shrink-0 ${indFilter === '全部' ? 'bg-accent/15 text-accent' : 'text-text-dim hover:text-text'}`}>
               全部
