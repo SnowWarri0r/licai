@@ -2302,6 +2302,18 @@ async def _tool_market_review() -> dict:
         return {"error": str(e)}
 
 
+async def _tool_inst_flow(code: str = "") -> dict:
+    """机构席位动向: 空=近30天全市场机构净买/净卖榜; 传6位代码=该股机构席位时间线。"""
+    try:
+        from services.inst_flow import inst_flow, inst_flow_for
+        q = _norm_code(code or "").strip()
+        if len(q) == 6 and q.isdigit():
+            return await inst_flow_for(q)
+        return await inst_flow(20)
+    except Exception as e:
+        return {"error": str(e)}
+
+
 _TOOLS = [
     {"name": "resolve_stock", "description": "把股票名字或代码解析成标准代码+名称。用户报名字(如'中钨高新')时先调它拿代码。",
      "input_schema": {"type": "object", "properties": {"query": {"type": "string", "description": "股票名字或代码"}}, "required": ["query"]}},
@@ -2347,6 +2359,8 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"query": {"type": "string", "description": "主题词(红利/半导体) 或 6位基金代码; 留空=在持场内ETF"}}}},
     {"name": "get_market_review", "description": "今日强势股复盘画像(扫全市场涨幅榜+成交额榜聚合): 涨停数、板块/概念扎堆(资金主线)、风格(小盘高换手妖股 vs 大盘低换手趋势)、领涨样本、吸金榜。回答'今天什么风格的票在涨/今天强势股有什么共性/资金扎堆在哪/帮我复盘今天市场'时用。比 get_market_sentiment 多了'强势股结构与扎堆方向'这层。结合 get_holdings 可点出用户持仓沾不沾今日主线。",
      "input_schema": {"type": "object", "properties": {}}},
+    {"name": "get_inst_flow", "description": "机构席位动向(龙虎榜机构专用席位买卖统计): code 留空=近30天全市场机构净买入/净卖出榜, 每行带 距最近/首次上榜日至今涨跌%——大额净买入+至今大跌 即市场说的'机构接在山顶', 净卖出+至今大跌='机构跑对了'; 传6位代码=该股机构席位事件时间线。回答'机构最近在买什么/XX是不是机构被套/机构在这只票上怎么操作的'时用。上榜日才披露(抽样非全量), 表述时注明。",
+     "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "6位代码查单票; 留空看全市场榜"}}}},
     {"name": "get_sector_momentum", "description": "板块趋势矩阵: 各行业近N日累计涨跌/连涨动能/净流入 + 量能趋势(近3日均量/前段均量, >1.2量能放大、<0.8萎缩)和量价 tag(放量上行=量价配合趋势健康/缩量上行=动能衰减/放量下跌=抛压重等)。判断板块是真上升趋势(涨+量价配合+资金顺)还是虚涨(涨但缩量/资金流出)。days 趋势窗口可传 5(短线)/10(中期)/20(中长期), 默认10; 问'短期/这几天'传5, '近一个月趋势'传20。",
      "input_schema": {"type": "object", "properties": {"days": {"type": "integer"}}}},
     {"name": "get_hot_rank", "description": "资金人气榜(东财): 关注度最高的个股, 标出哪些在用户持仓。看资金主线/抱团方向。",
@@ -2392,6 +2406,7 @@ _EXECUTORS = {
     "get_market_sentiment": lambda a: _tool_market_sentiment(),
     "get_etf_xray": lambda a: _tool_etf_xray(a.get("query", "")),
     "get_market_review": lambda a: _tool_market_review(),
+    "get_inst_flow": lambda a: _tool_inst_flow(a.get("code", "")),
     "get_sector_momentum": lambda a: _tool_sector_momentum(a.get("days", 10)),
     "get_hot_rank": lambda a: _tool_hot_rank(),
     "get_hot_concepts": lambda a: _tool_hot_concepts(a.get("top", 15)),
@@ -2613,7 +2628,7 @@ _TOOL_CN = {
     "get_news": "查新闻", "get_intraday": "查分时", "get_announcements": "查公告", "get_fund_flow": "查资金流", "get_lhb": "查龙虎榜",
     "get_company_profile": "查公司主营", "get_red_flags": "查红线风险", "get_stock_concepts": "查所属概念", "get_fundamentals": "查基本面", "get_commodity": "查商品价",
     "get_peers": "同行对比", "get_shareholders": "查股东解禁",
-    "get_holdings": "看持仓", "get_thesis": "看买入逻辑", "get_asset_allocation": "看资产配置", "get_trades": "查成交记录", "get_market_sentiment": "看大盘情绪", "get_market_review": "复盘强势股",
+    "get_holdings": "看持仓", "get_thesis": "看买入逻辑", "get_asset_allocation": "看资产配置", "get_trades": "查成交记录", "get_market_sentiment": "看大盘情绪", "get_market_review": "复盘强势股", "get_inst_flow": "查机构动向",
     "get_sector_momentum": "看板块动量", "get_hot_rank": "看资金热度",
     "get_hot_concepts": "看热门概念", "get_board_stocks": "查板块龙头", "get_market_news": "看政策快讯", "web_search": "联网搜索",
     "get_chain_quote": "产业链量价", "read_url": "读网页全文", "get_global_indices": "看全球指数", "get_coiled_stocks": "扫横盘蓄势",

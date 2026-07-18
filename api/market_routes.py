@@ -145,6 +145,13 @@ async def market_rankings(limit: int = 100):
     return await _aio.to_thread(market_review.top_rankings, limit)
 
 
+@router.get("/inst-flow")
+async def market_inst_flow(top: int = 25):
+    """机构席位动向: 近30天龙虎榜机构净买入/卖出榜 + 距上榜日涨跌。"""
+    from services.inst_flow import inst_flow
+    return await inst_flow(top)
+
+
 @router.get("/coiled")
 async def market_coiled(force: bool = False):
     """横盘蓄势扫描: 长期箱体横盘 + 今日放量上攻(贴近/突破上沿)的结构筛选。10min 缓存。"""
