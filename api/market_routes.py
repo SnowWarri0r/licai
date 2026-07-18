@@ -360,24 +360,30 @@ def _fetch_sentiment_sync():
             money_eff = round(sum(vals) / len(vals), 2)
             red_rate = round(sum(1 for v in vals if v > 0) / len(vals) * 100)
 
+    # 统计日带星期(周一时"昨日涨停"实际是上周五的, 相对日期词一律换成具体日期)
+    _wd = "一二三四五六日"
+    _dt = datetime.strptime(d, "%Y%m%d")
+    d_cn = f"{d[4:6]}-{d[6:8]}(周{_wd[_dt.weekday()]})"
+
     # 情绪定性 (纯客观, 看赚钱效应+连板高度, 不给买卖建议)
     if money_eff is None:
         mood, desc = "数据不足", ""
     elif money_eff >= 3 and max_lb >= 4:
         mood = "情绪高潮"
-        desc = f"昨日涨停今天平均 {money_eff:+.1f}%, 接力能赚, 最高 {max_lb} 连板, 资金敢打高位"
+        desc = f"上一交易日涨停的票在{d_cn}平均 {money_eff:+.1f}%, 接力能赚, 最高 {max_lb} 连板, 资金敢打高位"
     elif money_eff >= 1:
         mood = "回暖/进攻"
-        desc = f"昨日涨停今天平均 {money_eff:+.1f}%, 接力有肉, 情绪偏暖"
+        desc = f"上一交易日涨停的票在{d_cn}平均 {money_eff:+.1f}%, 接力有肉, 情绪偏暖"
     elif money_eff > -1:
         mood = "分歧/震荡"
-        desc = f"昨日涨停今天平均 {money_eff:+.1f}%, 多空分歧, 追高赚钱效应一般"
+        desc = f"上一交易日涨停的票在{d_cn}平均 {money_eff:+.1f}%, 多空分歧, 追高赚钱效应一般"
     else:
         mood = "退潮/亏钱效应"
-        desc = f"昨日涨停今天平均 {money_eff:+.1f}%, 接力被埋, 炸板率 {zbl_rate}%, 高位危险"
+        desc = f"上一交易日涨停的票在{d_cn}平均 {money_eff:+.1f}%, 接力被埋, 炸板率 {zbl_rate}%, 高位危险"
 
     return {
-        "date": d, "n_zt": n_zt, "n_dt": n_dt, "n_zb": n_zb, "zbl_rate": zbl_rate,
+        "date": d, "date_cn": d_cn,
+        "n_zt": n_zt, "n_dt": n_dt, "n_zb": n_zb, "zbl_rate": zbl_rate,
         "max_lianban": max_lb, "ladder": ladder, "leaders": leaders,
         "money_effect": money_eff, "red_rate": red_rate,
         "mood": mood, "mood_desc": desc,
@@ -464,13 +470,14 @@ async def sentiment_ai(force: bool = False):
         parts.append("我持仓 ETF 主题: " + "、".join(sorted(etf_themes)))
     held_line = "; ".join(parts) if parts else "（无 A 股/ETF 持仓）"
 
+    stat_day = s.get("date_cn") or s.get("date")
     data_block = (
-        f"数据日期 {s.get('date')}\n"
+        f"统计交易日 {stat_day}(全部指标都是这一天的, 表述时间一律用这个具体日期, 相对词按它换算)\n"
         f"涨停 {s.get('n_zt')} 家 / 跌停 {s.get('n_dt')} 家 / 炸板 {s.get('n_zb')} 家, 炸板率 {s.get('zbl_rate')}%\n"
         f"最高连板 {s.get('max_lianban')} 板; 连板梯队: {ladder_line}; 空间龙头: {'、'.join(s.get('leaders') or []) or '无'}\n"
-        f"昨日涨停今日平均涨幅(接力赚钱效应) {s.get('money_effect')}%; 昨涨停红盘率 {s.get('red_rate')}%\n"
+        f"上一交易日涨停的票在{stat_day}的平均涨幅(接力赚钱效应) {s.get('money_effect')}%; 红盘率 {s.get('red_rate')}%\n"
         f"量能: {vol_line}\n"
-        f"今日涨停板块热点分布: {hot_line}\n"
+        f"{stat_day}涨停板块热点分布: {hot_line}\n"
         f"系统初判情绪: {s.get('mood')} — {s.get('mood_desc')}"
     )
 

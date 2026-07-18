@@ -2282,10 +2282,13 @@ async def _tool_market_sentiment() -> dict:
     try:
         from api.market_routes import market_sentiment
         s = await market_sentiment()
-        return {"mood": s.get("mood"), "mood_desc": s.get("mood_desc"),
+        return {"统计交易日": s.get("date_cn") or s.get("date"),
+                "mood": s.get("mood"), "mood_desc": s.get("mood_desc"),
                 "n_zt": s.get("n_zt"), "n_dt": s.get("n_dt"), "zbl_rate": s.get("zbl_rate"),
                 "max_lianban": s.get("max_lianban"), "money_effect": s.get("money_effect"),
-                "hot_sectors": [h.get("name") for h in (s.get("hot_sectors") or [])[:6]]}
+                "hot_sectors": [h.get("name") for h in (s.get("hot_sectors") or [])[:6]],
+                "note": "全部指标属于 统计交易日 这一天; money_effect=上一交易日涨停的票在统计交易日的平均涨幅。"
+                        "落笔时间一律用统计交易日的具体日期(带星期), 相对词(今天/昨天)按它换算。"}
     except Exception as e:
         return {"error": str(e)}
 
