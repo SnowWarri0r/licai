@@ -298,10 +298,10 @@ function _minuteSlot(t) {
   return 240
 }
 
-export function MinuteChart({ points, prevClose, actions = [], day }) {
+export function MinuteChart({ points, prevClose, actions = [], day, height = 410 }) {
   const [hover, setHover] = useState(null)
   const svgRef = useRef(null)
-  const W = 720, H = 410, P = { l: 64, r: 16, t: 16, b: 28 }
+  const W = 720, H = height, P = { l: 64, r: 16, t: 16, b: 28 }
   const innerW = W - P.l - P.r, innerH = H - P.t - P.b
   const volH = 48, volGap = 10
   const priceH = innerH - volH - volGap

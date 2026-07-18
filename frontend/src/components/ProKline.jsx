@@ -216,25 +216,21 @@ export default function ProKline({ code, days = 250, height = 460, fill = false 
       {err && <div className="absolute inset-0 flex items-center justify-center text-[12px] text-text-dim">{err}</div>}
       {loading && !err && <div className="absolute inset-x-0 top-1/2 text-center text-[12px] text-text-dim">加载 K 线…</div>}
 
-      {/* 点蜡烛 → 该日分时弹窗 */}
+      {/* 点蜡烛 → 该日分时内嵌在下半区(同花顺式), 再点别的蜡烛切日, × 收起 */}
       {intraday && (
-        <div className="fixed inset-0 z-[90] flex items-center justify-center p-4"
-          style={{ background: 'rgba(0,0,0,0.55)' }} onClick={() => setIntraday(null)}>
-          <div className="bg-surface-2 border border-border rounded-xl p-3 w-full max-w-[780px]"
-            onClick={e => e.stopPropagation()}>
-            <div className="flex items-baseline gap-2 mb-1.5">
-              <span className="text-[13px] font-semibold text-text-bright">{code}</span>
-              <span className="text-[11.5px] text-text-muted font-mono">{minData?.date || intraday.date} 分时</span>
-              <span className="text-[10px] text-text-dim">基准=前一交易日收盘 {fmt(intraday.prevClose)}</span>
-              <button onClick={() => setIntraday(null)}
-                className="ml-auto text-text-dim hover:text-text text-[18px] leading-none px-1 cursor-pointer">×</button>
-            </div>
-            {minErr && <div className="text-center py-10 text-[12px] text-text-dim">{minErr}</div>}
-            {!minErr && !minData && <div className="text-center py-10 text-[12px] text-text-dim">分时加载中…</div>}
-            {minData && (
-              <MinuteChart points={minData.points} prevClose={intraday.prevClose} day={minData.date || intraday.date} />
-            )}
+        <div className="shrink-0 border-t border-border-subtle mt-1 pt-1">
+          <div className="flex items-baseline gap-2 px-1 mb-0.5">
+            <span className="text-[11px] font-mono text-text-bright">{(minData?.date || intraday.date).toString().replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3')} 分时</span>
+            <span className="text-[9.5px] text-text-dim">基准=前收 {fmt(intraday.prevClose)} · 点其他蜡烛切日</span>
+            <button onClick={() => setIntraday(null)}
+              className="ml-auto text-text-dim hover:text-text text-[15px] leading-none px-1 cursor-pointer">×</button>
           </div>
+          {minErr && <div className="text-center py-6 text-[11.5px] text-text-dim">{minErr}</div>}
+          {!minErr && !minData && <div className="text-center py-6 text-[11.5px] text-text-dim">分时加载中…</div>}
+          {minData && (
+            <MinuteChart points={minData.points} prevClose={intraday.prevClose}
+              day={minData.date || intraday.date} height={224} />
+          )}
         </div>
       )}
     </div>
