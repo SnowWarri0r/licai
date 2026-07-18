@@ -91,9 +91,12 @@ export default function ProKline({ code, days = 250, height = 460, fill = false 
   const [legend, setLegend] = useState(null)
   const [err, setErr] = useState('')
   const [loading, setLoading] = useState(true)
-  const [intraday, setIntraday] = useState(null)   // 点蜡烛 → {date, prevClose} 弹该日分时
+  const [hint, setHint] = useState(null)           // 点蜡烛 → {x, y, date, prevClose} 「分时›」tooltip
+  const [intraday, setIntraday] = useState(null)   // 点 tooltip → {date, prevClose} 分时浮层
   const [minData, setMinData] = useState(null)
   const [minErr, setMinErr] = useState('')
+  const intradayRef = useRef(null)
+  intradayRef.current = intraday
 
   // 建图(一次)
   useEffect(() => {
@@ -127,16 +130,18 @@ export default function ProKline({ code, days = 250, height = 460, fill = false 
       setLegend({ time: param.time, o: d.open, h: d.high, l: d.low, c: d.close })
     })
 
-    // 点蜡烛 → 弹该日分时(昨收取前一根收盘, 分时涨跌以它为基准)
+    // 点蜡烛 → 出「分时›」tooltip; 浮层开着时点K线 → 收起浮层(同花顺式浮层交互)
     chart.subscribeClick(param => {
+      if (intradayRef.current) { setIntraday(null); setHint(null); return }
       const t = param.time
-      if (!t) return
+      if (!t || !param.point) { setHint(null); return }
       const key = typeof t === 'string' ? t
         : `${t.year}-${String(t.month).padStart(2, '0')}-${String(t.day).padStart(2, '0')}`
       const arr = barsRef.current
       const i = arr.findIndex(b => b.time === key)
-      if (i < 0) return
-      setIntraday({ date: key, prevClose: arr[i - 1]?.close ?? arr[i].open })
+      if (i < 0) { setHint(null); return }
+      setHint({ x: param.point.x, y: param.point.y, date: key,
+                prevClose: arr[i - 1]?.close ?? arr[i].open })
     })
 
     return () => { chart.remove(); chartRef.current = null }
@@ -155,7 +160,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false 
         else setMinData(d.data)
       })
       .catch(e => alive && setMinErr(e?.message || '加载失败'))
-    const onEsc = (e) => { if (e.key === 'Escape') setIntraday(null) }
+    const onEsc = (e) => { if (e.key === 'Escape') { setIntraday(null); setHint(null) } }
     window.addEventListener('keydown', onEsc)
     return () => { alive = false; window.removeEventListener('keydown', onEsc) }
   }, [intraday, code])
@@ -212,27 +217,41 @@ export default function ProKline({ code, days = 250, height = 460, fill = false 
             </span>
           : <span className="text-text-muted">{MA_DEFS.map(m => `MA${m.n}`).join(' / ')} · <span style={{ color: '#c8a876' }}>┄ 昨收</span> · 滚轮缩放 · 点蜡烛看当日分时</span>}
       </div>
-      <div ref={wrapRef} className={fill ? 'flex-1 min-h-0' : ''} style={fill ? { width: '100%' } : { width: '100%', height }} />
+      <div className={`relative ${fill ? 'flex-1 min-h-0' : ''}`} style={fill ? { width: '100%' } : { width: '100%', height }}>
+        <div ref={wrapRef} className="absolute inset-0" />
+
+        {/* 点蜡烛 → 「分时›」tooltip(跟随点击位置) */}
+        {hint && !intraday && (
+          <button
+            onClick={() => { setIntraday({ date: hint.date, prevClose: hint.prevClose }); setHint(null) }}
+            className="absolute z-20 text-[10.5px] px-2 py-1 rounded-lg bg-surface-3 border border-accent/50 text-accent shadow-lg hover:bg-accent/20 cursor-pointer whitespace-nowrap"
+            style={{ left: Math.min(Math.max(hint.x + 8, 4), (wrapRef.current?.clientWidth || 400) - 120),
+                     top: Math.max(hint.y - 34, 4) }}>
+            {hint.date.slice(5)} 分时 ›
+          </button>
+        )}
+
+        {/* 分时浮层: 盖在K线下半部, K线不缩; 点K线任意处/×/ESC 收起 */}
+        {intraday && (
+          <div className="absolute inset-x-0 bottom-0 z-20 border-t border-border rounded-t-lg px-2 pt-1 pb-1.5 overflow-hidden"
+            style={{ height: '62%', background: 'color-mix(in srgb, var(--color-surface-2) 94%, transparent)', backdropFilter: 'blur(2px)' }}>
+            <div className="flex items-baseline gap-2 px-1 mb-0.5">
+              <span className="text-[11px] font-mono text-text-bright">{(minData?.date || intraday.date).toString().replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3')} 分时</span>
+              <span className="text-[9.5px] text-text-dim">基准=前收 {fmt(intraday.prevClose)} · 点K线空白处收起</span>
+              <button onClick={() => setIntraday(null)}
+                className="ml-auto text-text-dim hover:text-text text-[15px] leading-none px-1 cursor-pointer">×</button>
+            </div>
+            {minErr && <div className="text-center py-6 text-[11.5px] text-text-dim">{minErr}</div>}
+            {!minErr && !minData && <div className="text-center py-6 text-[11.5px] text-text-dim">分时加载中…</div>}
+            {minData && (
+              <MinuteChart points={minData.points} prevClose={intraday.prevClose}
+                day={minData.date || intraday.date} height={200} />
+            )}
+          </div>
+        )}
+      </div>
       {err && <div className="absolute inset-0 flex items-center justify-center text-[12px] text-text-dim">{err}</div>}
       {loading && !err && <div className="absolute inset-x-0 top-1/2 text-center text-[12px] text-text-dim">加载 K 线…</div>}
-
-      {/* 点蜡烛 → 该日分时内嵌在下半区(同花顺式), 再点别的蜡烛切日, × 收起 */}
-      {intraday && (
-        <div className="shrink-0 border-t border-border-subtle mt-1 pt-1">
-          <div className="flex items-baseline gap-2 px-1 mb-0.5">
-            <span className="text-[11px] font-mono text-text-bright">{(minData?.date || intraday.date).toString().replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3')} 分时</span>
-            <span className="text-[9.5px] text-text-dim">基准=前收 {fmt(intraday.prevClose)} · 点其他蜡烛切日</span>
-            <button onClick={() => setIntraday(null)}
-              className="ml-auto text-text-dim hover:text-text text-[15px] leading-none px-1 cursor-pointer">×</button>
-          </div>
-          {minErr && <div className="text-center py-6 text-[11.5px] text-text-dim">{minErr}</div>}
-          {!minErr && !minData && <div className="text-center py-6 text-[11.5px] text-text-dim">分时加载中…</div>}
-          {minData && (
-            <MinuteChart points={minData.points} prevClose={intraday.prevClose}
-              day={minData.date || intraday.date} height={224} />
-          )}
-        </div>
-      )}
     </div>
   )
 }
