@@ -423,6 +423,35 @@ def _fetch_sentiment_sync():
     except Exception:
         volume = None
 
+    # 涨跌家数(市场宽度): 沪/深/北三指数快照的 f104/f105/f106, 实时口径——
+    # 盘中=此刻, 收盘后/周末=最近收盘定格, 可能与上面涨停池的统计交易日不同天
+    breadth = None
+    try:
+        import requests as _rq2
+        _s2 = _rq2.Session(); _s2.trust_env = False
+        for _h in ("push2.eastmoney.com", "push2delay.eastmoney.com", "1.push2.eastmoney.com"):
+            try:
+                _diff = _s2.get(f"https://{_h}/api/qt/ulist.np/get",
+                                params={"fltt": "2", "secids": "1.000001,0.399106,0.899050",
+                                        "fields": "f12,f104,f105,f106"},
+                                timeout=7).json()["data"]["diff"]
+                _mk = {"000001": "沪", "399106": "深", "899050": "北"}
+                _per = {}
+                for _x in _diff:
+                    _nm = _mk.get(str(_x.get("f12")))
+                    if _nm and isinstance(_x.get("f104"), int):
+                        _per[_nm] = {"上涨": _x["f104"], "下跌": _x["f105"], "平盘": _x["f106"]}
+                if _per:
+                    breadth = {"上涨": sum(v["上涨"] for v in _per.values()),
+                               "下跌": sum(v["下跌"] for v in _per.values()),
+                               "平盘": sum(v["平盘"] for v in _per.values()),
+                               "分市场": _per}
+                    break
+            except Exception:
+                continue
+    except Exception:
+        breadth = None
+
     money_eff, red_rate = None, None
     if prev is not None and "涨跌幅" in prev.columns:
         vals = [float(x) for x in prev["涨跌幅"] if x == x]
@@ -458,6 +487,7 @@ def _fetch_sentiment_sync():
         "money_effect": money_eff, "red_rate": red_rate,
         "mood": mood, "mood_desc": desc,
         "hot_sectors": hot_sectors, "volume": volume,
+        "breadth": breadth,
     }
 
 
