@@ -228,15 +228,17 @@ export default function Rankings() {
   return (
     <div className="bg-surface-2 border border-border rounded-xl overflow-hidden flex flex-col lg:flex-row h-[calc(100vh-11rem)] min-h-[480px]">
       <div className="lg:w-[420px] shrink-0 flex flex-col border-b lg:border-b-0 lg:border-r border-border min-h-0">
-        <div className="flex items-center gap-1 px-3 py-2 border-b border-border-subtle">
-          {TABS.map(t => (
-            <button key={t.key} onClick={() => setTab(t.key)}
-              className={`text-[12px] px-2 py-1 rounded border whitespace-nowrap shrink-0 ${tab === t.key ? 'bg-accent/20 text-accent border-accent/40' : 'bg-surface-3 text-text-dim border-transparent hover:text-text'}`}>
-              {t.label}
-            </button>
-          ))}
-          <span className="ml-auto text-[10px] text-text-muted whitespace-nowrap">{(tab === 'structure' ? structure?.as_of : tab === 'lhb' ? lhbDaily?.date : data?.as_of)?.slice(5, 11) || ''}</span>
-          <button onClick={load} title="刷新" className="text-[10.5px] px-1.5 py-0.5 rounded border border-border text-text-dim hover:text-text">刷新</button>
+        <div className="flex items-center gap-1.5 px-3 py-2 border-b border-border-subtle">
+          <div className="no-scrollbar flex items-center gap-1 overflow-x-auto min-w-0 flex-1">
+            {TABS.map(t => (
+              <button key={t.key} onClick={() => setTab(t.key)}
+                className={`text-[12px] px-2 py-1 rounded border whitespace-nowrap shrink-0 ${tab === t.key ? 'bg-accent/20 text-accent border-accent/40' : 'bg-surface-3 text-text-dim border-transparent hover:text-text'}`}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+          <span className="text-[10px] text-text-muted whitespace-nowrap shrink-0">{(tab === 'structure' ? structure?.as_of : tab === 'lhb' ? lhbDaily?.date : data?.as_of)?.slice(5, 11) || ''}</span>
+          <button onClick={load} title="刷新" className="text-[10.5px] px-1.5 py-0.5 rounded border border-border text-text-dim hover:text-text shrink-0">刷新</button>
         </div>
 
         {/* 板块筛选 */}
@@ -337,15 +339,15 @@ export default function Rankings() {
                     {r.is_st && <span className="text-[8.5px] px-1 rounded bg-bear/15 text-bear-bright shrink-0">ST</span>}
                   </span>
                   <span className={`text-[10px] text-text-muted font-mono ${tab === 'lhb' ? 'block truncate' : ''}`}>
-                    {boardOf(r.code)} · {r.code} · {tab === 'inst'
+                    {boardOf(r.code)} · {r.code}{tab === 'watch' ? '' : ' · '}{tab === 'inst'
                       ? `净买 ${r['机构净买亿']}亿 · 上榜${r['上榜次数']}次`
                       : tab === 'lhb'
                       ? (r['解读'] || r['上榜原因'] || '—')
                       : tab === 'watch'
-                      ? (r['结构'] || '结构无显著形态')
+                      ? ''
                       : (r['行业'] || '—')}
                     {tab === 'watch' && r['业绩预告'] && (
-                      <span className="ml-1 px-1 rounded bg-accent/15 text-accent text-[9px]">{r['业绩预告']}</span>
+                      <span className="ml-1 px-1 rounded bg-accent/15 text-accent text-[9px] whitespace-nowrap">{r['业绩预告']}</span>
                     )}
                     {tab === 'earnings' && r['持仓关联'] && (
                       <span className="ml-1 px-1 rounded bg-accent/15 text-accent text-[9px]">{r['持仓关联']}</span>
@@ -354,6 +356,11 @@ export default function Rankings() {
                   {tab === 'structure' && (
                     <span className="block text-[9.5px] text-text-dim truncate">
                       {r['标签']}{r['业绩预告'] ? ` · ${r['业绩预告']}` : ''}
+                    </span>
+                  )}
+                  {tab === 'watch' && (
+                    <span className="block text-[9.5px] text-text-dim truncate">
+                      {r['结构'] || '结构无显著形态'}
                     </span>
                   )}
                 </span>
