@@ -2324,6 +2324,15 @@ async def _tool_market_review() -> dict:
         return {"error": str(e)}
 
 
+async def _tool_seat_history(q: str) -> dict:
+    """龙虎榜席位追踪(名号/营业部名 → 近期上榜明细+统计)。"""
+    try:
+        from services.lhb_detail import seat_history
+        return await seat_history(q)
+    except Exception as e:
+        return {"error": f"席位追踪失败: {e}"}
+
+
 async def _tool_inst_flow(code: str = "") -> dict:
     """机构席位动向: 空=近30天全市场机构净买/净卖榜; 传6位代码=该股机构席位时间线。"""
     try:
@@ -2401,6 +2410,8 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_inst_flow", "description": "机构席位动向(龙虎榜机构专用席位买卖统计): code 留空=近30天全市场机构净买入/净卖出榜, 每行带 距最近/首次上榜日至今涨跌%——大额净买入+至今大跌 即市场说的'机构接在山顶', 净卖出+至今大跌='机构跑对了'; 传6位代码=该股机构席位事件时间线。回答'机构最近在买什么/XX是不是机构被套/机构在这只票上怎么操作的'时用。上榜日才披露(抽样非全量), 表述时注明。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "6位代码查单票; 留空看全市场榜"}}}},
+    {"name": "get_seat_history", "description": "龙虎榜席位追踪: 传席位名号(章盟主/陈小群/拉萨天团)或营业部名(子串/全名), 返回该席位近90天上榜明细(股票/净额/上榜后1·5·10日涨跌)+客观统计(上榜次数/净买入后1日与5日红盘率)。回答'章盟主最近在买什么/这个席位胜率怎么样/大佬说XX进场了帮我看看'时用。名号映射来自公开名录会漂移, 统计是纯历史描述, 表述时注明。",
+     "input_schema": {"type": "object", "properties": {"q": {"type": "string", "description": "席位名号或营业部名"}}, "required": ["q"]}},
     {"name": "get_earnings", "description": "业绩预告(最新报告期, 当前=中报): code 留空=全市场预喜榜(预增/扭亏, 按归母净利同比幅度排)+预警榜(预减/首亏)+持仓关联清单(直持或经由在持ETF成分); 传6位代码=查该股预告。回答'哪些股票中报业绩好/最近业绩雷有哪些/我持仓相关的业绩怎么样/XX中报预告了吗'时用。未披露≠业绩差(预告只对大幅变动强制), 表述时注明; 正式财报数字用 get_fundamentals。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "6位代码查单票; 留空看全市场榜"}}}},
     {"name": "get_sector_momentum", "description": "板块趋势矩阵: 各行业近N日累计涨跌/连涨动能/净流入 + 量能趋势(近3日均量/前段均量, >1.2量能放大、<0.8萎缩)和量价 tag(放量上行=量价配合趋势健康/缩量上行=动能衰减/放量下跌=抛压重等)。判断板块是真上升趋势(涨+量价配合+资金顺)还是虚涨(涨但缩量/资金流出)。days 趋势窗口可传 5(短线)/10(中期)/20(中长期), 默认10; 问'短期/这几天'传5, '近一个月趋势'传20。",
@@ -2434,6 +2445,7 @@ _EXECUTORS = {
     "get_announcements": lambda a: _tool_announcements(a.get("code", "")),
     "get_fund_flow": lambda a: _tool_fund_flow(a.get("code", "")),
     "get_lhb": lambda a: _tool_lhb(a.get("code", ""), a.get("date", "")),
+    "get_seat_history": lambda a: _tool_seat_history(a.get("q", "")),
     "get_red_flags": lambda a: _tool_red_flags(a.get("code", "")),
     "get_company_profile": lambda a: _tool_company_profile(a.get("code", "")),
     "get_stock_concepts": lambda a: _tool_stock_concepts(a.get("code", "")),
@@ -2669,7 +2681,7 @@ def _system() -> str:
 
 _TOOL_CN = {
     "resolve_stock": "解析代码", "get_quote": "查行情", "get_trend": "查走势",
-    "get_news": "查新闻", "get_intraday": "查分时", "get_announcements": "查公告", "get_fund_flow": "查资金流", "get_lhb": "查龙虎榜",
+    "get_news": "查新闻", "get_intraday": "查分时", "get_announcements": "查公告", "get_fund_flow": "查资金流", "get_lhb": "查龙虎榜", "get_seat_history": "查席位历史",
     "get_company_profile": "查公司主营", "get_red_flags": "查红线风险", "get_stock_concepts": "查所属概念", "get_fundamentals": "查基本面", "get_commodity": "查商品价",
     "get_peers": "同行对比", "get_shareholders": "查股东解禁",
     "get_holdings": "看持仓", "get_thesis": "看买入逻辑", "get_asset_allocation": "看资产配置", "get_trades": "查成交记录", "get_market_sentiment": "看大盘情绪", "get_market_review": "复盘强势股", "get_inst_flow": "查机构动向", "get_earnings": "查业绩预告",

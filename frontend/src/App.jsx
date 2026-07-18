@@ -15,6 +15,7 @@ import TransactionHistory from './components/TransactionHistory'
 import MorningBriefing from './components/MorningBriefing'
 import SentimentThermometer from './components/SentimentThermometer'
 import SectorMatrix from './components/SectorMatrix'
+import SectorShare from './components/SectorShare'
 import HotRank from './components/HotRank'
 import SectorRadar from './components/SectorRadar'
 import SectorOpportunities from './components/SectorOpportunities'
@@ -128,6 +129,7 @@ export default function App() {
               <MorningBriefing />
               <SentimentThermometer />
               <EtfXray />
+              <SectorShare />
               <SectorMatrix />
               <HotRank />
               <SectorRadar />

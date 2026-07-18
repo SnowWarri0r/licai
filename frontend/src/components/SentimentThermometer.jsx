@@ -10,6 +10,63 @@ const MOOD_COLOR = {
 }
 const pctColor = (v) => v == null ? 'text-text-dim' : v > 0 ? 'text-bear-bright' : v < 0 ? 'text-bull-bright' : 'text-text-dim'
 
+// 情绪周期时间轴: 近30交易日 涨停柱(上,红)/跌停柱(下,绿) + 赚钱效应折线(金)
+function CycleStrip() {
+  const [d, setD] = useState(null)
+  useEffect(() => {
+    fetchJSON('/api/market/sentiment-history?days=30').then(setD).catch(() => {})
+  }, [])
+  const s = d?.series || []
+  if (s.length < 5) return null
+
+  const W = 720, H = 120, P = { l: 8, r: 8, t: 14, b: 16 }
+  const midY = P.t + (H - P.t - P.b) * 0.5
+  const half = (H - P.t - P.b) / 2 - 2
+  const n = s.length
+  const step = (W - P.l - P.r) / n
+  const bw = Math.max(4, Math.min(14, step * 0.42))
+  const maxZt = Math.max(...s.map(r => r.n_zt || 0), 1)
+  const maxDt = Math.max(...s.map(r => r.n_dt || 0), 1)
+  const maxMe = Math.max(...s.map(r => Math.abs(r.money_effect ?? 0)), 1)
+  const x = (i) => P.l + step * (i + 0.5)
+  const meY = (v) => midY - (v / maxMe) * half
+  const mePts = s.map((r, i) => r.money_effect == null ? null : `${x(i).toFixed(1)},${meY(r.money_effect).toFixed(1)}`)
+    .filter(Boolean).join(' ')
+
+  return (
+    <div className="mb-3">
+      <div className="flex items-baseline gap-2 mb-1">
+        <span className="text-[10.5px] text-text-muted">情绪周期 · 近{n}个交易日</span>
+        <span className="text-[9.5px] text-text-dim">
+          <span className="text-bear">■</span>涨停(上) <span className="text-bull">■</span>跌停(下) <span style={{ color: '#c8a876' }}>—</span>赚钱效应
+        </span>
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full block" style={{ height: 'auto' }}>
+        <line x1={P.l} x2={W - P.r} y1={midY} y2={midY} stroke="rgba(255,255,255,0.12)" strokeWidth="1" />
+        {s.map((r, i) => {
+          const hu = (r.n_zt / maxZt) * half
+          const hd = (r.n_dt / maxDt) * half
+          const op = r.partial ? 0.45 : 0.85
+          return (
+            <g key={r.date}>
+              <title>{`${r.date}${r.partial ? '(盘中)' : ''}  涨停${r.n_zt} 跌停${r.n_dt} 炸板率${r.zbl_rate}% 最高${r.max_lb}板 赚钱效应${r.money_effect == null ? '—' : (r.money_effect > 0 ? '+' : '') + r.money_effect + '%'}`}</title>
+              <rect x={x(i) - bw / 2} y={midY - hu} width={bw} height={Math.max(hu, 0.5)} fill="#cf5c5c" opacity={op} />
+              <rect x={x(i) - bw / 2} y={midY} width={bw} height={Math.max(hd, 0.5)} fill="#5fa86c" opacity={op} />
+              {r.max_lb >= 4 && (
+                <text x={x(i)} y={midY - hu - 3} textAnchor="middle" fontSize="8.5" fill="#c8a876">{r.max_lb}板</text>
+              )}
+              {(i === 0 || i === n - 1 || i === Math.floor(n / 2)) && (
+                <text x={x(i)} y={H - 4} textAnchor="middle" fontSize="8.5" fill="#6b7280">{r.date.slice(5)}</text>
+              )}
+            </g>
+          )
+        })}
+        {mePts && <polyline points={mePts} fill="none" stroke="#c8a876" strokeWidth="1.6" opacity="0.9" />}
+      </svg>
+    </div>
+  )
+}
+
 export default function SentimentThermometer() {
   const [d, setD] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -94,6 +151,8 @@ export default function SentimentThermometer() {
           {ai.holdings_note && <div className="text-[11px] text-info mt-1.5 leading-relaxed">持仓: {ai.holdings_note}</div>}
         </div>
       )}
+
+      <CycleStrip />
 
       {/* 指标 grid */}
       <div className="grid grid-cols-3 md:grid-cols-6 gap-2 mb-3 text-[11px]">

@@ -4,6 +4,7 @@ import ProKline from './ProKline'
 import StockAskModal from './StockAskModal'
 
 const TABS = [
+  { key: 'watch', label: '自选' },
   { key: 'gainers', label: '涨幅' },
   { key: 'by_amount', label: '成交额' },
   { key: 'lhb', label: '龙虎榜' },
@@ -29,7 +30,7 @@ function boardOf(code) {
 const BOARDS = ['全部', '主板', '创业板', '科创板', '北交所']
 
 // 右侧面板: 选中股票看 K线(铺满); 想问就点"问 AI"或底部输入框 → 弹出式对话(与问问市场样式一致)
-function StockPanel({ stock }) {
+function StockPanel({ stock, watched, onToggleWatch }) {
   const [askOpen, setAskOpen] = useState(false)
   const [seed, setSeed] = useState('')
   const [draft, setDraft] = useState('')
@@ -60,8 +61,12 @@ function StockPanel({ stock }) {
           {stock.pct >= 0 ? '+' : ''}{stock.pct}%
         </span>
         {stock['行业'] && <span className="text-[10.5px] text-text-dim ml-1">{stock['行业']}</span>}
+        <button onClick={() => onToggleWatch(stock)} title={watched ? '移出自选' : '加入自选(记录当前价, 之后看自选以来涨跌)'}
+          className={`ml-auto text-[15px] leading-none px-1.5 py-0.5 rounded cursor-pointer ${watched ? 'text-accent' : 'text-text-dim hover:text-accent'}`}>
+          {watched ? '★' : '☆'}
+        </button>
         <button onClick={() => openAsk('')}
-          className="ml-auto text-[11px] px-2.5 py-1 rounded-lg bg-accent/20 text-accent border border-accent/40 hover:bg-accent/30">
+          className="text-[11px] px-2.5 py-1 rounded-lg bg-accent/20 text-accent border border-accent/40 hover:bg-accent/30">
           问 AI 分析
         </button>
       </div>
@@ -106,6 +111,8 @@ export default function Rankings() {
   const [earnings, setEarnings] = useState(null)
   const [earnSide, setEarnSide] = useState('预喜')       // 预喜 | 预警 | 持仓关联
   const [lhbDaily, setLhbDaily] = useState(null)         // 最新披露日龙虎榜全榜单
+  const [watch, setWatch] = useState(null)               // 自选池(全量视图)
+  const [watchSet, setWatchSet] = useState(new Set())    // 自选代码集(☆按钮状态)
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState(false)
   const [selected, setSelected] = useState(null)
@@ -131,16 +138,32 @@ export default function Rankings() {
       ? fetchJSON('/api/market/earnings?top=100').then(d => { if (d.error) setErr(true); else setEarnings(d) })
       : tab === 'lhb'
       ? fetchJSON('/api/market/lhb-daily').then(d => { if (d.error) setErr(true); else setLhbDaily(d) })
+      : tab === 'watch'
+      ? fetchJSON('/api/market/watchlist').then(d => { if (d.error) setErr(true); else setWatch(d) })
       : fetchJSON('/api/market/rankings?limit=100').then(d => { if (d.error) setErr(true); else setData(d) })
     req.catch(() => setErr(true)).finally(() => setLoading(false))
   }
   useEffect(() => { load() }, [])
+  // 自选代码集(☆按钮状态), 轻端点
+  useEffect(() => {
+    fetchJSON('/api/market/watchlist?lite=1').then(d => setWatchSet(new Set(d?.codes || []))).catch(() => {})
+  }, [])
+  const toggleWatch = (stock) => {
+    const code = stock.code
+    const on = watchSet.has(code)
+    fetchJSON(`/api/market/watchlist/${code}`, { method: on ? 'DELETE' : 'POST' })
+      .then(() => {
+        setWatchSet(prev => { const s = new Set(prev); on ? s.delete(code) : s.add(code); return s })
+        setWatch(null)                                  // 下次进自选页重拉
+        if (tabRef.current === 'watch') load()
+      }).catch(() => {})
+  }
   // ←→ 切分类时把选中 chip 滚进可视区
   useEffect(() => {
     try { document.querySelector(`[data-ind="${indFilter}"]`)?.scrollIntoView({ inline: 'nearest', block: 'nearest' }) } catch { /* 行业名含引号等极端情况忽略 */ }
   }, [indFilter])
   // 切到结构/机构/业绩 tab 时懒加载(服务端有缓存, 之后秒回)
-  useEffect(() => { if ((tab === 'structure' && !structure) || (tab === 'inst' && !inst) || (tab === 'earnings' && !earnings) || (tab === 'lhb' && !lhbDaily)) load() }, [tab])   // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if ((tab === 'structure' && !structure) || (tab === 'inst' && !inst) || (tab === 'earnings' && !earnings) || (tab === 'lhb' && !lhbDaily) || (tab === 'watch' && !watch)) load() }, [tab])   // eslint-disable-line react-hooks/exhaustive-deps
 
   // ↑↓ 翻K线, ←→ 切行业分类(结构页); 输入框聚焦时不劫持
   useEffect(() => {
@@ -174,6 +197,7 @@ export default function Rankings() {
   }, [])
 
   const rawList = tab === 'inst' ? ((inst && inst[instSide]) || []).map(r => ({ ...r, pct: r['距最近上榜%'] }))
+    : tab === 'watch' ? ((watch?.rows) || [])
     : tab === 'lhb' ? ((lhbDaily?.rows) || []).map(r => ({ ...r, pct: r['涨跌幅'], _lhbDate: lhbDaily.date }))
     : tab === 'earnings' ? (
         (earnSide === '持仓关联'
@@ -279,6 +303,7 @@ export default function Rankings() {
             <div className="text-center py-8 text-text-dim text-[12px] px-4 leading-relaxed">
               {tab === 'structure' ? '今天龙头池里没有满足条件的蓄势/强势结构（大波动市里稀缺属正常）'
                 : tab === 'lhb' ? (lhbDaily?.note || '近10天无龙虎榜披露数据')
+                : tab === 'watch' ? '自选池为空——在任意榜单点开股票, 右上角 ☆ 加入跟踪(会记下当时价格, 之后看"自选以来"涨跌)'
                 : `榜单 top100 里暂无${board}标的`}
             </div>
           )}
@@ -316,7 +341,12 @@ export default function Rankings() {
                       ? `净买 ${r['机构净买亿']}亿 · 上榜${r['上榜次数']}次`
                       : tab === 'lhb'
                       ? (r['解读'] || r['上榜原因'] || '—')
+                      : tab === 'watch'
+                      ? (r['结构'] || '结构无显著形态')
                       : (r['行业'] || '—')}
+                    {tab === 'watch' && r['业绩预告'] && (
+                      <span className="ml-1 px-1 rounded bg-accent/15 text-accent text-[9px]">{r['业绩预告']}</span>
+                    )}
                     {tab === 'earnings' && r['持仓关联'] && (
                       <span className="ml-1 px-1 rounded bg-accent/15 text-accent text-[9px]">{r['持仓关联']}</span>
                     )}
@@ -338,6 +368,8 @@ export default function Rankings() {
                       ? `${(r['最近上榜'] || '').slice(5)}上榜·至今`
                       : tab === 'lhb'
                       ? `净买 ${r['净买额亿'] >= 0 ? '+' : ''}${r['净买额亿']}亿`
+                      : tab === 'watch'
+                      ? (r['自选以来%'] != null ? `自选(${(r.added_at || '').slice(5)})以来${r['自选以来%'] >= 0 ? '+' : ''}${r['自选以来%']}%` : `${(r.added_at || '').slice(5)}加自选`)
                       : tab === 'earnings'
                       ? `${r['类型']}·${(r['披露日'] || '').slice(5)}披露`
                       : tab === 'by_amount'
@@ -352,6 +384,11 @@ export default function Rankings() {
 
         </div>
 
+        {tab === 'watch' && !loading && (watch?.rows || []).length > 0 && (
+          <div className="shrink-0 px-3 py-1.5 border-t border-border-subtle text-[9.5px] text-text-muted leading-relaxed">
+            自选=纯跟踪清单（在看但未必持有），副行是当下K线结构形态与业绩预告 · 选中后点右上 ★ 移出 · 纯客观结构描述，非买卖建议
+          </div>
+        )}
         {tab === 'lhb' && !loading && (
           <div className="shrink-0 px-3 py-1.5 border-t border-border-subtle text-[9.5px] text-text-muted leading-relaxed">
             {lhbDaily?.date || '最新披露日'} 全部上榜个股（涨跌幅偏离/换手/振幅触发交易所披露，盘后约17点起更新）· 按龙虎榜净买额排序，同股多榜单口径取金额最大一条 · 点个股直接弹开该日买卖前五席位 · 纯客观数据，非买卖建议
@@ -375,7 +412,7 @@ export default function Rankings() {
       </div>
 
       <div className="flex-1 min-h-0 min-w-0">
-        <StockPanel stock={selected} />
+        <StockPanel stock={selected} watched={selected ? watchSet.has(selected.code) : false} onToggleWatch={toggleWatch} />
       </div>
     </div>
   )

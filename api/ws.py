@@ -152,12 +152,11 @@ async def briefing_loop():
                     print(f"[briefing] Done: {len(results)} briefings saved")
                     # Push a one-line summary to feishu (signal 模型: 客观信息倾向, 非操作建议)
                     if feishu_notify.is_enabled() and results:
-                        lines = [f"📋 {today} 早盘简报"]
+                        lines = [f"{today} 早盘简报"]
                         for b in results:
                             sig = b.get("signal", "中性")
-                            icon = {"偏暖": "🔥", "中性": "•", "偏冷": "❄", "警惕": "⚠"}.get(sig, "•")
                             lines.append(
-                                f"【{b.get('stock_name')}】{icon} {sig} — {b.get('summary', '')}"
+                                f"【{b.get('stock_name')}】{sig} — {b.get('summary', '')}"
                             )
                         await feishu_notify.send_text("\n".join(lines))
                 except Exception as e:
@@ -167,6 +166,37 @@ async def briefing_loop():
         except Exception as e:
             print(f"[briefing] Loop error: {e}")
             await asyncio.sleep(120)
+
+
+# --- 收盘持仓小结(纯数据, 非 LLM) ---
+_eod_done_date: str = ""
+
+async def eod_summary_loop():
+    """交易日 15:10~15:40 窗口推一次收盘小结: 持仓涨跌归因 + 事件(上榜/涨跌停/预告披露) + 大盘。"""
+    global _eod_done_date
+    from datetime import datetime, timezone, timedelta
+    while True:
+        try:
+            cst_now = datetime.now(timezone.utc) + timedelta(hours=8)
+            today = cst_now.strftime("%Y-%m-%d")
+            t = cst_now.hour * 60 + cst_now.minute
+            if 910 <= t <= 940 and today != _eod_done_date:
+                from services.market_data import _is_a_share_trading_day
+                if _is_a_share_trading_day(cst_now.date()):
+                    from services.eod_summary import push_eod_summary
+                    r = await push_eod_summary()
+                    print(f"[eod] 收盘小结 {today} pushed={r.get('pushed')}")
+                    try:
+                        from services.sector_share import archive_today
+                        n = await archive_today()
+                        print(f"[eod] 板块份额入档 {n} 行")
+                    except Exception as e:
+                        print(f"[eod] 板块份额入档失败: {e}")
+                _eod_done_date = today
+            await asyncio.sleep(120)
+        except Exception as e:
+            print(f"[eod] Loop error: {e}")
+            await asyncio.sleep(300)
 
 
 _dca_done_date: str = ""
