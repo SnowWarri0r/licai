@@ -264,7 +264,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false 
         {/* 分时浮层: 盖在K线下半部, K线不缩; 点K线任意处/×/ESC 收起 */}
         {intraday && (
           <div className="absolute inset-x-0 bottom-0 z-20 border-t border-border rounded-t-lg px-2 pt-1 pb-1.5 overflow-hidden flex flex-col"
-            style={{ height: ovTab === '分时' ? '62%' : 'auto', maxHeight: '68%',
+            style={{ height: '62%',
                      background: 'color-mix(in srgb, var(--color-surface-2) 94%, transparent)', backdropFilter: 'blur(2px)' }}>
             <div className="flex items-baseline gap-2 px-1 mb-0.5">
               <span className="text-[11px] font-mono text-text-bright">{(minData?.date || intraday.date).toString().replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3')}</span>
@@ -289,18 +289,18 @@ export default function ProKline({ code, days = 250, height = 460, fill = false 
               </div>
             )}
             {ovTab === '龙虎榜' && (
-              !lhb ? <div className="text-center py-6 text-[11.5px] text-text-dim">席位明细加载中…</div>
+              !lhb ? <div className="flex-1 flex items-center justify-center text-[11.5px] text-text-dim">席位明细加载中…</div>
               : (!lhb['买入']?.length && !lhb['卖出']?.length)
-              ? <div className="text-center py-6 text-[11.5px] text-text-dim">{lhb.note || '该日未上龙虎榜'}</div>
+              ? <div className="flex-1 flex items-center justify-center text-[11.5px] text-text-dim">{lhb.note || '该日未上龙虎榜'}</div>
               : (
-                <div className="overflow-y-auto text-[12px]">
-                  {lhb['上榜原因'] && <div className="px-1 text-[10.5px] text-text-dim mb-1">上榜原因: {lhb['上榜原因']}</div>}
-                  <div className="grid grid-cols-2 gap-4 px-1">
+                <div className="flex-1 min-h-0 flex flex-col text-[12.5px] overflow-y-auto">
+                  {lhb['上榜原因'] && <div className="px-1 text-[10.5px] text-text-dim mb-1 shrink-0">上榜原因: {lhb['上榜原因']}</div>}
+                  <div className="grid grid-cols-2 gap-5 px-1 flex-1 content-start">
                     {[['买入', 'text-bear-bright'], ['卖出', 'text-bull-bright']].map(([side, cls]) => (
                       <div key={side}>
-                        <div className={`mb-1 font-semibold ${cls}`}>{side}前五 · 计 {(lhb[`${side}总计万`] / 1e4).toFixed(2)}亿</div>
+                        <div className={`mb-1 text-[13px] font-semibold ${cls}`}>{side}前五 · 计 {(lhb[`${side}总计万`] / 1e4).toFixed(2)}亿</div>
                         {(lhb[side] || []).map((s, i) => (
-                          <div key={i} className="flex items-baseline gap-1.5 py-1 border-b border-border-subtle/40">
+                          <div key={i} className="flex items-baseline gap-1.5 py-1.5 border-b border-border-subtle/40">
                             <span className="text-text truncate flex-1" title={s.席位}>{s.席位.replace(/(股份|有限责任)?公司|证券营业部/g, '')}</span>
                             {s.标签 && <span className="text-[10px] px-1 rounded bg-accent/15 text-accent shrink-0">{s.标签}</span>}
                             <span className="text-[10.5px] text-text-dim font-mono shrink-0">{s['占成交%']}%</span>
@@ -310,7 +310,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false 
                       </div>
                     ))}
                   </div>
-                  <div className="px-1 pt-1 text-[9.5px] text-text-dim">{lhb.note}</div>
+                  <div className="px-1 pt-1 text-[9.5px] text-text-dim shrink-0">{lhb.note}</div>
                 </div>
               )
             )}
