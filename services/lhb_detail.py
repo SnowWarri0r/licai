@@ -57,6 +57,115 @@ def seat_tag(name: str) -> str:
     return ""
 
 
+def _pick_latest_day(records: list) -> tuple:
+    """全榜原始行(可能一股多条上榜原因) → (最新披露日, 按代码去重合并后的行)。
+
+    同股多条: 金额字段取绝对值最大的那条(不同榜单口径重叠, 相加会重复计),
+    上榜原因合并展示。纯函数, 便于测试。
+    """
+    if not records:
+        return "", []
+    day = max(str(r.get("上榜日") or "") for r in records)
+    by_code: dict = {}
+    for r in records:
+        if str(r.get("上榜日") or "") != day:
+            continue
+        code = str(r.get("代码") or "").strip()
+        if not code:
+            continue
+
+        def _f(k):
+            try:
+                v = float(r.get(k))
+                return v if v == v else None
+            except (TypeError, ValueError):
+                return None
+
+        net = _f("龙虎榜净买额")
+        row = {
+            "code": code, "name": str(r.get("名称") or "").strip(),
+            "涨跌幅": round(_f("涨跌幅") or 0, 2),
+            "收盘价": _f("收盘价"),
+            "净买额亿": round((net or 0) / 1e8, 2),
+            "换手率": round(_f("换手率") or 0, 2),
+            "解读": str(r.get("解读") or "").strip(),
+            "上榜原因": str(r.get("上榜原因") or "").strip(),
+        }
+        old = by_code.get(code)
+        if old is None:
+            by_code[code] = row
+        else:
+            if abs(row["净买额亿"]) > abs(old["净买额亿"]):
+                row["上榜原因"] = old["上榜原因"] + " / " + row["上榜原因"]
+                by_code[code] = row
+            elif row["上榜原因"] and row["上榜原因"] not in old["上榜原因"]:
+                old["上榜原因"] += " / " + row["上榜原因"]
+    rows = sorted(by_code.values(), key=lambda x: x["净买额亿"], reverse=True)
+    return day, rows
+
+
+def _daily_sync() -> dict:
+    import datetime
+    import os
+    for k in list(os.environ):
+        if "proxy" in k.lower():
+            os.environ.pop(k, None)
+    import akshare as ak
+    end = datetime.date.today()
+    start = end - datetime.timedelta(days=10)
+    df = ak.stock_lhb_detail_em(start_date=start.strftime("%Y%m%d"), end_date=end.strftime("%Y%m%d"))
+    if df is None or not len(df):
+        return {"date": "", "rows": [], "note": "近10天无龙虎榜披露数据(东财源)。"}
+    day, rows = _pick_latest_day(df.to_dict("records"))
+    return {"date": day, "rows": rows,
+            "note": ("交易所当日全部上榜个股(涨跌幅偏离/换手/振幅等触发披露)。"
+                     "净买额=龙虎榜披露席位合计, 同股多榜单口径取金额最大一条。"
+                     "点个股直接看该日买卖前五席位。纯客观数据, 不构成任何买卖建议。")}
+
+
+_daily_cache: dict = {}
+
+
+async def lhb_daily() -> dict:
+    """最新一个披露日的龙虎榜全榜单(按净买额排序)。当日盘后约17点起逐步披露,
+    未出时自动落到上一披露日。缓存30分钟。"""
+    c = _daily_cache.get("d")
+    if c and time.time() - c[1] < 1800:
+        return c[0]
+    r = await asyncio.to_thread(_daily_sync)
+    if r["rows"]:
+        _daily_cache["d"] = (r, time.time())
+    return r
+
+
+def _dates_sync(code: str) -> list:
+    import os
+    for k in list(os.environ):
+        if "proxy" in k.lower():
+            os.environ.pop(k, None)
+    import akshare as ak
+    df = ak.stock_lhb_stock_detail_date_em(symbol=code)
+    if df is None or not len(df):
+        return []
+    return sorted((str(x)[:10] for x in df["交易日"].tolist()), reverse=True)[:8]
+
+
+_dates_cache: dict = {}
+
+
+async def stock_lhb_dates(code: str) -> list:
+    """某股历史上榜日(最近8个, 新→旧)。缓存6h。"""
+    c = _dates_cache.get(code)
+    if c and time.time() - c[1] < _TTL:
+        return c[0]
+    try:
+        r = await asyncio.to_thread(_dates_sync, code)
+    except Exception:
+        return []
+    _dates_cache[code] = (r, time.time())
+    return r
+
+
 def _fetch_sync(code: str, date: str) -> dict:
     import os
     for k in list(os.environ):
@@ -103,6 +212,9 @@ async def lhb_seat_detail(code: str, date: str) -> dict:
     r = await asyncio.to_thread(_fetch_sync, code, date)
     if not r["买入"] and not r["卖出"]:
         r["note"] = "该日未上龙虎榜(涨跌幅/换手未触发披露条件), 无席位数据。"
+        r["最近上榜日"] = await stock_lhb_dates(code)
+        # 空结果也缓存(短TTL): 未上榜的日子占绝大多数, 每次点都重跑重试链太慢
+        _cache[ck] = (r, time.time() - _TTL + 1800)
     else:
         r["note"] = ("交易所披露的买卖前五席位。'常见量化通道'为公开常识近似画像(会漂移, 仅供参考);"
                      "无标签≠游资。纯客观数据, 不构成任何买卖建议。")
