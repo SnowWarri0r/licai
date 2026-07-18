@@ -23,12 +23,34 @@ _QUANT_SEATS = (
 )
 
 
+_seat_names: dict | None = None
+
+
+def _load_seat_names() -> dict:
+    """data/seat_names.json: 席位子串 → 江湖名号(公开资料整理, 用户可自行增删)。"""
+    global _seat_names
+    if _seat_names is None:
+        import json
+        import os
+        p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "data", "seat_names.json")
+        try:
+            with open(p) as f:
+                _seat_names = {k: v for k, v in json.load(f).items() if not k.startswith("_")}
+        except Exception:
+            _seat_names = {}
+    return _seat_names
+
+
 def seat_tag(name: str) -> str:
     n = (name or "").strip()
     if n == "机构专用":
         return "机构"
     if "沪股通" in n or "深股通" in n:
         return "北向"
+    for sub, nick in _load_seat_names().items():
+        if sub[:12] in n:
+            return nick
     for q in _QUANT_SEATS:
         if q[:10] in n:
             return "常见量化通道"
