@@ -147,6 +147,32 @@ CREATE TABLE IF NOT EXISTS portfolio_snapshots (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 自选观察池(在跟踪但未必持有的票)
+CREATE TABLE IF NOT EXISTS watchlist (
+    stock_code TEXT PRIMARY KEY,
+    stock_name TEXT,
+    added_at TEXT,                       -- YYYY-MM-DD
+    added_price REAL,                    -- 加自选时现价(看"自选以来"涨跌)
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 板块成交额份额逐日档案(收盘后定格): 看资金往哪个板块聚拢/撤离
+CREATE TABLE IF NOT EXISTS sector_share_history (
+    snap_date TEXT,                      -- YYYY-MM-DD
+    board TEXT,                          -- 同花顺行业板块名
+    amount_yi REAL,                      -- 板块总成交额(亿)
+    share_pct REAL,                      -- 占全市场板块总成交比重(%)
+    PRIMARY KEY (snap_date, board)
+);
+
+-- 市场情绪逐日档案(交易日收盘后定格, 情绪周期时间轴用)
+CREATE TABLE IF NOT EXISTS sentiment_history (
+    snap_date TEXT PRIMARY KEY,          -- YYYY-MM-DD
+    n_zt INTEGER, n_dt INTEGER, n_zb INTEGER,
+    zbl_rate REAL, max_lb INTEGER, money_effect REAL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS cashflow_monthly (
     month TEXT PRIMARY KEY,             -- YYYY-MM
     income REAL DEFAULT 0,              -- 月收入(税后)
@@ -1382,5 +1408,100 @@ async def list_portfolio_snapshots(limit: int = 500) -> list[dict]:
             (limit,))
         rows = await cur.fetchall()
         return [{"snap_date": r[0], "total_value": r[1], "by_asset": r[2]} for r in rows]
+    finally:
+        await db.close()
+
+
+# ---- 板块成交额份额档案 ----
+
+async def save_sector_shares(snap_date: str, rows: list[dict]):
+    db = await get_db()
+    try:
+        await db.executemany(
+            "INSERT OR REPLACE INTO sector_share_history (snap_date, board, amount_yi, share_pct) VALUES (?, ?, ?, ?)",
+            [(snap_date, r["board"], r["amount_yi"], r["share_pct"]) for r in rows])
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def get_sector_shares_on(snap_date: str) -> dict:
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT board, share_pct FROM sector_share_history WHERE snap_date = ?", (snap_date,))
+        return {r[0]: r[1] for r in await cur.fetchall()}
+    finally:
+        await db.close()
+
+
+async def list_sector_share_dates(limit: int = 20) -> list[str]:
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT DISTINCT snap_date FROM sector_share_history ORDER BY snap_date DESC LIMIT ?", (limit,))
+        return [r[0] for r in await cur.fetchall()]
+    finally:
+        await db.close()
+
+
+# ---- 自选观察池 ----
+
+async def add_watchlist(code: str, name: str, price: float | None):
+    import datetime
+    db = await get_db()
+    try:
+        await db.execute(
+            "INSERT OR REPLACE INTO watchlist (stock_code, stock_name, added_at, added_price) VALUES (?, ?, ?, ?)",
+            (code, name, datetime.date.today().isoformat(), price))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def remove_watchlist(code: str):
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM watchlist WHERE stock_code = ?", (code,))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def list_watchlist() -> list[dict]:
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT stock_code, stock_name, added_at, added_price FROM watchlist ORDER BY created_at DESC")
+        rows = await cur.fetchall()
+        return [{"code": r[0], "name": r[1], "added_at": r[2], "added_price": r[3]} for r in rows]
+    finally:
+        await db.close()
+
+
+# ---- 市场情绪逐日档案 ----
+
+async def save_sentiment_day(row: dict):
+    db = await get_db()
+    try:
+        await db.execute(
+            "INSERT OR REPLACE INTO sentiment_history (snap_date, n_zt, n_dt, n_zb, zbl_rate, max_lb, money_effect)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (row["date"], row.get("n_zt"), row.get("n_dt"), row.get("n_zb"),
+             row.get("zbl_rate"), row.get("max_lb"), row.get("money_effect")))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def list_sentiment_history(limit: int = 60) -> list[dict]:
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT snap_date, n_zt, n_dt, n_zb, zbl_rate, max_lb, money_effect"
+            " FROM sentiment_history ORDER BY snap_date DESC LIMIT ?", (limit,))
+        rows = await cur.fetchall()
+        return [{"date": r[0], "n_zt": r[1], "n_dt": r[2], "n_zb": r[3],
+                 "zbl_rate": r[4], "max_lb": r[5], "money_effect": r[6]} for r in rows]
     finally:
         await db.close()

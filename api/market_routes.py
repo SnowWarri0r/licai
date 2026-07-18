@@ -160,6 +160,54 @@ async def lhb_daily_list():
     return await lhb_daily()
 
 
+@router.get("/sector-share")
+async def sector_share():
+    """板块占全市场成交额份额排行 + 较昨日/5日前份额变化(资金聚拢/退潮)。"""
+    from services.sector_share import sector_share_view
+    return await sector_share_view()
+
+
+@router.get("/watchlist")
+async def watchlist_get(lite: bool = False):
+    """自选观察池。lite=1 只回代码表(☆按钮状态用), 默认全量(行情+结构+业绩预告)。"""
+    if lite:
+        from database import list_watchlist
+        return {"codes": [r["code"] for r in await list_watchlist()]}
+    from services.watchlist import watchlist_view
+    return await watchlist_view()
+
+
+@router.post("/watchlist/{stock_code}")
+async def watchlist_add(stock_code: str):
+    from database import add_watchlist
+    from services.market_data import get_realtime_quotes, normalize_stock_code
+    code = normalize_stock_code(stock_code).split(".")[-1]
+    q = (await get_realtime_quotes([code])).get(code) or {}
+    await add_watchlist(code, q.get("stock_name") or code, q.get("price"))
+    return {"ok": True, "code": code, "name": q.get("stock_name"), "added_price": q.get("price")}
+
+
+@router.delete("/watchlist/{stock_code}")
+async def watchlist_del(stock_code: str):
+    from database import remove_watchlist
+    await remove_watchlist(stock_code.split(".")[-1])
+    return {"ok": True}
+
+
+@router.get("/sentiment-history")
+async def sentiment_history_api(days: int = 30):
+    """情绪周期时间轴: 近 N 交易日 涨停/跌停/炸板率/最高连板/赚钱效应 序列。"""
+    from services.sentiment_history import sentiment_series
+    return await sentiment_series(days)
+
+
+@router.get("/seat-history")
+async def seat_history_api(q: str, days: int = 90):
+    """龙虎榜席位追踪: 名号(章盟主)/席位名/营业部全名 → 近期上榜记录+客观统计。"""
+    from services.lhb_detail import seat_history
+    return await seat_history(q, max(30, min(int(days or 90), 180)))
+
+
 @router.get("/earnings")
 async def market_earnings(top: int = 100):
     """业绩预告看板: 最新报告期(中报)预喜/预警榜 + 持仓关联。"""
