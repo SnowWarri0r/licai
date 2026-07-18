@@ -872,6 +872,19 @@ async def trade_review_ai(period: str = "all", force: int = 0):
     if fund_lines:
         lines += ["", "【基金/ETF 交易】(下面这些不是个股, 按各自逻辑评):"] + fund_lines
 
+    # 净值口径(TWR, 出入金已剥离): 全周期定性落在真实收益率上, 而不只凭流水统计
+    try:
+        from services.portfolio_curve import build_curve
+        cv = await build_curve(250)
+        cm = cv.get("metrics") or {}
+        if cm:
+            lines += ["", "【组合净值口径(TWR·时间加权, 出入金已剥离, 与基金净值同口径)】",
+                      f"  自{cm.get('起点')}以来: 区间收益 {cm.get('区间收益%')}%, 最大回撤 {cm.get('最大回撤%')}%, "
+                      f"同期沪深300 {cm.get('基准收益%')}%, 超额 {cm.get('超额%')}%。"
+                      "定性'整体做得怎么样/跑没跑赢大盘'以这组数为准(它剥离了出入金干扰)。"]
+    except Exception:
+        pass
+
     data_block = "\n".join(lines)
     _fund_rule = (
         "\n【基金/ETF 评判另一套尺子】数据末尾的'基金/ETF 交易'不是个股, 严禁套用上面个股的追高/做T/越跌加码那套:\n"
@@ -1390,6 +1403,13 @@ async def portfolio_curve(days: int = 120):
     """组合净值曲线: TWR(时间加权收益) + 沪深300 基准 + 区间收益/最大回撤。"""
     from services.portfolio_curve import build_curve
     return await build_curve(days)
+
+
+@router.get("/correlation")
+async def portfolio_correlation(days: int = 60):
+    """在持标的日收益相关性矩阵(价格口径): 量化同源风险。"""
+    from services.portfolio_curve import correlation_matrix
+    return await correlation_matrix(days)
 
 
 @router.get("/thesis")
