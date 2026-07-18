@@ -1,9 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { createChart, CandlestickSeries, HistogramSeries, LineSeries, CrosshairMode, LineStyle } from 'lightweight-charts'
 import { fetchJSON } from '../hooks/useApi'
+import { MinuteChart } from './StockKlineModal'
 
 const UP = '#cf5c5c', DOWN = '#5fa86c'   // A股 红涨绿跌
-const MA_DEFS = [{ n: 5, c: '#e8b04a' }, { n: 10, c: '#4aa6e0' }, { n: 20, c: '#cf6bcf' }]
+const MA_DEFS = [
+  { n: 5, c: '#e8b04a' }, { n: 10, c: '#4aa6e0' }, { n: 20, c: '#cf6bcf' },
+  { n: 30, c: '#6fc0b2' }, { n: 60, c: '#9a8cf0' },
+]
 
 function maLine(bars, n) {
   const out = []
@@ -83,9 +87,13 @@ export default function ProKline({ code, days = 250, height = 460, fill = false 
   const chartRef = useRef(null)
   const seriesRef = useRef({})
   const prevCloseLineRef = useRef(null)
+  const barsRef = useRef([])
   const [legend, setLegend] = useState(null)
   const [err, setErr] = useState('')
   const [loading, setLoading] = useState(true)
+  const [intraday, setIntraday] = useState(null)   // 点蜡烛 → {date, prevClose} 弹该日分时
+  const [minData, setMinData] = useState(null)
+  const [minErr, setMinErr] = useState('')
 
   // 建图(一次)
   useEffect(() => {
@@ -119,8 +127,38 @@ export default function ProKline({ code, days = 250, height = 460, fill = false 
       setLegend({ time: param.time, o: d.open, h: d.high, l: d.low, c: d.close })
     })
 
+    // 点蜡烛 → 弹该日分时(昨收取前一根收盘, 分时涨跌以它为基准)
+    chart.subscribeClick(param => {
+      const t = param.time
+      if (!t) return
+      const key = typeof t === 'string' ? t
+        : `${t.year}-${String(t.month).padStart(2, '0')}-${String(t.day).padStart(2, '0')}`
+      const arr = barsRef.current
+      const i = arr.findIndex(b => b.time === key)
+      if (i < 0) return
+      setIntraday({ date: key, prevClose: arr[i - 1]?.close ?? arr[i].open })
+    })
+
     return () => { chart.remove(); chartRef.current = null }
   }, [])
+
+  // 分时弹窗: 拉该日分钟数据; ESC 关闭
+  useEffect(() => {
+    if (!intraday) return
+    let alive = true
+    setMinData(null); setMinErr('')
+    fetchJSON(`/api/market/tdx/minute/${encodeURIComponent(code)}?date=${intraday.date}`)
+      .then(d => {
+        if (!alive) return
+        if (!d?.enabled) setMinErr('分时需启用 TDX 数据源(设置→TDX)')
+        else if (!d?.data?.points?.length) setMinErr('该日分时不可得(太久远或非交易日)')
+        else setMinData(d.data)
+      })
+      .catch(e => alive && setMinErr(e?.message || '加载失败'))
+    const onEsc = (e) => { if (e.key === 'Escape') setIntraday(null) }
+    window.addEventListener('keydown', onEsc)
+    return () => { alive = false; window.removeEventListener('keydown', onEsc) }
+  }, [intraday, code])
 
   // 换股票 / 周期 → 拉数据填充
   useEffect(() => {
@@ -132,6 +170,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false 
         if (!alive) return
         if (!Array.isArray(k) || !k.length) { setErr('暂无 K 线数据'); return }
         const bars = k.map(x => ({ time: x.time, open: x.open, high: x.high, low: x.low, close: x.close, volume: x.volume }))
+        barsRef.current = bars
         const { candle, vol, mas, gapPrim } = seriesRef.current
         candle.setData(bars.map(b => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close })))
         vol.setData(bars.map(b => ({ time: b.time, value: b.volume, color: b.close >= b.open ? 'rgba(207,92,92,0.5)' : 'rgba(95,168,108,0.5)' })))
@@ -171,11 +210,33 @@ export default function ProKline({ code, days = 250, height = 460, fill = false 
               <span>低<span className="text-bull">{fmt(legend.l)}</span></span>
               <span>收<span className={legend.c >= legend.o ? 'text-bear' : 'text-bull'}>{fmt(legend.c)}</span></span>
             </span>
-          : <span className="text-text-muted">{MA_DEFS.map(m => `MA${m.n}`).join(' / ')} · <span style={{ color: '#c8a876' }}>┄ 昨收</span> · 滚轮缩放 · 拖动平移</span>}
+          : <span className="text-text-muted">{MA_DEFS.map(m => `MA${m.n}`).join(' / ')} · <span style={{ color: '#c8a876' }}>┄ 昨收</span> · 滚轮缩放 · 点蜡烛看当日分时</span>}
       </div>
       <div ref={wrapRef} className={fill ? 'flex-1 min-h-0' : ''} style={fill ? { width: '100%' } : { width: '100%', height }} />
       {err && <div className="absolute inset-0 flex items-center justify-center text-[12px] text-text-dim">{err}</div>}
       {loading && !err && <div className="absolute inset-x-0 top-1/2 text-center text-[12px] text-text-dim">加载 K 线…</div>}
+
+      {/* 点蜡烛 → 该日分时弹窗 */}
+      {intraday && (
+        <div className="fixed inset-0 z-[90] flex items-center justify-center p-4"
+          style={{ background: 'rgba(0,0,0,0.55)' }} onClick={() => setIntraday(null)}>
+          <div className="bg-surface-2 border border-border rounded-xl p-3 w-full max-w-[780px]"
+            onClick={e => e.stopPropagation()}>
+            <div className="flex items-baseline gap-2 mb-1.5">
+              <span className="text-[13px] font-semibold text-text-bright">{code}</span>
+              <span className="text-[11.5px] text-text-muted font-mono">{minData?.date || intraday.date} 分时</span>
+              <span className="text-[10px] text-text-dim">基准=前一交易日收盘 {fmt(intraday.prevClose)}</span>
+              <button onClick={() => setIntraday(null)}
+                className="ml-auto text-text-dim hover:text-text text-[18px] leading-none px-1 cursor-pointer">×</button>
+            </div>
+            {minErr && <div className="text-center py-10 text-[12px] text-text-dim">{minErr}</div>}
+            {!minErr && !minData && <div className="text-center py-10 text-[12px] text-text-dim">分时加载中…</div>}
+            {minData && (
+              <MinuteChart points={minData.points} prevClose={intraday.prevClose} day={minData.date || intraday.date} />
+            )}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

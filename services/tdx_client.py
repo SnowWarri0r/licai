@@ -121,15 +121,20 @@ def _price_div(raw_prices, ref) -> float:
     return 10000.0 if (mid / 1000.0) / ref > 5 else 1000.0
 
 
-async def minute(code: str) -> dict | None:
-    """分时(当日 9:30-11:30 / 13:00-15:00, 至多 240 点)。返回 {date, points:[{time,price,手}]} 或 None。"""
+async def minute(code: str, date: str = "") -> dict | None:
+    """分时(9:30-11:30 / 13:00-15:00, 至多 240 点)。date=YYYY-MM-DD/YYYYMMDD 取历史某日, 空=今日。
+    返回 {date, points:[{time,price,手}]} 或 None。"""
     if not _BASE_URL:
         return None
-    data = await asyncio.to_thread(_get_sync, "/api/minute", {"code": _mkcode(code)})
+    params = {"code": _mkcode(code)}
+    hist = bool(date)
+    if hist:
+        params["date"] = str(date).replace("-", "")
+    data = await asyncio.to_thread(_get_sync, "/api/minute", params)
     if not isinstance(data, dict):
         return None
     raw = data.get("List") or []
-    q = await quote(code)                       # 一次拿到: 基数锚(昨收) + 开盘价
+    q = await quote(code)                       # 基数锚(昨收); 历史日只用于判基数, 量级差2倍内不影响
     ref = (q or {}).get("prev_close") or (q or {}).get("price")
     div = _price_div([x.get("Price") for x in raw], ref)
     pts = []
@@ -140,10 +145,10 @@ async def minute(code: str) -> dict | None:
         pts.append({"time": x.get("Time"), "price": p, "手": x.get("Number")})
     if not pts:
         return None
-    # TDX 分时从 09:31 起, 缺 09:30 开盘点。用 quote 开盘价(集合竞价结果)补一个锚点,
-    # 让分时从真实开盘价起步。手=0(竞价量不在分钟数据里, 不画量柱)。
+    # TDX 分时从 09:31 起, 缺 09:30 开盘点。当日用 quote 开盘价(集合竞价结果)补锚点;
+    # 历史日的开盘价不在 quote 里, 不补。手=0(竞价量不在分钟数据里, 不画量柱)。
     op = (q or {}).get("open")
-    if op and not str(pts[0].get("time") or "").startswith("09:30"):
+    if not hist and op and not str(pts[0].get("time") or "").startswith("09:30"):
         pts.insert(0, {"time": "09:30", "price": op, "手": 0})
     return {"date": data.get("date"), "points": pts}
 
