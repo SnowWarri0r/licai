@@ -201,14 +201,20 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
     const pc = intraday?.prevClose
     const pts = minData?.points
     if (!pc || !pts?.length) return { adjPrev: pc, adjusted: false }
+    // 首选后端精确值: 前复权昨收经分红送配事件表逐事件逆变换的真实昨收
+    if (minData.prev_close_raw > 0) {
+      return { adjPrev: minData.prev_close_raw,
+               adjusted: (minData.exright_events || 0) > 0 ? '精确' : false }
+    }
+    // 回退近似: 用当日(分时收盘 vs 前复权收盘)错位量推——除息按差值平移, 送转按比值
     const bar = barsRef.current.find(b => b.time === intraday.date)
     const lastPx = pts[pts.length - 1]?.price
     if (bar?.close > 0 && lastPx > 0) {
       const diff = lastPx - bar.close
       if (Math.abs(diff) > bar.close * 0.004) {
         return Math.abs(diff) < bar.close * 0.15
-          ? { adjPrev: pc + diff, adjusted: true }                 // 除息(现金分红)
-          : { adjPrev: pc * (lastPx / bar.close), adjusted: true } // 送转/拆分
+          ? { adjPrev: pc + diff, adjusted: '近似' }
+          : { adjPrev: pc * (lastPx / bar.close), adjusted: '近似' }
       }
     }
     return { adjPrev: pc, adjusted: false }
@@ -314,7 +320,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
                   {t}
                 </button>
               ))}
-              <span className="text-[9.5px] text-text-dim">{ovTab === '分时' ? `基准=前收 ${fmt(adjPrev)}${adjusted ? '(已除权校正)' : ''} · ` : ''}点K线空白处收起</span>
+              <span className="text-[9.5px] text-text-dim">{ovTab === '分时' ? `基准=前收 ${fmt(adjPrev)}${adjusted ? `(除权校正·${adjusted})` : ''} · ` : ''}点K线空白处收起</span>
               <button onClick={() => setIntraday(null)}
                 className="ml-auto text-text-dim hover:text-text text-[15px] leading-none px-1 cursor-pointer">×</button>
             </div>

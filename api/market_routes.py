@@ -40,12 +40,36 @@ async def tdx_orderbook(stock_code: str):
 
 @router.get("/tdx/minute/{stock_code}")
 async def tdx_minute(stock_code: str, date: str = ""):
-    """分时(TDX, 至多 240 点)。date=YYYY-MM-DD 取历史某日, 空=今日。"""
+    """分时(TDX, 至多 240 点)。date=YYYY-MM-DD 取历史某日, 空=今日。
+
+    历史日附 prev_close_raw: 真实(不复权)昨收——前复权昨收经分红送配事件表
+    逐事件逆变换, 除权错位精确归零; 事件表拉不到则不带, 前端回退近似校正。"""
     import services.tdx_client as _tdx
     bare = _tdx_bare(stock_code)
     if not _tdx.is_enabled() or not bare:
         return {"enabled": _tdx.is_enabled(), "data": None}
-    return {"enabled": True, "data": await _tdx.minute(bare, date=date)}
+    data = await _tdx.minute(bare, date=date)
+    if data and date and (data.get("points") or []):
+        try:
+            from services.exright import raw_price_on
+            from services.market_data import get_historical_data
+            d10 = date if "-" in date else f"{date[:4]}-{date[4:6]}-{date[6:]}"
+            df = await get_historical_data(bare, 400)
+            prev = None
+            if df is not None and len(df):
+                days = [(str(r["日期"])[:10], float(r["收盘"])) for _, r in df.iterrows()]
+                for i, (ds, _c) in enumerate(days):
+                    if ds == d10 and i > 0:
+                        prev = days[i - 1][1]
+                        break
+            if prev:
+                raw, n_ev = await raw_price_on(bare, prev, d10)
+                if raw:
+                    data["prev_close_raw"] = raw
+                    data["exright_events"] = n_ev
+        except Exception:
+            pass
+    return {"enabled": True, "data": data}
 
 
 @router.get("/tdx/kline/{stock_code}")
