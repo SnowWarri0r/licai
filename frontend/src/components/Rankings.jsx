@@ -99,6 +99,7 @@ export default function Rankings() {
   const [data, setData] = useState(null)
   const [structure, setStructure] = useState(null)
   const [phaseFilter, setPhaseFilter] = useState('全部')   // 全部 | 强势 | 蓄势
+  const [indFilter, setIndFilter] = useState('全部')       // 行业快捷筛选
   const [inst, setInst] = useState(null)
   const [instSide, setInstSide] = useState('net_buy')   // net_buy | net_sell
   const [earnings, setEarnings] = useState(null)
@@ -154,6 +155,7 @@ export default function Rankings() {
   // 结构页: 行业分组 → 组头行 + 个股行 摊平成一个列表(板块/阶段筛选后空组不显示)
   let _sn = 0
   const structList = tab !== 'structure' ? [] : (structure?.groups || []).flatMap(g => {
+    if (indFilter !== '全部' && g.行业 !== indFilter) return []
     let rs = g.rows || []
     if (phaseFilter !== '全部') rs = rs.filter(r => r.phase === phaseFilter)
     if (board !== '全部') rs = rs.filter(r => boardOf(r.code) === board)
@@ -223,6 +225,23 @@ export default function Rankings() {
           ))}
         </div>
 
+        {/* 行业快捷条(结构页): 点行业只看该组, 不用往下翻 */}
+        {tab === 'structure' && (structure?.groups || []).length > 0 && (
+          <div className="flex gap-1 px-3 py-1.5 border-b border-border-subtle overflow-x-auto whitespace-nowrap shrink-0"
+            style={{ scrollbarWidth: 'thin' }}>
+            <button onClick={() => setIndFilter('全部')}
+              className={`text-[10.5px] px-1.5 py-0.5 rounded shrink-0 ${indFilter === '全部' ? 'bg-accent/15 text-accent' : 'text-text-dim hover:text-text'}`}>
+              全部
+            </button>
+            {structure.groups.map(g => (
+              <button key={g.行业} onClick={() => setIndFilter(g.行业)}
+                className={`text-[10.5px] px-1.5 py-0.5 rounded shrink-0 ${indFilter === g.行业 ? 'bg-accent/15 text-accent' : 'text-text-dim hover:text-text'}`}>
+                {g.行业} {g.n}
+              </button>
+            ))}
+          </div>
+        )}
+
         <div className="flex-1 overflow-y-auto min-h-0">
           {!loading && !err && list.length === 0 && (
             <div className="text-center py-8 text-text-dim text-[12px] px-4 leading-relaxed">
@@ -234,7 +253,9 @@ export default function Rankings() {
           {!loading && !err && list.map((r, i) => {
             if (r._gheader) {
               return (
-                <div key={`g-${r.行业}`} className="px-3 py-1 text-[10px] text-accent/90 bg-surface-3/50 border-t border-b border-border-subtle flex items-baseline gap-2 sticky top-0">
+                <div key={`g-${r.行业}`}
+                  className="px-3 py-1 text-[10px] text-accent/90 border-t border-b border-border-subtle flex items-baseline gap-2 sticky top-0 z-10"
+                  style={{ background: 'var(--color-surface-2)' }}>
                   <span className="font-semibold">{r.行业}</span>
                   <span className="text-text-muted">{r.n}只</span>
                   {r.n_强势 > 0 && <span className="text-bear-bright">强势{r.n_强势}</span>}
