@@ -392,8 +392,8 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
         {['09:30', '11:30/13:00', '15:00'].map((lbl, i) => (
           <text key={i} x={P.l + (i / 2) * innerW} y={H - 8} fontSize="10" fill="var(--color-text-dim)" textAnchor={i === 0 ? 'start' : i === 2 ? 'end' : 'middle'} fontFamily="monospace">{lbl}</text>
         ))}
-        {/* 分时成交量 */}
-        <text x={P.l} y={volTop - 3} fontSize="9" fill="var(--color-text-muted)" fontFamily="monospace">
+        {/* 分时成交量图例: 靠右画, 避开左侧价格轴标 */}
+        <text x={W - P.r} y={volTop - 3} fontSize="9" fill="var(--color-text-muted)" textAnchor="end" fontFamily="monospace">
           量 <tspan fill={UP}>红买</tspan>/<tspan fill={DOWN}>绿卖</tspan>
         </text>
         {rows.map(r => {
