@@ -3123,17 +3123,18 @@ function ReduceLotRow({ asset, onDone, onCancel }) {
               </div>
             )}
             {isShareBased && (
+              /* 字段顺序与加仓表单一致: 先净值后份额 */
               <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="text-[11.5px] text-text-dim block mb-1">赎回份额</label>
-                  <input type="number" inputMode="decimal" placeholder={inferred?.shares || '可选'}
-                    value={shares} onChange={e => setShares(e.target.value)}
-                    className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent" />
-                </div>
                 <div>
                   <label className="text-[11.5px] text-text-dim block mb-1">单价 / 净值</label>
                   <input type="number" inputMode="decimal" placeholder={inferred?.unit_price || '可选'}
                     value={unitPrice} onChange={e => setUnitPrice(e.target.value)}
+                    className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent" />
+                </div>
+                <div>
+                  <label className="text-[11.5px] text-text-dim block mb-1">赎回份额</label>
+                  <input type="number" inputMode="decimal" placeholder={inferred?.shares || '可选'}
+                    value={shares} onChange={e => setShares(e.target.value)}
                     className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] font-mono outline-none focus:border-accent" />
                 </div>
               </div>
