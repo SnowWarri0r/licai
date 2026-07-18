@@ -518,3 +518,98 @@ async def coiled_prewarm_loop():
         except Exception:
             interval = 3600
         await asyncio.sleep(interval)
+
+
+# ---------- 结构完好扫描("没砸下去"): 大盘调整中K线结构未破坏的强势票 ----------
+
+async def _stage2_unbroken(c: dict, bench10: float) -> dict | str:
+    """K线结构体检: 距高点回撤浅 + 近10日无放量大阴 + 上行结构未破位 + 跑赢大盘。
+    '没砸下去'=调整市里主力没撤的客观痕迹; 纯结构描述, 不构成买卖建议。"""
+    from services.market_data import get_historical_data
+    from services.stock_agent import _structure_scan
+    try:
+        df = await get_historical_data(c["code"], days=120)
+    except Exception:
+        return "K线不可达"
+    if df is None or len(df) < 45:
+        return "K线不足"
+    closes = [float(v) for v in df["收盘"] if v]
+    if len(closes) < 45:
+        return "K线不足"
+    try:
+        highs = [float(v) for v in df["最高"]]
+        lows = [float(v) for v in df["最低"]]
+        vols = [float(v) for v in df["成交量"]]
+    except Exception:
+        highs = lows = [None] * len(closes)
+        vols = [0] * len(closes)
+    last = closes[-1]
+    hi60 = max(closes[-60:])
+    dist_high = round((last / hi60 - 1) * 100, 1)
+    if dist_high < -12:
+        return "距60日高回撤>12%(已被砸)"
+    # 近10日单日大阴(收盘跌≥6%)= 砸过
+    for i in range(max(1, len(closes) - 10), len(closes)):
+        if closes[i] / closes[i - 1] - 1 <= -0.06:
+            return "近10日有大阴(已被砸)"
+    st = _structure_scan(closes, highs, lows, vols)
+    if st.get("结构破位") or st.get("跌破颈线") or st.get("2B假突破"):
+        return "结构破位/假突破"
+    ma20 = sum(closes[-20:]) / 20
+    uptrend = st.get("阶梯式上行") or st.get("抬高低点") or (last > ma20 and dist_high >= -8)
+    if not uptrend:
+        return "非上行结构"
+    pct10 = (last / closes[-11] - 1) * 100 if len(closes) >= 11 else 0
+    rs10 = round(pct10 - bench10, 1)
+    if rs10 < -1:
+        return "近10日明显跑输大盘"
+    tags = [k for k in ("阶梯式上行", "抬高低点", "2B假破位", "突破底颈线") if st.get(k)]
+    if dist_high >= -3:
+        tags.append("贴近60日高")
+    score = (rs10 * 2 + (12 + dist_high)
+             + (8 if st.get("阶梯式上行") else 4 if st.get("抬高低点") else 0)
+             + (4 if last > ma20 else 0))
+    return {**c, "距60日高%": dist_high, "近10日超额%": rs10,
+            "标签": "·".join(tags) or "站上MA20", "评分": round(score),
+            "台阶支撑": st.get("台阶支撑")}
+
+
+async def scan_unbroken(force: bool = False) -> dict:
+    """结构完好扫描主入口: 龙头池里K线没被砸的。10分钟缓存, 与蓄势共享池与单飞锁。"""
+    c = _cache.get("unbroken")
+    if not force and c and time.time() - c[1] < _TTL:
+        return c[0]
+    pool, fmap = await asyncio.gather(asyncio.to_thread(_clist_pool),
+                                      asyncio.to_thread(_fund_hold_map))
+    if not pool:
+        return c[0] if c else {"error": "行情源暂不可达(东财抖动)"}
+    universe = _build_universe(pool, fmap)
+    try:
+        from services.market_data import _fetch_benchmark_history
+        bdf = await asyncio.to_thread(_fetch_benchmark_history, "sh000300", 15)
+        bcl = [float(r["close"]) for _, r in bdf.iterrows()]
+        bench10 = (bcl[-1] / bcl[-11] - 1) * 100 if len(bcl) >= 11 else 0.0
+    except Exception:
+        bench10 = 0.0
+    sem = asyncio.Semaphore(8)
+
+    async def _one(x):
+        async with sem:
+            return await _stage2_unbroken(x, bench10)
+
+    results = await asyncio.gather(*[_one(x) for x in universe], return_exceptions=True)
+    rows = [r for r in results if isinstance(r, dict)]
+    from collections import Counter
+    rejected = Counter(r for r in results if isinstance(r, str))
+    fc_map = await asyncio.to_thread(_forecast_map)
+    _attach_forecast(rows, fc_map)
+    rows.sort(key=lambda r: -r["评分"])
+    out = {"as_of": time.strftime("%Y-%m-%d %H:%M"), "rows": rows[:60],
+           "universe": len(universe), "rejected": dict(rejected),
+           "bench10": round(bench10, 1),
+           "note": "结构完好观察池('K线没砸下去'): 龙头池(百亿+≥30家基金+盈利) → 距60日高回撤≤12%、"
+                   "近10日无单日大阴(≥6%)、上行结构未破位(阶梯/抬高低点/站上MA20)、近10日不明显跑输沪深300。"
+                   "标签带业绩预告凭据(预喜+6/预警-6)。结构完好只是当下事实, 随时可能被砸, "
+                   "纯客观结构描述, 不构成任何买卖建议。"}
+    _cache["unbroken"] = (out, time.time())
+    return out
