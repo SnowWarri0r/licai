@@ -145,6 +145,14 @@ async def market_rankings(limit: int = 100):
     return await _aio.to_thread(market_review.top_rankings, limit)
 
 
+@router.get("/lhb-detail/{stock_code}")
+async def lhb_detail(stock_code: str, date: str):
+    """龙虎榜席位明细: 某股某上榜日的买卖前五营业部+金额+席位画像。"""
+    from services.lhb_detail import lhb_seat_detail
+    bare = stock_code.split(".")[-1]
+    return await lhb_seat_detail(bare, date)
+
+
 @router.get("/earnings")
 async def market_earnings(top: int = 100):
     """业绩预告看板: 最新报告期(中报)预喜/预警榜 + 持仓关联。"""

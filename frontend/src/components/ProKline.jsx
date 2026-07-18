@@ -92,9 +92,11 @@ export default function ProKline({ code, days = 250, height = 460, fill = false 
   const [err, setErr] = useState('')
   const [loading, setLoading] = useState(true)
   const [hint, setHint] = useState(null)           // 点蜡烛 → {x, y, date, prevClose} 「分时›」tooltip
-  const [intraday, setIntraday] = useState(null)   // 点 tooltip → {date, prevClose} 分时浮层
+  const [intraday, setIntraday] = useState(null)   // 点 tooltip → {date, prevClose} 浮层
+  const [ovTab, setOvTab] = useState('分时')        // 浮层页签: 分时 | 龙虎榜
   const [minData, setMinData] = useState(null)
   const [minErr, setMinErr] = useState('')
+  const [lhb, setLhb] = useState(null)             // 该日席位明细(懒加载)
   const intradayRef = useRef(null)
   intradayRef.current = intraday
 
@@ -147,11 +149,11 @@ export default function ProKline({ code, days = 250, height = 460, fill = false 
     return () => { chart.remove(); chartRef.current = null }
   }, [])
 
-  // 分时弹窗: 拉该日分钟数据; ESC 关闭
+  // 浮层: 拉该日分钟数据; ESC 关闭; 龙虎榜页签懒加载
   useEffect(() => {
     if (!intraday) return
     let alive = true
-    setMinData(null); setMinErr('')
+    setMinData(null); setMinErr(''); setLhb(null); setOvTab('分时')
     fetchJSON(`/api/market/tdx/minute/${encodeURIComponent(code)}?date=${intraday.date}`)
       .then(d => {
         if (!alive) return
@@ -164,6 +166,15 @@ export default function ProKline({ code, days = 250, height = 460, fill = false 
     window.addEventListener('keydown', onEsc)
     return () => { alive = false; window.removeEventListener('keydown', onEsc) }
   }, [intraday, code])
+
+  useEffect(() => {
+    if (!intraday || ovTab !== '龙虎榜' || lhb) return
+    let alive = true
+    fetchJSON(`/api/market/lhb-detail/${encodeURIComponent(code)}?date=${intraday.date}`)
+      .then(d => alive && setLhb(d || { note: '暂不可达' }))
+      .catch(() => alive && setLhb({ note: '龙虎榜数据暂不可达(东财抖动)' }))
+    return () => { alive = false }
+  }, [ovTab, intraday, code, lhb])
 
   // 换股票 / 周期 → 拉数据填充
   useEffect(() => {
@@ -238,16 +249,49 @@ export default function ProKline({ code, days = 250, height = 460, fill = false 
           <div className="absolute inset-x-0 bottom-0 z-20 border-t border-border rounded-t-lg px-2 pt-1 pb-1.5 overflow-hidden"
             style={{ height: '62%', background: 'color-mix(in srgb, var(--color-surface-2) 94%, transparent)', backdropFilter: 'blur(2px)' }}>
             <div className="flex items-baseline gap-2 px-1 mb-0.5">
-              <span className="text-[11px] font-mono text-text-bright">{(minData?.date || intraday.date).toString().replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3')} 分时</span>
-              <span className="text-[9.5px] text-text-dim">基准=前收 {fmt(intraday.prevClose)} · 点K线空白处收起</span>
+              <span className="text-[11px] font-mono text-text-bright">{(minData?.date || intraday.date).toString().replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3')}</span>
+              {['分时', '龙虎榜'].map(t => (
+                <button key={t} onClick={() => setOvTab(t)}
+                  className={`text-[10.5px] px-1.5 py-0.5 rounded cursor-pointer ${ovTab === t ? 'bg-accent/20 text-accent' : 'text-text-dim hover:text-text'}`}>
+                  {t}
+                </button>
+              ))}
+              <span className="text-[9.5px] text-text-dim">{ovTab === '分时' ? `基准=前收 ${fmt(intraday.prevClose)} · ` : ''}点K线空白处收起</span>
               <button onClick={() => setIntraday(null)}
                 className="ml-auto text-text-dim hover:text-text text-[15px] leading-none px-1 cursor-pointer">×</button>
             </div>
-            {minErr && <div className="text-center py-6 text-[11.5px] text-text-dim">{minErr}</div>}
-            {!minErr && !minData && <div className="text-center py-6 text-[11.5px] text-text-dim">分时加载中…</div>}
-            {minData && (
-              <MinuteChart points={minData.points} prevClose={intraday.prevClose}
-                day={minData.date || intraday.date} height={200} />
+            {ovTab === '分时' && <>
+              {minErr && <div className="text-center py-6 text-[11.5px] text-text-dim">{minErr}</div>}
+              {!minErr && !minData && <div className="text-center py-6 text-[11.5px] text-text-dim">分时加载中…</div>}
+              {minData && (
+                <MinuteChart points={minData.points} prevClose={intraday.prevClose}
+                  day={minData.date || intraday.date} height={200} />
+              )}
+            </>}
+            {ovTab === '龙虎榜' && (
+              !lhb ? <div className="text-center py-6 text-[11.5px] text-text-dim">席位明细加载中…</div>
+              : (!lhb['买入']?.length && !lhb['卖出']?.length)
+              ? <div className="text-center py-6 text-[11.5px] text-text-dim">{lhb.note || '该日未上龙虎榜'}</div>
+              : (
+                <div className="overflow-y-auto text-[10.5px]" style={{ maxHeight: 'calc(100% - 26px)' }}>
+                  {lhb['上榜原因'] && <div className="px-1 text-[9.5px] text-text-dim mb-1">上榜原因: {lhb['上榜原因']}</div>}
+                  <div className="grid grid-cols-2 gap-3 px-1">
+                    {[['买入', 'text-bear-bright'], ['卖出', 'text-bull-bright']].map(([side, cls]) => (
+                      <div key={side}>
+                        <div className={`mb-0.5 font-semibold ${cls}`}>{side}前五 · 计 {(lhb[`${side}总计万`] / 1e4).toFixed(2)}亿</div>
+                        {(lhb[side] || []).map((s, i) => (
+                          <div key={i} className="flex items-baseline gap-1 py-[1px] border-b border-border-subtle/40">
+                            <span className="text-text truncate flex-1" title={s.席位}>{s.席位.replace(/(股份|有限责任)?公司|证券营业部/g, '')}</span>
+                            {s.标签 && <span className="text-[8.5px] px-1 rounded bg-accent/15 text-accent shrink-0">{s.标签}</span>}
+                            <span className={`font-mono shrink-0 ${cls}`}>{(s.金额万 / 1e4).toFixed(2)}亿</span>
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="px-1 pt-0.5 text-[8.5px] text-text-dim">{lhb.note}</div>
+                </div>
+              )
             )}
           </div>
         )}
