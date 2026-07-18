@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { fetchJSON } from '../hooks/useApi'
 
 const ACQUIRE = new Set(['BUY', 'ADD', 'BONUS'])
-export const MA_WARMUP = 20           // 日K 多取的均线预热根数(够 MA20 从首根可见蜡烛起连续)
+export const MA_WARMUP = 60           // 日K 多取的均线预热根数(够 MA60 从首根可见蜡烛起连续)
 // A 股口径: 红涨绿跌
 const UP = '#cf5c5c', DOWN = '#5fa86c'
 const BUY_COLOR = '#3fae6a', SELL_COLOR = '#d04a4a'
@@ -122,7 +122,7 @@ export function CandleChart({ series, cost, actions, warmup = [] }) {
   }, [series])
 
   // 均线 MA5/10/20
-  const MA_DEFS = [{ n: 5, c: '#e8e0cf' }, { n: 10, c: '#c8a876' }, { n: 20, c: '#7aa2d6' }]
+  const MA_DEFS = [{ n: 5, c: '#e8e0cf' }, { n: 10, c: '#c8a876' }, { n: 20, c: '#7aa2d6' }, { n: 30, c: '#6fc0b2' }, { n: 60, c: '#9a8cf0' }]
   const maLines = useMemo(() => {
     if (points.length < 2) return []
     const w = warmup.length
@@ -298,7 +298,7 @@ function _minuteSlot(t) {
   return 240
 }
 
-function MinuteChart({ points, prevClose, actions = [], day }) {
+export function MinuteChart({ points, prevClose, actions = [], day }) {
   const [hover, setHover] = useState(null)
   const svgRef = useRef(null)
   const W = 720, H = 410, P = { l: 64, r: 16, t: 16, b: 28 }
