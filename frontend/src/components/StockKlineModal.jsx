@@ -301,9 +301,11 @@ function _minuteSlot(t) {
 export function MinuteChart({ points, prevClose, actions = [], day, height = 410 }) {
   const [hover, setHover] = useState(null)
   const svgRef = useRef(null)
-  const W = 720, H = height, P = { l: 64, r: 16, t: 16, b: 28 }
+  // t=30: 顶部预留图例专属条带(y≈17), 图从其下开始; volGap=24: 两图间隙容纳量图例行——
+  // 图例有自己的空间, 不与任何轴标/内容抢位
+  const W = 720, H = height, P = { l: 64, r: 16, t: 30, b: 28 }
   const innerW = W - P.l - P.r, innerH = H - P.t - P.b
-  const volH = 48, volGap = 10
+  const volH = 48, volGap = 24
   const priceH = innerH - volH - volGap
   const volTop = P.t + priceH + volGap
 
@@ -392,8 +394,8 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
         {['09:30', '11:30/13:00', '15:00'].map((lbl, i) => (
           <text key={i} x={P.l + (i / 2) * innerW} y={H - 8} fontSize="10" fill="var(--color-text-dim)" textAnchor={i === 0 ? 'start' : i === 2 ? 'end' : 'middle'} fontFamily="monospace">{lbl}</text>
         ))}
-        {/* 分时成交量图例: 两图间隙居中(左右两侧都有轴标, 中间保证空) */}
-        <text x={P.l + innerW / 2} y={volTop - 3} fontSize="9" fill="var(--color-text-muted)" textAnchor="middle" fontFamily="monospace">
+        {/* 分时成交量图例: 两图间隙条带(volGap=24 专门留的), 右对齐, 与价格区底部轴标隔开 */}
+        <text x={W - P.r} y={volTop - 7} fontSize="9" fill="var(--color-text-muted)" textAnchor="end" fontFamily="monospace">
           量 <tspan fill={UP}>红买</tspan>/<tspan fill={DOWN}>绿卖</tspan>
         </text>
         {rows.map(r => {
@@ -416,9 +418,9 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
           )
         })}
         {hover && <line x1={hover.x} y1={P.t} x2={hover.x} y2={volTop + volH} stroke="var(--color-text-muted)" strokeWidth="1" strokeDasharray="2 3" />}
-        {/* 图例: 顶部居中(左右两侧都有轴标, 只有中间保证空); 悬浮时让位给 tooltip */}
+        {/* 图例: 顶部专属条带(图内容从 P.t 起, 条带内没有别的东西); 悬浮时让位给 tooltip */}
         {!hover && (
-          <text x={P.l + innerW / 2} y={P.t + 11} fontSize="10" textAnchor="middle" fontFamily="ui-monospace, monospace">
+          <text x={W - P.r} y={17} fontSize="10" textAnchor="end" fontFamily="ui-monospace, monospace">
             <tspan fill={lineColor}>— 价格</tspan>
             <tspan dx="10" fill="#c8a876">— 均价</tspan>
           </text>
