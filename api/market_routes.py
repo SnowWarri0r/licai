@@ -159,6 +159,13 @@ async def market_inst_flow(top: int = 25):
     return await inst_flow(top)
 
 
+@router.get("/unbroken")
+async def market_unbroken(force: bool = False):
+    """结构完好扫描: 龙头池里 K 线没被砸下去的(距高点浅/无大阴/结构未破/跑赢大盘)。"""
+    from services.coiled_scanner import scan_unbroken
+    return await scan_unbroken(force)
+
+
 @router.get("/coiled")
 async def market_coiled(force: bool = False):
     """横盘蓄势扫描: 长期箱体横盘 + 今日放量上攻(贴近/突破上沿)的结构筛选。10min 缓存。"""
