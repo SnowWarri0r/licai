@@ -138,6 +138,15 @@ CREATE TABLE IF NOT EXISTS morning_briefings (
     UNIQUE(stock_code, briefing_date)
 );
 
+-- 每日组合市值快照(收盘后记一次): 机器人/加密等无价史资产的真实市值序列,
+-- 净值曲线用它替代成本基线(快照攒得越久, 这部分曲线越真)
+CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+    snap_date TEXT PRIMARY KEY,          -- YYYY-MM-DD
+    total_value REAL NOT NULL,
+    by_asset TEXT,                       -- JSON {"EXT:<id>"|"A:<code>": value}
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS cashflow_monthly (
     month TEXT PRIMARY KEY,             -- YYYY-MM
     income REAL DEFAULT 0,              -- 月收入(税后)
@@ -1348,5 +1357,30 @@ async def delete_broker(broker_id: int):
     try:
         await db.execute("DELETE FROM brokers WHERE id=? AND is_default=0", (broker_id,))
         await db.commit()
+    finally:
+        await db.close()
+
+
+# ---- 每日组合市值快照 ----
+
+async def save_portfolio_snapshot(snap_date: str, total_value: float, by_asset_json: str):
+    db = await get_db()
+    try:
+        await db.execute(
+            "INSERT OR REPLACE INTO portfolio_snapshots (snap_date, total_value, by_asset) VALUES (?, ?, ?)",
+            (snap_date, total_value, by_asset_json))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def list_portfolio_snapshots(limit: int = 500) -> list[dict]:
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT snap_date, total_value, by_asset FROM portfolio_snapshots ORDER BY snap_date DESC LIMIT ?",
+            (limit,))
+        rows = await cur.fetchall()
+        return [{"snap_date": r[0], "total_value": r[1], "by_asset": r[2]} for r in rows]
     finally:
         await db.close()

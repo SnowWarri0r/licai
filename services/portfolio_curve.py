@@ -250,13 +250,29 @@ async def build_curve(days: int = 120) -> dict:
             kind = "px" if _is_onchain_etf(code) else "otc"
             tasks.append((kind, code, acts))
         else:
-            tasks.append(("cost", f"{at}:{x['id']}", acts))
+            tasks.append(("cost", f"EXT:{x['id']}", acts))
 
     sem = asyncio.Semaphore(4)
+    try:
+        from services.portfolio_snapshot import snapshot_map
+        snaps = await snapshot_map()          # {date: {key: value}} 真实市值快照
+    except Exception:
+        snaps = {}
 
     async def _one(kind: str, code: str, acts: list[dict]):
         if kind == "cost":
-            return cost_basis_series(acts, axis), day_flows(acts, axis), None
+            vals = cost_basis_series(acts, axis)
+            fl = day_flows(acts, axis)
+            # 有快照的日子用真实市值覆盖成本基线(快照日之间前向填充);
+            # 快照含当日盈亏而流量不含 → TWR 从此吃到这部分资产的真实收益
+            last = None
+            for i, dt in enumerate(axis):
+                v = (snaps.get(dt) or {}).get(code)
+                if v is not None:
+                    last = v
+                if last is not None:
+                    vals[i] = last
+            return vals, fl, None
         async with sem:
             hist = await _price_hist(kind, code, days + 60)
         fl = day_flows(acts, axis, stock=(kind == "stock"))
@@ -327,3 +343,113 @@ async def build_curve(days: int = 120) -> dict:
     }
     _cache[ck] = (out, time.time())
     return out
+
+
+async def correlation_matrix(days: int = 60) -> dict:
+    """在持标的两两日收益相关性(价格口径, 与买卖流水无关) + 与沪深300 的相关。
+    覆盖: A股直持 + 场内ETF + 场外基金(官方净值); 现金/理财/机器人无价格序列不参与。
+    量化"同源风险": 名字不同的持仓若相关性>0.8, 涨跌基本是一回事。纯客观, 不构成建议。"""
+    days = max(20, min(int(days or 60), 250))
+    ck = f"corr_{days}"
+    c = _cache.get(ck)
+    if c and time.time() - c[1] < _TTL:
+        return c[0]
+
+    from database import list_external_assets
+    from services.external_assets import _is_onchain_etf
+    from services.stock_agent import _active_holdings
+
+    inst: list[tuple[str, str, str]] = []       # (kind, code, name)
+    for h in await _active_holdings():
+        code = str(h.get("stock_code") or "")
+        if code:
+            inst.append(("px", code, h.get("stock_name") or code))
+    for x in await list_external_assets():
+        if (x.get("asset_type") or "").upper() != "FUND":
+            continue
+        code = str(x.get("code") or "")
+        if not code or (x.get("shares") or 0) <= 0:
+            continue
+        kind = "px" if _is_onchain_etf(code) else "otc"
+        inst.append((kind, code, x.get("name") or code))
+    if len(inst) < 2:
+        return {"error": "在持的有价史标的不足两只, 算不了相关性"}
+
+    sem = asyncio.Semaphore(4)
+
+    async def _rets(kind, code):
+        async with sem:
+            hist = await _price_hist(kind, code, days + 40)
+        ks = sorted(hist.keys())[-(days + 1):]
+        return {ks[i]: hist[ks[i]] / hist[ks[i - 1]] - 1
+                for i in range(1, len(ks)) if hist[ks[i - 1]]}
+
+    rets = await asyncio.gather(*[_rets(k, cd) for k, cd, _ in inst], return_exceptions=True)
+    series = []
+    for (kind, code, name), r in zip(inst, rets):
+        if isinstance(r, dict) and len(r) >= 15:
+            series.append((name, r))
+    # 基准列
+    try:
+        from services.market_data import _fetch_benchmark_history
+        bdf = await asyncio.to_thread(_fetch_benchmark_history, "sh000300", days + 10)
+        closes = [(_d(r["date"]), float(r["close"])) for _, r in bdf.iterrows()]
+        series.append(("沪深300", {closes[i][0]: closes[i][1] / closes[i - 1][1] - 1
+                                   for i in range(1, len(closes))}))
+    except Exception:
+        pass
+    if len(series) < 2:
+        return {"error": "价格历史不足, 算不了相关性"}
+
+    def _corr(a: dict, b: dict) -> float | None:
+        common = sorted(set(a) & set(b))
+        if len(common) < 15:
+            return None
+        xs = [a[d_] for d_ in common]; ys = [b[d_] for d_ in common]
+        n = len(xs)
+        mx, my = sum(xs) / n, sum(ys) / n
+        sx = (sum((v - mx) ** 2 for v in xs)) ** 0.5
+        sy = (sum((v - my) ** 2 for v in ys)) ** 0.5
+        if sx < 1e-12 or sy < 1e-12:
+            return None
+        return round(sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / (sx * sy), 2)
+
+    names = [n for n, _ in series]
+    matrix = [[(1.0 if i == j else _corr(series[i][1], series[j][1]))
+               for j in range(len(series))] for i in range(len(series))]
+    pairs = []
+    for i in range(len(series)):
+        for j in range(i + 1, len(series)):
+            if names[i] == "沪深300" or names[j] == "沪深300":
+                continue
+            if matrix[i][j] is not None:
+                pairs.append({"a": names[i], "b": names[j], "corr": matrix[i][j]})
+    pairs.sort(key=lambda p: -abs(p["corr"]))
+    out = {"as_of": time.strftime("%Y-%m-%d %H:%M"), "days": days,
+           "names": names, "matrix": matrix, "pairs": pairs[:8],
+           "note": f"近{days}个交易日的日收益相关性(价格口径)。>0.8=涨跌基本是一回事(分散是名义上的),"
+                   "0.4-0.8=中度同向, <0.2=基本独立。现金/理财/机器人无价格序列不参与。"
+                   "纯客观统计, 不构成任何买卖建议。"}
+    _cache[ck] = (out, time.time())
+    return out
+
+
+async def curve_prewarm_loop():
+    """后台预热(首算 ~1 分钟, 预热后前端秒开) + 每日收盘市值快照。"""
+    await asyncio.sleep(90)
+    while True:
+        for win in (60, 120, 250):
+            try:
+                await build_curve(win)
+            except Exception:
+                pass
+        try:
+            await correlation_matrix(60)
+        except Exception:
+            pass
+        try:
+            from services.portfolio_snapshot import maybe_snapshot
+            await maybe_snapshot()
+        except Exception:
+            pass
+        await asyncio.sleep(1200)
