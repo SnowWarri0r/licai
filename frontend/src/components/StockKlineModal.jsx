@@ -301,9 +301,9 @@ function _minuteSlot(t) {
 export function MinuteChart({ points, prevClose, actions = [], day, height = 410 }) {
   const [hover, setHover] = useState(null)
   const svgRef = useRef(null)
-  // t=30: 顶部预留图例专属条带(y≈17), 图从其下开始; volGap=24: 两图间隙容纳量图例行——
-  // 图例有自己的空间, 不与任何轴标/内容抢位
-  const W = 720, H = height, P = { l: 64, r: 16, t: 30, b: 28 }
+  // t=30: 顶部预留图例专属条带(y≈17), 图从其下开始; volGap=24: 两图间隙容纳量图例行;
+  // r=52: 右侧涨跌幅轴标专属条带——线画到 W-P.r 为止, 标签在条带里, 互不相压
+  const W = 720, H = height, P = { l: 64, r: 52, t: 30, b: 28 }
   const innerW = W - P.l - P.r, innerH = H - P.t - P.b
   const volH = 48, volGap = 24
   const priceH = innerH - volH - volGap
@@ -312,9 +312,12 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
   const { rows, rangeMin, range, volMax } = useMemo(() => {
     const prices = points.map(p => p.price).filter(v => v > 0)
     if (!prices.length) return { rows: [], rangeMin: 0, range: 1, volMax: 1 }
-    // 以昨收为中心对称, 让涨跌幅直观
-    const maxDev = Math.max(...prices.map(p => Math.abs(p - prevClose)), prevClose * 0.001)
-    const rMin = prevClose - maxDev, rng = maxDev * 2 || 1
+    // 范围=当日实际高低并含昨收(0%基准线始终可见), 上下加小 padding——
+    // 高开高走/涨停日不再按最大偏离对称到下半场, 起伏占满可用高度
+    const hi = Math.max(...prices, prevClose)
+    const lo = Math.min(...prices, prevClose)
+    const pad = Math.max((hi - lo) * 0.06, prevClose * 0.001)
+    const rMin = lo - pad, rng = (hi - lo) + pad * 2 || 1
     const vMax = Math.max(1, ...points.map(p => Number(p['手']) || 0))
     let cumPV = 0, cumV = 0, prevPx = prevClose, lastUp = true
     const rs = points.map((p, i) => {
@@ -387,7 +390,7 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
           <g key={i}>
             <line x1={P.l} y1={t.y} x2={W - P.r} y2={t.y} stroke="var(--color-border-subtle)" strokeWidth="1" strokeDasharray={Math.abs(t.v - prevClose) < range * 0.02 ? '0' : '2 3'} />
             <text x={P.l - 6} y={t.y + 3} fontSize="10" fill="var(--color-text-dim)" textAnchor="end" fontFamily="monospace">{fmtVal(t.v)}</text>
-            <text x={W - P.r} y={t.y + 3} fontSize="9" fill={colorPctHex(t.pct)} textAnchor="end" fontFamily="monospace">{fmtPct(t.pct)}</text>
+            <text x={W - 6} y={t.y + 3} fontSize="9" fill={colorPctHex(t.pct)} textAnchor="end" fontFamily="monospace">{fmtPct(t.pct)}</text>
           </g>
         ))}
         <line x1={P.l} y1={baseY} x2={W - P.r} y2={baseY} stroke="var(--color-text-muted)" strokeWidth="1" strokeDasharray="3 3" opacity="0.6" />
@@ -395,7 +398,7 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
           <text key={i} x={P.l + (i / 2) * innerW} y={H - 8} fontSize="10" fill="var(--color-text-dim)" textAnchor={i === 0 ? 'start' : i === 2 ? 'end' : 'middle'} fontFamily="monospace">{lbl}</text>
         ))}
         {/* 分时成交量图例: 两图间隙条带(volGap=24 专门留的), 右对齐, 与价格区底部轴标隔开 */}
-        <text x={W - P.r} y={volTop - 7} fontSize="9" fill="var(--color-text-muted)" textAnchor="end" fontFamily="monospace">
+        <text x={W - 6} y={volTop - 7} fontSize="9" fill="var(--color-text-muted)" textAnchor="end" fontFamily="monospace">
           量 <tspan fill={UP}>红买</tspan>/<tspan fill={DOWN}>绿卖</tspan>
         </text>
         {rows.map(r => {
@@ -420,7 +423,7 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
         {hover && <line x1={hover.x} y1={P.t} x2={hover.x} y2={volTop + volH} stroke="var(--color-text-muted)" strokeWidth="1" strokeDasharray="2 3" />}
         {/* 图例: 顶部专属条带(图内容从 P.t 起, 条带内没有别的东西); 悬浮时让位给 tooltip */}
         {!hover && (
-          <text x={W - P.r} y={17} fontSize="10" textAnchor="end" fontFamily="ui-monospace, monospace">
+          <text x={W - 6} y={17} fontSize="10" textAnchor="end" fontFamily="ui-monospace, monospace">
             <tspan fill={lineColor}>— 价格</tspan>
             <tspan dx="10" fill="#c8a876">— 均价</tspan>
           </text>

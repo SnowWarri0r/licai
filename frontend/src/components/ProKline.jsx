@@ -129,11 +129,18 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
     candle.attachPrimitive(gapPrim)
     seriesRef.current = { candle, vol, mas, gapPrim }
 
-    // 十字光标 → 顶部图例(日期/OHLC/涨跌)
+    // 十字光标 → 顶部图例(日期/OHLC/较昨收涨跌%)
     chart.subscribeCrosshairMove(param => {
       const d = param.seriesData?.get(candle)
       if (!d || !param.time) { setLegend(null); return }
-      setLegend({ time: param.time, o: d.open, h: d.high, l: d.low, c: d.close })
+      const t = param.time
+      const key = typeof t === 'string' ? t
+        : `${t.year}-${String(t.month).padStart(2, '0')}-${String(t.day).padStart(2, '0')}`
+      const arr = barsRef.current
+      const i = arr.findIndex(b => b.time === key)
+      const prev = i > 0 ? arr[i - 1].close : null
+      setLegend({ time: param.time, o: d.open, h: d.high, l: d.low, c: d.close,
+                  pct: prev ? (d.close / prev - 1) * 100 : null })
     })
 
     // 点蜡烛 → 出「分时›」tooltip; 浮层开着时点K线 → 收起浮层(同花顺式浮层交互)
@@ -249,6 +256,11 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
               <span>高<span className="text-bear">{fmt(legend.h)}</span></span>
               <span>低<span className="text-bull">{fmt(legend.l)}</span></span>
               <span>收<span className={legend.c >= legend.o ? 'text-bear' : 'text-bull'}>{fmt(legend.c)}</span></span>
+              {legend.pct != null && (
+                <span className={`font-semibold ${legend.pct >= 0 ? 'text-bear' : 'text-bull'}`}>
+                  {legend.pct >= 0 ? '+' : ''}{legend.pct.toFixed(2)}%
+                </span>
+              )}
             </span>
           : <span className="text-text-muted">{MA_DEFS.map(m => `MA${m.n}`).join(' / ')} · <span style={{ color: '#c8a876' }}>┄ 昨收</span> · 滚轮缩放 · 点蜡烛看当日分时</span>}
       </div>
