@@ -194,3 +194,7 @@ body::after {
 @media (max-width: 767px) {
   .licai-alloc-row > .licai-md-only { display: none !important; }
 }
+
+/* 横向 chip 条: 完全隐藏滚动条(滚轮/拖动仍可滚) */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
