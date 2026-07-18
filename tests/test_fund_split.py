@@ -138,3 +138,26 @@ def test_curve_twr_ignores_flows():
     tw = twr_series([100, 200], [0, 0])
     assert abs(tw[-1] - 200) < 1e-6
     assert max_drawdown([100, 120, 90, 110]) == -25.0
+
+
+def test_structure_2b_rules():
+    """2B法则: 冲过前高又收回其下=假突破; 击穿前低又收回其上=假破位。"""
+    from services.stock_agent import _structure_scan
+    # 2B顶: 前高10.0(idx~8), 末端冲到10.3后收盘跌回9.6
+    closes = [9.0, 9.2, 9.4, 9.6, 9.8, 9.9, 9.95, 9.9, 10.0, 9.8, 9.6, 9.5,
+              9.4, 9.5, 9.6, 9.7, 9.8, 9.9, 10.0, 10.1, 10.25, 10.1, 9.9,
+              9.75, 9.65, 9.6]
+    highs = [c * 1.005 for c in closes]
+    highs[20] = 10.3          # 突破前高 10.05
+    lows = [c * 0.995 for c in closes]
+    vols = [100] * len(closes)
+    st = _structure_scan(closes, highs, lows, vols)
+    assert "2B假突破" in st, st
+    # 2B底: 前低9.0(中段), 末端下探8.8后收盘收回9.3
+    closes2 = [10.8, 10.65, 10.5, 10.3, 10.1, 9.9, 9.6, 9.3, 9.1, 9.0, 9.1, 9.3, 9.5, 9.6,
+               9.5, 9.4, 9.3, 9.2, 9.1, 9.0, 8.95, 8.85, 8.9, 9.1, 9.25, 9.3]
+    highs2 = [c * 1.005 for c in closes2]
+    lows2 = [c * 0.995 for c in closes2]
+    lows2[21] = 8.8
+    st2 = _structure_scan(closes2, highs2, lows2, [100] * len(closes2))
+    assert "2B假破位" in st2, st2
