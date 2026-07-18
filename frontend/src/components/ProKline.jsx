@@ -97,6 +97,8 @@ export default function ProKline({ code, days = 250, height = 460, fill = false 
   const [minData, setMinData] = useState(null)
   const [minErr, setMinErr] = useState('')
   const [lhb, setLhb] = useState(null)             // 该日席位明细(懒加载)
+  const ovBodyRef = useRef(null)
+  const [minH, setMinH] = useState(200)            // 分时 viewBox 高: 按浮层实际宽高比算, 铺满不留白
   const intradayRef = useRef(null)
   intradayRef.current = intraday
 
@@ -166,6 +168,21 @@ export default function ProKline({ code, days = 250, height = 460, fill = false 
     window.addEventListener('keydown', onEsc)
     return () => { alive = false; window.removeEventListener('keydown', onEsc) }
   }, [intraday, code])
+
+  // 分时区实际宽高比 → viewBox 高度(svg 按 720:minH 缩放正好占满容器, 大屏不再上浮留白)
+  useEffect(() => {
+    if (!intraday || ovTab !== '分时') return
+    const el = ovBodyRef.current
+    if (!el) return
+    const compute = () => {
+      const w = el.clientWidth || 720, h = el.clientHeight || 200
+      setMinH(Math.max(140, Math.round(720 * h / w)))
+    }
+    compute()
+    const ro = new ResizeObserver(compute)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [intraday, ovTab, minData])
 
   useEffect(() => {
     if (!intraday || ovTab !== '龙虎榜' || lhb) return
@@ -246,8 +263,9 @@ export default function ProKline({ code, days = 250, height = 460, fill = false 
 
         {/* 分时浮层: 盖在K线下半部, K线不缩; 点K线任意处/×/ESC 收起 */}
         {intraday && (
-          <div className="absolute inset-x-0 bottom-0 z-20 border-t border-border rounded-t-lg px-2 pt-1 pb-1.5 overflow-hidden"
-            style={{ height: '62%', background: 'color-mix(in srgb, var(--color-surface-2) 94%, transparent)', backdropFilter: 'blur(2px)' }}>
+          <div className="absolute inset-x-0 bottom-0 z-20 border-t border-border rounded-t-lg px-2 pt-1 pb-1.5 overflow-hidden flex flex-col"
+            style={{ height: ovTab === '分时' ? '62%' : 'auto', maxHeight: '68%',
+                     background: 'color-mix(in srgb, var(--color-surface-2) 94%, transparent)', backdropFilter: 'blur(2px)' }}>
             <div className="flex items-baseline gap-2 px-1 mb-0.5">
               <span className="text-[11px] font-mono text-text-bright">{(minData?.date || intraday.date).toString().replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3')}</span>
               {['分时', '龙虎榜'].map(t => (
@@ -260,36 +278,39 @@ export default function ProKline({ code, days = 250, height = 460, fill = false 
               <button onClick={() => setIntraday(null)}
                 className="ml-auto text-text-dim hover:text-text text-[15px] leading-none px-1 cursor-pointer">×</button>
             </div>
-            {ovTab === '分时' && <>
-              {minErr && <div className="text-center py-6 text-[11.5px] text-text-dim">{minErr}</div>}
-              {!minErr && !minData && <div className="text-center py-6 text-[11.5px] text-text-dim">分时加载中…</div>}
-              {minData && (
-                <MinuteChart points={minData.points} prevClose={intraday.prevClose}
-                  day={minData.date || intraday.date} height={200} />
-              )}
-            </>}
+            {ovTab === '分时' && (
+              <div ref={ovBodyRef} className="flex-1 min-h-0">
+                {minErr && <div className="text-center py-6 text-[11.5px] text-text-dim">{minErr}</div>}
+                {!minErr && !minData && <div className="text-center py-6 text-[11.5px] text-text-dim">分时加载中…</div>}
+                {minData && (
+                  <MinuteChart points={minData.points} prevClose={intraday.prevClose}
+                    day={minData.date || intraday.date} height={minH} />
+                )}
+              </div>
+            )}
             {ovTab === '龙虎榜' && (
               !lhb ? <div className="text-center py-6 text-[11.5px] text-text-dim">席位明细加载中…</div>
               : (!lhb['买入']?.length && !lhb['卖出']?.length)
               ? <div className="text-center py-6 text-[11.5px] text-text-dim">{lhb.note || '该日未上龙虎榜'}</div>
               : (
-                <div className="overflow-y-auto text-[10.5px]" style={{ maxHeight: 'calc(100% - 26px)' }}>
-                  {lhb['上榜原因'] && <div className="px-1 text-[9.5px] text-text-dim mb-1">上榜原因: {lhb['上榜原因']}</div>}
-                  <div className="grid grid-cols-2 gap-3 px-1">
+                <div className="overflow-y-auto text-[12px]">
+                  {lhb['上榜原因'] && <div className="px-1 text-[10.5px] text-text-dim mb-1">上榜原因: {lhb['上榜原因']}</div>}
+                  <div className="grid grid-cols-2 gap-4 px-1">
                     {[['买入', 'text-bear-bright'], ['卖出', 'text-bull-bright']].map(([side, cls]) => (
                       <div key={side}>
-                        <div className={`mb-0.5 font-semibold ${cls}`}>{side}前五 · 计 {(lhb[`${side}总计万`] / 1e4).toFixed(2)}亿</div>
+                        <div className={`mb-1 font-semibold ${cls}`}>{side}前五 · 计 {(lhb[`${side}总计万`] / 1e4).toFixed(2)}亿</div>
                         {(lhb[side] || []).map((s, i) => (
-                          <div key={i} className="flex items-baseline gap-1 py-[1px] border-b border-border-subtle/40">
+                          <div key={i} className="flex items-baseline gap-1.5 py-1 border-b border-border-subtle/40">
                             <span className="text-text truncate flex-1" title={s.席位}>{s.席位.replace(/(股份|有限责任)?公司|证券营业部/g, '')}</span>
-                            {s.标签 && <span className="text-[8.5px] px-1 rounded bg-accent/15 text-accent shrink-0">{s.标签}</span>}
-                            <span className={`font-mono shrink-0 ${cls}`}>{(s.金额万 / 1e4).toFixed(2)}亿</span>
+                            {s.标签 && <span className="text-[10px] px-1 rounded bg-accent/15 text-accent shrink-0">{s.标签}</span>}
+                            <span className="text-[10.5px] text-text-dim font-mono shrink-0">{s['占成交%']}%</span>
+                            <span className={`font-mono font-semibold shrink-0 ${cls}`}>{(s.金额万 / 1e4).toFixed(2)}亿</span>
                           </div>
                         ))}
                       </div>
                     ))}
                   </div>
-                  <div className="px-1 pt-0.5 text-[8.5px] text-text-dim">{lhb.note}</div>
+                  <div className="px-1 pt-1 text-[9.5px] text-text-dim">{lhb.note}</div>
                 </div>
               )
             )}
