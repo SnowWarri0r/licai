@@ -392,8 +392,8 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
         {['09:30', '11:30/13:00', '15:00'].map((lbl, i) => (
           <text key={i} x={P.l + (i / 2) * innerW} y={H - 8} fontSize="10" fill="var(--color-text-dim)" textAnchor={i === 0 ? 'start' : i === 2 ? 'end' : 'middle'} fontFamily="monospace">{lbl}</text>
         ))}
-        {/* 分时成交量图例: 靠右画, 避开左侧价格轴标 */}
-        <text x={W - P.r} y={volTop - 3} fontSize="9" fill="var(--color-text-muted)" textAnchor="end" fontFamily="monospace">
+        {/* 分时成交量图例: 两图间隙居中(左右两侧都有轴标, 中间保证空) */}
+        <text x={P.l + innerW / 2} y={volTop - 3} fontSize="9" fill="var(--color-text-muted)" textAnchor="middle" fontFamily="monospace">
           量 <tspan fill={UP}>红买</tspan>/<tspan fill={DOWN}>绿卖</tspan>
         </text>
         {rows.map(r => {
@@ -416,9 +416,9 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
           )
         })}
         {hover && <line x1={hover.x} y1={P.t} x2={hover.x} y2={volTop + volH} stroke="var(--color-text-muted)" strokeWidth="1" strokeDasharray="2 3" />}
-        {/* 图例画进 SVG(随视图缩放, 不会压到轴标); 悬浮时让位给右上角 tooltip */}
+        {/* 图例: 顶部居中(左右两侧都有轴标, 只有中间保证空); 悬浮时让位给 tooltip */}
         {!hover && (
-          <text x={W - P.r - 6} y={P.t + 11} fontSize="10" textAnchor="end" fontFamily="ui-monospace, monospace">
+          <text x={P.l + innerW / 2} y={P.t + 11} fontSize="10" textAnchor="middle" fontFamily="ui-monospace, monospace">
             <tspan fill={lineColor}>— 价格</tspan>
             <tspan dx="10" fill="#c8a876">— 均价</tspan>
           </text>
