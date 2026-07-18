@@ -108,6 +108,8 @@ export default function Rankings() {
   const [err, setErr] = useState(false)
   const [selected, setSelected] = useState(null)
   const listRef = useRef([])
+  const indsRef = useRef(['全部'])
+  const tabRef = useRef('gainers')
 
   const load = () => {
     setLoading(true); setErr(false)
@@ -121,23 +123,39 @@ export default function Rankings() {
     req.catch(() => setErr(true)).finally(() => setLoading(false))
   }
   useEffect(() => { load() }, [])
+  // ←→ 切分类时把选中 chip 滚进可视区
+  useEffect(() => {
+    try { document.querySelector(`[data-ind="${indFilter}"]`)?.scrollIntoView({ inline: 'nearest', block: 'nearest' }) } catch { /* 行业名含引号等极端情况忽略 */ }
+  }, [indFilter])
   // 切到结构/机构/业绩 tab 时懒加载(服务端有缓存, 之后秒回)
   useEffect(() => { if ((tab === 'structure' && !structure) || (tab === 'inst' && !inst) || (tab === 'earnings' && !earnings)) load() }, [tab])   // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ↑↓ 键在列表里快速翻K线(输入框聚焦时不劫持)
+  // ↑↓ 翻K线, ←→ 切行业分类(结构页); 输入框聚焦时不劫持
   useEffect(() => {
     const onKey = (e) => {
-      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
+      const isUD = e.key === 'ArrowDown' || e.key === 'ArrowUp'
+      const isLR = e.key === 'ArrowLeft' || e.key === 'ArrowRight'
+      if (!isUD && !isLR) return
       const tag = (document.activeElement?.tagName || '').toLowerCase()
       if (tag === 'input' || tag === 'textarea' || tag === 'select') return
-      setSelected(prev => {
-        if (!listRef.current?.length) return prev
-        const arr = listRef.current
-        const i = arr.findIndex(x => x.code === prev?.code)
-        const ni = e.key === 'ArrowDown' ? Math.min(i + 1, arr.length - 1) : Math.max(i - 1, 0)
-        return arr[ni] || prev
-      })
-      e.preventDefault()
+      if (isUD) {
+        setSelected(prev => {
+          if (!listRef.current?.length) return prev
+          const arr = listRef.current
+          const i = arr.findIndex(x => x.code === prev?.code)
+          const ni = e.key === 'ArrowDown' ? Math.min(i + 1, arr.length - 1) : Math.max(i - 1, 0)
+          return arr[ni] || prev
+        })
+        e.preventDefault()
+      } else if (tabRef.current === 'structure') {
+        setIndFilter(prev => {
+          const arr = indsRef.current
+          if (arr.length < 2) return prev
+          const i = Math.max(arr.indexOf(prev), 0)
+          return arr[(i + (e.key === 'ArrowRight' ? 1 : -1) + arr.length) % arr.length]
+        })
+        e.preventDefault()
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -167,6 +185,8 @@ export default function Rankings() {
   const list = tab === 'structure' ? structList
     : board === '全部' ? rawList : rawList.filter(r => boardOf(r.code) === board)
   listRef.current = list.filter(r => !r._gheader)
+  indsRef.current = ['全部', ...(structure?.groups || []).map(g => g.行业)]
+  tabRef.current = tab
 
   return (
     <div className="bg-surface-2 border border-border rounded-xl overflow-hidden flex flex-col lg:flex-row h-[calc(100vh-11rem)] min-h-[480px]">
@@ -228,12 +248,12 @@ export default function Rankings() {
         {/* 行业快捷条(结构页): 点行业只看该组, 不用往下翻 */}
         {tab === 'structure' && (structure?.groups || []).length > 0 && (
           <div className="no-scrollbar flex gap-1 px-3 py-1.5 border-b border-border-subtle overflow-x-auto whitespace-nowrap shrink-0">
-            <button onClick={() => setIndFilter('全部')}
+            <button data-ind="全部" onClick={() => setIndFilter('全部')}
               className={`text-[10.5px] px-1.5 py-0.5 rounded shrink-0 ${indFilter === '全部' ? 'bg-accent/15 text-accent' : 'text-text-dim hover:text-text'}`}>
               全部
             </button>
             {structure.groups.map(g => (
-              <button key={g.行业} onClick={() => setIndFilter(g.行业)}
+              <button key={g.行业} data-ind={g.行业} onClick={() => setIndFilter(g.行业)}
                 className={`text-[10.5px] px-1.5 py-0.5 rounded shrink-0 ${indFilter === g.行业 ? 'bg-accent/15 text-accent' : 'text-text-dim hover:text-text'}`}>
                 {g.行业} {g.n}
               </button>
@@ -325,7 +345,7 @@ export default function Rankings() {
         )}
         {tab === 'structure' && !loading && (
           <div className="shrink-0 px-3 py-1.5 border-t border-border-subtle text-[9.5px] text-text-muted leading-relaxed">
-            结构观察池（按行业分组，同行业强势多=主线在推进、蓄势多=可能在孕育）：<span className="text-bear-bright">强势</span>=K线没砸下去（距60日高≤12%、近10日无大阴、上行结构未破位、不跑输沪深300）；<span className="text-accent">蓄势</span>=安静横盘基座（AI看图复核）· 带业绩预告凭据 · ↑↓ 键快速翻K线 · 结构完好只是当下事实，随时可能被砸 · 纯客观结构，非买卖建议
+            结构观察池（按行业分组，同行业强势多=主线在推进、蓄势多=可能在孕育）：<span className="text-bear-bright">强势</span>=K线没砸下去（距60日高≤12%、近10日无大阴、上行结构未破位、不跑输沪深300）；<span className="text-accent">蓄势</span>=安静横盘基座（AI看图复核）· 带业绩预告凭据 · ↑↓ 翻K线、←→ 切行业 · 结构完好只是当下事实，随时可能被砸 · 纯客观结构，非买卖建议
           </div>
         )}
       </div>
