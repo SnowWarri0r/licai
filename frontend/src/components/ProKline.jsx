@@ -82,7 +82,7 @@ class GapPrimitive {
 }
 
 // 券商式可拖动/缩放 K线(TradingView lightweight-charts): 蜡烛 + 量能 + MA5/10/20, 滚轮缩放/拖动平移/十字光标。
-export default function ProKline({ code, days = 250, height = 460, fill = false }) {
+export default function ProKline({ code, days = 250, height = 460, fill = false, lhbDate = '' }) {
   const wrapRef = useRef(null)
   const chartRef = useRef(null)
   const seriesRef = useRef({})
@@ -155,7 +155,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false 
   useEffect(() => {
     if (!intraday) return
     let alive = true
-    setMinData(null); setMinErr(''); setLhb(null); setOvTab('分时')
+    setMinData(null); setMinErr(''); setLhb(null); setOvTab(intraday.tab || '分时')
     fetchJSON(`/api/market/tdx/minute/${encodeURIComponent(code)}?date=${intraday.date}`)
       .then(d => {
         if (!alive) return
@@ -226,11 +226,16 @@ export default function ProKline({ code, days = 250, height = 460, fill = false 
         } else {
           ts?.fitContent()
         }
+        // 从龙虎榜榜单点进来: 直接弹开该上榜日的席位浮层
+        if (lhbDate) {
+          const i = bars.findIndex(b => b.time === lhbDate)
+          if (i >= 0) setIntraday({ date: lhbDate, prevClose: bars[i - 1]?.close ?? bars[i].open, tab: '龙虎榜' })
+        }
       })
       .catch(e => alive && setErr(e?.message || '加载失败'))
       .finally(() => alive && setLoading(false))
     return () => { alive = false }
-  }, [code, days])
+  }, [code, days, lhbDate])
 
   return (
     <div className={fill ? 'relative flex flex-col h-full' : 'relative'}>
@@ -291,7 +296,27 @@ export default function ProKline({ code, days = 250, height = 460, fill = false 
             {ovTab === '龙虎榜' && (
               !lhb ? <div className="flex-1 flex items-center justify-center text-[11.5px] text-text-dim">席位明细加载中…</div>
               : (!lhb['买入']?.length && !lhb['卖出']?.length)
-              ? <div className="flex-1 flex items-center justify-center text-[11.5px] text-text-dim">{lhb.note || '该日未上龙虎榜'}</div>
+              ? (
+                <div className="flex-1 flex flex-col items-center justify-center gap-2 text-[11.5px] text-text-dim px-4 text-center">
+                  <span>{lhb.note || '该日未上龙虎榜'}</span>
+                  {(lhb['最近上榜日'] || []).length > 0 && (
+                    <span className="flex items-baseline gap-1.5 flex-wrap justify-center">
+                      <span className="text-[10.5px]">它最近的上榜日:</span>
+                      {lhb['最近上榜日'].map(d => {
+                        const arr = barsRef.current
+                        const i = arr.findIndex(b => b.time === d)
+                        return i >= 0
+                          ? <button key={d}
+                              onClick={() => { setLhb(null); setIntraday({ date: d, prevClose: arr[i - 1]?.close ?? arr[i].open, tab: '龙虎榜' }) }}
+                              className="text-[10.5px] px-1.5 py-0.5 rounded bg-accent/15 text-accent hover:bg-accent/25 cursor-pointer font-mono">
+                              {d.slice(2)}
+                            </button>
+                          : <span key={d} className="text-[10.5px] font-mono text-text-muted" title="超出当前K线窗口">{d.slice(2)}</span>
+                      })}
+                    </span>
+                  )}
+                </div>
+              )
               : (
                 <div className="flex-1 min-h-0 flex flex-col text-[12.5px] overflow-y-auto">
                   {lhb['上榜原因'] && <div className="px-1 text-[10.5px] text-text-dim mb-1 shrink-0">上榜原因: {lhb['上榜原因']}</div>}
