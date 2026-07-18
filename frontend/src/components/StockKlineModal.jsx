@@ -416,10 +416,14 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
           )
         })}
         {hover && <line x1={hover.x} y1={P.t} x2={hover.x} y2={volTop + volH} stroke="var(--color-text-muted)" strokeWidth="1" strokeDasharray="2 3" />}
+        {/* 图例画进 SVG(随视图缩放, 不会压到轴标); 悬浮时让位给右上角 tooltip */}
+        {!hover && (
+          <text x={W - P.r - 6} y={P.t + 11} fontSize="10" textAnchor="end" fontFamily="ui-monospace, monospace">
+            <tspan fill={lineColor}>— 价格</tspan>
+            <tspan dx="10" fill="#c8a876">— 均价</tspan>
+          </text>
+        )}
       </svg>
-      <div className="absolute top-2 left-[68px] text-[10px] font-mono flex gap-3">
-        <span style={{ color: lineColor }}>— 价格</span><span style={{ color: '#c8a876' }}>— 均价</span>
-      </div>
       {hover && (
         <div className="absolute top-2 right-2 bg-surface-2 border border-border-med rounded-md px-2.5 py-1.5 text-[11px] font-mono pointer-events-none">
           <div className="text-text-dim">{hover.time}</div>
