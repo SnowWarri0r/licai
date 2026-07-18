@@ -224,9 +224,11 @@ export default function ProKline({ code, days = 250, height = 460, fill = false 
         {hint && !intraday && (
           <button
             onClick={() => { setIntraday({ date: hint.date, prevClose: hint.prevClose }); setHint(null) }}
-            className="absolute z-20 text-[10.5px] px-2 py-1 rounded-lg bg-surface-3 border border-accent/50 text-accent shadow-lg hover:bg-accent/20 cursor-pointer whitespace-nowrap"
+            className="absolute z-20 text-[10.5px] font-semibold px-2 py-1 rounded-lg cursor-pointer whitespace-nowrap"
             style={{ left: Math.min(Math.max(hint.x + 8, 4), (wrapRef.current?.clientWidth || 400) - 120),
-                     top: Math.max(hint.y - 34, 4) }}>
+                     top: Math.max(hint.y - 34, 4),
+                     background: '#c8a876', color: '#1a1b1f',
+                     boxShadow: '0 4px 14px rgba(0,0,0,0.6)' }}>
             {hint.date.slice(5)} 分时 ›
           </button>
         )}
