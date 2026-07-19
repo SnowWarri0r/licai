@@ -113,6 +113,9 @@ export default function Rankings() {
   const [lhbDaily, setLhbDaily] = useState(null)         // 最新披露日龙虎榜全榜单
   const [watch, setWatch] = useState(null)               // 自选池(全量视图)
   const [watchSet, setWatchSet] = useState(new Set())    // 自选代码集(☆按钮状态)
+  const [sq, setSq] = useState('')                       // 自由查股输入
+  const [sqCands, setSqCands] = useState([])             // 搜索候选
+  const sqTimer = useRef(null)
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState(false)
   const [selected, setSelected] = useState(null)
@@ -148,6 +151,23 @@ export default function Rankings() {
   useEffect(() => {
     fetchJSON('/api/market/watchlist?lite=1').then(d => setWatchSet(new Set(d?.codes || []))).catch(() => {})
   }, [])
+  // 自由查股: 防抖搜索 → 候选下拉 → 选中进右侧面板(与榜单行同一套 K线/浮层/问AI)
+  const onSearch = (v) => {
+    setSq(v)
+    if (sqTimer.current) clearTimeout(sqTimer.current)
+    const t = v.trim()
+    if (!t) { setSqCands([]); return }
+    sqTimer.current = setTimeout(() => {
+      fetchJSON(`/api/market/stock-search?q=${encodeURIComponent(t)}`)
+        .then(d => setSqCands(d?.candidates || []))
+        .catch(() => setSqCands([]))
+    }, 300)
+  }
+  const pickCand = (c) => {
+    setSelected({ code: String(c.code), name: c.name || String(c.code), pct: c.pct ?? 0 })
+    setSq(''); setSqCands([])
+  }
+
   const toggleWatch = (stock) => {
     const code = stock.code
     const on = watchSet.has(code)
@@ -241,6 +261,26 @@ export default function Rankings() {
                 {t.label}
               </button>
             ))}
+          </div>
+          <div className="relative shrink-0">
+            <input value={sq} onChange={e => onSearch(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && sqCands.length) pickCand(sqCands[0]); if (e.key === 'Escape') { setSq(''); setSqCands([]) } }}
+              placeholder="查任意股票" title="代码/名称/拼音子串, 选中后与榜单一样看K线/分时/龙虎榜/问AI"
+              className="w-[86px] focus:w-[130px] transition-all text-[11px] px-2 py-1 rounded bg-surface-3 border border-border text-text placeholder:text-text-muted focus:border-accent/50 outline-none" />
+            {sqCands.length > 0 && (
+              <div className="absolute right-0 top-full mt-1 z-30 w-56 bg-surface-2 border border-border rounded-lg overflow-hidden shadow-xl">
+                {sqCands.map(c => (
+                  <button key={c.code} onClick={() => pickCand(c)}
+                    className="w-full flex items-baseline gap-2 px-2.5 py-1.5 text-left hover:bg-surface-3/80 border-b border-border-subtle/50">
+                    <span className="text-[12px] text-text-bright truncate">{c.name || c.code}</span>
+                    <span className="text-[10px] font-mono text-text-muted shrink-0">{c.code}</span>
+                    {c.pct != null && (
+                      <span className={`ml-auto text-[11px] font-mono shrink-0 ${pctColor(c.pct)}`}>{c.pct >= 0 ? '+' : ''}{c.pct}%</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           <span className="text-[10px] text-text-muted whitespace-nowrap shrink-0">{(tab === 'structure' ? structure?.as_of : tab === 'lhb' ? lhbDaily?.date : data?.as_of)?.slice(5, 11) || ''}</span>
           <button onClick={load} title="刷新" className="text-[10.5px] px-1.5 py-0.5 rounded border border-border text-text-dim hover:text-text shrink-0">刷新</button>

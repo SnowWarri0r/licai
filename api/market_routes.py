@@ -184,6 +184,25 @@ async def lhb_daily_list():
     return await lhb_daily()
 
 
+@router.get("/stock-search")
+async def stock_search(q: str):
+    """自由查股: 代码/名称/子串 → 候选列表(带实时涨跌), 复用 agent 的 resolve 链路。"""
+    from services.market_data import get_realtime_quotes
+    from services.stock_agent import _tool_resolve_stock
+    r = await _tool_resolve_stock((q or "").strip())
+    cands = (r.get("candidates")
+             or ([{"code": r["code"], "name": r.get("name") or r["code"]}] if r.get("code") else []))[:8]
+    if cands:
+        quotes = await get_realtime_quotes([c["code"] for c in cands])
+        for c in cands:
+            qq = quotes.get(str(c["code"]).split(".")[-1]) or quotes.get(c["code"]) or {}
+            c["pct"] = qq.get("change_pct")
+            c["price"] = qq.get("price")
+            if qq.get("stock_name"):
+                c["name"] = c["name"] or qq["stock_name"]
+    return {"candidates": cands}
+
+
 @router.get("/sector-share")
 async def sector_share():
     """板块占全市场成交额份额排行 + 较昨日/5日前份额变化(资金聚拢/退潮)。"""
