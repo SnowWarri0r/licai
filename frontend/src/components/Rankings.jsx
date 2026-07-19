@@ -344,12 +344,10 @@ export default function Rankings() {
                     {r.is_st && <span className="text-[8.5px] px-1 rounded bg-bear/15 text-bear-bright shrink-0">ST</span>}
                   </span>
                   <span className={`text-[10px] text-text-muted font-mono ${tab === 'lhb' ? 'block truncate' : ''}`}>
-                    {boardOf(r.code)} · {r.code}{tab === 'watch' ? '' : ' · '}{tab === 'inst'
+                    {boardOf(r.code)} · {r.code} · {tab === 'inst'
                       ? `净买 ${r['机构净买亿']}亿 · 上榜${r['上榜次数']}次`
                       : tab === 'lhb'
                       ? (r['解读'] || r['上榜原因'] || '—')
-                      : tab === 'watch'
-                      ? ''
                       : (r['行业'] || '—')}
                     {tab === 'watch' && r['业绩预告'] && (
                       <span className="ml-1 px-1 rounded bg-accent/15 text-accent text-[9px] whitespace-nowrap">{r['业绩预告']}</span>
