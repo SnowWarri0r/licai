@@ -184,6 +184,13 @@ async def lhb_daily_list():
     return await lhb_daily()
 
 
+@router.get("/changes")
+async def market_changes_api(group: str = "全部"):
+    """盘口异动事件流(同花顺式): 拉升/跳水/竞价 分组, 近30分钟市场脉搏。"""
+    from services.stock_changes import market_changes
+    return await market_changes(group)
+
+
 @router.get("/stock-search")
 async def stock_search(q: str):
     """自由查股: 代码/名称/子串 → 候选列表(带实时涨跌), 复用 agent 的 resolve 链路。"""
