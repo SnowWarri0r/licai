@@ -103,6 +103,10 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
   const [minH, setMinH] = useState(200)            // 分时 viewBox 高: 按浮层实际宽高比算, 铺满不留白
   const intradayRef = useRef(null)
   intradayRef.current = intraday
+  const depthRef = useRef(days)                    // 当前已加载的K线深度(根数), 往左拖到头自动升档
+  const moreBusyRef = useRef(false)
+  const exhaustedRef = useRef(false)               // 服务端没有更早历史了(新股/次新)
+  const loadMoreRef = useRef(null)                 // 数据 effect 里注入, 建图 effect 的订阅回调调用
 
   // 建图(一次)
   useEffect(() => {
@@ -155,6 +159,11 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
       if (i < 0) { setHint(null); return }
       setHint({ x: param.point.x, y: param.point.y, date: key,
                 prevClose: arr[i - 1]?.close ?? arr[i].open })
+    })
+
+    // 往左拖/缩放看到最早的几根 → 自动续加载更早的历史
+    chart.timeScale().subscribeVisibleLogicalRangeChange(r => {
+      if (r && r.from < 12) loadMoreRef.current?.()
     })
 
     return () => { chart.remove(); chartRef.current = null }
@@ -234,27 +243,57 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
     if (!code) return
     let alive = true
     setLoading(true); setErr('')
+    depthRef.current = days
+    exhaustedRef.current = false
+
+    const paint = (bars) => {
+      barsRef.current = bars
+      const { candle, vol, mas, gapPrim } = seriesRef.current
+      candle.setData(bars.map(b => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close })))
+      vol.setData(bars.map(b => ({ time: b.time, value: b.volume, color: b.close >= b.open ? 'rgba(207,92,92,0.5)' : 'rgba(95,168,108,0.5)' })))
+      mas.forEach((s, i) => s.setData(maLine(bars, MA_DEFS[i].n)))
+      gapPrim?.setGaps(detectGaps(bars))
+      // 昨收线: 最新一根的前一日收盘 → 一眼看出今天这根(哪怕收红阳线)是否还在昨收下方
+      if (prevCloseLineRef.current) { candle.removePriceLine(prevCloseLineRef.current); prevCloseLineRef.current = null }
+      const prevClose = bars.length >= 2 ? bars[bars.length - 2].close : null
+      if (prevClose != null) {
+        prevCloseLineRef.current = candle.createPriceLine({
+          price: prevClose, color: '#c8a876', lineWidth: 1, lineStyle: LineStyle.Dashed,
+          axisLabelVisible: true, title: '昨收',
+        })
+      }
+    }
+
+    // 拖到最早处 → 升档拉更长历史(×3, 上限约十年), 保持当前视窗时间范围不跳
+    loadMoreRef.current = () => {
+      if (!alive || moreBusyRef.current || exhaustedRef.current) return
+      const cur = depthRef.current
+      // 上次要 cur 根只回来更少 → 服务端没有更早的了(新股/次新), 别再打了
+      if (barsRef.current.length + 30 < cur || cur >= 2400) { exhaustedRef.current = true; return }
+      moreBusyRef.current = true
+      const want = Math.min(cur * 3, 2400)
+      prefetchJSON(`/api/market/history/${encodeURIComponent(code)}?days=${want}`)
+        .then(k => {
+          if (!alive || !Array.isArray(k)) return
+          depthRef.current = want
+          if (k.length <= barsRef.current.length) { exhaustedRef.current = true; return }
+          const bars = k.map(x => ({ time: x.time, open: x.open, high: x.high, low: x.low, close: x.close, volume: x.volume }))
+          const ts = chartRef.current?.timeScale()
+          const vr = ts?.getVisibleRange()          // 时间坐标的视窗, 数据前插后原样恢复
+          paint(bars)
+          if (vr) ts?.setVisibleRange(vr)
+        })
+        .catch(() => {})
+        .finally(() => { moreBusyRef.current = false })
+    }
+
     // 走预取缓存: 榜单已顺序预取过光标附近个股, 方向键翻股直接命中不等网络
     prefetchJSON(`/api/market/history/${encodeURIComponent(code)}?days=${days}`)
       .then(k => {
         if (!alive) return
         if (!Array.isArray(k) || !k.length) { setErr('暂无 K 线数据'); return }
-        const bars = k.map(x => ({ time: x.time, open: x.open, high: x.high, low: x.low, close: x.close, volume: x.volume }))
-        barsRef.current = bars
-        const { candle, vol, mas, gapPrim } = seriesRef.current
-        candle.setData(bars.map(b => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close })))
-        vol.setData(bars.map(b => ({ time: b.time, value: b.volume, color: b.close >= b.open ? 'rgba(207,92,92,0.5)' : 'rgba(95,168,108,0.5)' })))
-        mas.forEach((s, i) => s.setData(maLine(bars, MA_DEFS[i].n)))
-        gapPrim?.setGaps(detectGaps(bars))
-        // 昨收线: 最新一根的前一日收盘 → 一眼看出今天这根(哪怕收红阳线)是否还在昨收下方
-        if (prevCloseLineRef.current) { candle.removePriceLine(prevCloseLineRef.current); prevCloseLineRef.current = null }
-        const prevClose = bars.length >= 2 ? bars[bars.length - 2].close : null
-        if (prevClose != null) {
-          prevCloseLineRef.current = candle.createPriceLine({
-            price: prevClose, color: '#c8a876', lineWidth: 1, lineStyle: LineStyle.Dashed,
-            axisLabelVisible: true, title: '昨收',
-          })
-        }
+        paint(k.map(x => ({ time: x.time, open: x.open, high: x.high, low: x.low, close: x.close, volume: x.volume })))
+        const bars = barsRef.current
         // 初始视窗只看最近约3个月(70根), 更长的历史往左拖/滚轮缩放就有——
         // fitContent 会把250根全塞进屏幕, 蜡烛细得看不清近期形态
         const ts = chartRef.current?.timeScale()
@@ -271,7 +310,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
       })
       .catch(e => alive && setErr(e?.message || '加载失败'))
       .finally(() => alive && setLoading(false))
-    return () => { alive = false }
+    return () => { alive = false; loadMoreRef.current = null }
   }, [code, days, lhbDate])
 
   return (
