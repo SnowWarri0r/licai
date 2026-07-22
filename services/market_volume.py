@@ -54,22 +54,30 @@ def _tx_daily_sync(sym: str, n: int = 16) -> list:
     return out
 
 
-def _tx_minute_sync(sym: str) -> list:
-    """腾讯当日分时 → [(HH:MM, 累计量股, 累计额元)]。行式 '0930 价 累计量(手) 累计额(元)'。"""
-    j = _get(f"https://web.ifzq.gtimg.cn/appstock/app/minute/query?code={sym}")
-    node = ((j.get("data") or {}).get(sym) or {}).get("data") or {}
-    lines = node.get("data") or []
-    out = []
-    for ln in lines:
-        p = str(ln).split()
-        if len(p) < 4:
-            continue
+def _sina_5min_sync(sym: str, datalen: int = 100) -> dict:
+    """新浪 5 分钟线(带成交额, 跨多日) → {YYYY-MM-DD: [(HH:MM, 累计量股, 累计额元)]}。
+    每档 amount(元)/volume(股)累加成当日累计。用于今日分时 + 昨日同期对照 + 预测。"""
+    j = _get(f"https://quotes.sina.cn/cn/api/openapi.php/CN_MarketDataService.getKLineData"
+             f"?symbol={sym}&scale=5&datalen={datalen}")
+    rows = (j.get("result") or {}).get("data") or []
+    by_day: dict = {}
+    for x in rows:
+        day = str(x.get("day") or "")[:10]
+        hhmm = str(x.get("day") or "")[11:16]
         try:
-            t = p[0]
-            hhmm = f"{t[:2]}:{t[2:]}" if len(t) == 4 else t
-            out.append((hhmm, float(p[2]) * 100, float(p[3])))   # 量 手→股, 额 已是元
-        except (ValueError, IndexError):
+            v, a = float(x.get("volume") or 0), float(x.get("amount") or 0)
+        except (ValueError, TypeError):
             continue
+        by_day.setdefault(day, []).append([hhmm, v, a])
+    out: dict = {}
+    for day, arr in by_day.items():
+        cv = ca = 0.0
+        cum = []
+        for hhmm, v, a in arr:
+            cv += v
+            ca += a
+            cum.append((hhmm, cv, ca))
+        out[day] = cum
     return out
 
 
@@ -130,8 +138,22 @@ async def market_volume() -> dict:
     return out
 
 
+def _merge_days(a: dict, b: dict) -> dict:
+    """两市 = 沪+深: 按 (日期, 时刻) 对齐累计量额相加。"""
+    out: dict = {}
+    for day in set(a) | set(b):
+        bb = {t: (v, m) for t, v, m in b.get(day, [])}
+        merged = []
+        for t, v, m in a.get(day, []):
+            bv, bm = bb.get(t, (0, 0))
+            merged.append((t, v + bv, m + bm))
+        out[day] = merged
+    return out
+
+
 async def market_volume_intraday(market: str = "两市") -> dict:
-    """当日分时: 逐分钟累计成交量(亿股)/成交额(亿元)。两市=沪+深按分钟对齐求和。60s 缓存。"""
+    """当日分时累计成交量(亿股)/成交额(亿元) + 昨日同期对照 + 开盘啦式全天预测。
+    预测 = 今日到此刻累计 × 昨日全天 ÷ 昨日同期累计(按盘中已走节奏外推)。60s 缓存。"""
     market = market if market in ("两市", "沪", "深", "创业", "科创") else "两市"
     c = _intraday_cache.get(market)
     if c and time.time() - c[1] < _TTL:
@@ -139,23 +161,51 @@ async def market_volume_intraday(market: str = "两市") -> dict:
 
     async def one(sym):
         try:
-            return await asyncio.to_thread(_tx_minute_sync, sym)
+            return await asyncio.to_thread(_sina_5min_sync, sym)
         except Exception:
-            return []
+            return {}
 
     if market == "两市":
         hu, shen = await asyncio.gather(one(_SYM["沪"]), one(_SYM["深"]))
-        sh_by = {t: (v, a) for t, v, a in shen}
-        pts = []
-        for t, v, a in hu:
-            sv, sa = sh_by.get(t, (0, 0))
-            pts.append({"time": t, "vol": round((v + sv) / 1e8, 1), "amt": round((a + sa) / 1e8)})
+        by_day = _merge_days(hu, shen)
     else:
-        pts = [{"time": t, "vol": round(v / 1e8, 1), "amt": round(a / 1e8)}
-               for t, v, a in await one(_SYM[market])]
+        by_day = await one(_SYM[market])
 
-    out = {"market": market, "points": pts,
-           "note": "当日累计成交量/成交额分时(腾讯), 盘中滚动。"}
-    if pts:
+    days = sorted(by_day)
+    if not days:
+        return {"market": market, "points": [], "note": "分时数据暂不可达"}
+    today = by_day[days[-1]]
+    prev = by_day[days[-2]] if len(days) >= 2 else []
+
+    def pts_of(series):
+        return [{"time": t, "vol": round(v / 1e8, 1), "amt": round(a / 1e8)} for t, v, a in series]
+
+    points = pts_of(today)
+    prev_points = pts_of(prev)
+    prev_full = ({"vol": round(prev[-1][1] / 1e8, 1), "amt": round(prev[-1][2] / 1e8)} if prev else None)
+
+    # 开盘啦式全天预测: 用昨日"同一时刻累计占全天比例"把今日已走的量外推到收盘
+    projected = None
+    if prev and today:
+        now_t = today[-1][0]
+        now_v, now_a = today[-1][1], today[-1][2]
+        # 昨日 <= 现在时刻 的最后一档累计(同期)
+        pv = pa = 0.0
+        for t, v, a in prev:
+            if t <= now_t:
+                pv, pa = v, a
+        pf_v, pf_a = prev[-1][1], prev[-1][2]
+        # 收盘(≥14:57)或昨日同期已接近全天, 就不外推(预测=实际)
+        near_close = now_t >= "14:57"
+        proj_a = now_a if near_close else (now_a * pf_a / pa if pa > 0 else None)
+        proj_v = now_v if near_close else (now_v * pf_v / pv if pv > 0 else None)
+        if proj_a:
+            projected = {"vol": round(proj_v / 1e8, 1) if proj_v else None,
+                         "amt": round(proj_a / 1e8), "final": near_close}
+
+    out = {"market": market, "points": points, "prev_points": prev_points,
+           "prev_full": prev_full, "projected": projected,
+           "note": "当日累计成交额/量分时(新浪5分钟) + 昨日同期对照 + 按昨日节奏预测全天。"}
+    if points:
         _intraday_cache[market] = (out, time.time())
     return out
