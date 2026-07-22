@@ -6,25 +6,25 @@ import { fetchJSON } from '../hooks/useApi'
 const up = 'text-bear-bright', down = 'text-bull-bright'
 
 // 量能红绿窄柱: 每日 vs 前一日, 放量红 / 缩量绿。
-// trend 含一根参照日(首位), 只画后面每根(都有前一日可比, 不出灰柱)。
-function VolBars({ trend, intraday }) {
-  if (!trend || trend.length < 2) return null
-  const shown = trend.slice(1)
-  const vols = shown.map(t => t.vol)
-  const max = Math.max(...vols), min = Math.min(...vols), span = max - min || 1
+// series: [{date, v}] 含一根参照日(首位), 只画后面每根(都有前一日可比, 不出灰柱)。
+function VolBars({ series, intraday, unit }) {
+  if (!series || series.length < 2) return null
+  const shown = series.slice(1)
+  const vals = shown.map(t => t.v)
+  const max = Math.max(...vals), min = Math.min(...vals), span = max - min || 1
   const n = shown.length
   const step = n > 10 ? 3 : n > 7 ? 2 : 1   // 日期标签密时隔位显示, 防重叠
   return (
     <div className="flex items-end gap-1" style={{ height: 100 }}>
       {shown.map((t, i) => {
-        const h = Math.round(14 + ((t.vol - min) / span) * 54)
-        const prev = trend[i].vol   // 前一日(原数组里的前一个)
+        const h = Math.round(14 + ((t.v - min) / span) * 54)
+        const prev = series[i].v   // 前一日(原数组里的前一个)
         const isToday = intraday && i === n - 1   // 末根=今日实时盘中
-        const color = t.vol > prev ? 'bg-bear-bright' : t.vol < prev ? 'bg-bull-bright' : 'bg-text-dim'
+        const color = t.v > prev ? 'bg-bear-bright' : t.v < prev ? 'bg-bull-bright' : 'bg-text-dim'
         const showDate = (n - 1 - i) % step === 0   // 从最新往前隔位, 保证最新一根有标签
         return (
-          <div key={i} className="flex-1 flex flex-col items-center justify-end gap-1 h-full min-w-0" title={`${t.date}${isToday ? ' 今日盘中' : ''}: ${t.vol}亿股`}>
-            <span className={`text-[8.5px] font-mono leading-none ${isToday ? 'text-bear-bright font-semibold' : 'text-text-dim'}`}>{t.vol}</span>
+          <div key={i} className="flex-1 flex flex-col items-center justify-end gap-1 h-full min-w-0" title={`${t.date}${isToday ? ' 今日盘中' : ''}: ${t.v}${unit}`}>
+            <span className={`text-[8.5px] font-mono leading-none ${isToday ? 'text-bear-bright font-semibold' : 'text-text-dim'}`}>{t.v}</span>
             <div className={`w-full max-w-[20px] rounded-t ${color}`} style={{ height: h, outline: isToday ? '1px solid var(--color-accent)' : 'none', outlineOffset: 1 }} />
             <span className={`text-[8.5px] leading-none h-2.5 ${isToday ? 'text-accent font-semibold' : 'text-text-muted'}`}>{showDate ? t.date : ''}</span>
           </div>
@@ -37,6 +37,8 @@ function VolBars({ trend, intraday }) {
 export default function SentimentDetailModal({ summary, volume, onClose }) {
   const [d, setD] = useState(null)
   const [tab, setTab] = useState('ladder')   // ladder | sector | dt
+  const [mkt, setMkt] = useState('两市')      // 量能市场: 两市/沪/深/创业/科创
+  const [metric, setMetric] = useState('amt') // 量能口径: amt=成交额(亿元) | vol=成交量(亿股)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -101,16 +103,49 @@ export default function SentimentDetailModal({ summary, volume, onClose }) {
           ))}
         </div>
 
-        {/* 量能红绿柱 */}
-        {(v.trend || []).length > 1 && (
-          <div className="mb-4 px-3 py-3 rounded-lg bg-surface-3/50 border border-border-subtle">
-            <div className="text-[10.5px] text-text-muted mb-2">近14日沪市成交量(亿股) · 每根较<b className="text-text-dim">前一日</b>放量红/缩量绿{v.intraday ? ' · 末根今日盘中' : ''}</div>
-            <VolBars trend={v.trend} intraday={v.intraday} />
-            {v.label && v.ratio != null && (
-              <div className="text-[10px] text-text-muted mt-2">
-                注: 头部「{v.label}{v.ratio > 0 ? '+' : ''}{v.ratio}%」是<b className="text-text-dim">今日 较前5日均值</b>口径, 与上面"较前一日"的柱色基准不同 — 今日量可低于周五大阳, 但仍高于5日均。
+        {/* 量能红绿柱: 两市/沪/深/创业/科创 × 成交额/成交量 */}
+        {(() => {
+          const mks = v.markets || {}
+          const names = Object.keys(mks)
+          // 新接口缺席时退回旧的单沪市量序列
+          if (!names.length) {
+            return (v.trend || []).length > 1 && (
+              <div className="mb-4 px-3 py-3 rounded-lg bg-surface-3/50 border border-border-subtle">
+                <div className="text-[10.5px] text-text-muted mb-2">近14日沪市成交量(亿股) · 每根较<b className="text-text-dim">前一日</b>放量红/缩量绿{v.intraday ? ' · 末根今日盘中' : ''}</div>
+                <VolBars series={(v.trend || []).map(t => ({ date: t.date, v: t.vol }))} intraday={v.intraday} unit="亿股" />
               </div>
-            )}
+            )
+          }
+          const trend = (mks[mkt] || mks['两市'] || {}).trend || []
+          const series = trend.map(t => ({ date: t.date, v: metric === 'amt' ? t.amt : t.vol })).filter(t => t.v != null)
+          const unit = metric === 'amt' ? '亿元' : '亿股'
+          return (
+            <div className="mb-4 px-3 py-3 rounded-lg bg-surface-3/50 border border-border-subtle">
+              <div className="flex items-center gap-1 mb-2 flex-wrap">
+                {names.map(k => (
+                  <button key={k} onClick={() => setMkt(k)}
+                    className={`text-[10.5px] px-1.5 py-0.5 rounded ${mkt === k ? 'bg-accent/15 text-accent' : 'text-text-dim hover:text-text'}`}>{k}</button>
+                ))}
+                <span className="text-text-muted mx-1">·</span>
+                {[['amt', '成交额'], ['vol', '成交量']].map(([k, lb]) => (
+                  <button key={k} onClick={() => setMetric(k)}
+                    className={`text-[10.5px] px-1.5 py-0.5 rounded ${metric === k ? 'bg-accent/15 text-accent' : 'text-text-dim hover:text-text'}`}>{lb}</button>
+                ))}
+                <span className="text-[10px] text-text-muted ml-auto">
+                  近14日{mkt}{metric === 'amt' ? '成交额(亿元)' : '成交量(亿股)'} · 较前一日放量红/缩量绿{v.markets_intraday ? ' · 末根今日盘中' : ''}
+                </span>
+              </div>
+              {series.length > 1
+                ? <VolBars series={series} intraday={v.markets_intraday} unit={unit} />
+                : <div className="text-[11px] text-text-dim py-4 text-center">
+                    成交额历史档案积累中(每个收盘日自动定格一格, 数据源恢复时一次回填两周)——先切「成交量」看, 量的序列是全的
+                  </div>}
+            </div>
+          )
+        })()}
+        {v.label && v.ratio != null && (
+          <div className="text-[10px] text-text-muted -mt-2 mb-4 px-1">
+            注: 头部「{v.label}{v.ratio > 0 ? '+' : ''}{v.ratio}%」是<b className="text-text-dim">沪市今日 较前5日均值</b>口径, 与柱色的"较前一日"基准不同。
           </div>
         )}
 
