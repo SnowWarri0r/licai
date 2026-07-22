@@ -54,11 +54,12 @@ def _tx_daily_sync(sym: str, n: int = 16) -> list:
     return out
 
 
-def _sina_5min_sync(sym: str, datalen: int = 260) -> dict:
-    """新浪 5 分钟线(带成交额, 跨多日) → {YYYY-MM-DD: [(HH:MM, 累计量股, 累计额元)]}。
-    每档 amount(元)/volume(股)累加成当日累计。用于今日分时 + 昨日同期对照 + 预测。"""
+def _sina_min_sync(sym: str, datalen: int = 1500) -> dict:
+    """新浪 1 分钟线(带成交额, 跨多日) → {YYYY-MM-DD: [(HH:MM, 累计量股, 累计额元)]}。
+    每档 amount(元)/volume(股)累加成当日累计。datalen=1500 覆盖约6完整日(240档/日)。
+    用于今日分时 + 昨日同期对照 + 逐分钟全天预测。"""
     j = _get(f"https://quotes.sina.cn/cn/api/openapi.php/CN_MarketDataService.getKLineData"
-             f"?symbol={sym}&scale=5&datalen={datalen}")
+             f"?symbol={sym}&scale=1&datalen={datalen}")
     rows = (j.get("result") or {}).get("data") or []
     by_day: dict = {}
     for x in rows:
@@ -161,7 +162,7 @@ async def market_volume_intraday(market: str = "两市") -> dict:
 
     async def one(sym):
         try:
-            return await asyncio.to_thread(_sina_5min_sync, sym)
+            return await asyncio.to_thread(_sina_min_sync, sym)
         except Exception:
             return {}
 
@@ -175,9 +176,9 @@ async def market_volume_intraday(market: str = "两市") -> dict:
     if not days:
         return {"market": market, "points": [], "note": "分时数据暂不可达"}
     today = by_day[days[-1]]
-    # 历史日必须是完整交易日(首档≤09:35 且档数≥40)——datalen 窗口最老那天常被截成只剩
+    # 历史日必须是完整交易日(首档≤09:31 且档数≥200)——datalen 窗口最老那天常被截成只剩
     # 下午, 会让"早盘完成度"混入 0% 把平均拉低, 预测因此虚高。剔除残缺日。
-    hist = [by_day[d] for d in days[:-1] if by_day[d] and by_day[d][0][0] <= "09:35" and len(by_day[d]) >= 40]
+    hist = [by_day[d] for d in days[:-1] if by_day[d] and by_day[d][0][0] <= "09:31" and len(by_day[d]) >= 200]
     prev = hist[-1] if hist else []                 # 昨日(对照曲线, 取最近的完整日)
 
     def pts_of(series):
