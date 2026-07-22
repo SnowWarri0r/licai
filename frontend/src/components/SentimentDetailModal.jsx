@@ -49,13 +49,16 @@ function IntradayLine({ intra, metric, unit }) {
   const pcts = series.map(p => pct(val(p)))
   const maxabs = Math.max(...pcts.map(Math.abs), 5) * 1.05
   const W = 560, H = 150, padB = 4, padT = 4
-  const n = 48                                       // 全日 5 分钟档位数, x 轴锁 09:30-15:00
+  const n = 240                                      // 全日 1 分钟档位数, x 轴锁 09:31-15:00
   const x = i => (i / (n - 1)) * W
   const y = pv => padT + (1 - (pv + maxabs) / (2 * maxabs)) * (H - padT - padB)
   const line = series.map((p, i) => `${x(i).toFixed(1)},${y(pcts[i]).toFixed(1)}`).join(' ')
   const y0 = y(0)
   const area = `${x(0)},${y0} ${line} ${x(series.length - 1)},${y0}`
-  const marks = ['09:30', '10:30', '11:30/13:00', '14:00', '15:00']
+  // x 轴刻度: 每 30 分钟一档, 按真实数据 index 定位(自动跳过午休), 首档补 09:30
+  const ticks = series.map((p, i) => ({ t: p.time, i }))
+    .filter(x => x.t.endsWith(':00') || x.t.endsWith(':30'))
+  if (!ticks.length || ticks[0].i > 1) ticks.unshift({ t: '09:30', i: 0 })
   const grid = [maxabs, maxabs / 2, 0, -maxabs / 2, -maxabs]
   const finalPct = pct(projLast)
   const delta = projLast - prevFull
