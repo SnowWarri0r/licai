@@ -10,3 +10,4 @@ chinese-calendar>=1.10
 exchange_calendars>=4.5
 matplotlib>=3.8
 mplfinance>=0.12.10b0
+pypinyin>=0.51
