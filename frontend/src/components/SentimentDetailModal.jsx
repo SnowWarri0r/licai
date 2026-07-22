@@ -34,31 +34,51 @@ function VolBars({ series, intraday, unit }) {
   )
 }
 
-// 当日分时累计曲线(逐分钟累计成交量/额), 面积折线。
-function IntradayLine({ points, metric, unit }) {
-  if (!points || points.length < 2) return null
-  const vals = points.map(p => (metric === 'amt' ? p.amt : p.vol))
-  const max = Math.max(...vals) || 1
-  const W = 560, H = 120, padB = 16, padT = 6
-  const x = i => (i / (points.length - 1)) * W
+// 当日分时累计曲线 + 昨日同期对照 + 昨日全天参照线。SVG 只画线, 文字走 HTML 免拉伸/裁切。
+function IntradayLine({ intra, metric, unit }) {
+  const points = intra?.points || []
+  if (points.length < 2) return null
+  const prev = intra?.prev_points || []
+  const val = p => (metric === 'amt' ? p.amt : p.vol)
+  const prevFull = intra?.prev_full && (metric === 'amt' ? intra.prev_full.amt : intra.prev_full.vol)
+  const proj = intra?.projected && (metric === 'amt' ? intra.projected.amt : intra.projected.vol)
+  const today = val(points[points.length - 1])
+  // y 轴上界取 今日/昨日/昨日全天 的最大, 保证参照线落在框内
+  const max = Math.max(today, ...points.map(val), ...prev.map(val), prevFull || 0) * 1.06 || 1
+  const W = 560, H = 120, padB = 4, padT = 6
+  const n = Math.max(points.length, prev.length, 2)
+  const x = i => (i / (n - 1)) * W
   const y = v => padT + (1 - v / max) * (H - padT - padB)
-  const line = points.map((p, i) => `${x(i).toFixed(1)},${y(vals[i]).toFixed(1)}`).join(' ')
-  const area = `0,${H - padB} ${line} ${W},${H - padB}`
-  // 时间刻度: 09:30 / 11:30 / 14:00 / 15:00 大致位置
+  const path = arr => arr.map((p, i) => `${x(i).toFixed(1)},${y(val(p)).toFixed(1)}`).join(' ')
+  const todayLine = path(points)
+  const area = `0,${H - padB} ${todayLine} ${x(points.length - 1)},${H - padB}`
+  const fmt = v => (v >= 10000 ? `${(v / 10000).toFixed(2)}万亿` : `${v}${unit}`)
   const marks = ['09:30', '10:30', '11:30/13:00', '14:00', '15:00']
-  const last = vals[vals.length - 1]
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 130 }} preserveAspectRatio="none">
-      <polygon points={area} fill="#c8a87622" />
-      <polyline points={line} fill="none" stroke="#c8a876" strokeWidth="1.4" />
-      {/* 午休缺口分隔(11:30 收/13:00 开在数据里是连续点, 用中点竖虚线示意) */}
-      {[0, 0.25, 0.5, 0.75, 1].map((f, i) => (
-        <text key={i} x={f * W} y={H - 3} fontSize="8" fill="#6b7280"
-          textAnchor={i === 0 ? 'start' : i === 4 ? 'end' : 'middle'}>{marks[i]}</text>
-      ))}
-      <line x1={x(points.length - 1)} y1={padT} x2={x(points.length - 1)} y2={H - padB} stroke="#c8a87655" strokeWidth="0.8" strokeDasharray="2 2" />
-      <text x={W - 2} y={y(last) - 4} fontSize="9" fill="#c8a876" textAnchor="end" fontWeight="600">{last}{unit}</text>
-    </svg>
+    <div>
+      <div className="flex items-baseline gap-3 mb-1 text-[10.5px] flex-wrap">
+        <span className="text-text-muted">今日累计 <b className="text-accent font-mono">{fmt(today)}</b></span>
+        {prevFull != null && <span className="text-text-muted">昨日全天 <b className="text-text-dim font-mono">{fmt(prevFull)}</b></span>}
+        {proj != null && (
+          <span className="text-text-muted">
+            {intra.projected.final ? '收盘' : '预测全天'} <b className="text-bear-bright font-mono">{intra.projected.final ? fmt(today) : `~${fmt(proj)}`}</b>
+            {!intra.projected.final && prevFull != null && <span className={proj >= prevFull ? 'text-bear ml-1' : 'text-bull ml-1'}>{proj >= prevFull ? '↑' : '↓'}较昨日{Math.abs(Math.round((proj / prevFull - 1) * 100))}%</span>}
+          </span>
+        )}
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 120 }} preserveAspectRatio="none">
+        <polygon points={area} fill="#c8a87620" />
+        {prevFull != null && <line x1="0" y1={y(prevFull)} x2={W} y2={y(prevFull)} stroke="#8a8f99" strokeWidth="0.8" strokeDasharray="4 3" />}
+        {prev.length > 1 && <polyline points={path(prev)} fill="none" stroke="#8a8f99" strokeWidth="1" strokeDasharray="3 3" opacity="0.7" />}
+        <polyline points={todayLine} fill="none" stroke="#c8a876" strokeWidth="1.6" />
+      </svg>
+      <div className="flex justify-between text-[8.5px] text-text-muted mt-0.5">
+        {marks.map((m, i) => <span key={i}>{m}</span>)}
+      </div>
+      <div className="text-[9px] text-text-muted mt-1">
+        金线=今日累计 · 灰虚线=昨日同期 · 横虚线=昨日全天{proj != null && !intra.projected.final ? ' · 预测=今日已走量按昨日同期节奏外推全天' : ''}
+      </div>
+    </div>
   )
 }
 
@@ -215,11 +235,8 @@ export default function SentimentDetailModal({ summary, volume, onClose }) {
                 </>
               ) : (
                 <>
-                  <div className="text-[10px] text-text-muted mb-1.5">
-                    当日{metric === 'amt' ? '累计成交额(亿元)' : '累计成交量(亿股)'}分时 · 09:30→15:00 逐分钟累计{live ? ' · 盘中滚动' : ''}
-                  </div>
                   {(intra?.points || []).length > 1
-                    ? <IntradayLine points={intra.points} metric={metric} unit={unit} />
+                    ? <IntradayLine intra={intra} metric={metric} unit={unit} />
                     : <div className="text-[11px] text-text-dim py-3 text-center">分时加载中…</div>}
                 </>
               )}
