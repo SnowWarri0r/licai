@@ -175,8 +175,10 @@ async def market_volume_intraday(market: str = "两市") -> dict:
     if not days:
         return {"market": market, "points": [], "note": "分时数据暂不可达"}
     today = by_day[days[-1]]
-    hist = [by_day[d] for d in days[:-1]]           # 今日之前的历史日(用于平均节奏)
-    prev = hist[-1] if hist else []                 # 昨日(对照曲线)
+    # 历史日必须是完整交易日(首档≤09:35 且档数≥40)——datalen 窗口最老那天常被截成只剩
+    # 下午, 会让"早盘完成度"混入 0% 把平均拉低, 预测因此虚高。剔除残缺日。
+    hist = [by_day[d] for d in days[:-1] if by_day[d] and by_day[d][0][0] <= "09:35" and len(by_day[d]) >= 40]
+    prev = hist[-1] if hist else []                 # 昨日(对照曲线, 取最近的完整日)
 
     def pts_of(series):
         return [{"time": t, "vol": round(v / 1e8, 1), "amt": round(a / 1e8)} for t, v, a in series]
