@@ -15,7 +15,7 @@ _TTL = 120  # 盘中 2 分钟
 
 _FS_ALL_A = "m:0 t:6,m:0 t:80,m:1 t:2,m:1 t:23,m:0 t:7,m:1 t:3"   # 沪深A股(不含北交所/B股)
 _FIELDS = "f2,f3,f6,f8,f10,f12,f14,f20,f100,f103"
-_HOSTS = ["push2.eastmoney.com", "push2delay.eastmoney.com", "1.push2.eastmoney.com"]
+_HOSTS = ["push2delay.eastmoney.com", "push2.eastmoney.com", "1.push2.eastmoney.com"]
 
 
 def _is_new_stock(name: str) -> bool:
