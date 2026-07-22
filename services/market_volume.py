@@ -87,6 +87,26 @@ def _sina_realtime_sync() -> dict:
     return got
 
 
+async def archive_today() -> int:
+    """收盘后定格今日四市场量额(新浪实时, 不依赖东财)。eod 循环每交易日调一次,
+    成交额档案就此逐日累积——即便东财 push2 长期不可达也能往前攒满。返回入档市场数。"""
+    from database import save_market_volume_history
+    cst = _cst_now()
+    today = cst.strftime("%Y-%m-%d")
+    try:
+        rt = await asyncio.to_thread(_sina_realtime_sync)
+    except Exception:
+        return 0
+    n = 0
+    for name, (vol, amt) in rt.items():
+        if amt:
+            await save_market_volume_history(name, [(today, vol, amt)])
+            n += 1
+    global _cache
+    _cache = None   # 让下次读取带上今日新档
+    return n
+
+
 async def market_volume() -> dict:
     """→ {markets: {两市/沪/深/创业/科创: {trend: [{date, vol, amt}]}}, intraday}
     trend 15行(前端画后14根, 首行作前一日参照), vol=亿股, amt=亿元(拿不到为 None)。"""
