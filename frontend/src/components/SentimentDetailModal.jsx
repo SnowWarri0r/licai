@@ -34,19 +34,49 @@ function VolBars({ series, intraday, unit }) {
   )
 }
 
+// 当日分时累计曲线(逐分钟累计成交量/额), 面积折线。
+function IntradayLine({ points, metric, unit }) {
+  if (!points || points.length < 2) return null
+  const vals = points.map(p => (metric === 'amt' ? p.amt : p.vol))
+  const max = Math.max(...vals) || 1
+  const W = 560, H = 120, padB = 16, padT = 6
+  const x = i => (i / (points.length - 1)) * W
+  const y = v => padT + (1 - v / max) * (H - padT - padB)
+  const line = points.map((p, i) => `${x(i).toFixed(1)},${y(vals[i]).toFixed(1)}`).join(' ')
+  const area = `0,${H - padB} ${line} ${W},${H - padB}`
+  // 时间刻度: 09:30 / 11:30 / 14:00 / 15:00 大致位置
+  const marks = ['09:30', '10:30', '11:30/13:00', '14:00', '15:00']
+  const last = vals[vals.length - 1]
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 130 }} preserveAspectRatio="none">
+      <polygon points={area} fill="#c8a87622" />
+      <polyline points={line} fill="none" stroke="#c8a876" strokeWidth="1.4" />
+      {/* 午休缺口分隔(11:30 收/13:00 开在数据里是连续点, 用中点竖虚线示意) */}
+      {[0, 0.25, 0.5, 0.75, 1].map((f, i) => (
+        <text key={i} x={f * W} y={H - 3} fontSize="8" fill="#6b7280"
+          textAnchor={i === 0 ? 'start' : i === 4 ? 'end' : 'middle'}>{marks[i]}</text>
+      ))}
+      <line x1={x(points.length - 1)} y1={padT} x2={x(points.length - 1)} y2={H - padB} stroke="#c8a87655" strokeWidth="0.8" strokeDasharray="2 2" />
+      <text x={W - 2} y={y(last) - 4} fontSize="9" fill="#c8a876" textAnchor="end" fontWeight="600">{last}{unit}</text>
+    </svg>
+  )
+}
+
 export default function SentimentDetailModal({ summary, volume, onClose }) {
   const [d, setD] = useState(null)
   const [tab, setTab] = useState('ladder')   // ladder | sector | dt
   const [mkt, setMkt] = useState('两市')      // 量能市场: 两市/沪/深/创业/科创
   const [metric, setMetric] = useState('amt') // 量能口径: amt=成交额(亿元) | vol=成交量(亿股)
+  const [view, setView] = useState('daily')   // daily=近14日 | intraday=当日分时累计
   const [loading, setLoading] = useState(true)
   const [vol, setVol] = useState(null)       // 独立量能接口(实时读数+近14日), 不吃 sentiment 5min 缓存
+  const [intra, setIntra] = useState(null)    // 当日分时累计(逐分钟量额)
 
   useEffect(() => {
     fetchJSON('/api/market/sentiment-detail').then(setD).catch(() => {}).finally(() => setLoading(false))
   }, [])
 
-  // 量能: 打开即拉独立端点; 盘中(markets_intraday)每 60s 刷新当前实时量额
+  // 量能: 打开即拉独立端点; 盘中(intraday)每 60s 刷新当前实时量额
   useEffect(() => {
     let alive = true, timer = null
     const pull = () => fetchJSON('/api/market/volume').then(r => {
@@ -57,6 +87,19 @@ export default function SentimentDetailModal({ summary, volume, onClose }) {
     pull()
     return () => { alive = false; if (timer) clearTimeout(timer) }
   }, [])
+
+  // 分时视图: 按市场拉当日逐分钟累计; 盘中每 60s 刷新
+  useEffect(() => {
+    if (view !== 'intraday') return
+    let alive = true, timer = null
+    const pull = () => fetchJSON(`/api/market/volume-intraday?market=${encodeURIComponent(mkt)}`).then(r => {
+      if (!alive || !r) return
+      setIntra(r)
+      if (vol?.intraday) timer = setTimeout(pull, 60000)
+    }).catch(() => {})
+    pull()
+    return () => { alive = false; if (timer) clearTimeout(timer) }
+  }, [view, mkt, vol?.intraday])
 
   // 打开时锁住底下页面滚动 + Esc 关闭
   useEffect(() => {
@@ -147,6 +190,11 @@ export default function SentimentDetailModal({ summary, volume, onClose }) {
                   <button key={k} onClick={() => setMetric(k)}
                     className={`text-[10.5px] px-1.5 py-0.5 rounded ${metric === k ? 'bg-accent/15 text-accent' : 'text-text-dim hover:text-text'}`}>{lb}</button>
                 ))}
+                <span className="text-text-muted mx-1">·</span>
+                {[['daily', '近14日'], ['intraday', '当日分时']].map(([k, lb]) => (
+                  <button key={k} onClick={() => setView(k)}
+                    className={`text-[10.5px] px-1.5 py-0.5 rounded ${view === k ? 'bg-accent/15 text-accent' : 'text-text-dim hover:text-text'}`}>{lb}</button>
+                ))}
               </div>
               {/* 当前实时读数(盘中随分钟刷新, 收盘后为定格) */}
               {rtVal != null && (
@@ -156,16 +204,25 @@ export default function SentimentDetailModal({ summary, volume, onClose }) {
                   <span className="text-[10.5px] text-text-muted">{mkt}{metric === 'amt' ? '成交额' : '成交量'}</span>
                 </div>
               )}
-              <div className="text-[10px] text-text-muted mb-1.5">
-                近14日{metric === 'amt' ? '成交额(亿元)' : '成交量(亿股)'} · 较前一日放量红/缩量绿{live ? ' · 末根今日盘中' : ''}
-              </div>
-              {series.length > 1
-                ? <VolBars series={series} intraday={live} unit={unit} />
-                : <div className="text-[11px] text-text-dim py-3 text-center">
-                    {metric === 'amt'
-                      ? '成交额历史档案在逐日累积(每个收盘日自动定格一格)——当前值见上方实时读数; 成交量的14日序列是全的, 可切过去看'
-                      : '暂无足够历史'}
-                  </div>}
+              {view === 'daily' ? (
+                <>
+                  <div className="text-[10px] text-text-muted mb-1.5">
+                    近14日{metric === 'amt' ? '成交额(亿元)' : '成交量(亿股)'} · 较前一日放量红/缩量绿{live ? ' · 末根今日盘中' : ''}
+                  </div>
+                  {series.length > 1
+                    ? <VolBars series={series} intraday={live} unit={unit} />
+                    : <div className="text-[11px] text-text-dim py-3 text-center">暂无足够历史</div>}
+                </>
+              ) : (
+                <>
+                  <div className="text-[10px] text-text-muted mb-1.5">
+                    当日{metric === 'amt' ? '累计成交额(亿元)' : '累计成交量(亿股)'}分时 · 09:30→15:00 逐分钟累计{live ? ' · 盘中滚动' : ''}
+                  </div>
+                  {(intra?.points || []).length > 1
+                    ? <IntradayLine points={intra.points} metric={metric} unit={unit} />
+                    : <div className="text-[11px] text-text-dim py-3 text-center">分时加载中…</div>}
+                </>
+              )}
             </div>
           )
         })()}
