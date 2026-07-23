@@ -197,16 +197,24 @@ async def stock_search(q: str):
     from services.market_data import get_realtime_quotes
     from services.stock_agent import _tool_resolve_stock
     r = await _tool_resolve_stock((q or "").strip())
+    # 候选池(至多20)先取行情, 按 (匹配度tier, 成交额降序) 重排 → 热门/高流动性靠前, 再截8
     cands = (r.get("candidates")
-             or ([{"code": r["code"], "name": r.get("name") or r["code"]}] if r.get("code") else []))[:8]
+             or ([{"code": r["code"], "name": r.get("name") or r["code"]}] if r.get("code") else []))
     if cands:
         quotes = await get_realtime_quotes([c["code"] for c in cands])
         for c in cands:
             qq = quotes.get(str(c["code"]).split(".")[-1]) or quotes.get(c["code"]) or {}
             c["pct"] = qq.get("change_pct")
             c["price"] = qq.get("price")
+            c["_amt"] = qq.get("amount") or 0
             if qq.get("stock_name"):
                 c["name"] = c["name"] or qq["stock_name"]
+        # 成交额(热度)主排序, tier 仅做次级 tiebreak → 热门股永远靠前(华宏→华虹在前)
+        cands.sort(key=lambda c: (-(c.get("_amt") or 0), c.get("_tier", 9)))
+        cands = cands[:8]
+        for c in cands:
+            c.pop("_tier", None)
+            c.pop("_amt", None)
     return {"candidates": cands}
 
 

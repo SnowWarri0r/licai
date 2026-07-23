@@ -258,53 +258,52 @@ async def _tool_resolve_stock(query: str) -> dict:
                 return {"code": cd, "name": nm, "in_holdings": False, "note": "已清仓, 不在当前持仓"}
     except Exception:
         pass
-    # 2) A 股全表
+    # 2) A 股全表 —— 精确名/代码直接命中(唯一, 置顶)
     n2c, c2n = await _code_name_maps()
     if q in c2n:
         return {"code": q, "name": c2n[q], "in_holdings": False}
     if q in n2c:
         return {"code": n2c[q], "name": q, "in_holdings": False}
-    hits = [(nm, cd) for nm, cd in n2c.items() if q in nm][:5]
-    if hits:
-        return {"candidates": [{"name": nm, "code": cd} for nm, cd in hits]}
-    # 2a) 字母查询: 拼音首字母(zgpa→中国平安) + 全拼(zhongguopingan)子串。
-    # 放在美股 ticker 之前——A股是主场, 没有拼音命中才轮到 NVDA/AAPL 这类解释
-    if _re.fullmatch(r"[A-Za-z0-9]{2,12}", q) and not q.isdigit():
-        ql = q.lower()
-        rows = await _pinyin_rows()
-        pre = sorted((r for r in rows if r[0].startswith(ql)), key=lambda r: len(r[0]))
-        sub = [r for r in rows if ql in r[0] and not r[0].startswith(ql)]
-        fsub = [r for r in rows if ql in r[1] and ql not in r[0]]   # 全拼子串
-        seen, py_hits = set(), []
-        for ini, full, nm, cd in pre + sub + fsub:
-            if cd not in seen:
-                seen.add(cd); py_hits.append((nm, cd))
-        py_hits = py_hits[:8]
-        if py_hits:
-            return {"candidates": [{"name": nm, "code": cd} for nm, cd in py_hits],
-                    "note": "按名称拼音匹配"}
-    # 2b) 错别字/同音容错: 把输入归一到读音(全拼), 同音字打错也能中。
-    #   同音子串(药名康德→药明康德) 优先; 再退编辑距离近似(仅中文输入, 免误伤英文 ticker)。
+
+    # 2') 汇总所有匹配法进一个候选池(不早退, 每个代码留最优 tier)——
+    #   否则"华宏"命中华宏科技就 return, 同音的华虹永远出不来。
+    #   tier: 0中文前缀 1中文子串 2首字母前缀 3首字母/全拼子串 4同音子串 5编辑距离近似。
+    #   排序: 先 tier, 端点再按成交额(热度)重排, 所以热门自然靠前。
+    rows = await _pinyin_rows()
+    ql = q.lower()
     qpy = _to_full_pinyin(q)
     has_cjk = any("一" <= ch <= "鿿" for ch in q)
-    if len(qpy) >= 4 and (has_cjk or len(q) >= 4):
-        rows = await _pinyin_rows()
-        homo = []
+    is_letters = bool(_re.fullmatch(r"[A-Za-z0-9]{2,12}", q)) and not q.isdigit()
+    pool: dict = {}   # code -> (tier, name)
+
+    def _add(cd, nm, tier):
+        if cd not in pool or tier < pool[cd][0]:
+            pool[cd] = (tier, nm)
+
+    for ini, full, nm, cd in rows:
+        if q in nm:
+            _add(cd, nm, 0 if nm.startswith(q) else 1)
+        if is_letters:
+            if ini.startswith(ql):
+                _add(cd, nm, 2)
+            elif ql in ini or ql in full:
+                _add(cd, nm, 3)
+        if len(qpy) >= 4 and (qpy in full or (len(qpy) >= 6 and full in qpy)):
+            _add(cd, nm, 4)
+    # 编辑距离近似仅中文输入且池仍空/很小时补(免误伤英文 ticker, 也省算力)
+    if has_cjk and len(qpy) >= 4 and len(pool) < 3:
+        cap = 1 if len(qpy) <= 6 else 2
         for _ini, full, nm, cd in rows:
-            if qpy in full or (len(qpy) >= 6 and full in qpy):
-                homo.append((abs(len(full) - len(qpy)), nm, cd))
-        if homo:
-            homo.sort(key=lambda x: x[0])
-            return {"candidates": [{"name": nm, "code": cd} for _d, nm, cd in homo[:8]],
-                    "note": "按读音近似匹配(容错同音字)"}
-        if has_cjk:
-            cap = 1 if len(qpy) <= 6 else 2
-            near = sorted(((_edit_distance(qpy, full, cap + 1), nm, cd)
-                           for _ini, full, nm, cd in rows), key=lambda x: x[0])
-            near = [(nm, cd) for d, nm, cd in near if d <= cap][:5]
-            if near:
-                return {"candidates": [{"name": nm, "code": cd} for nm, cd in near],
-                        "note": "按读音近似匹配(容错错别字)"}
+            if cd in pool:
+                continue
+            if _edit_distance(qpy, full, cap) <= cap:
+                _add(cd, nm, 5)
+
+    if pool:
+        ordered = sorted(pool.items(), key=lambda kv: (kv[1][0], len(kv[1][1])))[:20]
+        return {"candidates": [{"name": nm, "code": cd, "_tier": tier}
+                               for cd, (tier, nm) in ordered],
+                "note": "候选按匹配度+热度(成交额)排序"}
     # 3) 6位数字代码但不在A股个股全表(如 ETF/LOF/可转债) → 直接当作代码, 实时查名
     if q.isdigit() and len(q) == 6:
         try:
