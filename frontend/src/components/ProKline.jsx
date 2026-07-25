@@ -287,6 +287,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
         .finally(() => { moreBusyRef.current = false })
     }
 
+    let warmTimer = null
     // 走预取缓存: 榜单已顺序预取过光标附近个股, 方向键翻股直接命中不等网络
     prefetchJSON(`/api/market/history/${encodeURIComponent(code)}?days=${days}`)
       .then(k => {
@@ -307,10 +308,17 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
           const i = bars.findIndex(b => b.time === lhbDate)
           if (i >= 0) setIntraday({ date: lhbDate, prevClose: bars[i - 1]?.close ?? bars[i].open, tab: '龙虎榜' })
         }
+        // 续史预热: 这只票停留 1.5s(不是方向键快速略过)且历史大概率更深时,
+        // 后台静默预取 750 根档——之后第一次拖到最早处直接命中缓存, 不用等
+        if (bars.length >= days && days * 3 <= 2400) {
+          warmTimer = setTimeout(() => {
+            if (alive) prefetchJSON(`/api/market/history/${encodeURIComponent(code)}?days=${days * 3}`).catch(() => {})
+          }, 1500)
+        }
       })
       .catch(e => alive && setErr(e?.message || '加载失败'))
       .finally(() => alive && setLoading(false))
-    return () => { alive = false; loadMoreRef.current = null }
+    return () => { alive = false; loadMoreRef.current = null; if (warmTimer) clearTimeout(warmTimer) }
   }, [code, days, lhbDate])
 
   return (
