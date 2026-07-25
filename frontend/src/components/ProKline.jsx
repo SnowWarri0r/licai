@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { createChart, CandlestickSeries, HistogramSeries, LineSeries, CrosshairMode, LineStyle } from 'lightweight-charts'
-import { fetchJSON } from '../hooks/useApi'
+import { fetchJSON, prefetchJSON } from '../hooks/useApi'
 import { MinuteChart } from './StockKlineModal'
 import SeatHistoryModal from './SeatHistoryModal'
 
@@ -234,7 +234,8 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
     if (!code) return
     let alive = true
     setLoading(true); setErr('')
-    fetchJSON(`/api/market/history/${encodeURIComponent(code)}?days=${days}`)
+    // 走预取缓存: 榜单已顺序预取过光标附近个股, 方向键翻股直接命中不等网络
+    prefetchJSON(`/api/market/history/${encodeURIComponent(code)}?days=${days}`)
       .then(k => {
         if (!alive) return
         if (!Array.isArray(k) || !k.length) { setErr('暂无 K 线数据'); return }
