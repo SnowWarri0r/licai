@@ -20,7 +20,7 @@ _TTL = 600   # 10 分钟
 
 _FS = "m:0 t:6,m:0 t:80,m:1 t:2,m:1 t:23,m:0 t:81"   # 沪深A + 北交所
 _FIELDS = "f3,f6,f10,f12,f14,f20,f23,f24,f26,f37,f41,f45,f46,f100,f115,f160"
-_HOSTS = ["push2.eastmoney.com", "push2delay.eastmoney.com", "1.push2.eastmoney.com"]
+_HOSTS = ["push2delay.eastmoney.com", "push2.eastmoney.com", "1.push2.eastmoney.com"]
 
 
 def _clist_pool(pages: int = 20) -> list[dict]:

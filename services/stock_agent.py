@@ -1058,8 +1058,8 @@ def _fetch_fund_flow_sync(code: str) -> dict:
         return c[0]
     secid = _em_secid(code)
     hdr = {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
-    hosts = ["push2.eastmoney.com", "push2delay.eastmoney.com", "1.push2.eastmoney.com"]
-    his_hosts = ["push2his.eastmoney.com", "push2.eastmoney.com", "push2delay.eastmoney.com"]
+    hosts = ["push2delay.eastmoney.com", "push2.eastmoney.com", "1.push2.eastmoney.com"]
+    his_hosts = ["push2delay.eastmoney.com", "push2.eastmoney.com", "push2his.eastmoney.com"]
     rt = _fetch_realtime_fund_flow(secid, hdr, hosts)  # 今日实时主力资金流(权威)
     # 历史趋势序列(近几日), 末根可能滞后, 仅用于画趋势
     params = {"lmt": "8", "klt": "101", "secid": secid,
