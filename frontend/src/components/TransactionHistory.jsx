@@ -105,8 +105,10 @@ export default function TransactionHistory({ stockCode, stockName, onClose, onCh
   const load = async () => {
     try {
       const list = await fetchJSON(`/api/portfolio/${enc(stockCode)}/actions`)
-      // Sort by trade_date ascending (oldest first)
-      list.sort((a, b) => (a.trade_date || '').localeCompare(b.trade_date || ''))
+      // 按 日期+成交时刻 升序(同一天也要按时分排, 之前只按 trade_date 天粒度 → 同日乱序)
+      // at_time 缺失时退 created_at 的时间, 再退 id, 保证稳定的时间顺序
+      const key = a => `${a.trade_date || ''} ${a.at_time || (a.created_at || '').slice(11) || ''}`
+      list.sort((a, b) => key(a).localeCompare(key(b)) || ((a.id || 0) - (b.id || 0)))
       setActions(list)
     } finally {
       setLoading(false)
