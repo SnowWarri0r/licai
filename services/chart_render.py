@@ -156,9 +156,21 @@ def render_trend_chart(bars: list, *, code: str = "", name: str = "",
             ax.scatter(i, hv + off, marker="v", s=70, color="#e88a8a", zorder=6, edgecolors="none")
         for i, lv in slo:
             ax.scatter(i, lv - off, marker="^", s=70, color="#74bd74", zorder=6, edgecolors="none")
-        # 结构线右端标名称+价位(自解释, 不靠图例)
+        # 结构线右端标名称+价位(自解释, 不靠图例)。
+        # 两条结构线价位接近时标签会原地叠印成重影字: 按价序往上错开;
+        # 推到坐标区顶端外会被裁掉, 越界时整簇下移(相互间距保持)
+        ymin_ax, ymax_ax = ax.get_ylim()
+        min_gap = (ymax_ax - ymin_ax) * 0.035
+        sorted_specs = sorted(line_specs, key=lambda s: s[0])
+        ys = []
+        for lv, _c, _lb in sorted_specs:
+            ys.append(lv if not ys else max(lv, ys[-1] + min_gap))
+        over = ys[-1] - (ymax_ax - min_gap * 0.6)
+        if over > 0:
+            ys = [y - over for y in ys]
+        label_y = {(lv, lb): y for (lv, _c, lb), y in zip(sorted_specs, ys)}
         for lv, col, lb in line_specs:
-            ax.text(n - 0.5, lv, f" {lb} {lv}", color=col, fontsize=8, va="center", ha="left", **_tkw)
+            ax.text(n - 0.5, label_y[(lv, lb)], f" {lb} {lv}", color=col, fontsize=8, va="center", ha="left", **_tkw)
         buf = io.BytesIO()
         fig.savefig(buf, format="png", dpi=160, facecolor=_BG, bbox_inches="tight")
         plt.close(fig)
