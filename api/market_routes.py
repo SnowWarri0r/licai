@@ -626,6 +626,16 @@ async def market_sentiment():
         return c[0]
     r = await asyncio.to_thread(_fetch_sentiment_sync)
     if r:
+        # 多市场量能(两市/沪/深/创业/科创 × 量/额): 独立服务自带缓存与兜底, 失败不影响老口径
+        try:
+            from services.market_volume import market_volume as _mv
+            mv = await _mv()
+            if not r.get("volume"):
+                r["volume"] = {}
+            r["volume"]["markets"] = mv["markets"]
+            r["volume"]["markets_intraday"] = mv["intraday"]
+        except Exception:
+            pass
         _senti_cache["s"] = (r, _time.time())
         return r
     return {"date": None, "mood": "数据不足", "n_zt": 0}
