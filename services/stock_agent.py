@@ -1848,6 +1848,8 @@ async def _tool_trades(code: str = "", start: str = "", end: str = "") -> dict:
                                  "shares": sh if at != "SPLIT" else None,
                                  "金额": x.get("amount"), "余额": round(net, 2),
                                  "note": x.get("note") or ""}
+                            if str(x.get("note") or "").startswith("DCA"):
+                                r["来源"] = "定投"
                             if at == "SPLIT":
                                 r["拆分比"] = f"1:{sh:g}"
                             elif fac_after[i] != 1.0:
@@ -1870,7 +1872,11 @@ async def _tool_trades(code: str = "", start: str = "", end: str = "") -> dict:
                                        "说'卖了多少/还剩多少/减仓占比'一律用 余额/今日 里的数。"
                                        "拆分前的交易带 调整价/调整份额(已折算到现行标度, 与现价直接可比)——"
                                        "算均价、对比现价、算每笔浮盈一律用调整后的数, price 仅是当时的原始成交价。"
-                                       "整体成本与盈亏以 get_holdings 返回的 摊薄成本 为准。"}
+                                       "整体成本与盈亏以 get_holdings 返回的 摊薄成本 为准。"
+                                       "来源=定投 的行是定投计划自动买入(策略性规律买入, 评价口径区别于主观加仓)。"}
+                        plan = (await _dca_plan_map()).get(a["id"])
+                        if plan:
+                            out["定投计划"] = plan
                         if today_in or today_out:
                             out["今日"] = {"净买入份额": round(today_in, 2), "净卖出份额": round(today_out, 2),
                                            "盘前份额": pre_today, "当前份额": cur,
@@ -1935,12 +1941,15 @@ async def _tool_trades(code: str = "", start: str = "", end: str = "") -> dict:
                 rec = {"date": d, "code": str(a.get("code") or ""),
                        "name": a.get("name") or "", "动作": act, "类型": cls, "price": x.get("unit_price"),
                        "shares": x.get("shares"), "金额": x.get("amount")}
+                if str(x.get("note") or "").startswith("DCA"):
+                    rec["来源"] = "定投"
                 if pend:
                     rec["状态"] = "待确认(T+1未出净值)"
                 merged.append(rec)
         merged.sort(key=lambda x: x["date"], reverse=True)
         return {"recent_trades": merged[:80], "range": {"start": s or None, "end": e or None},
-                "note": "成交(时间倒序), 含个股/场内ETF/场外基金三类; 含待确认申购(状态=待确认)。日期缺失的成交按录入时间(created_at)归日。"}
+                "note": "成交(时间倒序), 含个股/场内ETF/场外基金三类; 含待确认申购(状态=待确认)。日期缺失的成交按录入时间(created_at)归日。"
+                        "来源=定投 的行是定投计划自动买入(策略性规律买入, 不是主观追高); 没这个标记的才是手动操作。"}
     except Exception:
         acts = await get_position_actions(None, limit=40)
         name_by = {h.get("stock_code"): h.get("stock_name") for h in await get_all_holdings()}
@@ -1976,9 +1985,40 @@ async def _tool_get_thesis(code: str) -> dict:
                     "复盘时先点明'这是你X天前/X个月前记的逻辑', 再逐条对照现价/基本面/消息/红线客观判定每条是否仍成立, 买卖结论由用户自定。"}
 
 
+def _dca_desc(p: dict) -> str:
+    """定投计划→人话: 每交易日/每周X/每月X日 + 金额或份额 + 暂停标注。"""
+    v = p.get("value")
+    what = f"{v:g}元" if (p.get("mode") or "amount") == "amount" else f"{v:g}份"
+    freq = p.get("frequency") or "monthly"
+    if freq == "daily_trading":
+        when = "每交易日"
+    elif freq == "weekly":
+        wd = int(p.get("day_of_week") or 1)
+        when = f"每周{'一二三四五六日'[wd - 1]}"
+    else:
+        when = f"每月{p.get('day_of_month') or 1}日"
+    s = f"{when} {what}"
+    if (p.get("status") or "active") != "active":
+        s += "(已暂停)"
+    return s
+
+
+async def _dca_plan_map() -> dict:
+    """asset_id → 定投计划描述(同一资产多计划用 / 连接)。查不到返回空表, 不影响主流程。"""
+    try:
+        from database import list_dca_schedules
+        m: dict = {}
+        for p in await list_dca_schedules():
+            m.setdefault(p["asset_id"], []).append(_dca_desc(p))
+        return {k: " / ".join(v) for k, v in m.items()}
+    except Exception:
+        return {}
+
+
 async def _tool_get_holdings() -> dict:
     try:
         hs = await _active_holdings()
+        dca_by_asset = await _dca_plan_map()
         a_shares = [{"code": h.get("stock_code"), "name": h.get("stock_name"),
                      "shares": h.get("shares"), "综合成本": h.get("cost_price"),
                      "每股已收分红": h.get("每股已收分红"),
@@ -1995,6 +2035,8 @@ async def _tool_get_holdings() -> dict:
                 if at == "FUND" and not (sh and sh > 0):   # 已赎回(shares=0)的基金不算在持
                     continue
                 row = {"name": x.get("name"), "code": x.get("code") or ""}
+                if dca_by_asset.get(x.get("id")):
+                    row["定投计划"] = dca_by_asset[x["id"]]
                 if sh and sh > 0:
                     row["份额"] = round(float(sh), 2)
                 if mv is not None:
@@ -2018,6 +2060,7 @@ async def _tool_get_holdings() -> dict:
                         "A股: 综合成本=含手续费+分红摊薄(对齐券商); 持有天数=资金加权(0=今天才开仓); 开仓日已带星期照抄。"
                         "场外: 基金/ETF 给份额+摊薄成本(单价, 份额拆分与减仓已实现均已折算, 与现价同标度, 对齐券商口径);"
                         "浮动盈亏=(现价−摊薄成本)×份额, 成本一律以本字段为准。现金/理财/机器人给金额(元)。"
+                        "带 定投计划 字段的资产在自动定投(频率+每期金额, 已暂停会标注)——这类持仓的规律小额买入是策略性定投, 不是主观追高。"
                         "要各大类占比/现金理财结构分析用 get_asset_allocation。"}
     except Exception as e:
         return {"error": str(e)}
@@ -2394,13 +2437,13 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_shareholders", "description": "筹码面: 十大流通股东及增减持、北向(香港中央结算)持股变动、未来限售解禁(抛压)。回答'谁在持股、控股股东/国家队/北向在加还是减、有没有解禁压力'时用。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
-    {"name": "get_holdings", "description": "查用户当前**全部**在持: A股(代码/名称/股数/综合成本/持有天数) + 场外资产(基金/场内ETF/理财/现金/加密/机器人, 含份额或金额)。回答'我的持仓/我有什么/我持有啥/跟我持仓的关系'时用——持仓不止A股, 用户还有基金/ETF/现金/理财/机器人。要各大类占比或现金理财结构分析则用 get_asset_allocation。",
+    {"name": "get_holdings", "description": "查用户当前**全部**在持: A股(代码/名称/股数/综合成本/持有天数) + 场外资产(基金/场内ETF/理财/现金/加密/机器人, 含份额或金额; 有定投计划的基金带 定投计划 字段——频率+每期金额)。回答'我的持仓/我有什么/我持有啥/哪些在定投/跟我持仓的关系'时用——持仓不止A股, 用户还有基金/ETF/现金/理财/机器人。要各大类占比或现金理财结构分析则用 get_asset_allocation。",
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_thesis", "description": "读用户当初记录的买入逻辑(为什么买这只)。回答'我当初为什么买X、X的逻辑还成立吗、帮我复盘X'时用: 拿到 thesis 后对照现价/基本面/消息/红线, 客观说每条理由还成不成立。不传 code 看全部持仓的逻辑。仅当用户记过才有。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选, 留空看全部"}}}},
     {"name": "get_asset_allocation", "description": "查用户全量资产配置: 各大类(股票/现金/理财/基金/加密/机器人)市值+占比 + 现金与理财逐笔明细(金额/年化/持有天数)。回答'现金/理财怎么分配、应急金够不够、资产结构合不合理、流动性够不够'这类资产配置问题时用。不涉及个股买卖。",
      "input_schema": {"type": "object", "properties": {}}},
-    {"name": "get_trades", "description": "查用户成交记录(含个股/场内ETF/场外基金): 传 code→该标的买卖/加减仓/分红或申赎流水(A股另给综合成本/已实现盈亏/持有天数, 同日有买有卖=做T); 不传→最近全部成交(三类合并)。可用 start/end(YYYY-MM-DD)按成交日期筛区间('这周/6月/上个月'自己换算成日期传)。回答'我什么时候买的、成本多少、做过几次T、这票赚没赚、持有多久、最近/某段时间交易了啥'时用。",
+    {"name": "get_trades", "description": "查用户成交记录(含个股/场内ETF/场外基金): 传 code→该标的买卖/加减仓/分红或申赎流水(A股另给综合成本/已实现盈亏/持有天数, 同日有买有卖=做T); 不传→最近全部成交(三类合并)。可用 start/end(YYYY-MM-DD)按成交日期筛区间('这周/6月/上个月'自己换算成日期传)。回答'我什么时候买的、成本多少、做过几次T、这票赚没赚、持有多久、最近/某段时间交易了啥、哪些买入是定投'时用(定投计划自动买入的行带 来源=定投)。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选; 留空看全部"}, "start": {"type": "string", "description": "可选, 起始日 YYYY-MM-DD"}, "end": {"type": "string", "description": "可选, 截止日 YYYY-MM-DD"}}}},
     {"name": "get_market_sentiment", "description": "查大盘打板情绪(涨停数/连板高度/炸板率/赚钱效应/热点板块)、全市场涨跌家数(几家上涨几家下跌, 含沪/深/北分市场)和涨跌分布直方图(每1%一档的家数, 看下跌集中在哪个深度), 回答'今天普跌吗/多少家在跌/跌得有多深/赚钱效应', 判断是个股原因还是大盘普涨普跌; 也用于判断市场风格(打板赚钱效应高=追涨/动量有效; 炸板率高+亏钱效应=高位分歧/反转)。",
      "input_schema": {"type": "object", "properties": {}}},
