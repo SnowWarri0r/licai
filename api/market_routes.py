@@ -547,7 +547,7 @@ def _fetch_sentiment_sync():
     try:
         import requests as _rq2
         _s2 = _rq2.Session(); _s2.trust_env = False
-        for _h in ("push2.eastmoney.com", "push2delay.eastmoney.com", "1.push2.eastmoney.com"):
+        for _h in ("push2delay.eastmoney.com", "push2.eastmoney.com", "1.push2.eastmoney.com"):
             try:
                 _diff = _s2.get(f"https://{_h}/api/qt/ulist.np/get",
                                 params={"fltt": "2", "secids": "1.000001,0.399106,0.899050",
