@@ -117,15 +117,26 @@ function IntradayLine({ intra, metric, unit }) {
           )}
         </div>
       </div>
-      <div className="flex justify-between text-[8.5px] text-text-muted mt-0.5 pl-12">
-        {marks.map((m, i) => <span key={i}>{m}</span>)}
+      <div className="flex">
+        <div className="w-11 mr-1 shrink-0" />
+        <div className="relative flex-1 h-3">
+          {ticks.map((tk, k) => {
+            const p = (tk.i / (n - 1)) * 100
+            return (
+              <span key={k} className="absolute text-[8px] text-text-muted whitespace-nowrap"
+                style={{ left: `${p}%`, transform: p < 4 ? 'none' : p > 96 ? 'translateX(-100%)' : 'translateX(-50%)' }}>
+                {tk.t}
+              </span>
+            )
+          })}
+        </div>
       </div>
       <div className="flex items-center gap-3 text-[9px] text-text-muted mt-1 pl-12 flex-wrap">
         <span><span style={{ color: '#e8913a' }}>—</span> 预测量能(按当时节奏外推全天)</span>
         <span><span style={{ color: '#5b8def' }}>—</span> 昨日总量能 {fmt(prevFull)}</span>
         <span className="text-text-dim">纵轴=较昨日%</span>
       </div>
-      <div className="text-[9px] text-text-dim mt-0.5 pl-12">早盘节奏快→预测偏高, 随盘中修正收敛, 收盘=实际; 近5日平均节奏, 粗估参考。</div>
+      <div className="text-[9px] text-text-dim mt-0.5 pl-12">预测=今日已成交+按近5日节奏估剩余; 越往后越准, 收盘=实际。粗估参考。</div>
     </div>
   )
 }
