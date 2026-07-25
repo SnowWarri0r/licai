@@ -48,6 +48,35 @@ async def _code_name_maps():
         return ({}, {}) if not _code_name_cache else (_code_name_cache[0], _code_name_cache[1])
 
 
+_pinyin_cache: tuple | None = None   # (rows, 源表id) —— rows: [(首字母串, 名称, 代码)]
+
+
+async def _pinyin_rows() -> list:
+    """A股全表 → 名称拼音首字母索引(懒建一次, 跟随 _code_name_maps 缓存周期)。
+    非汉字字符(ETF/数字/字母)原样并入小写串, 'kc50etf' 这类也能命中。"""
+    global _pinyin_cache
+    n2c, _ = await _code_name_maps()
+    if not n2c:
+        return []
+    if _pinyin_cache and _pinyin_cache[1] == id(n2c):
+        return _pinyin_cache[0]
+
+    def _build():
+        from pypinyin import lazy_pinyin, Style
+        rows = []
+        for nm, cd in n2c.items():
+            try:
+                ini = "".join(lazy_pinyin(nm, style=Style.FIRST_LETTER)).lower()
+            except Exception:
+                continue
+            rows.append((ini, nm, cd))
+        return rows
+
+    rows = await asyncio.to_thread(_build)
+    _pinyin_cache = (rows, id(n2c))
+    return rows
+
+
 # ---------------------------------------------------------------------------
 # 工具执行器 (都返回可 JSON 序列化的 dict/list)
 # ---------------------------------------------------------------------------
@@ -208,6 +237,18 @@ async def _tool_resolve_stock(query: str) -> dict:
     hits = [(nm, cd) for nm, cd in n2c.items() if q in nm][:5]
     if hits:
         return {"candidates": [{"name": nm, "code": cd} for nm, cd in hits]}
+    # 2a) 拼音首字母模糊匹配(zgpa→中国平安): 前缀命中优先(越短越贴), 其次任意位置;
+    # 放在美股 ticker 之前——A股是主场, 没有拼音命中才轮到 NVDA/AAPL 这类解释
+    if _re.fullmatch(r"[A-Za-z0-9]{2,12}", q) and not q.isdigit():
+        ql = q.lower()
+        rows = await _pinyin_rows()
+        pre = sorted(((ini, nm, cd) for ini, nm, cd in rows if ini.startswith(ql)),
+                     key=lambda r: len(r[0]))
+        sub = [(ini, nm, cd) for ini, nm, cd in rows if ql in ini and not ini.startswith(ql)]
+        py_hits = (pre + sub)[:8]
+        if py_hits:
+            return {"candidates": [{"name": nm, "code": cd} for _ini, nm, cd in py_hits],
+                    "note": "按名称拼音首字母匹配"}
     # 3) 6位数字代码但不在A股个股全表(如 ETF/LOF/可转债) → 直接当作代码, 实时查名
     if q.isdigit() and len(q) == 6:
         try:
