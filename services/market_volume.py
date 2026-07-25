@@ -185,38 +185,52 @@ async def market_volume_intraday(market: str = "两市") -> dict:
     prev_points = pts_of(prev)
     prev_full = ({"vol": round(prev[-1][1] / 1e8, 1), "amt": round(prev[-1][2] / 1e8)} if prev else None)
 
-    # 全天预测(近5日平均日内完成度): proj = 今日到此刻累计 ÷ 近5日"这个时刻平均已完成全天的比例"。
-    # 平滑掉单日异常, 不锚死昨日一天。收盘(≥14:57)则预测=实际。
-    projected = None
+    # 预测量能序列(开盘啦式): 每个时刻按"近5日该时点平均完成度"把今日已走量外推成全天预测。
+    # proj_series[i] = 今日累计(t_i) ÷ 近5日 mean(cum_d(t_i)/full_d)。开盘节奏快→早盘预测高,
+    # 随盘中修正一路收敛, 收盘=实际。前端画成相对昨日总量的 % 偏离曲线。
     recent = hist[-5:]
+    proj_series = []
+    projected = None
     if recent and today:
-        now_t = today[-1][0]
-        now_v, now_a = today[-1][1], today[-1][2]
+        # 预计算近5日每个时刻的累计, 便于对齐
+        recent_full = [(d[-1][1], d[-1][2]) for d in recent]
 
-        def avg_frac(idx):   # idx: 1=vol 2=amt
+        def avg_frac_at(t, idx):
             fr = []
-            for day in recent:
-                cum_now = 0.0
+            for di, day in enumerate(recent):
+                cum = 0.0
                 for row in day:
-                    if row[0] <= now_t:
-                        cum_now = row[idx]
-                full = day[-1][idx]
+                    if row[0] <= t:
+                        cum = row[idx]
+                    else:
+                        break
+                full = recent_full[di][idx - 1]
                 if full > 0:
-                    fr.append(cum_now / full)
+                    fr.append(cum / full)
             return sum(fr) / len(fr) if fr else None
 
-        near_close = now_t >= "14:57"
-        fa, fv = avg_frac(2), avg_frac(1)
-        proj_a = now_a if near_close else (now_a / fa if fa and fa > 0 else None)
-        proj_v = now_v if near_close else (now_v / fv if fv and fv > 0 else None)
-        if proj_a:
-            projected = {"vol": round(proj_v / 1e8, 1) if proj_v else None,
-                         "amt": round(proj_a / 1e8), "final": near_close,
+        for t, cv, ca in today:
+            fa, fv = avg_frac_at(t, 2), avg_frac_at(t, 1)
+            pa = ca / fa if (fa and fa > 0) else None
+            pv = cv / fv if (fv and fv > 0) else None
+            if pa:
+                proj_series.append({"time": t, "amt": round(pa / 1e8),
+                                    "vol": round(pv / 1e8, 1) if pv else None})
+        # 收盘后末点预测 = 实际; 用真实全天覆盖末点, 保证曲线收敛到实际
+        now_t = today[-1][0]
+        if now_t >= "14:57" and proj_series:
+            proj_series[-1] = {"time": now_t, "amt": round(today[-1][2] / 1e8),
+                               "vol": round(today[-1][1] / 1e8, 1)}
+        if proj_series:
+            last = proj_series[-1]
+            projected = {"amt": last["amt"], "vol": last["vol"], "final": now_t >= "14:57",
                          "basis": f"近{len(recent)}日平均节奏"}
 
+    actual = {"amt": round(today[-1][2] / 1e8), "vol": round(today[-1][1] / 1e8, 1)} if today else None
     out = {"market": market, "points": points, "prev_points": prev_points,
-           "prev_full": prev_full, "projected": projected,
-           "note": "当日累计成交额/量分时(新浪5分钟) + 昨日同期对照 + 近5日平均节奏预测全天。"}
+           "prev_full": prev_full, "actual": actual,
+           "proj_series": proj_series, "projected": projected,
+           "note": "预测量能(开盘啦式): 逐分钟按近5日平均节奏外推全天, 相对昨日总量的偏离; 收盘收敛到实际。"}
     if points:
         _intraday_cache[market] = (out, time.time())
     return out
