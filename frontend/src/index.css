@@ -198,3 +198,6 @@ body::after {
 /* 横向 chip 条: 完全隐藏滚动条(滚轮/拖动仍可滚) */
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+
+/* 键盘导航(↑↓翻股等)时浏览器默认的蓝色 focus 框太扎眼——选中态已有自己的高亮 */
+button:focus, button:focus-visible { outline: none; }
