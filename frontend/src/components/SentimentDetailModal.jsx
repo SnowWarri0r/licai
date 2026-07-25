@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { fetchJSON } from '../hooks/useApi'
 
@@ -60,6 +60,18 @@ function IntradayLine({ intra, metric, unit }) {
   const finalPct = pct(projLast)
   const delta = projLast - prevFull
   const up = delta >= 0
+  // hover: 鼠标滑过取最近数据点 → 十字线 + 浮标
+  const [hi, setHi] = useState(null)
+  const svgRef = useRef(null)
+  const onMove = (e) => {
+    const el = svgRef.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    const frac = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width))
+    setHi(Math.max(0, Math.min(series.length - 1, Math.round(frac * (n - 1)))))
+  }
+  const hp = hi != null ? series[hi] : null
+  const hv = hp ? val(hp) : null
   return (
     <div>
       <div className="flex items-baseline gap-3 mb-1.5 text-[11px] flex-wrap">
@@ -78,12 +90,29 @@ function IntradayLine({ intra, metric, unit }) {
             </span>
           ))}
         </div>
-        <svg viewBox={`0 0 ${W} ${H}`} className="flex-1" style={{ height: H }} preserveAspectRatio="none">
-          {grid.map((g, k) => <line key={k} x1="0" y1={y(g)} x2={W} y2={y(g)} stroke="#ffffff" strokeOpacity={g === 0 ? 0 : 0.05} strokeWidth="0.6" strokeDasharray={g === 0 ? '' : '3 3'} />)}
-          <polygon points={area} fill="#e8913a1e" />
-          <line x1="0" y1={y0} x2={W} y2={y0} stroke="#5b8def" strokeWidth="1.2" />
-          <polyline points={line} fill="none" stroke="#e8913a" strokeWidth="1.6" />
-        </svg>
+        <div className="relative flex-1">
+          <svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: H }} preserveAspectRatio="none"
+            onMouseMove={onMove} onMouseLeave={() => setHi(null)}>
+            {grid.map((g, k) => <line key={k} x1="0" y1={y(g)} x2={W} y2={y(g)} stroke="#ffffff" strokeOpacity={g === 0 ? 0 : 0.05} strokeWidth="0.6" strokeDasharray={g === 0 ? '' : '3 3'} />)}
+            <polygon points={area} fill="#e8913a1e" />
+            <line x1="0" y1={y0} x2={W} y2={y0} stroke="#5b8def" strokeWidth="1.2" />
+            <polyline points={line} fill="none" stroke="#e8913a" strokeWidth="1.6" />
+            {hp && (
+              <>
+                <line x1={x(hi)} y1={padT} x2={x(hi)} y2={H - padB} stroke="#c8a876" strokeWidth="0.8" strokeDasharray="3 2" opacity="0.6" />
+                <circle cx={x(hi)} cy={y(pcts[hi])} r="2.8" fill="#e8913a" stroke="#1a1a1a" strokeWidth="0.8" />
+              </>
+            )}
+          </svg>
+          {hp && (
+            <div className="absolute top-0 pointer-events-none bg-surface-2 border border-border rounded px-1.5 py-1 text-[9.5px] leading-tight shadow-lg z-10"
+              style={{ left: `${(hi / (n - 1)) * 100}%`, transform: `translateX(${hi / (n - 1) > 0.7 ? '-105%' : '8px'})` }}>
+              <div className="text-text-muted font-mono">{hp.time}</div>
+              <div className="text-text-bright font-mono">{fmt(hv)}</div>
+              <div className={pct(hv) >= 0 ? 'text-bear' : 'text-bull'}>{pct(hv) >= 0 ? '+' : ''}{pct(hv).toFixed(2)}%</div>
+            </div>
+          )}
+        </div>
       </div>
       <div className="flex justify-between text-[8.5px] text-text-muted mt-0.5 pl-12">
         {marks.map((m, i) => <span key={i}>{m}</span>)}
