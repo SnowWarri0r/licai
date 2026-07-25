@@ -550,8 +550,11 @@ async def _get_historical_data_inner(stock_code: str, days: int = 60) -> pd.Data
     # 场内 ETF 跳过即时服务 SQLite 缓存: 历史上可能被新浪不复权数据污染过(断崖),
     # 宁可继续往下走前复权源(akshare qfq), 也不服务可能脏的缓存。
     if not need_fetch and not is_etf:
-        # SQLite cache is up-to-date, use it
+        # SQLite cache is up-to-date, use it —— 但必须够深: 缓存只攒了 260 根时,
+        # days=750 的续史请求不能被它截胡, 放行到下游源拉长再回写自愈
         rows = await get_cached_klines(stock_code, days)
+        if rows and len(rows) < days:
+            rows = None
         if rows:
             df = pd.DataFrame(rows)
             df.rename(columns={"date": "日期", "open": "开盘", "high": "最高", "low": "最低", "close": "收盘", "volume": "成交量"}, inplace=True)
