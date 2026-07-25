@@ -48,9 +48,15 @@ def seat_tag(name: str) -> str:
         return "机构"
     if "沪股通" in n or "深股通" in n:
         return "北向"
+    # 名号表: 双向包含——表键含"证券营业部"后缀变体或源名是缩写都能对上;
+    # 不能截前缀匹配(券商全称就 12 字, 会把该券商所有分支都误挂同一名号)
     for sub, nick in _load_seat_names().items():
-        if sub[:12] in n:
+        if sub in n or (len(n) >= 8 and n in sub):
             return nick
+    # 券商总部量化通道: 必须整名以"总部"结尾才算, 只按前缀匹配会误伤该券商全部分支营业部。
+    # 国泰君安 2025 吸收合并海通证券后改名"国泰海通", 新旧名都认。
+    if n.endswith("总部") and ("国泰海通" in n or "国泰君安" in n):
+        return "常见量化通道"
     for q in _QUANT_SEATS:
         if q[:10] in n:
             return "常见量化通道"
