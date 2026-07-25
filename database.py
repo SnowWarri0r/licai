@@ -165,6 +165,15 @@ CREATE TABLE IF NOT EXISTS sector_share_history (
     PRIMARY KEY (snap_date, board)
 );
 
+-- 市场量能逐日档案(沪/深/创业/科创 量+额): 东财可达时回填历史, 收盘后定格当日
+CREATE TABLE IF NOT EXISTS market_volume_history (
+    snap_date TEXT,                      -- YYYY-MM-DD
+    market TEXT,                         -- 沪/深/创业/科创
+    vol REAL,                            -- 成交量(股)
+    amt REAL,                            -- 成交额(元)
+    PRIMARY KEY (snap_date, market)
+);
+
 -- 市场情绪逐日档案(交易日收盘后定格, 情绪周期时间轴用)
 CREATE TABLE IF NOT EXISTS sentiment_history (
     snap_date TEXT PRIMARY KEY,          -- YYYY-MM-DD
@@ -1431,6 +1440,38 @@ async def get_sector_shares_on(snap_date: str) -> dict:
         cur = await db.execute(
             "SELECT board, share_pct FROM sector_share_history WHERE snap_date = ?", (snap_date,))
         return {r[0]: r[1] for r in await cur.fetchall()}
+    finally:
+        await db.close()
+
+
+async def save_market_volume_history(market: str, rows: list):
+    """rows: [(YYYY-MM-DD, vol股, amt元)], INSERT OR REPLACE 幂等回填。"""
+    if not rows:
+        return
+    db = await get_db()
+    try:
+        await db.executemany(
+            "INSERT OR REPLACE INTO market_volume_history (snap_date, market, vol, amt) VALUES (?, ?, ?, ?)",
+            [(d, market, v, a) for d, v, a in rows])
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def get_market_volume_history(markets: list, days: int = 20) -> dict:
+    """→ {market: [(date, amt元)]} 升序, 近 days 个档案日。"""
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT snap_date, market, amt FROM market_volume_history "
+            "WHERE market IN (%s) ORDER BY snap_date DESC LIMIT ?" % ",".join("?" * len(markets)),
+            (*markets, days * len(markets)))
+        out: dict = {m: [] for m in markets}
+        for d, m, a in await cur.fetchall():
+            out[m].append((d, a))
+        for m in out:
+            out[m].reverse()
+        return out
     finally:
         await db.close()
 
