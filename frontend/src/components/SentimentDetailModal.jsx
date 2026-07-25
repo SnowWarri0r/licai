@@ -34,79 +34,66 @@ function VolBars({ series, intraday, unit }) {
   )
 }
 
-// 当日分时累计曲线 + 昨日同期对照 + 昨日全天参照线。SVG 只画线, 文字走 HTML 免拉伸/裁切。
+// 预测量能(开盘啦式): 逐分钟"按当时节奏预测的全天量能", 画成相对昨日总量的 % 偏离曲线。
+// 橙线=预测量能, 蓝线(0轴)=昨日总量能; 早盘节奏快预测高, 随盘中修正收敛到收盘实际。
 function IntradayLine({ intra, metric, unit }) {
-  const points = intra?.points || []
-  if (points.length < 2) return null
-  const prev = intra?.prev_points || []
+  const series = intra?.proj_series || []
+  if (series.length < 2) return null
   const val = p => (metric === 'amt' ? p.amt : p.vol)
   const prevFull = intra?.prev_full && (metric === 'amt' ? intra.prev_full.amt : intra.prev_full.vol)
-  const proj = intra?.projected && (metric === 'amt' ? intra.projected.amt : intra.projected.vol)
-  const today = val(points[points.length - 1])
-  // y 轴上界取 今日/昨日/昨日全天/预测 的最大, 保证参照线与预测终点落在框内
-  const max = Math.max(today, ...points.map(val), ...prev.map(val), prevFull || 0, (proj && !intra?.projected?.final) ? proj : 0) * 1.06 || 1
-  const W = 560, H = 120, padB = 4, padT = 6
-  const n = Math.max(points.length, prev.length, 2)
+  const actual = intra?.actual && (metric === 'amt' ? intra.actual.amt : intra.actual.vol)
+  const projLast = val(series[series.length - 1])
+  if (!prevFull) return null
+  const fmt = v => (v >= 10000 ? `${(v / 10000).toFixed(2)}万亿` : `${Math.round(v)}${unit}`)
+  const pct = v => (v / prevFull - 1) * 100
+  const pcts = series.map(p => pct(val(p)))
+  const maxabs = Math.max(...pcts.map(Math.abs), 5) * 1.05
+  const W = 560, H = 150, padB = 4, padT = 4
+  const n = 48                                       // 全日 5 分钟档位数, x 轴锁 09:30-15:00
   const x = i => (i / (n - 1)) * W
-  const y = v => padT + (1 - v / max) * (H - padT - padB)
-  const path = arr => arr.map((p, i) => `${x(i).toFixed(1)},${y(val(p)).toFixed(1)}`).join(' ')
-  const todayLine = path(points)
-  const area = `0,${H - padB} ${todayLine} ${x(points.length - 1)},${H - padB}`
-  const fmt = v => (v >= 10000 ? `${(v / 10000).toFixed(2)}万亿` : `${v}${unit}`)
+  const y = pv => padT + (1 - (pv + maxabs) / (2 * maxabs)) * (H - padT - padB)
+  const line = series.map((p, i) => `${x(i).toFixed(1)},${y(pcts[i]).toFixed(1)}`).join(' ')
+  const y0 = y(0)
+  const area = `${x(0)},${y0} ${line} ${x(series.length - 1)},${y0}`
   const marks = ['09:30', '10:30', '11:30/13:00', '14:00', '15:00']
+  const grid = [maxabs, maxabs / 2, 0, -maxabs / 2, -maxabs]
+  const finalPct = pct(projLast)
+  const delta = projLast - prevFull
+  const up = delta >= 0
   return (
     <div>
-      <div className="flex items-baseline gap-3 mb-1 text-[10.5px] flex-wrap">
-        <span className="text-text-muted">今日累计 <b className="text-accent font-mono">{fmt(today)}</b></span>
-        {prevFull != null && <span className="text-text-muted">昨日全天 <b className="text-text-dim font-mono">{fmt(prevFull)}</b></span>}
-        {proj != null && !intra.projected.final && (
-          <span className="text-text-muted">
-            预计全天 <b className="text-bear-bright font-mono">~{fmt(proj)}</b>
-            {prevFull != null && <span className={proj >= prevFull ? 'text-bear ml-1' : 'text-bull ml-1'}>{proj >= prevFull ? '↑' : '↓'}较昨日{Math.abs(Math.round((proj / prevFull - 1) * 100))}%</span>}
-            {intra.projected.basis && <span className="text-text-dim ml-1">({intra.projected.basis})</span>}
-          </span>
-        )}
+      <div className="flex items-baseline gap-3 mb-1.5 text-[11px] flex-wrap">
+        <span className="text-text-muted">{intra.market}·实际量能 <b className="text-text-bright font-mono">{fmt(actual)}</b></span>
+        <span className="text-text-muted">
+          {intra.projected?.final ? '今日量能' : '预测量能'} <b className={`font-mono ${up ? 'text-bear-bright' : 'text-bull-bright'}`}>{fmt(projLast)}</b>
+          <span className={up ? 'text-bear ml-1' : 'text-bull ml-1'}>({finalPct >= 0 ? '+' : ''}{finalPct.toFixed(2)}%, {up ? '放量' : '缩量'}{fmt(Math.abs(delta))})</span>
+        </span>
       </div>
       <div className="flex">
-        {/* Y 轴刻度(HTML, 免 SVG 拉伸): 4 档, 顶=上界 */}
-        <div className="relative shrink-0 w-9 mr-1" style={{ height: 120 }}>
-          {[0, 1, 2, 3].map(k => {
-            const gv = max * (1 - k / 3)
-            return (
-              <span key={k} className="absolute right-0 text-[8px] text-text-muted font-mono leading-none"
-                style={{ top: `${(k / 3) * 100}%`, transform: 'translateY(-2px)' }}>
-                {gv >= 10000 ? (gv / 10000).toFixed(1) + '万亿' : Math.round(gv)}
-              </span>
-            )
-          })}
+        <div className="relative shrink-0 w-11 mr-1" style={{ height: H }}>
+          {grid.map((g, k) => (
+            <span key={k} className={`absolute right-0 text-[8px] font-mono leading-none ${g > 0 ? 'text-bear' : g < 0 ? 'text-bull' : 'text-text-muted'}`}
+              style={{ top: `${(k / (grid.length - 1)) * 100}%`, transform: 'translateY(-2px)' }}>
+              {g >= 0 ? '+' : ''}{g.toFixed(2)}%
+            </span>
+          ))}
         </div>
-        <svg viewBox={`0 0 ${W} ${H}`} className="flex-1" style={{ height: 120 }} preserveAspectRatio="none">
-          {/* Y 网格线 */}
-          {[0, 1, 2, 3].map(k => <line key={k} x1="0" y1={padT + (k / 3) * (H - padT - padB)} x2={W} y2={padT + (k / 3) * (H - padT - padB)} stroke="#ffffff" strokeOpacity="0.05" strokeWidth="0.6" />)}
-          <polygon points={area} fill="#c8a87620" />
-          {prevFull != null && <line x1="0" y1={y(prevFull)} x2={W} y2={y(prevFull)} stroke="#8a8f99" strokeWidth="0.9" strokeDasharray="5 3" />}
-          {prev.length > 1 && <polyline points={path(prev)} fill="none" stroke="#8a8f99" strokeWidth="1" strokeDasharray="3 3" opacity="0.7" />}
-          <polyline points={todayLine} fill="none" stroke="#c8a876" strokeWidth="1.6" />
-          {/* 盘中预测: 从今日末点虚线延伸到 15:00 的预测终点 */}
-          {proj != null && !intra.projected.final && (
-            <>
-              <line x1={x(points.length - 1)} y1={y(today)} x2={x(n - 1)} y2={y(proj)}
-                stroke="#cf5c5c" strokeWidth="1.4" strokeDasharray="4 3" />
-              <circle cx={x(n - 1)} cy={y(proj)} r="2.4" fill="#cf5c5c" />
-            </>
-          )}
+        <svg viewBox={`0 0 ${W} ${H}`} className="flex-1" style={{ height: H }} preserveAspectRatio="none">
+          {grid.map((g, k) => <line key={k} x1="0" y1={y(g)} x2={W} y2={y(g)} stroke="#ffffff" strokeOpacity={g === 0 ? 0 : 0.05} strokeWidth="0.6" strokeDasharray={g === 0 ? '' : '3 3'} />)}
+          <polygon points={area} fill="#e8913a1e" />
+          <line x1="0" y1={y0} x2={W} y2={y0} stroke="#5b8def" strokeWidth="1.2" />
+          <polyline points={line} fill="none" stroke="#e8913a" strokeWidth="1.6" />
         </svg>
       </div>
-      <div className="flex justify-between text-[8.5px] text-text-muted mt-0.5 pl-10">
+      <div className="flex justify-between text-[8.5px] text-text-muted mt-0.5 pl-12">
         {marks.map((m, i) => <span key={i}>{m}</span>)}
       </div>
-      <div className="flex items-center gap-3 text-[9px] text-text-muted mt-1 pl-10 flex-wrap">
-        <span><span style={{ color: '#c8a876' }}>—</span> 今日累计</span>
-        <span><span style={{ color: '#8a8f99' }}>--</span> 昨日同期</span>
-        <span><span style={{ color: '#8a8f99' }}>┈</span> 昨日全天 {prevFull != null ? fmt(prevFull) : ''}</span>
-        {proj != null && !intra.projected.final && <span><span style={{ color: '#cf5c5c' }}>--</span> 预测全天</span>}
-        <span className="text-text-dim">纵轴={unit}</span>
+      <div className="flex items-center gap-3 text-[9px] text-text-muted mt-1 pl-12 flex-wrap">
+        <span><span style={{ color: '#e8913a' }}>—</span> 预测量能(按当时节奏外推全天)</span>
+        <span><span style={{ color: '#5b8def' }}>—</span> 昨日总量能 {fmt(prevFull)}</span>
+        <span className="text-text-dim">纵轴=较昨日%</span>
       </div>
+      <div className="text-[9px] text-text-dim mt-0.5 pl-12">早盘节奏快→预测偏高, 随盘中修正收敛, 收盘=实际; 近5日平均节奏, 粗估参考。</div>
     </div>
   )
 }
