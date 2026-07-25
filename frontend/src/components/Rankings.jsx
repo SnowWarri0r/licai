@@ -240,7 +240,7 @@ export default function Rankings() {
   }, [])
 
   const rawList = tab === 'inst' ? ((inst && inst[instSide]) || []).map(r => ({ ...r, pct: r['距最近上榜%'] }))
-    : tab === 'changes' ? ((changes?.rows) || []).filter(r => chKind === '全部' || r['类型'] === chKind).map((r, i) => ({ ...r, _k: `${r.code}-${r.时间}-${i}` }))
+    : tab === 'changes' ? ((changes?.rows) || []).filter(r => chKind === '全部' || r['类型'] === chKind).slice(0, 120).map((r, i) => ({ ...r, _k: `${r.code}-${r.时间}-${i}` }))
     : tab === 'watch' ? ((watch?.rows) || [])
     : tab === 'lhb' ? ((lhbDaily?.rows) || []).map(r => ({ ...r, pct: r['涨跌幅'], _lhbDate: lhbDaily.date }))
     : tab === 'earnings' ? (
@@ -397,6 +397,7 @@ export default function Rankings() {
               {tab === 'structure' ? '今天龙头池里没有满足条件的蓄势/强势结构（大波动市里稀缺属正常）'
                 : tab === 'lhb' ? (lhbDaily?.note || '近10天无龙虎榜披露数据')
                 : tab === 'watch' ? '自选池为空——在任意榜单点开股票, 右上角 ☆ 加入跟踪(会记下当时价格, 之后看"自选以来"涨跌)'
+                : tab === 'changes' ? `当前筛选下暂无异动事件${board !== '全部' ? `(${board})` : ''}——每类只保留当天最新60条, 少数派事件可能已滚出窗口`
                 : `榜单 top100 里暂无${board}标的`}
             </div>
           )}
