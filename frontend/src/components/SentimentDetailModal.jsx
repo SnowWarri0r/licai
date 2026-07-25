@@ -43,8 +43,8 @@ function IntradayLine({ intra, metric, unit }) {
   const prevFull = intra?.prev_full && (metric === 'amt' ? intra.prev_full.amt : intra.prev_full.vol)
   const proj = intra?.projected && (metric === 'amt' ? intra.projected.amt : intra.projected.vol)
   const today = val(points[points.length - 1])
-  // y 轴上界取 今日/昨日/昨日全天 的最大, 保证参照线落在框内
-  const max = Math.max(today, ...points.map(val), ...prev.map(val), prevFull || 0) * 1.06 || 1
+  // y 轴上界取 今日/昨日/昨日全天/预测 的最大, 保证参照线与预测终点落在框内
+  const max = Math.max(today, ...points.map(val), ...prev.map(val), prevFull || 0, (proj && !intra?.projected?.final) ? proj : 0) * 1.06 || 1
   const W = 560, H = 120, padB = 4, padT = 6
   const n = Math.max(points.length, prev.length, 2)
   const x = i => (i / (n - 1)) * W
@@ -59,24 +59,53 @@ function IntradayLine({ intra, metric, unit }) {
       <div className="flex items-baseline gap-3 mb-1 text-[10.5px] flex-wrap">
         <span className="text-text-muted">今日累计 <b className="text-accent font-mono">{fmt(today)}</b></span>
         {prevFull != null && <span className="text-text-muted">昨日全天 <b className="text-text-dim font-mono">{fmt(prevFull)}</b></span>}
-        {proj != null && (
+        {proj != null && !intra.projected.final && (
           <span className="text-text-muted">
-            {intra.projected.final ? '收盘' : '预测全天'} <b className="text-bear-bright font-mono">{intra.projected.final ? fmt(today) : `~${fmt(proj)}`}</b>
-            {!intra.projected.final && prevFull != null && <span className={proj >= prevFull ? 'text-bear ml-1' : 'text-bull ml-1'}>{proj >= prevFull ? '↑' : '↓'}较昨日{Math.abs(Math.round((proj / prevFull - 1) * 100))}%</span>}
+            预计全天 <b className="text-bear-bright font-mono">~{fmt(proj)}</b>
+            {prevFull != null && <span className={proj >= prevFull ? 'text-bear ml-1' : 'text-bull ml-1'}>{proj >= prevFull ? '↑' : '↓'}较昨日{Math.abs(Math.round((proj / prevFull - 1) * 100))}%</span>}
+            {intra.projected.basis && <span className="text-text-dim ml-1">({intra.projected.basis})</span>}
           </span>
         )}
       </div>
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 120 }} preserveAspectRatio="none">
-        <polygon points={area} fill="#c8a87620" />
-        {prevFull != null && <line x1="0" y1={y(prevFull)} x2={W} y2={y(prevFull)} stroke="#8a8f99" strokeWidth="0.8" strokeDasharray="4 3" />}
-        {prev.length > 1 && <polyline points={path(prev)} fill="none" stroke="#8a8f99" strokeWidth="1" strokeDasharray="3 3" opacity="0.7" />}
-        <polyline points={todayLine} fill="none" stroke="#c8a876" strokeWidth="1.6" />
-      </svg>
-      <div className="flex justify-between text-[8.5px] text-text-muted mt-0.5">
+      <div className="flex">
+        {/* Y 轴刻度(HTML, 免 SVG 拉伸): 4 档, 顶=上界 */}
+        <div className="relative shrink-0 w-9 mr-1" style={{ height: 120 }}>
+          {[0, 1, 2, 3].map(k => {
+            const gv = max * (1 - k / 3)
+            return (
+              <span key={k} className="absolute right-0 text-[8px] text-text-muted font-mono leading-none"
+                style={{ top: `${(k / 3) * 100}%`, transform: 'translateY(-2px)' }}>
+                {gv >= 10000 ? (gv / 10000).toFixed(1) + '万亿' : Math.round(gv)}
+              </span>
+            )
+          })}
+        </div>
+        <svg viewBox={`0 0 ${W} ${H}`} className="flex-1" style={{ height: 120 }} preserveAspectRatio="none">
+          {/* Y 网格线 */}
+          {[0, 1, 2, 3].map(k => <line key={k} x1="0" y1={padT + (k / 3) * (H - padT - padB)} x2={W} y2={padT + (k / 3) * (H - padT - padB)} stroke="#ffffff" strokeOpacity="0.05" strokeWidth="0.6" />)}
+          <polygon points={area} fill="#c8a87620" />
+          {prevFull != null && <line x1="0" y1={y(prevFull)} x2={W} y2={y(prevFull)} stroke="#8a8f99" strokeWidth="0.9" strokeDasharray="5 3" />}
+          {prev.length > 1 && <polyline points={path(prev)} fill="none" stroke="#8a8f99" strokeWidth="1" strokeDasharray="3 3" opacity="0.7" />}
+          <polyline points={todayLine} fill="none" stroke="#c8a876" strokeWidth="1.6" />
+          {/* 盘中预测: 从今日末点虚线延伸到 15:00 的预测终点 */}
+          {proj != null && !intra.projected.final && (
+            <>
+              <line x1={x(points.length - 1)} y1={y(today)} x2={x(n - 1)} y2={y(proj)}
+                stroke="#cf5c5c" strokeWidth="1.4" strokeDasharray="4 3" />
+              <circle cx={x(n - 1)} cy={y(proj)} r="2.4" fill="#cf5c5c" />
+            </>
+          )}
+        </svg>
+      </div>
+      <div className="flex justify-between text-[8.5px] text-text-muted mt-0.5 pl-10">
         {marks.map((m, i) => <span key={i}>{m}</span>)}
       </div>
-      <div className="text-[9px] text-text-muted mt-1">
-        金线=今日累计 · 灰虚线=昨日同期 · 横虚线=昨日全天{proj != null && !intra.projected.final ? ' · 预测=今日已走量按昨日同期节奏外推全天' : ''}
+      <div className="flex items-center gap-3 text-[9px] text-text-muted mt-1 pl-10 flex-wrap">
+        <span><span style={{ color: '#c8a876' }}>—</span> 今日累计</span>
+        <span><span style={{ color: '#8a8f99' }}>--</span> 昨日同期</span>
+        <span><span style={{ color: '#8a8f99' }}>┈</span> 昨日全天 {prevFull != null ? fmt(prevFull) : ''}</span>
+        {proj != null && !intra.projected.final && <span><span style={{ color: '#cf5c5c' }}>--</span> 预测全天</span>}
+        <span className="text-text-dim">纵轴={unit}</span>
       </div>
     </div>
   )
