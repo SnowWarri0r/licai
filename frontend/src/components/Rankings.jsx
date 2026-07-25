@@ -5,6 +5,7 @@ import StockAskModal from './StockAskModal'
 
 const TABS = [
   { key: 'watch', label: '自选' },
+  { key: 'changes', label: '异动' },
   { key: 'gainers', label: '涨幅' },
   { key: 'by_amount', label: '成交额' },
   { key: 'lhb', label: '龙虎榜' },
@@ -57,9 +58,11 @@ function StockPanel({ stock, watched, onToggleWatch }) {
       <div className="flex items-baseline gap-2 px-4 py-2 border-b border-border-subtle shrink-0">
         <span className="text-[14px] font-semibold text-text-bright">{stock.name}</span>
         <span className="text-[11px] font-mono text-text-muted">{stock.code}</span>
-        <span className={`text-[13px] font-mono font-semibold ${pctColor(stock.pct)}`}>
-          {stock.pct >= 0 ? '+' : ''}{stock.pct}%
-        </span>
+        {stock.pct != null && (
+          <span className={`text-[13px] font-mono font-semibold ${pctColor(stock.pct)}`}>
+            {stock.pct >= 0 ? '+' : ''}{stock.pct}%
+          </span>
+        )}
         {stock['行业'] && <span className="text-[10.5px] text-text-dim ml-1">{stock['行业']}</span>}
         <button onClick={() => onToggleWatch(stock)} title={watched ? '移出自选' : '加入自选(记录当前价, 之后看自选以来涨跌)'}
           className={`ml-auto text-[15px] leading-none px-1.5 py-0.5 rounded cursor-pointer ${watched ? 'text-accent' : 'text-text-dim hover:text-accent'}`}>
@@ -113,6 +116,8 @@ export default function Rankings() {
   const [lhbDaily, setLhbDaily] = useState(null)         // 最新披露日龙虎榜全榜单
   const [watch, setWatch] = useState(null)               // 自选池(全量视图)
   const [watchSet, setWatchSet] = useState(new Set())    // 自选代码集(☆按钮状态)
+  const [changes, setChanges] = useState(null)           // 盘口异动事件流
+  const [chGroup, setChGroup] = useState('全部')          // 异动组: 全部/拉升/跳水/竞价
   const [sq, setSq] = useState('')                       // 自由查股输入
   const [sqCands, setSqCands] = useState([])             // 搜索候选
   const sqTimer = useRef(null)
@@ -143,6 +148,8 @@ export default function Rankings() {
       ? fetchJSON('/api/market/lhb-daily').then(d => { if (d.error) setErr(true); else setLhbDaily(d) })
       : tab === 'watch'
       ? fetchJSON('/api/market/watchlist').then(d => { if (d.error) setErr(true); else setWatch(d) })
+      : tab === 'changes'
+      ? fetchJSON(`/api/market/changes?group=${encodeURIComponent(chGroup)}`).then(d => { if (d.error) setErr(true); else setChanges(d) })
       : fetchJSON('/api/market/rankings?limit=100').then(d => { if (d.error) setErr(true); else setData(d) })
     req.catch(() => setErr(true)).finally(() => setLoading(false))
   }
@@ -189,6 +196,16 @@ export default function Rankings() {
   }, [selected])
   // 切到结构/机构/业绩 tab 时懒加载(服务端有缓存, 之后秒回)
   useEffect(() => { if ((tab === 'structure' && !structure) || (tab === 'inst' && !inst) || (tab === 'earnings' && !earnings) || (tab === 'lhb' && !lhbDaily) || (tab === 'watch' && !watch)) load() }, [tab])   // eslint-disable-line react-hooks/exhaustive-deps
+  // 异动页: 进页签/换组立即拉 + 60s 静默轮询(服务端45s缓存, 盘中事件流持续滚动, 不闪加载态)
+  useEffect(() => {
+    if (tab !== 'changes') return
+    let alive = true
+    const pull = () => fetchJSON(`/api/market/changes?group=${encodeURIComponent(chGroup)}`)
+      .then(d => { if (alive && !d.error) setChanges(d) }).catch(() => {})
+    pull()
+    const t = setInterval(pull, 60000)
+    return () => { alive = false; clearInterval(t) }
+  }, [tab, chGroup])
 
   // ↑↓ 翻K线, ←→ 切行业分类(结构页); 输入框聚焦时不劫持
   useEffect(() => {
@@ -222,6 +239,7 @@ export default function Rankings() {
   }, [])
 
   const rawList = tab === 'inst' ? ((inst && inst[instSide]) || []).map(r => ({ ...r, pct: r['距最近上榜%'] }))
+    : tab === 'changes' ? ((changes?.rows) || []).map((r, i) => ({ ...r, _k: `${r.code}-${r.时间}-${i}` }))
     : tab === 'watch' ? ((watch?.rows) || [])
     : tab === 'lhb' ? ((lhbDaily?.rows) || []).map(r => ({ ...r, pct: r['涨跌幅'], _lhbDate: lhbDaily.date }))
     : tab === 'earnings' ? (
@@ -293,6 +311,17 @@ export default function Rankings() {
               {['全部', '强势', '蓄势'].map(k => (
                 <button key={k} onClick={() => setPhaseFilter(k)}
                   className={`text-[11px] px-2 py-0.5 rounded ${phaseFilter === k ? 'bg-accent/15 text-accent' : 'text-text-dim hover:text-text'}`}>
+                  {k}
+                </button>
+              ))}
+              <span className="text-text-muted mx-0.5">·</span>
+            </>
+          )}
+          {tab === 'changes' && (
+            <>
+              {['全部', '拉升', '跳水', '竞价'].map(k => (
+                <button key={k} onClick={() => setChGroup(k)}
+                  className={`text-[11px] px-2 py-0.5 rounded ${chGroup === k ? 'bg-accent/15 text-accent' : 'text-text-dim hover:text-text'}`}>
                   {k}
                 </button>
               ))}
@@ -371,7 +400,7 @@ export default function Rankings() {
             }
             const active = selected?.code === r.code
             return (
-              <button key={r.code} data-row={r.code} onClick={() => setSelected(r)} title={r['AI理由'] || r['上榜原因'] || undefined}
+              <button key={r._k || r.code} data-row={r.code} onClick={() => setSelected(r)} title={r['AI理由'] || r['上榜原因'] || undefined}
                 className={`w-full flex items-center gap-2 px-3 py-1.5 text-left border-b border-border-subtle/60 ${active ? 'bg-accent/15' : 'hover:bg-surface-3/60'}`}>
                 <span className="text-[10px] font-mono text-text-muted w-5 shrink-0 text-right">{r._idx ?? i + 1}</span>
                 <span className="min-w-0 flex-1">
@@ -380,14 +409,19 @@ export default function Rankings() {
                     {tab === 'structure' && r.phase && (
                       <span className={`text-[8.5px] px-1 rounded shrink-0 ${r.phase === '强势' ? 'bg-bear/15 text-bear-bright' : 'bg-accent/15 text-accent'}`}>{r.phase}</span>
                     )}
+                    {tab === 'changes' && (
+                      <span className={`text-[8.5px] px-1 rounded shrink-0 ${r.up ? 'bg-bear/15 text-bear-bright' : 'bg-bull/15 text-bull-bright'}`}>{r['类型']}</span>
+                    )}
                     {r.is_new && <span className="text-[8.5px] px-1 rounded bg-accent/15 text-accent shrink-0" title="上市前5日无涨跌幅限制">新</span>}
                     {r.is_st && <span className="text-[8.5px] px-1 rounded bg-bear/15 text-bear-bright shrink-0">ST</span>}
                   </span>
-                  <span className={`text-[10px] text-text-muted font-mono ${tab === 'lhb' ? 'block truncate' : ''}`}>
+                  <span className={`text-[10px] text-text-muted font-mono ${tab === 'lhb' || tab === 'changes' ? 'block truncate' : ''}`}>
                     {boardOf(r.code)} · {r.code} · {tab === 'inst'
                       ? `净买 ${r['机构净买亿']}亿 · 上榜${r['上榜次数']}次`
                       : tab === 'lhb'
                       ? (r['解读'] || r['上榜原因'] || '—')
+                      : tab === 'changes'
+                      ? (r['描述'] || '—')
                       : (r['行业'] || '—')}
                     {tab === 'watch' && r['业绩预告'] && (
                       <span className="ml-1 px-1 rounded bg-accent/15 text-accent text-[9px] whitespace-nowrap">{r['业绩预告']}</span>
@@ -408,7 +442,9 @@ export default function Rankings() {
                   )}
                 </span>
                 <span className="text-right shrink-0">
-                  <span className={`block text-[12.5px] font-mono font-semibold ${pctColor(r.pct)}`}>{r.pct >= 0 ? '+' : ''}{r.pct}%</span>
+                  {tab === 'changes'
+                    ? <span className="block text-[11.5px] font-mono text-text-dim">{r['时间']}</span>
+                    : <span className={`block text-[12.5px] font-mono font-semibold ${pctColor(r.pct)}`}>{r.pct >= 0 ? '+' : ''}{r.pct}%</span>}
                   <span className="block text-[10px] text-text-muted font-mono">
                     {tab === 'structure'
                       ? (r.phase === '强势'
@@ -416,6 +452,8 @@ export default function Rankings() {
                           : `${r['AI置信'] != null ? `AI${r['AI置信']}·` : ''}横盘${r['横盘日']}日`)
                       : tab === 'inst'
                       ? `${(r['最近上榜'] || '').slice(5)}上榜·至今`
+                      : tab === 'changes'
+                      ? ''
                       : tab === 'lhb'
                       ? `净买 ${r['净买额亿'] >= 0 ? '+' : ''}${r['净买额亿']}亿`
                       : tab === 'watch'
@@ -434,6 +472,11 @@ export default function Rankings() {
 
         </div>
 
+        {tab === 'changes' && (changes?.rows || []).length > 0 && (
+          <div className="shrink-0 px-3 py-1.5 border-t border-border-subtle text-[9.5px] text-text-muted leading-relaxed">
+            市场脉搏(近30分钟): <span className="text-bear">拉升类 {changes?.pulse?.['近30分钟拉升类']}</span> vs <span className="text-bull">跳水类 {changes?.pulse?.['近30分钟跳水类']}</span> · 交易所盘口异动(东财), 盘中60s自动刷新, 收盘后为当日全程 · 竞价类=9:15-9:25集合竞价产物 · 纯客观事件, 非买卖建议
+          </div>
+        )}
         {tab === 'watch' && !loading && (watch?.rows || []).length > 0 && (
           <div className="shrink-0 px-3 py-1.5 border-t border-border-subtle text-[9.5px] text-text-muted leading-relaxed">
             自选=纯跟踪清单（在看但未必持有），副行是当下K线结构形态与业绩预告 · 选中后点右上 ★ 移出 · 纯客观结构描述，非买卖建议
