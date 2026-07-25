@@ -4,6 +4,19 @@ const BASE = ''
 // 立即重拉, 免得各自的轮询周期造成"改完了顶条还是旧数"的观感。
 export const MUTATED_EVENT = 'licai:data-mutated'
 
+// GET 预取缓存: 同 URL 短 TTL 内复用同一个 promise——榜单预取光标附近个股的K线,
+// 方向键翻股时 ProKline 直接命中, 不再等网络。失败的请求立即出缓存, 下次可重试。
+const _prefetched = new Map()
+const PREFETCH_TTL = 60_000
+export function prefetchJSON(path) {
+  const hit = _prefetched.get(path)
+  if (hit && Date.now() - hit.t < PREFETCH_TTL) return hit.p
+  const p = fetchJSON(path)
+  p.catch(() => { _prefetched.delete(path) })
+  _prefetched.set(path, { t: Date.now(), p })
+  return p
+}
+
 export async function fetchJSON(path, options) {
   const res = await fetch(`${BASE}${path}`, {
     headers: { 'Content-Type': 'application/json' },
