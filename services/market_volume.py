@@ -54,7 +54,7 @@ def _tx_daily_sync(sym: str, n: int = 16) -> list:
     return out
 
 
-def _sina_5min_sync(sym: str, datalen: int = 100) -> dict:
+def _sina_5min_sync(sym: str, datalen: int = 260) -> dict:
     """新浪 5 分钟线(带成交额, 跨多日) → {YYYY-MM-DD: [(HH:MM, 累计量股, 累计额元)]}。
     每档 amount(元)/volume(股)累加成当日累计。用于今日分时 + 昨日同期对照 + 预测。"""
     j = _get(f"https://quotes.sina.cn/cn/api/openapi.php/CN_MarketDataService.getKLineData"
@@ -175,7 +175,8 @@ async def market_volume_intraday(market: str = "两市") -> dict:
     if not days:
         return {"market": market, "points": [], "note": "分时数据暂不可达"}
     today = by_day[days[-1]]
-    prev = by_day[days[-2]] if len(days) >= 2 else []
+    hist = [by_day[d] for d in days[:-1]]           # 今日之前的历史日(用于平均节奏)
+    prev = hist[-1] if hist else []                 # 昨日(对照曲线)
 
     def pts_of(series):
         return [{"time": t, "vol": round(v / 1e8, 1), "amt": round(a / 1e8)} for t, v, a in series]
@@ -184,28 +185,38 @@ async def market_volume_intraday(market: str = "两市") -> dict:
     prev_points = pts_of(prev)
     prev_full = ({"vol": round(prev[-1][1] / 1e8, 1), "amt": round(prev[-1][2] / 1e8)} if prev else None)
 
-    # 开盘啦式全天预测: 用昨日"同一时刻累计占全天比例"把今日已走的量外推到收盘
+    # 全天预测(近5日平均日内完成度): proj = 今日到此刻累计 ÷ 近5日"这个时刻平均已完成全天的比例"。
+    # 平滑掉单日异常, 不锚死昨日一天。收盘(≥14:57)则预测=实际。
     projected = None
-    if prev and today:
+    recent = hist[-5:]
+    if recent and today:
         now_t = today[-1][0]
         now_v, now_a = today[-1][1], today[-1][2]
-        # 昨日 <= 现在时刻 的最后一档累计(同期)
-        pv = pa = 0.0
-        for t, v, a in prev:
-            if t <= now_t:
-                pv, pa = v, a
-        pf_v, pf_a = prev[-1][1], prev[-1][2]
-        # 收盘(≥14:57)或昨日同期已接近全天, 就不外推(预测=实际)
+
+        def avg_frac(idx):   # idx: 1=vol 2=amt
+            fr = []
+            for day in recent:
+                cum_now = 0.0
+                for row in day:
+                    if row[0] <= now_t:
+                        cum_now = row[idx]
+                full = day[-1][idx]
+                if full > 0:
+                    fr.append(cum_now / full)
+            return sum(fr) / len(fr) if fr else None
+
         near_close = now_t >= "14:57"
-        proj_a = now_a if near_close else (now_a * pf_a / pa if pa > 0 else None)
-        proj_v = now_v if near_close else (now_v * pf_v / pv if pv > 0 else None)
+        fa, fv = avg_frac(2), avg_frac(1)
+        proj_a = now_a if near_close else (now_a / fa if fa and fa > 0 else None)
+        proj_v = now_v if near_close else (now_v / fv if fv and fv > 0 else None)
         if proj_a:
             projected = {"vol": round(proj_v / 1e8, 1) if proj_v else None,
-                         "amt": round(proj_a / 1e8), "final": near_close}
+                         "amt": round(proj_a / 1e8), "final": near_close,
+                         "basis": f"近{len(recent)}日平均节奏"}
 
     out = {"market": market, "points": points, "prev_points": prev_points,
            "prev_full": prev_full, "projected": projected,
-           "note": "当日累计成交额/量分时(新浪5分钟) + 昨日同期对照 + 按昨日节奏预测全天。"}
+           "note": "当日累计成交额/量分时(新浪5分钟) + 昨日同期对照 + 近5日平均节奏预测全天。"}
     if points:
         _intraday_cache[market] = (out, time.time())
     return out
