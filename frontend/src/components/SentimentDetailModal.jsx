@@ -40,9 +40,22 @@ export default function SentimentDetailModal({ summary, volume, onClose }) {
   const [mkt, setMkt] = useState('两市')      // 量能市场: 两市/沪/深/创业/科创
   const [metric, setMetric] = useState('amt') // 量能口径: amt=成交额(亿元) | vol=成交量(亿股)
   const [loading, setLoading] = useState(true)
+  const [vol, setVol] = useState(null)       // 独立量能接口(实时读数+近14日), 不吃 sentiment 5min 缓存
 
   useEffect(() => {
     fetchJSON('/api/market/sentiment-detail').then(setD).catch(() => {}).finally(() => setLoading(false))
+  }, [])
+
+  // 量能: 打开即拉独立端点; 盘中(markets_intraday)每 60s 刷新当前实时量额
+  useEffect(() => {
+    let alive = true, timer = null
+    const pull = () => fetchJSON('/api/market/volume').then(r => {
+      if (!alive || !r) return
+      setVol(r)
+      if (r.intraday) timer = setTimeout(pull, 60000)
+    }).catch(() => {})
+    pull()
+    return () => { alive = false; if (timer) clearTimeout(timer) }
   }, [])
 
   // 打开时锁住底下页面滚动 + Esc 关闭
@@ -54,7 +67,7 @@ export default function SentimentDetailModal({ summary, volume, onClose }) {
     return () => { document.body.style.overflow = prev; window.removeEventListener('keydown', onKey) }
   }, [onClose])
 
-  const v = volume || {}
+  const v = { ...(volume || {}), ...(vol || {}) }   // 独立端点覆盖 sentiment 内嵌口径
   const zt = d?.zt || []
   // 连板梯队: 按连板数分组(>=2), 降序
   const byLb = {}
@@ -119,6 +132,9 @@ export default function SentimentDetailModal({ summary, volume, onClose }) {
           const trend = (mks[mkt] || mks['两市'] || {}).trend || []
           const series = trend.map(t => ({ date: t.date, v: metric === 'amt' ? t.amt : t.vol })).filter(t => t.v != null)
           const unit = metric === 'amt' ? '亿元' : '亿股'
+          const rt = (v.realtime || {})[mkt]
+          const rtVal = rt && (metric === 'amt' ? rt.amt : rt.vol)
+          const live = v.intraday   // 盘中实时 / 收盘后为当日定格
           return (
             <div className="mb-4 px-3 py-3 rounded-lg bg-surface-3/50 border border-border-subtle">
               <div className="flex items-center gap-1 mb-2 flex-wrap">
@@ -131,14 +147,24 @@ export default function SentimentDetailModal({ summary, volume, onClose }) {
                   <button key={k} onClick={() => setMetric(k)}
                     className={`text-[10.5px] px-1.5 py-0.5 rounded ${metric === k ? 'bg-accent/15 text-accent' : 'text-text-dim hover:text-text'}`}>{lb}</button>
                 ))}
-                <span className="text-[10px] text-text-muted ml-auto">
-                  近14日{mkt}{metric === 'amt' ? '成交额(亿元)' : '成交量(亿股)'} · 较前一日放量红/缩量绿{v.markets_intraday ? ' · 末根今日盘中' : ''}
-                </span>
+              </div>
+              {/* 当前实时读数(盘中随分钟刷新, 收盘后为定格) */}
+              {rtVal != null && (
+                <div className="flex items-baseline gap-2 mb-2">
+                  <span className="text-[17px] font-mono font-semibold text-text-bright">{rtVal >= 10000 ? `${(rtVal / 10000).toFixed(2)}万亿` : `${rtVal}${unit === '亿元' ? '亿元' : '亿股'}`}</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded ${live ? 'bg-bear/15 text-bear-bright' : 'bg-surface-2 text-text-dim'}`}>{live ? '盘中实时' : '今日收盘'}</span>
+                  <span className="text-[10.5px] text-text-muted">{mkt}{metric === 'amt' ? '成交额' : '成交量'}</span>
+                </div>
+              )}
+              <div className="text-[10px] text-text-muted mb-1.5">
+                近14日{metric === 'amt' ? '成交额(亿元)' : '成交量(亿股)'} · 较前一日放量红/缩量绿{live ? ' · 末根今日盘中' : ''}
               </div>
               {series.length > 1
-                ? <VolBars series={series} intraday={v.markets_intraday} unit={unit} />
-                : <div className="text-[11px] text-text-dim py-4 text-center">
-                    成交额历史档案积累中(每个收盘日自动定格一格, 数据源恢复时一次回填两周)——先切「成交量」看, 量的序列是全的
+                ? <VolBars series={series} intraday={live} unit={unit} />
+                : <div className="text-[11px] text-text-dim py-3 text-center">
+                    {metric === 'amt'
+                      ? '成交额历史档案在逐日累积(每个收盘日自动定格一格)——当前值见上方实时读数; 成交量的14日序列是全的, 可切过去看'
+                      : '暂无足够历史'}
                   </div>}
             </div>
           )
