@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import statistics
 import time
 from datetime import datetime, timezone, timedelta
 
@@ -188,38 +189,33 @@ async def market_volume_intraday(market: str = "两市") -> dict:
     prev_points = pts_of(prev)
     prev_full = ({"vol": round(prev[-1][1] / 1e8, 1), "amt": round(prev[-1][2] / 1e8)} if prev else None)
 
-    # 预测量能序列(开盘啦式): 每个时刻按"近5日该时点平均完成度"把今日已走量外推成全天预测。
-    # proj_series[i] = 今日累计(t_i) ÷ 近5日 mean(cum_d(t_i)/full_d)。开盘节奏快→早盘预测高,
-    # 随盘中修正一路收敛, 收盘=实际。前端画成相对昨日总量的 % 偏离曲线。
+    # 预测量能序列(开盘啦式): 纯比例外推 proj(t) = 今日累计(t) ÷ 近N日该时点"完成度"中位数。
+    # 完成度 = cum_d(t)/full_d(当日累计占当日全天比)。取中位数对单日异常更稳。
+    # 相比旧"锚定近5日均值估剩余"的好处: anchor 被约掉, 预测自动跟随今日真实量级——
+    # 清淡日不再死扛在均值上(旧法早盘 +20~37% 虚高), 放量日也不封顶。收盘=实际。
+    # 前端画成相对昨日总量的 % 偏离曲线。留一回测: 午后 ±2%, 早盘 ±8~10%(5日样本天花板)。
     recent = hist[-5:]
     proj_series = []
     projected = None
     if recent and today:
-        # 预计算近5日每个时刻的累计, 便于对齐
-        recent_full = [(d[-1][1], d[-1][2]) for d in recent]
-
-        def avg_frac_at(t, idx):
+        def frac_at(t, idx):
             fr = []
-            for di, day in enumerate(recent):
+            for day in recent:
                 cum = 0.0
                 for row in day:
                     if row[0] <= t:
                         cum = row[idx]
                     else:
                         break
-                full = recent_full[di][idx - 1]
+                full = day[-1][idx]
                 if full > 0:
                     fr.append(cum / full)
-            return sum(fr) / len(fr) if fr else None
+            return statistics.median(fr) if fr else None
 
-        # 锚: 近5日平均全天量(量/额)。预测 = 今日已累计 + (1−平均完成度)×锚 估剩余。
-        # 比纯"除以完成度"稳: 今日前置/后置只影响已成交部分, 剩余用典型量估, 不被整天放大。
-        anchor_v = sum(f[0] for f in recent_full) / len(recent_full)
-        anchor_a = sum(f[1] for f in recent_full) / len(recent_full)
         for t, cv, ca in today:
-            fa, fv = avg_frac_at(t, 2), avg_frac_at(t, 1)
-            pa = ca + (1 - fa) * anchor_a if fa is not None else None
-            pv = cv + (1 - fv) * anchor_v if fv is not None else None
+            fa, fv = frac_at(t, 2), frac_at(t, 1)
+            pa = ca / fa if (fa and fa > 0) else None
+            pv = cv / fv if (fv and fv > 0) else None
             if pa:
                 proj_series.append({"time": t, "amt": round(pa / 1e8),
                                     "vol": round(pv / 1e8, 1) if pv else None})
@@ -231,13 +227,13 @@ async def market_volume_intraday(market: str = "两市") -> dict:
         if proj_series:
             last = proj_series[-1]
             projected = {"amt": last["amt"], "vol": last["vol"], "final": now_t >= "14:57",
-                         "basis": f"近{len(recent)}日平均节奏"}
+                         "basis": f"近{len(recent)}日节奏中位外推"}
 
     actual = {"amt": round(today[-1][2] / 1e8), "vol": round(today[-1][1] / 1e8, 1)} if today else None
     out = {"market": market, "points": points, "prev_points": prev_points,
            "prev_full": prev_full, "actual": actual,
            "proj_series": proj_series, "projected": projected,
-           "note": "预测量能(开盘啦式): 今日已成交 + 按近5日节奏估剩余, 相对昨日总量的偏离; 收盘收敛到实际。"}
+           "note": "预测量能(开盘啦式): 今日累计 ÷ 近5日该时点完成度中位数外推全天, 相对昨日总量的偏离; 收盘收敛到实际。"}
     if points:
         _intraday_cache[market] = (out, time.time())
     return out
