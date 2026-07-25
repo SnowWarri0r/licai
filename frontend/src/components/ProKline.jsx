@@ -289,7 +289,11 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
                 </span>
               )}
             </span>
-          : <span className="text-text-muted">{MA_DEFS.map(m => `MA${m.n}`).join(' / ')} · <span style={{ color: '#c8a876' }}>┄ 昨收</span> · 滚轮缩放 · 点蜡烛看当日分时</span>}
+          : <span className="text-text-muted flex gap-2 flex-wrap items-baseline">
+              {MA_DEFS.map(m => <span key={m.n} style={{ color: m.c }}>— MA{m.n}</span>)}
+              <span style={{ color: '#c8a876' }}>┄ 昨收</span>
+              <span>滚轮缩放 · 点蜡烛看当日分时</span>
+            </span>}
       </div>
       <div className={`relative ${fill ? 'flex-1 min-h-0' : ''}`} style={fill ? { width: '100%' } : { width: '100%', height }}>
         <div ref={wrapRef} className="absolute inset-0" />
