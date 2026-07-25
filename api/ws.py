@@ -192,12 +192,6 @@ async def eod_summary_loop():
                         print(f"[eod] 板块份额入档 {n} 行")
                     except Exception as e:
                         print(f"[eod] 板块份额入档失败: {e}")
-                    try:
-                        from services.market_volume import archive_today as _mv_arch
-                        n = await _mv_arch()
-                        print(f"[eod] 市场量能入档 {n} 市场")
-                    except Exception as e:
-                        print(f"[eod] 市场量能入档失败: {e}")
                 _eod_done_date = today
             await asyncio.sleep(120)
         except Exception as e:
