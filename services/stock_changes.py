@@ -154,7 +154,8 @@ async def market_changes(group: str = "全部") -> dict:
                 n_up += 1 if up else 0
                 n_down += 0 if up else 1
 
-    out = {"group": group, "rows": disp[:120],
+    # rows 不合并截断: 每类各带最新60条, 前端选具体类型时才不会被高频类挤没
+    out = {"group": group, "rows": disp,
            "kinds": kinds, "hot": hot, "buckets": buckets,
            "pulse": {"近30分钟拉升类": n_up, "近30分钟跳水类": n_down},
            "note": ("交易所盘口异动事件流(东财), 盘中随时滚动、收盘后显示当日全程。"
