@@ -55,6 +55,12 @@ async def watchlist_view() -> dict:
         fc = await asyncio.to_thread(_forecast_map)
     except Exception:
         fc = {}
+    inds = {}
+    try:
+        from services.etf_xray import industry_map
+        inds = await asyncio.to_thread(industry_map)
+    except Exception:
+        inds = {}
 
     tags = await asyncio.gather(*(_structure_tags(c) for c in codes))
     out = []
@@ -73,6 +79,7 @@ async def watchlist_view() -> dict:
             "code": r["code"], "name": q.get("stock_name") or r["name"],
             "pct": q.get("change_pct"), "price": price,
             "added_at": r["added_at"], "added_price": r.get("added_price"),
+            "行业": (inds.get(r["code"]) or ("", ""))[1],
             "自选以来%": since, "结构": tg,
             "业绩预告": fc_txt,
         })
