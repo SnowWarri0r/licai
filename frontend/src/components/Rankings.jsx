@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { fetchJSON } from '../hooks/useApi'
+import { fetchJSON, prefetchJSON } from '../hooks/useApi'
 import ProKline from './ProKline'
 import StockAskModal from './StockAskModal'
 
@@ -199,6 +199,23 @@ export default function Rankings() {
     if (!selected?.code) return
     try { document.querySelector(`[data-row="${selected.code}"]`)?.scrollIntoView({ block: 'nearest' }) } catch { /* ignore */ }
   }, [selected])
+  // K线预取: 选中行变化 → 顺序预取光标附近(下3只/上1只)的K线首屏, 方向键翻股秒开;
+  // 刚进页签还没选中时预取前3行。一次只发一个请求, 不挤占当前选中股的加载。
+  useEffect(() => {
+    const arr = listRef.current || []
+    if (!arr.length) return
+    const i = selected?.code ? arr.findIndex(x => x.code === selected.code) : -1
+    const idxs = i >= 0 ? [i + 1, i + 2, i - 1, i + 3] : [0, 1, 2]
+    const codes = [...new Set(idxs.map(j => arr[j]?.code).filter(Boolean))]
+    let stop = false
+    ;(async () => {
+      for (const c of codes) {
+        if (stop) return
+        try { await prefetchJSON(`/api/market/history/${encodeURIComponent(c)}?days=250`) } catch { /* 预取失败静默, 正式加载会重试 */ }
+      }
+    })()
+    return () => { stop = true }
+  }, [selected, tab, loading])
   // 切到结构/机构/业绩 tab 时懒加载(服务端有缓存, 之后秒回)
   useEffect(() => { if ((tab === 'structure' && !structure) || (tab === 'inst' && !inst) || (tab === 'earnings' && !earnings) || (tab === 'lhb' && !lhbDaily) || (tab === 'watch' && !watch)) load() }, [tab])   // eslint-disable-line react-hooks/exhaustive-deps
   // 异动页: 进页签/换组立即拉 + 60s 静默轮询(服务端45s缓存, 盘中事件流持续滚动, 不闪加载态)
