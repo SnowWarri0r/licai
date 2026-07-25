@@ -210,6 +210,16 @@ async def stock_search(q: str):
     return {"candidates": cands}
 
 
+@router.get("/volume")
+async def market_volume_api():
+    """市场量能: 两市/沪/深/创业/科创 × 成交量/成交额, 近14日 + 当前实时读数。60s 缓存。"""
+    from services.market_volume import market_volume
+    try:
+        return await market_volume()
+    except Exception as e:
+        return {"markets": {}, "realtime": {}, "error": str(e)}
+
+
 @router.get("/sector-share")
 async def sector_share():
     """板块占全市场成交额份额排行 + 较昨日/5日前份额变化(资金聚拢/退潮)。"""
