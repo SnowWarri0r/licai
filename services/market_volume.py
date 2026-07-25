@@ -11,7 +11,7 @@ import time
 from datetime import datetime, timezone, timedelta
 
 _cache: tuple | None = None
-_TTL = 300
+_TTL = 60          # 盘中实时读数, 短缓存
 
 # (名称, 新浪符号, 东财secid, 新浪实时量单位是否为手)
 MARKETS = [
@@ -154,17 +154,32 @@ async def market_volume() -> dict:
                 amts[name] = {d: a for d, a in rows if a}
         except Exception:
             pass
-        # 今日格用实时快照补(盘中/收盘后均可)
-        if opened:
-            try:
-                rt = await asyncio.to_thread(_sina_realtime_sync)
-                for name, (v, a) in rt.items():
-                    if a:
-                        amts.setdefault(name, {})[today] = a
-                    if closed and a:
-                        await save_market_volume_history(name, [(today, v, a)])
-            except Exception:
-                pass
+
+    # 2b) 实时快照(新浪, 全市场量额): 无论东财通不通都拿, 既作今日格、也作当前实时读数。
+    # 盘中=此刻累计、收盘后=当日收盘值。今日成交量也以它为准(比新浪日K末根更即时)。
+    realtime: dict = {}
+    if opened:
+        try:
+            rt = await asyncio.to_thread(_sina_realtime_sync)
+            for name, (v, a) in rt.items():
+                realtime[name] = {"vol": round(v / 1e8, 1), "amt": round(a / 1e8) if a else None}
+                if a:
+                    amts.setdefault(name, {})[today] = a
+                if v and vols.get(name):
+                    # 今日量以实时为准: 覆盖/补上新浪日K的末根(盘中更即时)
+                    if vols[name] and vols[name][-1][0] == today:
+                        vols[name][-1] = (today, v)
+                    else:
+                        vols[name].append((today, v))
+                if closed and a:
+                    await save_market_volume_history(name, [(today, v, a)])
+        except Exception:
+            pass
+    # 两市实时 = 沪+深
+    if "沪" in realtime and "深" in realtime:
+        h, s = realtime["沪"], realtime["深"]
+        realtime["两市"] = {"vol": round(h["vol"] + s["vol"], 1),
+                            "amt": (h["amt"] + s["amt"]) if (h["amt"] and s["amt"]) else None}
 
     # 3) 组装 trend; 两市=沪+深 逐日求和(创业/科创分别是深/沪子集, 不并入)
     def rows_of(name):
@@ -185,6 +200,7 @@ async def market_volume() -> dict:
         both.append({"date": r["date"], "vol": round(r["vol"] + s["vol"], 1),
                      "amt": (r["amt"] + s["amt"]) if (r["amt"] and s["amt"]) else None})
     out = {"markets": {"两市": {"trend": both}, **markets},
+           "realtime": realtime,                         # 各市场当前量额(亿), 盘中实时/收盘定格
            "intraday": opened and not closed, "em_ok": em_ok}
     if any(m["trend"] for m in out["markets"].values()):
         _cache = (out, time.time())
