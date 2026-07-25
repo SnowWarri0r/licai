@@ -270,7 +270,15 @@ export default function Rankings() {
 
   const rawList = tab === 'inst' ? ((inst && inst[instSide]) || []).map(r => ({ ...r, pct: r['距最近上榜%'] }))
     : tab === 'changes' ? ((changes?.rows) || []).filter(r => chKind === '全部' || r['类型'] === chKind).slice(0, 120).map((r, i) => ({ ...r, _k: `${r.code}-${r.时间}-${i}` }))
-    : tab === 'watch' ? ((watch?.rows) || [])
+    : tab === 'watch' ? (() => {
+        const rs = (watch?.rows) || []
+        const held = rs.filter(r => r.source === '持仓')
+        const manual = rs.filter(r => r.source !== '持仓')
+        const merged = []
+        if (held.length) { merged.push({ _wh: true, 标题: `持仓 ${held.length}`, 说明: '现取, 清仓即消失' }); merged.push(...held) }
+        if (manual.length) { merged.push({ _wh: true, 标题: `自选 ${manual.length}`, 说明: '在看未必持有' }); merged.push(...manual) }
+        return merged
+      })()
     : tab === 'lhb' ? ((lhbDaily?.rows) || []).map(r => ({ ...r, pct: r['涨跌幅'], _lhbDate: lhbDaily.date }))
     : tab === 'earnings' ? (
         (earnSide === '持仓关联'
@@ -294,7 +302,7 @@ export default function Rankings() {
   })
   const list = tab === 'structure' ? structList
     : board === '全部' ? rawList : rawList.filter(r => boardOf(r.code) === board)
-  listRef.current = list.filter(r => !r._gheader)
+  listRef.current = list.filter(r => !r._gheader && !r._wh)
   indsRef.current = ['全部', ...(structure?.groups || []).map(g => g.行业)]
   chKindsRef.current = ['全部', ...(changes?.kinds || []).map(k => k.kind)]
   tabRef.current = tab
@@ -426,7 +434,7 @@ export default function Rankings() {
             <div className="text-center py-8 text-text-dim text-[12px] px-4 leading-relaxed">
               {tab === 'structure' ? '今天龙头池里没有满足条件的蓄势/强势结构（大波动市里稀缺属正常）'
                 : tab === 'lhb' ? (lhbDaily?.note || '近10天无龙虎榜披露数据')
-                : tab === 'watch' ? '自选池为空——在任意榜单点开股票, 右上角 ☆ 加入跟踪(会记下当时价格, 之后看"自选以来"涨跌)'
+                : tab === 'watch' ? '空——持有的 A 股个股会自动出现在这里(持仓组); 想额外跟踪没持有的票, 在榜单点开右上角 ☆ 加入'
                 : tab === 'changes' ? `当前筛选下暂无异动事件${board !== '全部' ? `(${board})` : ''}——每类只保留当天最新60条, 少数派事件可能已滚出窗口`
                 : `榜单 top100 里暂无${board}标的`}
             </div>
@@ -434,6 +442,16 @@ export default function Rankings() {
           {loading && <div className="text-center py-8 text-text-dim text-[12px]">{tab === 'structure' ? '全市场扫描中…（首扫约1分钟, 之后10分钟缓存秒开）' : '加载榜单…'}</div>}
           {err && <div className="text-center py-8 text-text-dim text-[12px]">榜单源暂不可达（东财抖动），<button onClick={load} className="text-accent">重试</button></div>}
           {!loading && !err && list.map((r, i) => {
+            if (r._wh) {
+              return (
+                <div key={`wh-${r.标题}`}
+                  className="px-3 py-1 text-[10px] border-t border-b border-border-subtle flex items-baseline gap-2 sticky top-0 z-10"
+                  style={{ background: 'var(--color-surface-2)' }}>
+                  <span className="font-semibold text-accent/90">{r.标题}</span>
+                  <span className="text-text-muted">{r.说明}</span>
+                </div>
+              )
+            }
             if (r._gheader) {
               return (
                 <div key={`g-${r.行业}`}
@@ -462,6 +480,9 @@ export default function Rankings() {
                     )}
                     {tab === 'changes' && r.n_today >= 3 && (
                       <span className="text-[8.5px] px-1 rounded bg-accent/15 text-accent shrink-0" title="该股今日在当前事件流内反复触发异动">今日{r.n_today}次</span>
+                    )}
+                    {tab === 'watch' && r.source === '持仓' && (
+                      <span className="text-[8.5px] px-1 rounded bg-accent/20 text-accent shrink-0" title="当前持仓, 自动跟踪">持</span>
                     )}
                     {r.is_new && <span className="text-[8.5px] px-1 rounded bg-accent/15 text-accent shrink-0" title="上市前5日无涨跌幅限制">新</span>}
                     {r.is_st && <span className="text-[8.5px] px-1 rounded bg-bear/15 text-bear-bright shrink-0">ST</span>}
@@ -510,7 +531,9 @@ export default function Rankings() {
                       : tab === 'lhb'
                       ? `净买 ${r['净买额亿'] >= 0 ? '+' : ''}${r['净买额亿']}亿`
                       : tab === 'watch'
-                      ? (r['自选以来%'] != null ? `自选(${(r.added_at || '').slice(5)})以来${r['自选以来%'] >= 0 ? '+' : ''}${r['自选以来%']}%` : `${(r.added_at || '').slice(5)}加自选`)
+                      ? (r.source === '持仓'
+                          ? `浮盈${r['浮盈%'] != null ? (r['浮盈%'] >= 0 ? '+' : '') + r['浮盈%'] + '%' : '—'}${r['持有天数'] != null ? ` · 持${r['持有天数']}日` : ''}`
+                          : (r['自选以来%'] != null ? `自选(${(r.added_at || '').slice(5)})以来${r['自选以来%'] >= 0 ? '+' : ''}${r['自选以来%']}%` : `${(r.added_at || '').slice(5)}加自选`))
                       : tab === 'earnings'
                       ? `${r['类型']}·${(r['披露日'] || '').slice(5)}披露`
                       : tab === 'by_amount'
