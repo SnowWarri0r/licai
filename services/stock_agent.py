@@ -48,12 +48,13 @@ async def _code_name_maps():
         return ({}, {}) if not _code_name_cache else (_code_name_cache[0], _code_name_cache[1])
 
 
-_pinyin_cache: tuple | None = None   # (rows, 源表id) —— rows: [(首字母串, 名称, 代码)]
+_pinyin_cache: tuple | None = None   # (rows, 源表id) —— rows: [(首字母串, 全拼串, 名称, 代码)]
 
 
 async def _pinyin_rows() -> list:
-    """A股全表 → 名称拼音首字母索引(懒建一次, 跟随 _code_name_maps 缓存周期)。
-    非汉字字符(ETF/数字/字母)原样并入小写串, 'kc50etf' 这类也能命中。"""
+    """A股全表 → 名称拼音索引(懒建一次, 跟随 _code_name_maps 缓存周期)。
+    每行 (首字母串, 全拼串, 名称, 代码): 首字母 zgpa→中国平安; 全拼 zhongguopingan
+    用于同音错别字匹配(输错字但读音对, 转拼音仍中)。非汉字原样并入小写。"""
     global _pinyin_cache
     n2c, _ = await _code_name_maps()
     if not n2c:
@@ -67,14 +68,43 @@ async def _pinyin_rows() -> list:
         for nm, cd in n2c.items():
             try:
                 ini = "".join(lazy_pinyin(nm, style=Style.FIRST_LETTER)).lower()
+                full = "".join(lazy_pinyin(nm, style=Style.NORMAL)).lower()
             except Exception:
                 continue
-            rows.append((ini, nm, cd))
+            rows.append((ini, full, nm, cd))
         return rows
 
     rows = await asyncio.to_thread(_build)
     _pinyin_cache = (rows, id(n2c))
     return rows
+
+
+def _to_full_pinyin(s: str) -> str:
+    """任意串 → 全拼小写(汉字转拼音, 非汉字原样)。用于把用户输入(可能带错别字)归一到读音。"""
+    try:
+        from pypinyin import lazy_pinyin, Style
+        return "".join(lazy_pinyin(s, style=Style.NORMAL)).lower()
+    except Exception:
+        return (s or "").lower()
+
+
+def _edit_distance(a: str, b: str, cap: int = 3) -> int:
+    """Levenshtein, 超过 cap 提前退出(返回 cap+1)。用于近似匹配的容错阈值。"""
+    la, lb = len(a), len(b)
+    if abs(la - lb) > cap:
+        return cap + 1
+    prev = list(range(lb + 1))
+    for i in range(1, la + 1):
+        cur = [i] + [0] * lb
+        best = cur[0]
+        for j in range(1, lb + 1):
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1,
+                         prev[j - 1] + (a[i - 1] != b[j - 1]))
+            best = min(best, cur[j])
+        if best > cap:
+            return cap + 1
+        prev = cur
+    return prev[lb]
 
 
 # ---------------------------------------------------------------------------
@@ -237,18 +267,44 @@ async def _tool_resolve_stock(query: str) -> dict:
     hits = [(nm, cd) for nm, cd in n2c.items() if q in nm][:5]
     if hits:
         return {"candidates": [{"name": nm, "code": cd} for nm, cd in hits]}
-    # 2a) 拼音首字母模糊匹配(zgpa→中国平安): 前缀命中优先(越短越贴), 其次任意位置;
+    # 2a) 字母查询: 拼音首字母(zgpa→中国平安) + 全拼(zhongguopingan)子串。
     # 放在美股 ticker 之前——A股是主场, 没有拼音命中才轮到 NVDA/AAPL 这类解释
     if _re.fullmatch(r"[A-Za-z0-9]{2,12}", q) and not q.isdigit():
         ql = q.lower()
         rows = await _pinyin_rows()
-        pre = sorted(((ini, nm, cd) for ini, nm, cd in rows if ini.startswith(ql)),
-                     key=lambda r: len(r[0]))
-        sub = [(ini, nm, cd) for ini, nm, cd in rows if ql in ini and not ini.startswith(ql)]
-        py_hits = (pre + sub)[:8]
+        pre = sorted((r for r in rows if r[0].startswith(ql)), key=lambda r: len(r[0]))
+        sub = [r for r in rows if ql in r[0] and not r[0].startswith(ql)]
+        fsub = [r for r in rows if ql in r[1] and ql not in r[0]]   # 全拼子串
+        seen, py_hits = set(), []
+        for ini, full, nm, cd in pre + sub + fsub:
+            if cd not in seen:
+                seen.add(cd); py_hits.append((nm, cd))
+        py_hits = py_hits[:8]
         if py_hits:
-            return {"candidates": [{"name": nm, "code": cd} for _ini, nm, cd in py_hits],
-                    "note": "按名称拼音首字母匹配"}
+            return {"candidates": [{"name": nm, "code": cd} for nm, cd in py_hits],
+                    "note": "按名称拼音匹配"}
+    # 2b) 错别字/同音容错: 把输入归一到读音(全拼), 同音字打错也能中。
+    #   同音子串(药名康德→药明康德) 优先; 再退编辑距离近似(仅中文输入, 免误伤英文 ticker)。
+    qpy = _to_full_pinyin(q)
+    has_cjk = any("一" <= ch <= "鿿" for ch in q)
+    if len(qpy) >= 4 and (has_cjk or len(q) >= 4):
+        rows = await _pinyin_rows()
+        homo = []
+        for _ini, full, nm, cd in rows:
+            if qpy in full or (len(qpy) >= 6 and full in qpy):
+                homo.append((abs(len(full) - len(qpy)), nm, cd))
+        if homo:
+            homo.sort(key=lambda x: x[0])
+            return {"candidates": [{"name": nm, "code": cd} for _d, nm, cd in homo[:8]],
+                    "note": "按读音近似匹配(容错同音字)"}
+        if has_cjk:
+            cap = 1 if len(qpy) <= 6 else 2
+            near = sorted(((_edit_distance(qpy, full, cap + 1), nm, cd)
+                           for _ini, full, nm, cd in rows), key=lambda x: x[0])
+            near = [(nm, cd) for d, nm, cd in near if d <= cap][:5]
+            if near:
+                return {"candidates": [{"name": nm, "code": cd} for nm, cd in near],
+                        "note": "按读音近似匹配(容错错别字)"}
     # 3) 6位数字代码但不在A股个股全表(如 ETF/LOF/可转债) → 直接当作代码, 实时查名
     if q.isdigit() and len(q) == 6:
         try:
