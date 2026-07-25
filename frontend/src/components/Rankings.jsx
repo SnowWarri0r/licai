@@ -118,6 +118,7 @@ export default function Rankings() {
   const [watchSet, setWatchSet] = useState(new Set())    // 自选代码集(☆按钮状态)
   const [changes, setChanges] = useState(null)           // 盘口异动事件流
   const [chGroup, setChGroup] = useState('全部')          // 异动组: 全部/拉升/跳水/竞价
+  const [chKind, setChKind] = useState('全部')            // 异动组内按事件类型细分
   const [sq, setSq] = useState('')                       // 自由查股输入
   const [sqCands, setSqCands] = useState([])             // 搜索候选
   const sqTimer = useRef(null)
@@ -239,7 +240,7 @@ export default function Rankings() {
   }, [])
 
   const rawList = tab === 'inst' ? ((inst && inst[instSide]) || []).map(r => ({ ...r, pct: r['距最近上榜%'] }))
-    : tab === 'changes' ? ((changes?.rows) || []).map((r, i) => ({ ...r, _k: `${r.code}-${r.时间}-${i}` }))
+    : tab === 'changes' ? ((changes?.rows) || []).filter(r => chKind === '全部' || r['类型'] === chKind).map((r, i) => ({ ...r, _k: `${r.code}-${r.时间}-${i}` }))
     : tab === 'watch' ? ((watch?.rows) || [])
     : tab === 'lhb' ? ((lhbDaily?.rows) || []).map(r => ({ ...r, pct: r['涨跌幅'], _lhbDate: lhbDaily.date }))
     : tab === 'earnings' ? (
@@ -320,7 +321,7 @@ export default function Rankings() {
           {tab === 'changes' && (
             <>
               {['全部', '拉升', '跳水', '竞价'].map(k => (
-                <button key={k} onClick={() => setChGroup(k)}
+                <button key={k} onClick={() => { setChGroup(k); setChKind('全部') }}
                   className={`text-[11px] px-2 py-0.5 rounded ${chGroup === k ? 'bg-accent/15 text-accent' : 'text-text-dim hover:text-text'}`}>
                   {k}
                 </button>
@@ -357,6 +358,22 @@ export default function Rankings() {
             </button>
           ))}
         </div>
+
+        {/* 事件类型快捷条(异动页): 组内再按具体事件细分, 带当前流内计数 */}
+        {tab === 'changes' && (changes?.kinds || []).length > 0 && (
+          <div className="no-scrollbar flex gap-1 px-3 py-1.5 border-b border-border-subtle overflow-x-auto whitespace-nowrap shrink-0">
+            <button onClick={() => setChKind('全部')}
+              className={`text-[10.5px] px-1.5 py-0.5 rounded shrink-0 ${chKind === '全部' ? 'bg-accent/15 text-accent' : 'text-text-dim hover:text-text'}`}>
+              全部
+            </button>
+            {changes.kinds.map(k => (
+              <button key={k.kind} onClick={() => setChKind(k.kind)}
+                className={`text-[10.5px] px-1.5 py-0.5 rounded shrink-0 ${chKind === k.kind ? 'bg-accent/15 text-accent' : 'text-text-dim hover:text-text'}`}>
+                {k.kind} <span className={k.up ? 'text-bear' : 'text-bull'}>{k.n}</span>
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* 行业快捷条(结构页): 点行业只看该组, 不用往下翻 */}
         {tab === 'structure' && (structure?.groups || []).length > 0 && (
@@ -412,6 +429,9 @@ export default function Rankings() {
                     {tab === 'changes' && (
                       <span className={`text-[8.5px] px-1 rounded shrink-0 ${r.up ? 'bg-bear/15 text-bear-bright' : 'bg-bull/15 text-bull-bright'}`}>{r['类型']}</span>
                     )}
+                    {tab === 'changes' && r.n_today >= 3 && (
+                      <span className="text-[8.5px] px-1 rounded bg-accent/15 text-accent shrink-0" title="该股今日在当前事件流内反复触发异动">今日{r.n_today}次</span>
+                    )}
                     {r.is_new && <span className="text-[8.5px] px-1 rounded bg-accent/15 text-accent shrink-0" title="上市前5日无涨跌幅限制">新</span>}
                     {r.is_st && <span className="text-[8.5px] px-1 rounded bg-bear/15 text-bear-bright shrink-0">ST</span>}
                   </span>
@@ -443,7 +463,9 @@ export default function Rankings() {
                 </span>
                 <span className="text-right shrink-0">
                   {tab === 'changes'
-                    ? <span className="block text-[11.5px] font-mono text-text-dim">{r['时间']}</span>
+                    ? (r.pct != null
+                        ? <span className={`block text-[12.5px] font-mono font-semibold ${pctColor(r.pct)}`}>{r.pct >= 0 ? '+' : ''}{r.pct}%</span>
+                        : <span className="block text-[11.5px] font-mono text-text-dim">{r['时间']}</span>)
                     : <span className={`block text-[12.5px] font-mono font-semibold ${pctColor(r.pct)}`}>{r.pct >= 0 ? '+' : ''}{r.pct}%</span>}
                   <span className="block text-[10px] text-text-muted font-mono">
                     {tab === 'structure'
@@ -453,7 +475,7 @@ export default function Rankings() {
                       : tab === 'inst'
                       ? `${(r['最近上榜'] || '').slice(5)}上榜·至今`
                       : tab === 'changes'
-                      ? ''
+                      ? (r.pct != null ? r['时间'] : '')
                       : tab === 'lhb'
                       ? `净买 ${r['净买额亿'] >= 0 ? '+' : ''}${r['净买额亿']}亿`
                       : tab === 'watch'
@@ -473,8 +495,42 @@ export default function Rankings() {
         </div>
 
         {tab === 'changes' && (changes?.rows || []).length > 0 && (
-          <div className="shrink-0 px-3 py-1.5 border-t border-border-subtle text-[9.5px] text-text-muted leading-relaxed">
-            市场脉搏(近30分钟): <span className="text-bear">拉升类 {changes?.pulse?.['近30分钟拉升类']}</span> vs <span className="text-bull">跳水类 {changes?.pulse?.['近30分钟跳水类']}</span> · 交易所盘口异动(东财), 盘中60s自动刷新, 收盘后为当日全程 · 竞价类=9:15-9:25集合竞价产物 · 纯客观事件, 非买卖建议
+          <div className="shrink-0 border-t border-border-subtle px-3 py-1.5">
+            {(changes?.hot || []).length > 0 && (
+              <div className="text-[9.5px] text-text-muted mb-1">
+                今日最活跃:{' '}
+                {changes.hot.map(h => (
+                  <button key={h.code} onClick={() => setSelected({ code: h.code, name: h.name })}
+                    className="text-accent hover:underline mr-2">{h.name} {h.n}次</button>
+                ))}
+              </div>
+            )}
+            {(changes?.buckets || []).length > 1 && (() => {
+              const bs = changes.buckets
+              // 开方比例尺: 开盘档事件量常是盘中档的几十倍, 线性刻度会把其余档压成平线
+              const sc = v => Math.sqrt(Math.max(v, 0))
+              const maxv = Math.max(...bs.map(b => sc(Math.max(b.up, b.down))), 1)
+              const bw = 4, mid = 14, amp = 12
+              return (
+                <div className="flex items-center gap-2 mb-1">
+                  <svg width={bs.length * (bw + 1)} height={28} className="shrink-0">
+                    {bs.map((b, i) => (
+                      <g key={b.t}>
+                        {b.up > 0 && <rect x={i * (bw + 1)} y={mid - sc(b.up) / maxv * amp} width={bw} height={Math.max(sc(b.up) / maxv * amp, 0.5)} fill="#cf5c5c" opacity="0.85"><title>{b.t} 拉升类 {b.up}</title></rect>}
+                        {b.down > 0 && <rect x={i * (bw + 1)} y={mid} width={bw} height={Math.max(sc(b.down) / maxv * amp, 0.5)} fill="#5fa86c" opacity="0.85"><title>{b.t} 跳水类 {b.down}</title></rect>}
+                      </g>
+                    ))}
+                  </svg>
+                  <span className="text-[9.5px] text-text-muted leading-tight">
+                    全天脉搏 {bs[0].t}–{bs[bs.length - 1].t}(5分钟/档)
+                    <br />近30分钟 <span className="text-bear">拉升 {changes?.pulse?.['近30分钟拉升类']}</span> vs <span className="text-bull">跳水 {changes?.pulse?.['近30分钟跳水类']}</span>
+                  </span>
+                </div>
+              )
+            })()}
+            <div className="text-[9.5px] text-text-muted leading-relaxed">
+              交易所盘口异动(东财), 盘中60s自动刷新, 收盘后为当日全程 · 竞价类=9:15-9:25集合竞价产物 · 纯客观事件, 非买卖建议
+            </div>
           </div>
         )}
         {tab === 'watch' && !loading && (watch?.rows || []).length > 0 && (
