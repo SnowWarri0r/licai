@@ -477,13 +477,10 @@ async def news_digest(force: bool = False, max_items: int = 80):
         "   (a) 直接涉及用户持仓的公告/新闻 — 必选\n"
         "   (b) 涉及用户持仓行业的政策/资金/事件 — 高优\n"
         "   (c) 大盘级别转向信号 (央行/汇率/外资/重大政策) — 中优\n"
-        "2. 每条要点格式:\n"
-        "   🟢 [利好] / 🔴 [利空] / 🟡 [关注] - 一句话核心事件 (≤30字)\n"
-        "   涉及: 代码或行业 | 可能影响方向\n"
-        "3. 不给 '该买/该卖' 建议, 只描述事件和市场可能的反应方向\n"
-        "4. 输出严格 JSON: {summary: '一段 60 字以内总结', highlights: [{level, title, related, impact}, ...]}\n"
-        "   level: 'good'/'bad'/'watch'; title: 核心事件; related: 代码/行业; impact: 可能反应方向\n"
-        "5. 只输出 JSON, 不要其他文字或 markdown 包装"
+        "2. 只描述事件本身和市场可能的反应方向, 方向性决策留给用户\n"
+        "3. 输出严格 JSON: {summary: '一段 60 字以内总结', highlights: [{level, title, related, impact}, ...]}\n"
+        "   level: 'good'(利好)/'bad'(利空)/'watch'(关注); title: 一句话核心事件(≤30字); related: 代码/行业; impact: 可能反应方向\n"
+        "4. 全部内容都在这个 JSON 里, JSON 即完整回复"
     )
 
     # 3) 调 LLM
