@@ -220,6 +220,16 @@ async def market_volume_api():
         return {"markets": {}, "realtime": {}, "error": str(e)}
 
 
+@router.get("/volume-intraday")
+async def market_volume_intraday_api(market: str = "两市"):
+    """当日分时: 逐分钟累计成交量(亿股)/成交额(亿元)。market=两市/沪/深/创业/科创。60s 缓存。"""
+    from services.market_volume import market_volume_intraday
+    try:
+        return await market_volume_intraday(market)
+    except Exception as e:
+        return {"market": market, "points": [], "error": str(e)}
+
+
 @router.get("/sector-share")
 async def sector_share():
     """板块占全市场成交额份额排行 + 较昨日/5日前份额变化(资金聚拢/退潮)。"""
