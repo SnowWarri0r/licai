@@ -127,6 +127,7 @@ export default function Rankings() {
   const [selected, setSelected] = useState(null)
   const listRef = useRef([])
   const indsRef = useRef(['全部'])
+  const chKindsRef = useRef(['全部'])
   const tabRef = useRef('gainers')
   const deepSelRef = useRef(new URLSearchParams(window.location.hash.split('?')[1] || '').get('s') || '')
 
@@ -190,6 +191,9 @@ export default function Rankings() {
   useEffect(() => {
     try { document.querySelector(`[data-ind="${indFilter}"]`)?.scrollIntoView({ inline: 'nearest', block: 'nearest' }) } catch { /* 行业名含引号等极端情况忽略 */ }
   }, [indFilter])
+  useEffect(() => {
+    try { document.querySelector(`[data-chkind="${chKind}"]`)?.scrollIntoView({ inline: 'nearest', block: 'nearest' }) } catch { /* ignore */ }
+  }, [chKind])
   // ↑↓ 翻股时把选中行滚进可视区(键盘翻到列表可视区外时跟随滚动)
   useEffect(() => {
     if (!selected?.code) return
@@ -233,6 +237,14 @@ export default function Rankings() {
           return arr[(i + (e.key === 'ArrowRight' ? 1 : -1) + arr.length) % arr.length]
         })
         e.preventDefault()
+      } else if (tabRef.current === 'changes') {
+        setChKind(prev => {
+          const arr = chKindsRef.current
+          if (arr.length < 2) return prev
+          const i = Math.max(arr.indexOf(prev), 0)
+          return arr[(i + (e.key === 'ArrowRight' ? 1 : -1) + arr.length) % arr.length]
+        })
+        e.preventDefault()
       }
     }
     window.addEventListener('keydown', onKey)
@@ -267,6 +279,7 @@ export default function Rankings() {
     : board === '全部' ? rawList : rawList.filter(r => boardOf(r.code) === board)
   listRef.current = list.filter(r => !r._gheader)
   indsRef.current = ['全部', ...(structure?.groups || []).map(g => g.行业)]
+  chKindsRef.current = ['全部', ...(changes?.kinds || []).map(k => k.kind)]
   tabRef.current = tab
 
   return (
@@ -362,12 +375,12 @@ export default function Rankings() {
         {/* 事件类型快捷条(异动页): 组内再按具体事件细分, 带当前流内计数 */}
         {tab === 'changes' && (changes?.kinds || []).length > 0 && (
           <div className="no-scrollbar flex gap-1 px-3 py-1.5 border-b border-border-subtle overflow-x-auto whitespace-nowrap shrink-0">
-            <button onClick={() => setChKind('全部')}
+            <button data-chkind="全部" onClick={() => setChKind('全部')}
               className={`text-[10.5px] px-1.5 py-0.5 rounded shrink-0 ${chKind === '全部' ? 'bg-accent/15 text-accent' : 'text-text-dim hover:text-text'}`}>
               全部
             </button>
             {changes.kinds.map(k => (
-              <button key={k.kind} onClick={() => setChKind(k.kind)}
+              <button key={k.kind} data-chkind={k.kind} onClick={() => setChKind(k.kind)}
                 className={`text-[10.5px] px-1.5 py-0.5 rounded shrink-0 ${chKind === k.kind ? 'bg-accent/15 text-accent' : 'text-text-dim hover:text-text'}`}>
                 {k.kind} <span className={k.up ? 'text-bear' : 'text-bull'}>{k.n}</span>
               </button>
