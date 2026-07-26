@@ -12,11 +12,11 @@
 <text x="48" y="120.0" font-size="11" fill="#57606a" text-anchor="end">30</text>
 <line x1="66.5" y1="52" x2="66.5" y2="356" stroke="#e8e4dc"/>
 <text x="66.5" y="374" font-size="11" fill="#57606a" text-anchor="middle">2026-05</text>
-<line x1="306.0" y1="52" x2="306.0" y2="356" stroke="#e8e4dc"/>
-<text x="306.0" y="374" font-size="11" fill="#57606a" text-anchor="middle">2026-06</text>
-<line x1="537.7" y1="52" x2="537.7" y2="356" stroke="#e8e4dc"/>
-<text x="537.7" y="374" font-size="11" fill="#57606a" text-anchor="middle">2026-07</text>
-<path d="M 56.0 348.0 H 56.0 V 340.0 H 60.9 V 332.0 H 64.3 V 324.0 H 198.5 V 316.0 H 287.5 V 308.0 H 302.9 V 300.0 H 324.2 V 292.0 H 423.1 V 284.0 H 449.5 V 276.0 H 472.3 V 268.0 H 477.6 V 260.0 H 478.6 V 252.0 H 485.8 V 244.0 H 496.4 V 236.0 H 519.7 V 228.0 H 527.1 V 220.0 H 527.6 V 212.0 H 532.5 V 204.0 H 539.8 V 196.0 H 554.4 V 188.0 H 555.1 V 180.0 H 565.4 V 172.0 H 602.8 V 164.0 H 603.1 V 156.0 H 627.7 V 148.0 H 647.7 V 140.0 H 649.6 V 132.0 H 649.8 V 124.0 H 654.8 V 116.0 H 695.0 V 108.0 H 703.2 V 100.0 H 712.2 V 92.0 H 723.8 V 84.0 H 732.0" fill="none" stroke="#c8a876" stroke-width="2.5" stroke-linejoin="round"/>
+<line x1="305.6" y1="52" x2="305.6" y2="356" stroke="#e8e4dc"/>
+<text x="305.6" y="374" font-size="11" fill="#57606a" text-anchor="middle">2026-06</text>
+<line x1="537.0" y1="52" x2="537.0" y2="356" stroke="#e8e4dc"/>
+<text x="537.0" y="374" font-size="11" fill="#57606a" text-anchor="middle">2026-07</text>
+<path d="M 56.0 348.0 H 56.0 V 340.0 H 60.9 V 332.0 H 64.3 V 324.0 H 198.3 V 316.0 H 287.1 V 308.0 H 302.6 V 300.0 H 323.8 V 292.0 H 422.5 V 284.0 H 448.9 V 276.0 H 471.6 V 268.0 H 477.0 V 260.0 H 478.0 V 252.0 H 485.2 V 244.0 H 495.7 V 236.0 H 519.0 V 228.0 H 526.4 V 220.0 H 526.9 V 212.0 H 531.7 V 204.0 H 539.1 V 196.0 H 553.7 V 188.0 H 554.3 V 180.0 H 564.6 V 172.0 H 602.0 V 164.0 H 602.3 V 156.0 H 626.9 V 148.0 H 646.8 V 140.0 H 648.7 V 132.0 H 648.9 V 124.0 H 653.9 V 116.0 H 694.0 V 108.0 H 702.2 V 100.0 H 711.2 V 92.0 H 722.8 V 84.0 H 732.0" fill="none" stroke="#c8a876" stroke-width="2.5" stroke-linejoin="round"/>
 <circle cx="732.0" cy="84.0" r="4" fill="#c8a876"/>
 <text x="724.0" y="74.0" font-size="13" font-weight="600" fill="#24292f" text-anchor="end">34 stars</text>
 </svg>
