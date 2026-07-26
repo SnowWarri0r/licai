@@ -37,15 +37,12 @@ def _parse(s: str) -> datetime:
     return datetime.fromisoformat(s.replace("Z", "+00:00"))
 
 
-def load_points() -> list[tuple[datetime, int]]:
-    """读仓库内的累计数据点 [(UTC时间, 累计star数)], 按时间升序。文件缺失/损坏返回空。"""
-    try:
-        with open(DATA) as f:
-            raw = json.load(f).get("points") or []
-    except (OSError, ValueError):
-        return []
+DATA_TAG = "star-data"
+
+
+def _points_from_json(raw) -> list[tuple[datetime, int]]:
     out = []
-    for p in raw:
+    for p in raw or []:
         try:
             out.append((_parse(p[0]), int(p[1])))
         except (ValueError, TypeError, IndexError):
@@ -53,16 +50,41 @@ def load_points() -> list[tuple[datetime, int]]:
     return sorted(out)
 
 
-def save_points(points: list[tuple[datetime, int]]) -> None:
-    os.makedirs(os.path.dirname(DATA) or ".", exist_ok=True)
-    with open(DATA, "w") as f:
-        json.dump({
-            "repo": REPO,
-            "note": "star 累计曲线数据点 [UTC时间, 累计star数]。历史段由 stargazers 时间线一次性回填; "
-                    "之后由 star-chart workflow 每天匿名读 stargazers_count 追加(仅在数值变化时), 无需任何 token。",
-            "points": [[_iso(t), c] for t, c in points],
-        }, f, ensure_ascii=False, indent=1)
-        f.write("\n")
+def load_points(svg_path: str) -> list[tuple[datetime, int]]:
+    """读累计数据点 [(UTC时间, 累计star数)]。
+
+    数据存在 SVG 自己的 <metadata id="star-data"> 里, 而不是单独的数据文件——
+    workflow 的 commit 步骤只 git add 这个 SVG, 把数据寄生在同一个文件里,
+    就不需要改 .github/workflows/(改 workflow 要 OAuth 的 workflow scope)。
+    文件缺失/无该段/损坏一律返回空, 调用方据此重建。
+    """
+    try:
+        with open(svg_path) as f:
+            svg = f.read()
+    except OSError:
+        return []
+    head = svg.find(f'<metadata id="{DATA_TAG}">')
+    if head < 0:
+        return []
+    start = svg.find(">", head) + 1
+    end = svg.find("</metadata>", start)
+    if end < 0:
+        return []
+    body = svg[start:end].replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+    try:
+        return _points_from_json(json.loads(body).get("points"))
+    except ValueError:
+        return []
+
+
+def _data_block(points: list[tuple[datetime, int]]) -> str:
+    """把数据点序列化进 SVG 的 metadata 段(时间戳+整数, 无需转义的特殊字符)。"""
+    payload = json.dumps({
+        "note": "star 累计曲线数据点 [UTC时间, 累计star数]; 由 scripts/star_chart.py 维护",
+        "points": [[_iso(t), c] for t, c in points],
+    }, ensure_ascii=False, separators=(",", ":"))
+    payload = payload.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return f'<metadata id="{DATA_TAG}">{payload}</metadata>'
 
 
 def _fetch_count_once(token: str) -> int:
@@ -140,6 +162,7 @@ def render(points: list[tuple[datetime, int]]) -> str:
     e = []
     e.append(f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" '
              f'viewBox="0 0 {W} {H}" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif">')
+    e.append(_data_block(points))          # 数据随图一起提交, 下次运行从这里读回
     e.append(f'<rect width="{W}" height="{H}" rx="8" fill="#ffffff" stroke="{GRID}"/>')
     e.append(f'<text x="{ML}" y="30" font-size="16" font-weight="600" fill="#24292f">'
              f'Star History · {REPO}</text>')
@@ -181,20 +204,19 @@ def main():
     if "--backfill" in sys.argv:
         points = backfill()
         if not points:
-            print("backfill 拿不到时间线, 数据文件保持不动", file=sys.stderr)
+            print("backfill 拿不到时间线, 保留现有图", file=sys.stderr)
             return 1
-        save_points(points)
-        print(f"{DATA}: 回填 {len(points)} 个点")
+        print(f"回填 {len(points)} 个点")
     else:
-        points = load_points()
+        points = load_points(out)
         count = fetch_count()
-        # 只在总数变化时追加点, 避免每日无变化也写文件产生空 commit
+        # 只在总数变化时追加点: 无变化时重绘出的 SVG 与现有文件一致(除了 updated 日期),
+        # workflow 的 git diff --cached --quiet 会据此跳过 commit
         if not points or points[-1][1] != count:
             points.append((datetime.now(timezone.utc), count))
-            save_points(points)
-            print(f"{DATA}: {len(points)} 个点 (star 数 → {count})")
+            print(f"star 数 → {count}, 追加后共 {len(points)} 个点")
         else:
-            print(f"{DATA}: star 数无变化 ({count}), 数据文件不动")
+            print(f"star 数无变化 ({count}), 沿用已有 {len(points)} 个点")
 
     if not points:
         print("无数据点, 保留现有图", file=sys.stderr)
@@ -203,7 +225,7 @@ def main():
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     with open(out, "w") as f:
         f.write(svg)
-    print(f"{out}: {points[-1][1]} stars, {os.path.getsize(out)} bytes")
+    print(f"{out}: {points[-1][1]} stars, {len(points)} 数据点, {os.path.getsize(out)} bytes")
     return 0
 
 
