@@ -158,7 +158,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
       const i = arr.findIndex(b => b.time === key)
       if (i < 0) { setHint(null); return }
       setHint({ x: param.point.x, y: param.point.y, date: key,
-                prevClose: arr[i - 1]?.close ?? arr[i].open })
+                prevClose: arr[i - 1]?.close ?? arr[i].open, prevIsOpen: !arr[i - 1] })
     })
 
     // 往左拖/缩放看到最早的几根 → 自动续加载更早的历史
@@ -306,7 +306,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
         // 从龙虎榜榜单点进来: 直接弹开该上榜日的席位浮层
         if (lhbDate) {
           const i = bars.findIndex(b => b.time === lhbDate)
-          if (i >= 0) setIntraday({ date: lhbDate, prevClose: bars[i - 1]?.close ?? bars[i].open, tab: '龙虎榜' })
+          if (i >= 0) setIntraday({ date: lhbDate, prevClose: bars[i - 1]?.close ?? bars[i].open, prevIsOpen: !bars[i - 1], tab: '龙虎榜' })
         }
         // 续史预热: 这只票停留 1.5s(不是方向键快速略过)且历史大概率更深时,
         // 后台静默预取 750 根档——之后第一次拖到最早处直接命中缓存, 不用等
@@ -349,7 +349,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
         {/* 点蜡烛 → 「分时›」tooltip(跟随点击位置) */}
         {hint && !intraday && (
           <button
-            onClick={() => { setIntraday({ date: hint.date, prevClose: hint.prevClose }); setHint(null) }}
+            onClick={() => { setIntraday({ date: hint.date, prevClose: hint.prevClose, prevIsOpen: hint.prevIsOpen }); setHint(null) }}
             className="absolute z-20 text-[10.5px] font-semibold px-2 py-1 rounded-lg cursor-pointer whitespace-nowrap"
             style={{ left: Math.min(Math.max(hint.x + 8, 4), (wrapRef.current?.clientWidth || 400) - 120),
                      top: Math.max(hint.y - 34, 4),
@@ -372,7 +372,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
                   {t}
                 </button>
               ))}
-              <span className="text-[9.5px] text-text-dim">{ovTab === '分时' ? `基准=前收 ${fmt(adjPrev)}${adjusted ? `(除权校正·${adjusted})` : ''} · ` : ''}点K线空白处收起</span>
+              <span className="text-[9.5px] text-text-dim">{ovTab === '分时' ? `基准=${intraday?.prevIsOpen ? '开盘' : '前收'} ${fmt(adjPrev)}${adjusted ? `(除权校正·${adjusted})` : ''} · ` : ''}点K线空白处收起</span>
               <button onClick={() => setIntraday(null)}
                 className="ml-auto text-text-dim hover:text-text text-[15px] leading-none px-1 cursor-pointer">×</button>
             </div>
@@ -400,7 +400,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
                         const i = arr.findIndex(b => b.time === d)
                         return i >= 0
                           ? <button key={d}
-                              onClick={() => { setLhb(null); setIntraday({ date: d, prevClose: arr[i - 1]?.close ?? arr[i].open, tab: '龙虎榜' }) }}
+                              onClick={() => { setLhb(null); setIntraday({ date: d, prevClose: arr[i - 1]?.close ?? arr[i].open, prevIsOpen: !arr[i - 1], tab: '龙虎榜' }) }}
                               className="text-[10.5px] px-1.5 py-0.5 rounded bg-accent/15 text-accent hover:bg-accent/25 cursor-pointer font-mono">
                               {d.slice(2)}
                             </button>
