@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 import asyncio
+import math
 
 _BASE_URL = ""          # 空 = 禁用
 _TIMEOUT = 3.0          # localhost, 短超时; 连不上快速回退
@@ -102,23 +103,35 @@ async def quote(code: str) -> dict | None:
 
 
 async def _ref_price(code: str):
-    """拿 quote 的昨收/现价当锚, 用于判定分时/逐笔的价格基数(个股×1000 / ETF×10000)。"""
+    """拿 quote 的现价当锚, 用于判定分时/逐笔的价格基数(个股×1000 / ETF×10000)。
+    取现价而非昨收: 当日分时/逐笔价贴的是现价, 昨收在新股首日/大幅波动时离得很远。"""
     q = await quote(code)
     if not q:
         return None
-    return q.get("prev_close") or q.get("price")
+    return q.get("price") or q.get("prev_close")
 
 
-def _price_div(raw_prices, ref) -> float:
-    """分时/逐笔基数: 个股 ÷1000, ETF/基金 ÷10000。
-    用 quote 锚价判定: 若 raw/1000 是锚价的 ~10 倍, 说明该 ÷10000。锚拿不到则退回 ÷1000。"""
-    if not ref or ref <= 0:
-        return 1000.0
+def _price_div(raw_prices, ref, code: str = "") -> float:
+    """分时/逐笔基数: 个股 ÷1000, 场内 ETF/LOF ÷10000(TDX 对场内基金多给一位小数)。
+
+    标准 6 位 A 股代码直接按前缀定档(1x/5x 场内基金, 其余个股)——确定性结论, 不受
+    行情影响, 历史日同样成立。只有非标准代码才退回锚价, 在两档里选让价格最接近锚的
+    那档(比值取对数距离)。
+
+    原实现拿昨收当锚 + ">5 倍即 ÷10000" 阈值, 新股首日会翻车: 长鑫 688825 上市首日
+    +466%, raw/1000 是昨收(发行价 8.66)的 5.4 倍, 个股被误判成 ETF, 整条分时缩小 10 倍
+    (显示 3.7~5.6 元, 实际 38~55 元)。
+    """
+    bare = (code or "")[-6:]
+    if len(bare) == 6 and bare.isdigit():     # 标准 A 股代码: 品种由前缀确定, 不看行情
+        return 10000.0 if bare[0] in ("1", "5") else 1000.0   # 1x/5x 场内基金, 其余个股
     vals = sorted(p for p in (raw_prices or []) if isinstance(p, (int, float)) and p > 0)
-    if not vals:
+    if not ref or ref <= 0 or not vals:
         return 1000.0
     mid = vals[len(vals) // 2]
-    return 10000.0 if (mid / 1000.0) / ref > 5 else 1000.0
+    # 选让 mid/div 与 ref 比值最接近 1 的一档(对数距离, 边界在 √10 而非原来的 5)
+    return min((1000.0, 10000.0),
+               key=lambda d: abs(math.log((mid / d) / ref)) if mid / d > 0 else float("inf"))
 
 
 async def minute(code: str, date: str = "") -> dict | None:
@@ -134,9 +147,9 @@ async def minute(code: str, date: str = "") -> dict | None:
     if not isinstance(data, dict):
         return None
     raw = data.get("List") or []
-    q = await quote(code)                       # 基数锚(昨收); 历史日只用于判基数, 量级差2倍内不影响
-    ref = (q or {}).get("prev_close") or (q or {}).get("price")
-    div = _price_div([x.get("Price") for x in raw], ref)
+    q = await quote(code)                       # 基数锚(现价); 历史日只用于判基数, 差几倍不影响档位判定
+    ref = (q or {}).get("price") or (q or {}).get("prev_close")
+    div = _price_div([x.get("Price") for x in raw], ref, code)
     pts = []
     for x in raw:
         p = _f(x.get("Price"), div)
@@ -188,7 +201,7 @@ async def trade(code: str, limit: int = 60) -> dict | None:
     rows = (data or {}).get("List") if isinstance(data, dict) else None
     if not rows:
         return None
-    div = _price_div([x.get("Price") for x in rows], await _ref_price(code))
+    div = _price_div([x.get("Price") for x in rows], await _ref_price(code), code)
     dirs = {0: "买", 1: "卖", 2: "中性"}
     ticks = []
     for x in rows:
