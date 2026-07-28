@@ -368,7 +368,11 @@ async def get_benchmark_return(start_date: str, symbol: str = "sh000300") -> dic
 
 
 def _fetch_history_sina(stock_code: str, days: int) -> pd.DataFrame:
-    """Fetch daily K-line from Sina Finance API (no proxy issues)."""
+    """Fetch daily K-line from Sina Finance API (no proxy issues).
+
+    成交量统一为「手」: 新浪 getKLineData 的 volume 是股, 而东财/腾讯/TDX 都给手。
+    不归一的话同一只票在不同源之间切换时, 成交量会跳 100 倍, 还会以两种量纲混写进
+    SQLite 缓存, 在序列中间留下假的放量/缩量接缝(实测缓存里有 50 处)。"""
     symbol = _sina_symbol(stock_code)
     # Sina provides historical K-line via money.finance.sina.com.cn
     # We use the simple daily K-line API
@@ -388,7 +392,7 @@ def _fetch_history_sina(stock_code: str, days: int) -> pd.DataFrame:
             "收盘": float(item["close"]),
             "最高": float(item["high"]),
             "最低": float(item["low"]),
-            "成交量": float(item["volume"]),
+            "成交量": float(item["volume"]) / 100.0,   # 股 → 手, 对齐东财/腾讯口径
             "成交额": 0,
             "振幅": 0,
             "涨跌幅": 0,
@@ -503,8 +507,10 @@ async def _append_live_bar_if_missing(stock_code: str, df: pd.DataFrame) -> pd.D
     if not (o and h and l and c):
         return df
     row = {col: 0 for col in df.columns}
+    # quote 的 volume 是股(新浪实时口径), 历史序列是手 —— 补的这根不换算就会让最后一根
+    # 柱子比前面高 100 倍。÷100 对齐, 不改 get_realtime_quotes 自身的对外口径。
     row.update({"日期": today, "开盘": float(o), "最高": float(h), "最低": float(l),
-                "收盘": float(c), "成交量": float(q.get("volume") or 0),
+                "收盘": float(c), "成交量": float(q.get("volume") or 0) / 100.0,
                 "成交额": float(q.get("amount") or 0)})
     return pd.concat([df, pd.DataFrame([row])], ignore_index=True)
 
