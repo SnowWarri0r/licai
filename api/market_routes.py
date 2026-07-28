@@ -1,5 +1,6 @@
 """Market data REST endpoints."""
 from __future__ import annotations
+import asyncio
 import json as _json
 from datetime import date, datetime, timedelta, timezone
 from fastapi import APIRouter
@@ -231,6 +232,85 @@ async def market_changes_api(group: str = "全部"):
     """盘口异动事件流(同花顺式): 拉升/跳水/竞价 分组, 近30分钟市场脉搏。"""
     from services.stock_changes import market_changes
     return await market_changes(group)
+
+
+@router.get("/company/{stock_code}")
+async def company_profile(stock_code: str):
+    """公司画像: 三级细分行业 + 一句话主营 + 完整简介 + 主营构成(营收占比/毛利率)。
+
+    榜单/K线头部原来只有粗板块(「半导体」), 看不出这家到底做什么。数据复用 agent 的
+    东财 F10 抓取(进程内缓存 24h)。抓不到时返回 {} 让前端静默降级, 不挡图。
+    """
+    bare = _tdx_bare(stock_code)
+    if not bare:
+        return {}
+    from services.stock_agent import _fetch_company_profile_sync
+    try:
+        d = await asyncio.to_thread(_fetch_company_profile_sync, bare)
+    except Exception:
+        return {}
+    if not isinstance(d, dict) or d.get("error"):
+        return {}
+    prof = (d.get("profile") or "").strip()
+    return {
+        "code": bare,
+        "name": d.get("name"),
+        "industry": d.get("industry"),          # 三级: 电子设备-半导体-集成电路
+        "brief": _one_line_brief(prof, d.get("name"), d.get("main_business")),
+        "profile": prof or None,
+        "main_business": d.get("main_business"),
+        "report_date": d.get("report_date"),
+        "employees": d.get("employees"),
+        "controller": d.get("controller"),
+    }
+
+
+# 强标志词优先(明确在陈述主业), 弱的兜底; 同级按出现顺序取最早的子句
+_BIZ_MARKS_STRONG = ("是一家", "是国内", "是全球", "是中国", "是技术", "是专业",
+                     "主要从事", "主营业务", "主要业务", "主要产品",
+                     "提供商", "服务商", "制造商", "供应商")
+_BIZ_MARKS_WEAK = ("专注于", "致力于", "从事", "生产经营")
+# 战略/愿景类前瞻表述不是"现在做什么"("未来将持续专注于核心技术研发")
+_FORWARD_WORDS = ("未来", "将持续", "将继续", "计划", "战略目标", "愿景", "力争", "打造成")
+
+
+def _one_line_brief(profile: str, name: str | None, main_business=None) -> str | None:
+    """一句话说清「做啥的」。
+
+    简介开头常是「XX公司成立于1999年,由...发起设立」这类沿革, 直接截首句会得到
+    「成立于2005年」这种废话。改为按业务标志词在**子句**级定位(业务描述常和成立年份
+    挤在同一句里, 用逗号分隔), 命中才用; 都没命中就退回主营构成(「主营 茅台酒 86.8%」
+    往往比沿革更说明问题), 再不行才用首句。
+    """
+    p = (profile or "").strip()
+    clauses = [c.strip() for seg in p.split("。") for c in seg.replace("，", ",").split(",") if c.strip()]
+
+    def _strip_name(s: str) -> str:
+        for pre in filter(None, [name, (name or "").replace("股份有限公司", ""),
+                                 (name or "").replace("集团股份有限公司", "")]):
+            if s.startswith(pre):
+                s = s[len(pre):]
+                break
+        return s.lstrip("是的 ").strip()
+
+    usable = [c for c in clauses if not any(w in c for w in _FORWARD_WORDS)]
+    for marks in (_BIZ_MARKS_STRONG, _BIZ_MARKS_WEAK):
+        for c in usable:
+            if any(m in c for m in marks):
+                s = _strip_name(c)
+                s = s[1:].strip() if s.startswith("是") else s
+                if 6 <= len(s) <= 60:
+                    return s
+    if main_business:
+        parts = [f"{x['项目']} {x['营收占比%']}%" for x in main_business[:2]
+                 if x.get("项目") and x.get("营收占比%") is not None
+                 and "补充" not in str(x["项目"]) and str(x["项目"]) != "其他"]
+        if parts:
+            return "主营 " + " · ".join(parts)
+    if clauses:
+        s = _strip_name(clauses[0])
+        return (s[:46] + "…") if len(s) > 46 else (s or None)
+    return None
 
 
 @router.get("/stock-search")
