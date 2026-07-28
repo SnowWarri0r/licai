@@ -331,8 +331,12 @@ async def stock_search(q: str):
             c["_amt"] = qq.get("amount") or 0
             if qq.get("stock_name"):
                 c["name"] = c["name"] or qq["stock_name"]
-        # 成交额(热度)主排序, tier 仅做次级 tiebreak → 热门股永远靠前(华宏→华虹在前)
-        cands.sort(key=lambda c: (-(c.get("_amt") or 0), c.get("_tier", 9)))
+        # 成交额(热度)主排序, tier 仅做次级 tiebreak → 热门股永远靠前(华宏→华虹在前)。
+        # ETF 成交额常压过同名主题个股, 故同热度档内个股优先(ETF 往后放一档)。
+        from services.stock_agent import _etf_codes
+        cands.sort(key=lambda c: (-(c.get("_amt") or 0),
+                                  1 if str(c.get("code")) in _etf_codes else 0,
+                                  c.get("_tier", 9)))
         cands = cands[:8]
         for c in cands:
             c.pop("_tier", None)
