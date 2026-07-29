@@ -112,6 +112,7 @@ async def watchlist_view() -> dict:
             "added_at": r["added_at"], "added_price": r.get("added_price"),
             "行业": (inds.get(code) or ("", ""))[1],
             "分组": r.get("group") or "", "sort_order": r.get("sort_order") or 0,
+            "group_order": r.get("group_order") or 0,
             "自选以来%": since, "结构": tags.get(code, ""), "业绩预告": _fc_txt(code),
         })
     # 已有分组名(供前端下拉/移动菜单), 按名称排; 持仓组是虚拟组不算在内

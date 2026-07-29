@@ -155,7 +155,8 @@ CREATE TABLE IF NOT EXISTS watchlist (
     added_price REAL,                    -- 加自选时现价(看"自选以来"涨跌)
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     grp TEXT DEFAULT '',                 -- 自定义分组名(空=未分组)
-    sort_order REAL DEFAULT 0            -- 组内手动排序位(小的在前, 用浮点便于插入中间)
+    sort_order REAL DEFAULT 0,           -- 全局手动位次(「全部」视图用; 与分组无关)
+    group_order REAL DEFAULT 0           -- 组内手动位次(选中某分组时用; 与全局独立)
 );
 
 -- 全市场代码↔名称字典(个股 + 场内基金): 搜股的匹配底表。
@@ -302,6 +303,11 @@ async def init_db():
             await db.execute(
                 "UPDATE watchlist SET sort_order = (SELECT COUNT(*) FROM watchlist w2 "
                 "WHERE w2.created_at > watchlist.created_at)")
+        if "group_order" not in wl_cols:
+            # 组内位次与全局位次分开: 只有一列时「全部」视图必须按 (分组, 位次) 排,
+            # 改分组就会把票挪进该组的簇里并排到末尾 —— 看着就是"跳到最下面"。
+            await db.execute("ALTER TABLE watchlist ADD COLUMN group_order REAL DEFAULT 0")
+            await db.execute("UPDATE watchlist SET group_order = COALESCE(sort_order,0)")
         # Migration: add trade_time to external_asset_actions
         cursor = await db.execute("PRAGMA table_info(external_asset_actions)")
         eaa_cols = {row[1] for row in await cursor.fetchall()}
@@ -1533,44 +1539,54 @@ async def remove_watchlist(code: str):
 
 
 async def list_watchlist() -> list[dict]:
-    """自选列表。按 (分组名, 组内位次, 加入时间倒序) 排 —— 位次相同(老数据/同批加入)
-    时仍退回加入时间倒序, 与改造前的顺序一致。"""
+    """自选列表。按全局位次排(位次相同则退回加入时间倒序, 与改造前一致)。
+    分组只是标签, 不参与全局排序 —— 前端选中某分组时改用 group_order 排。"""
     db = await get_db()
     try:
         cur = await db.execute(
             "SELECT stock_code, stock_name, added_at, added_price, "
-            "COALESCE(grp,''), COALESCE(sort_order,0) FROM watchlist "
-            "ORDER BY COALESCE(grp,''), COALESCE(sort_order,0), created_at DESC")
+            "COALESCE(grp,''), COALESCE(sort_order,0), COALESCE(group_order,0) FROM watchlist "
+            "ORDER BY COALESCE(sort_order,0), created_at DESC")
         rows = await cur.fetchall()
         return [{"code": r[0], "name": r[1], "added_at": r[2], "added_price": r[3],
-                 "group": r[4] or "", "sort_order": r[5] or 0} for r in rows]
+                 "group": r[4] or "", "sort_order": r[5] or 0, "group_order": r[6] or 0}
+                for r in rows]
     finally:
         await db.close()
 
 
 async def set_watchlist_group(code: str, group: str) -> None:
-    """改某只票的分组。新分组里排到末尾, 避免插到别人中间。"""
+    """改分组。只动 group_order(排到目标组末尾), 全局位次 sort_order 保持不动 ——
+    否则在「全部」视图里改个分组标签会让这只票凭空跳位置。"""
     db = await get_db()
     try:
         cur = await db.execute(
-            "SELECT COALESCE(MAX(sort_order),0)+1 FROM watchlist WHERE COALESCE(grp,'')=?",
+            "SELECT COALESCE(MAX(group_order),0)+1 FROM watchlist WHERE COALESCE(grp,'')=?",
             (group or "",))
         nxt = (await cur.fetchone())[0] or 0
-        await db.execute("UPDATE watchlist SET grp=?, sort_order=? WHERE stock_code=?",
+        await db.execute("UPDATE watchlist SET grp=?, group_order=? WHERE stock_code=?",
                          (group or "", nxt, code))
         await db.commit()
     finally:
         await db.close()
 
 
-async def reorder_watchlist(group: str, codes: list[str]) -> None:
-    """按给定顺序重排某个分组内的位次(整组覆盖写)。顺带把这些票归到该组,
-    支持跨组拖动 —— 前端拖到别的组时把目标组的完整顺序发过来即可。"""
+async def reorder_watchlist(codes: list[str], scope: str = "global", group: str | None = None) -> None:
+    """按给定顺序覆盖写位次。
+
+    scope='global': 写 sort_order(「全部」视图拖动), 不碰分组;
+    scope='group' : 写 group_order, 并把这些票归入 group(支持拖进别的组)。
+    两套位次独立, 所以在组内调顺序不会打乱「全部」视图, 反之亦然。
+    """
     db = await get_db()
     try:
         for i, c in enumerate(codes or []):
-            await db.execute("UPDATE watchlist SET grp=?, sort_order=? WHERE stock_code=?",
-                             (group or "", float(i), c))
+            if scope == "group":
+                await db.execute("UPDATE watchlist SET grp=?, group_order=? WHERE stock_code=?",
+                                 (group or "", float(i), c))
+            else:
+                await db.execute("UPDATE watchlist SET sort_order=? WHERE stock_code=?",
+                                 (float(i), c))
         await db.commit()
     finally:
         await db.close()

@@ -247,46 +247,59 @@ export default function Rankings() {
     setSq(''); setSqCands([])
   }
 
-  // 自选重排: 把当前可见的手动自选顺序整组回写(后端整组覆盖 sort_order)
-  const wlManual = () => ((watch?.rows) || []).filter(r => r.source !== '持仓')
-  const wlGroupOf = (code) => (wlManual().find(r => r.code === code)?.['分组']) || ''
+  // 自选重排。scope 随视图: 「全部」写全局位次, 选中分组写组内位次(两套独立)。
+  const wlScope = () => (wlGroup === '全部' ? 'global' : 'group')
+  const wlScopeGroup = () => (wlGroup === '全部' ? '' : (wlGroup === '未分组' ? '' : wlGroup))
 
-  const commitOrder = async (group, codes) => {
-    // 乐观更新: 先按新顺序改本地 watch, 再回写; 失败则重拉纠正
+  // 当前"显示顺序"的代码序列 —— 必须与界面一致, 不能用 watch.rows 的数组原始顺序:
+  // 乐观更新只改行上的位次字段、不重排数组, 拿原始顺序算会导致第二次 ↑↓ 写回和上次
+  // 相同的结果, 表现为"点一次之后就没用了"。
+  const wlVisibleCodes = () => {
+    let rs = ((watch?.rows) || []).filter(r => r.source !== '持仓')
+    if (wlGroup !== '全部') rs = rs.filter(r => (r['分组'] || '') === wlScopeGroup())
+    const key = wlGroup === '全部' ? 'sort_order' : 'group_order'
+    return [...rs].sort((a, b) => (a[key] || 0) - (b[key] || 0)).map(r => r.code)
+  }
+
+  const commitOrder = async (codes) => {
+    const scope = wlScope()
+    const group = wlScopeGroup()
+    const key = scope === 'global' ? 'sort_order' : 'group_order'
+    // 乐观更新: 只改本视图对应的位次字段(另一套不动), 列表随即按它重排
     setWatch(prev => {
       if (!prev?.rows) return prev
       const pos = new Map(codes.map((c, i) => [c, i]))
-      const rows = prev.rows.map(r => (pos.has(r.code) ? { ...r, 分组: group, sort_order: pos.get(r.code) } : r))
+      const rows = prev.rows.map(r => (pos.has(r.code)
+        ? { ...r, [key]: pos.get(r.code), ...(scope === 'group' ? { 分组: group } : {}) }
+        : r))
       return { ...prev, rows }
     })
     try {
       await fetchJSON('/api/market/watchlist-order', {
-        method: 'PUT', body: JSON.stringify({ group, codes }),
+        method: 'PUT', body: JSON.stringify({ scope, group, codes }),
       })
     } catch { load() }
   }
 
-  // ↑↓ 一格: 只在同组内换位
+  // ↑↓ 一格: 在当前视图的显示顺序里换位
   const nudge = (code, dir) => {
-    const g = wlGroupOf(code)
-    const codes = wlManual().filter(r => (r['分组'] || '') === g).map(r => r.code)
+    const codes = wlVisibleCodes()
     const i = codes.indexOf(code)
     const j = i + dir
     if (i < 0 || j < 0 || j >= codes.length) return
     ;[codes[i], codes[j]] = [codes[j], codes[i]]
-    commitOrder(g, codes)
+    commitOrder(codes)
   }
 
-  // 拖放: 把 dragCode 插到 targetCode 之前(同组内重排; 跨组时归入目标组)
+  // 拖放: 把 dragCode 插到 targetCode 之前
   const dropOn = (targetCode) => {
     const from = dragCode
     setDragCode('')
     if (!from || from === targetCode) return
-    const g = wlGroupOf(targetCode)
-    const codes = wlManual().filter(r => (r['分组'] || '') === g && r.code !== from).map(r => r.code)
+    const codes = wlVisibleCodes().filter(c => c !== from)
     const at = codes.indexOf(targetCode)
     codes.splice(at < 0 ? codes.length : at, 0, from)
-    commitOrder(g, codes)
+    commitOrder(codes)
   }
 
   const moveToGroup = async (code, group) => {
@@ -400,11 +413,12 @@ export default function Rankings() {
         // 分组 chips 只筛手动自选; 持仓组是虚拟组(现取), 不参与分组
         let manual = rs.filter(r => r.source !== '持仓')
         if (wlGroup !== '全部') manual = manual.filter(r => (r['分组'] || '') === (wlGroup === '未分组' ? '' : wlGroup))
-        // 本地按 (分组, 组内位次) 排: 服务端虽已排好, 但 ↑↓/拖动是乐观更新(只改了行上的
-        // sort_order 字段), 不在这里重排的话界面要等下一次拉取才动。
-        manual = [...manual].sort((a, b) =>
-          String(a['分组'] || '').localeCompare(String(b['分组'] || ''))
-          || (a.sort_order || 0) - (b.sort_order || 0))
+        // 排序键随视图切换: 「全部」用全局位次, 选中某分组用组内位次 —— 两套独立,
+        // 所以组内调顺序不会打乱「全部」, 改分组标签也不会让票在「全部」里跳位置。
+        // 必须在本地排: ↑↓/拖动是乐观更新(只改行上的位次字段), 否则要等下次拉取才动。
+        manual = [...manual].sort((a, b) => (wlGroup === '全部'
+          ? (a.sort_order || 0) - (b.sort_order || 0)
+          : (a.group_order || 0) - (b.group_order || 0)))
         const merged = []
         if (held.length && wlGroup === '全部') { merged.push({ _wh: true, 标题: `持仓 ${held.length}`, 说明: '现取, 清仓即消失' }); merged.push(...held) }
         if (manual.length) {
