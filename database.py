@@ -153,7 +153,19 @@ CREATE TABLE IF NOT EXISTS watchlist (
     stock_name TEXT,
     added_at TEXT,                       -- YYYY-MM-DD
     added_price REAL,                    -- 加自选时现价(看"自选以来"涨跌)
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    grp TEXT DEFAULT '',                 -- 自定义分组名(空=未分组)
+    sort_order REAL DEFAULT 0            -- 组内手动排序位(小的在前, 用浮点便于插入中间)
+);
+
+-- 全市场代码↔名称字典(个股 + 场内基金): 搜股的匹配底表。
+-- 现拉一次要 20s+(stock_info_a_code_name 17 个分页 + ETF 表), 每次重启都重付, 首次
+-- 搜索被阻塞几十秒。落盘后重启即时可用, 过期只在后台刷。
+CREATE TABLE IF NOT EXISTS symbol_dict (
+    code TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    is_etf INTEGER DEFAULT 0,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- 板块成交额份额逐日档案(收盘后定格): 看资金往哪个板块聚拢/撤离
@@ -279,6 +291,17 @@ async def init_db():
         if "broker" not in cols:
             # 本笔成交的券商 (可选); NULL → 用持仓默认券商。支持同股跨券商, 手续费按各自费率
             await db.execute("ALTER TABLE position_actions ADD COLUMN broker TEXT")
+        # Migration: 自选加「分组 + 组内手动排序」(老库建表时没有这两列)
+        cursor = await db.execute("PRAGMA table_info(watchlist)")
+        wl_cols = {row[1] for row in await cursor.fetchall()}
+        if "grp" not in wl_cols:
+            await db.execute("ALTER TABLE watchlist ADD COLUMN grp TEXT DEFAULT ''")
+        if "sort_order" not in wl_cols:
+            await db.execute("ALTER TABLE watchlist ADD COLUMN sort_order REAL DEFAULT 0")
+            # 老数据按加入时间倒序给初始位次, 保持用户当前看到的顺序不变
+            await db.execute(
+                "UPDATE watchlist SET sort_order = (SELECT COUNT(*) FROM watchlist w2 "
+                "WHERE w2.created_at > watchlist.created_at)")
         # Migration: add trade_time to external_asset_actions
         cursor = await db.execute("PRAGMA table_info(external_asset_actions)")
         eaa_cols = {row[1] for row in await cursor.fetchall()}
@@ -1510,12 +1533,77 @@ async def remove_watchlist(code: str):
 
 
 async def list_watchlist() -> list[dict]:
+    """自选列表。按 (分组名, 组内位次, 加入时间倒序) 排 —— 位次相同(老数据/同批加入)
+    时仍退回加入时间倒序, 与改造前的顺序一致。"""
     db = await get_db()
     try:
         cur = await db.execute(
-            "SELECT stock_code, stock_name, added_at, added_price FROM watchlist ORDER BY created_at DESC")
+            "SELECT stock_code, stock_name, added_at, added_price, "
+            "COALESCE(grp,''), COALESCE(sort_order,0) FROM watchlist "
+            "ORDER BY COALESCE(grp,''), COALESCE(sort_order,0), created_at DESC")
         rows = await cur.fetchall()
-        return [{"code": r[0], "name": r[1], "added_at": r[2], "added_price": r[3]} for r in rows]
+        return [{"code": r[0], "name": r[1], "added_at": r[2], "added_price": r[3],
+                 "group": r[4] or "", "sort_order": r[5] or 0} for r in rows]
+    finally:
+        await db.close()
+
+
+async def set_watchlist_group(code: str, group: str) -> None:
+    """改某只票的分组。新分组里排到末尾, 避免插到别人中间。"""
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT COALESCE(MAX(sort_order),0)+1 FROM watchlist WHERE COALESCE(grp,'')=?",
+            (group or "",))
+        nxt = (await cur.fetchone())[0] or 0
+        await db.execute("UPDATE watchlist SET grp=?, sort_order=? WHERE stock_code=?",
+                         (group or "", nxt, code))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def reorder_watchlist(group: str, codes: list[str]) -> None:
+    """按给定顺序重排某个分组内的位次(整组覆盖写)。顺带把这些票归到该组,
+    支持跨组拖动 —— 前端拖到别的组时把目标组的完整顺序发过来即可。"""
+    db = await get_db()
+    try:
+        for i, c in enumerate(codes or []):
+            await db.execute("UPDATE watchlist SET grp=?, sort_order=? WHERE stock_code=?",
+                             (group or "", float(i), c))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+# ---- 全市场代码↔名称字典(搜股底表, 落盘避免每次重启重拉 20s+) ----
+
+async def save_symbol_dict(rows: list[tuple]) -> int:
+    """rows: [(code, name, is_etf)]。整表覆盖式 upsert, 不删旧码(退市票留着仍可搜历史)。"""
+    if not rows:
+        return 0
+    db = await get_db()
+    try:
+        await db.executemany(
+            "INSERT INTO symbol_dict (code, name, is_etf, updated_at) VALUES (?,?,?,CURRENT_TIMESTAMP) "
+            "ON CONFLICT(code) DO UPDATE SET name=excluded.name, is_etf=excluded.is_etf, "
+            "updated_at=CURRENT_TIMESTAMP",
+            [(str(c), str(n), int(e)) for c, n, e in rows])
+        await db.commit()
+        return len(rows)
+    finally:
+        await db.close()
+
+
+async def load_symbol_dict() -> tuple[list[tuple], str | None]:
+    """→ ([(code, name, is_etf)], 最新更新时间)。空表返回 ([], None)。"""
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT code, name, COALESCE(is_etf,0) FROM symbol_dict")
+        rows = [(r[0], r[1], int(r[2])) for r in await cur.fetchall()]
+        cur = await db.execute("SELECT MAX(updated_at) FROM symbol_dict")
+        ts = (await cur.fetchone())[0]
+        return rows, ts
     finally:
         await db.close()
 
