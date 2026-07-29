@@ -734,7 +734,7 @@ function RowActions({ row, visible, onEdit, onHistory, onRemove, onAddLot, onRed
 // ============================================================
 // Summary strip
 // ============================================================
-function SummaryStrip({ agg, aShareClosed, realized }) {
+function SummaryStrip({ agg, aShareClosed, realized, todayPnl }) {
   const fxExposure = agg.fxExposure || []
   const realizedTotal = (realized?.stock || 0) + (realized?.asset || 0)
   const grandPnl = (agg.totalPnl || 0) + realizedTotal
@@ -767,11 +767,56 @@ function SummaryStrip({ agg, aShareClosed, realized }) {
         </div>
       ) : null,
     },
-    {
-      label: aShareClosed ? '今日浮动 (A股闭市)' : '今日浮动',
-      val: `${agg.totalToday >= 0 ? '+' : ''}${fmtMoney(agg.totalToday)}`,
-      color: priceColor(agg.totalToday),
-    },
+    (() => {
+      // 当日盈亏优先用后端券商口径(含今日清仓的已实现 + 今日新建仓以买入价为基准);
+      // 端点不可用时退回前端的纯市值变动口径, 并把标签退回「今日浮动」以免口径不符。
+      const useSrv = todayPnl && typeof todayPnl.total === 'number'
+      const v = useSrv ? todayPnl.total : agg.totalToday
+      const closedN = useSrv ? (todayPnl.items || []).filter(i => i.closed_today).length : 0
+      const openedN = useSrv ? (todayPnl.items || []).filter(i => i.opened_today).length : 0
+      const est = useSrv ? (todayPnl.estimated_part || 0) : 0
+      const unk = useSrv ? (todayPnl.unknown || []) : []
+      return {
+        label: (useSrv ? '今日盈亏' : '今日浮动') + (aShareClosed ? ' (A股闭市)' : ''),
+        val: `${v >= 0 ? '+' : ''}${fmtMoney(v)}`,
+        color: priceColor(v),
+        note: useSrv && (closedN || openedN)
+          ? [closedN ? `含今日清仓 ${closedN} 笔` : '', openedN ? `新建 ${openedN} 笔` : '']
+              .filter(Boolean).join(' · ')
+          : null,
+        tooltip: useSrv ? (
+          <div className="space-y-1.5">
+            <div>当日盈亏 = 现市值 + 今日卖出所得 − 昨收市值 − 今日买入成本</div>
+            <div className="text-text-dim">
+              今日清仓的已实现算在内; 今天新建的仓以买入价(而非昨收)为基准。金额含手续费。
+            </div>
+            {(todayPnl.items || []).filter(i => i.today_pnl != null && Math.abs(i.today_pnl) >= 1)
+              .slice(0, 8).map(i => (
+              <div key={i.code} className="flex gap-2 justify-between font-mono text-[10.5px]">
+                <span className="text-text-dim">
+                  {i.name?.slice(0, 14) || i.code}
+                  {i.closed_today ? ' 清仓' : i.opened_today ? ' 新建' : ''}
+                  {i.estimated ? ' 估' : ''}
+                </span>
+                <span className={priceColor(i.today_pnl)}>
+                  {i.today_pnl >= 0 ? '+' : ''}{fmtMoney(i.today_pnl)}
+                </span>
+              </div>
+            ))}
+            {est !== 0 && (
+              <div className="text-text-muted text-[10px]">
+                其中 {fmtMoney(est)} 来自净值 T+1 的场外基金, 按底层代理估, 净值公布后修正
+              </div>
+            )}
+            {unk.length > 0 && (
+              <div className="text-text-muted text-[10px]">
+                {unk.length} 只净值滞后且无代理标的, 未计入(不冒充)
+              </div>
+            )}
+          </div>
+        ) : null,
+      }
+    })(),
   ]
   return (
     <div className="flex gap-4 md:gap-7 items-baseline flex-wrap">
@@ -836,6 +881,7 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
   }, [])
   useEffect(() => { loadThesisCodes() }, [loadThesisCodes])
   const [realized, setRealized] = useState({ stock: 0, asset: 0 })
+  const [todayPnl, setTodayPnl] = useState(null)     // 券商口径当日盈亏(后端算)
   const [settling, setSettling] = useState(false)
   const [settleMsg, setSettleMsg] = useState('')
 
@@ -898,14 +944,22 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
     } catch (e) { console.error('realized load failed', e) }
   }, [])
 
+  const loadTodayPnl = useCallback(async () => {
+    try {
+      const d = await fetchJSON('/api/portfolio/today-pnl')
+      setTodayPnl(d && typeof d.total === 'number' ? d : null)   // 出错时置 null → 退回前端口径
+    } catch { setTodayPnl(null) }
+  }, [])
+
   useEffect(() => {
     loadAssets()
     loadRealized()
+    loadTodayPnl()
     // Crypto & OKX bots are 24/7 markets; use shorter interval. Server-side
     // caches handle upstream rate limits (crypto 30s, fund 120s).
-    const t = setInterval(() => { loadAssets(); loadRealized() }, 20000)
+    const t = setInterval(() => { loadAssets(); loadRealized(); loadTodayPnl() }, 20000)
     return () => clearInterval(t)
-  }, [loadAssets, loadRealized])
+  }, [loadAssets, loadRealized, loadTodayPnl])
 
   useEffect(() => {
     fetchJSON('/api/market/trading-day').then(setTradingDay).catch(() => {})
@@ -915,8 +969,8 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
 
   // 交易流水编辑后 (dataVersion 变化): 立即重载已实现/已清仓/资产, 不用等 20s 轮询
   useEffect(() => {
-    if (dataVersion > 0) { loadRealized(); loadAssets() }
-  }, [dataVersion, loadRealized, loadAssets])
+    if (dataVersion > 0) { loadRealized(); loadAssets(); loadTodayPnl() }
+  }, [dataVersion, loadRealized, loadAssets, loadTodayPnl])
 
   const rows = useMemo(() => {
     // 0 持仓的股票/基金 不在主列表显示, 走 "已清仓" 区块
@@ -1080,7 +1134,7 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
           </div>
           {isEmpty
             ? <div className="text-text-dim text-[12px] py-2">还没有持仓,点击下方「+ 添加」开始</div>
-            : <SummaryStrip agg={agg} aShareClosed={!aShareTradingDay} realized={realized} />
+            : <SummaryStrip agg={agg} aShareClosed={!aShareTradingDay} realized={realized} todayPnl={todayPnl} />
           }
         </div>
         {!isEmpty && <AllocationDonut groups={agg.groups} totalMv={agg.totalMv} />}

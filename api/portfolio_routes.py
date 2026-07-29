@@ -1253,6 +1253,19 @@ async def remove_holding(stock_code: str):
 
 # --- Position Actions (buy/sell history) ---
 
+@router.get("/today-pnl")
+async def today_pnl_api():
+    """当日盈亏(券商口径): 含今日清仓的已实现, 今日新建仓以买入价为基准。
+
+    必须放在 /{stock_code} 这类路径参数路由之前, 否则会被当成 stock_code 吃掉。
+    """
+    from services.today_pnl import today_pnl
+    try:
+        return await today_pnl()
+    except Exception as e:
+        return {"error": str(e), "total": None, "items": []}
+
+
 @router.get("/{stock_code}/actions")
 async def list_actions(stock_code: str):
     """List all buy/sell actions for a stock, chronologically.
