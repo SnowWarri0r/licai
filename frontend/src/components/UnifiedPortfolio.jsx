@@ -1795,17 +1795,18 @@ function AddAShareForm({ initialMarket = 'A', onDone, onCancel, brokers = [] }) 
         <input className={`${inp} w-28`} placeholder={nameLooking ? '查询中...' : '可留空'}
           value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} />
       </div>
-      <div className="flex flex-col gap-1">
-        <label className="text-[11px] text-text-dim">数量</label>
-        <input type="number" className={`${inp} w-24 font-mono`}
-          placeholder={market === 'US' ? '10' : '300'} min={STOCK_MARKETS[market].minShares} step={STOCK_MARKETS[market].step} value={form.shares}
-          onChange={e => setForm({ ...form, shares: e.target.value })} />
-      </div>
+      {/* 字段顺序与加仓/减仓表单一致: 先价格后数量 */}
       <div className="flex flex-col gap-1">
         <label className="text-[11px] text-text-dim">成本价</label>
         <input type="number" className={`${inp} w-28 font-mono`}
           placeholder="12.7401" step={0.0001} value={form.cost}
           onChange={e => setForm({ ...form, cost: e.target.value })} />
+      </div>
+      <div className="flex flex-col gap-1">
+        <label className="text-[11px] text-text-dim">数量</label>
+        <input type="number" className={`${inp} w-24 font-mono`}
+          placeholder={market === 'US' ? '10' : '300'} min={STOCK_MARKETS[market].minShares} step={STOCK_MARKETS[market].step} value={form.shares}
+          onChange={e => setForm({ ...form, shares: e.target.value })} />
       </div>
       <div className="flex flex-col gap-1">
         <label className="text-[11px] text-text-dim">买入日期</label>
@@ -2109,19 +2110,20 @@ function AddAssetForm({ typeKey, onDone, onCancel, brokers = [] }) {
 
         {assetType === 'FUND' || assetType === 'CRYPTO' ? (
           <>
-            <div className="flex flex-col gap-1">
-              <label className="text-[11px] text-text-dim">
-                {assetType === 'FUND' ? '份额' : '数量'}
-              </label>
-              <input type="number" step="0.0001" value={shares} onChange={e => setShares(e.target.value)}
-                className={`${inp} w-28 font-mono`} placeholder={assetType === 'FUND' ? '1500.23' : '0.012'} />
-            </div>
+            {/* 字段顺序与加仓/减仓表单一致: 先价格后数量 */}
             <div className="flex flex-col gap-1">
               <label className="text-[11px] text-text-dim">
                 {assetType === 'FUND' ? '净值/单价' : '单价 $'}
               </label>
               <input type="number" step="0.0001" value={unitPrice} onChange={e => setUnitPrice(e.target.value)}
                 className={`${inp} w-28 font-mono`} placeholder={assetType === 'FUND' ? '3.4915' : '40000'} />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-[11px] text-text-dim">
+                {assetType === 'FUND' ? '份额' : '数量'}
+              </label>
+              <input type="number" step="0.0001" value={shares} onChange={e => setShares(e.target.value)}
+                className={`${inp} w-28 font-mono`} placeholder={assetType === 'FUND' ? '1500.23' : '0.012'} />
             </div>
           </>
         ) : null}
