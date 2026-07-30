@@ -90,7 +90,8 @@ def _agg_bars(daily: list, period: str) -> list:
             continue
         if key not in buckets:
             buckets[key] = {"date": d, "open": b["open"], "high": b["high"],
-                            "low": b["low"], "close": b["close"], "volume": b.get("volume") or 0}
+                            "low": b["low"], "close": b["close"], "volume": b.get("volume") or 0,
+                            "amount": b.get("amount") or 0}
             order.append(key)
         else:
             k = buckets[key]
@@ -98,6 +99,7 @@ def _agg_bars(daily: list, period: str) -> list:
             k["low"] = min(k["low"], b["low"])
             k["close"] = b["close"]
             k["volume"] = (k["volume"] or 0) + (b.get("volume") or 0)
+            k["amount"] = (k["amount"] or 0) + (b.get("amount") or 0)
     return [buckets[k] for k in order]
 
 
@@ -123,7 +125,8 @@ async def tdx_kline(stock_code: str, type: str = "day", limit: int = 200):
         return {"enabled": True, "data": None}
     bars = daily if type == "day" else _agg_bars(daily, type)
     bars = [{"date": b["date"] if "date" in b else b["time"], "open": b["open"], "high": b["high"],
-             "low": b["low"], "close": b["close"], "volume": b.get("volume")} for b in bars[-limit:]]
+             "low": b["low"], "close": b["close"], "volume": b.get("volume"),
+             "amount": b.get("amount")} for b in bars[-limit:]]
     return {"enabled": True, "data": {"type": type, "bars": bars, "source": "daily-agg"}}
 
 
@@ -550,6 +553,7 @@ async def get_history(stock_code: str, days: int = 60):
             "low": float(r.get("最低", 0)),
             "close": float(r.get("收盘", 0)),
             "volume": float(r.get("成交量", 0)),
+            "amount": float(r.get("成交额", 0) or 0),   # 元; 源缺则 0(前端据此隐藏成交额档)
         })
     return result
 
