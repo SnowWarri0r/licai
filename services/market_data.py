@@ -412,11 +412,14 @@ def _em_secid(stock_code: str) -> str:
 
 def _kline_tencent_a(stock_code: str, datalen: int = 120) -> pd.DataFrame:
     """腾讯 gtimg A股/ETF 前复权日K(不同提供商, 抗东财 push2his 抽风; ETF 同样支持)。
-    数组: [日期, 开, 收, 高, 低, 量, ...]。"""
+    数组: [日期, 开, 收, 高, 低, 量(手), {}, 振幅, 额(万元), '']。
+
+    走 newfqkline 而非 fqkline: 后者每行只有 6 个字段(到"量"为止), 拿不到成交额,
+    副图切「成交额」会全是 0。newfqkline 同样是前复权, 多给振幅与成交额。"""
     code = split_stock_code(stock_code)[1]
     pre = "bj" if _is_bse(code) else ("sh" if code[:1] in ("6", "9", "5") else "sz")
     sym = pre + code
-    url = (f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
+    url = (f"https://web.ifzq.gtimg.cn/appstock/app/newfqkline/get"
            f"?_var=kline_dayqfq&param={sym},day,,,{max(int(datalen), 1)},qfq")
     r = _requests.get(url, timeout=10)
     txt = r.text.strip()
@@ -432,9 +435,16 @@ def _kline_tencent_a(stock_code: str, datalen: int = 120) -> pd.DataFrame:
         if len(p) < 6:
             continue
         try:
+            # p[8] = 成交额(万元) —— 之前一律填 0, 副图切"成交额"就没数。万元 → 元。
+            amt = 0.0
+            if len(p) > 8:
+                try:
+                    amt = float(p[8]) * 1e4
+                except (TypeError, ValueError):
+                    amt = 0.0
             out.append({"日期": str(p[0]), "开盘": float(p[1]), "收盘": float(p[2]),
                         "最高": float(p[3]), "最低": float(p[4]), "成交量": float(p[5]),
-                        "成交额": 0, "振幅": 0, "涨跌幅": 0, "涨跌额": 0, "换手率": 0})
+                        "成交额": amt, "振幅": 0, "涨跌幅": 0, "涨跌额": 0, "换手率": 0})
         except (TypeError, ValueError):
             continue
     return pd.DataFrame(out)
@@ -585,8 +595,8 @@ async def _get_historical_data_inner(stock_code: str, days: int = 60) -> pd.Data
             rows = None
         if rows:
             df = pd.DataFrame(rows)
-            df.rename(columns={"date": "日期", "open": "开盘", "high": "最高", "low": "最低", "close": "收盘", "volume": "成交量"}, inplace=True)
-            df["成交额"] = 0
+            df.rename(columns={"date": "日期", "open": "开盘", "high": "最高", "low": "最低", "close": "收盘", "volume": "成交量", "amount": "成交额"}, inplace=True)
+            if "成交额" not in df.columns: df["成交额"] = 0   # 缓存里读回来的额别清零
             df["振幅"] = 0
             df["涨跌幅"] = 0
             df["涨跌额"] = 0
@@ -654,8 +664,8 @@ async def _get_historical_data_inner(stock_code: str, days: int = 60) -> pd.Data
     rows = await get_cached_klines(stock_code, days)
     if rows:
         df = pd.DataFrame(rows)
-        df.rename(columns={"date": "日期", "open": "开盘", "high": "最高", "low": "最低", "close": "收盘", "volume": "成交量"}, inplace=True)
-        df["成交额"] = 0
+        df.rename(columns={"date": "日期", "open": "开盘", "high": "最高", "low": "最低", "close": "收盘", "volume": "成交量", "amount": "成交额"}, inplace=True)
+        if "成交额" not in df.columns: df["成交额"] = 0   # 缓存里读回来的额别清零
         df["振幅"] = 0
         df["涨跌幅"] = 0
         df["涨跌额"] = 0
