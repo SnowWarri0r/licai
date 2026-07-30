@@ -454,7 +454,32 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
           </button>
         )}
 
-        {/* 分时浮层: 盖在K线下半部, K线不缩; 点K线任意处/×/ESC 收起 */}
+      </div>
+
+      {/* 量/额 独立副图: 自己的纵轴刻度 + hover 出具体数字; 与主图时间轴双向同步 */}
+      <div className="shrink-0 mt-0.5">
+        <div className="flex items-center gap-2 px-0.5 h-4 text-[10px]">
+          {['量', '额'].map(m => (
+            <button key={m} onClick={() => setVolMode(m)}
+              title={m === '量' ? '成交量(手)' : '成交额(元)'}
+              className={`px-1.5 rounded leading-4 ${volMode === m ? 'bg-accent/20 text-accent' : 'text-text-dim hover:text-text'}`}>
+              {m === '量' ? '成交量' : '成交额'}
+            </button>
+          ))}
+          {volLegend && (
+            <span className="font-mono text-text-dim">
+              <span className="text-text-muted mr-1.5">{volLegend.time}</span>
+              量 <span className="text-text">{fmtVol(volLegend.volume)}</span>
+              <span className="text-text-muted mx-1">·</span>
+              额 <span className="text-text">{fmtAmt(volLegend.amount)}</span>
+            </span>
+          )}
+        </div>
+        <div ref={volWrapRef} style={{ width: '100%', height: 132 }} />
+      </div>
+
+      {/* 分时浮层: 覆盖组件底部(含量额副图区) —— 挂在根层而非主图容器内,
+          否则 62% 只按被副图挤小后的主图高算, 纵轴刻度会挤成一团。 */}
         {intraday && (
           <div className="absolute inset-x-0 bottom-0 z-20 border-t border-border rounded-t-lg px-2 pt-1 pb-1.5 overflow-hidden flex flex-col"
             style={{ height: '62%',
@@ -534,29 +559,6 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
             )}
           </div>
         )}
-      </div>
-
-      {/* 量/额 独立副图: 自己的纵轴刻度 + hover 出具体数字; 与主图时间轴双向同步 */}
-      <div className="shrink-0 mt-0.5">
-        <div className="flex items-center gap-2 px-0.5 h-4 text-[10px]">
-          {['量', '额'].map(m => (
-            <button key={m} onClick={() => setVolMode(m)}
-              title={m === '量' ? '成交量(手)' : '成交额(元)'}
-              className={`px-1.5 rounded leading-4 ${volMode === m ? 'bg-accent/20 text-accent' : 'text-text-dim hover:text-text'}`}>
-              {m === '量' ? '成交量' : '成交额'}
-            </button>
-          ))}
-          {volLegend && (
-            <span className="font-mono text-text-dim">
-              <span className="text-text-muted mr-1.5">{volLegend.time}</span>
-              量 <span className="text-text">{fmtVol(volLegend.volume)}</span>
-              <span className="text-text-muted mx-1">·</span>
-              额 <span className="text-text">{fmtAmt(volLegend.amount)}</span>
-            </span>
-          )}
-        </div>
-        <div ref={volWrapRef} style={{ width: '100%', height: 132 }} />
-      </div>
       {err && <div className="absolute inset-0 flex items-center justify-center text-[12px] text-text-dim">{err}</div>}
       {loading && !err && <div className="absolute inset-x-0 top-1/2 text-center text-[12px] text-text-dim">加载 K 线…</div>}
       {seatQ && <SeatHistoryModal seat={seatQ} onClose={() => setSeatQ('')} />}
