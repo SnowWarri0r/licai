@@ -99,6 +99,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
   const volChartRef = useRef(null)
   const volSeriesRef = useRef(null)
   const syncingRef = useRef(false)                 // 两图时间轴互相同步时防回环
+  const alignScalesRef = useRef(null)              // 对齐两图价格轴宽度(否则柱子错位)
   const [volMode, setVolMode] = useState('量')     // 量 | 额
   const [volLegend, setVolLegend] = useState(null) // 副图 hover 的具体数字
   const chartRef = useRef(null)
@@ -133,6 +134,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
       value: volMode === '额' ? (b.amount || 0) : (b.volume || 0),
       color: b.close >= b.open ? 'rgba(207,92,92,0.55)' : 'rgba(95,168,108,0.55)',
     })))
+    requestAnimationFrame(() => alignScalesRef.current?.())   // 量↔额 刻度宽度不同, 重新对齐
   }, [volMode])
 
   // 建图(一次)
@@ -197,6 +199,27 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
       }
       chart.timeScale().subscribeVisibleLogicalRangeChange(syncFrom(chart, volChart))
       volChart.timeScale().subscribeVisibleLogicalRangeChange(syncFrom(volChart, chart))
+
+      // 两图价格轴宽度必须一致, 否则上下柱子对不齐: 绘图区 = 容器宽 − 轴宽, 而主图刻度是
+      // 「1500.00」(宽)、副图是「500亿」(窄), 轴宽差十几像素, 同一根就落在不同 x 上。
+      // 取两者实测宽度的较大值, 双向设成 minimumWidth(该选项的官方用途正是垂直堆叠对齐)。
+      // 两阶段: 先把 minimumWidth 解除, 让两边报告"自然宽度"; 下一帧再按较大者 pin 回去。
+      // 不解除就量不到新刻度的自然宽 —— width() 永远 ≥ 已 pin 的值, 于是切「成交额」后
+      // (「200亿」比「40万」宽)副图实际变宽而主图没跟上, 又错开。
+      const alignScales = () => {
+        const ps = [chart.priceScale('right'), volChart.priceScale('right')]
+        try {
+          ps.forEach(x => x.applyOptions({ minimumWidth: 0 }))
+        } catch { return }
+        requestAnimationFrame(() => {
+          try {
+            const w = Math.max(...ps.map(x => x.width()))
+            if (w > 0) ps.forEach(x => x.applyOptions({ minimumWidth: w }))
+          } catch { /* 尺寸未就绪时忽略, 下次数据/尺寸变化再对齐 */ }
+        })
+      }
+      alignScalesRef.current = alignScales
+      requestAnimationFrame(alignScales)
 
       volChart.subscribeCrosshairMove(param => {
         const d = param.seriesData?.get(volSeriesRef.current)
@@ -341,6 +364,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
       })))
       mas.forEach((s, i) => s.setData(maLine(bars, MA_DEFS[i].n)))
       gapPrim?.setGaps(detectGaps(bars))
+      requestAnimationFrame(() => alignScalesRef.current?.())   // 刻度文本变长 → 轴宽变 → 重新对齐
       // 昨收线: 最新一根的前一日收盘 → 一眼看出今天这根(哪怕收红阳线)是否还在昨收下方
       if (prevCloseLineRef.current) { candle.removePriceLine(prevCloseLineRef.current); prevCloseLineRef.current = null }
       const prevClose = bars.length >= 2 ? bars[bars.length - 2].close : null
