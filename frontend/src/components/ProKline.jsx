@@ -171,7 +171,8 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
         crosshair: { mode: CrosshairMode.Normal,
           vertLine: { color: 'rgba(200,168,118,0.5)', width: 1, style: 2 },
           horzLine: { color: 'rgba(200,168,118,0.5)', width: 1, style: 2 } },
-        rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.12, bottom: 0.02 } },
+        // bottom 留一点: 0 刻度紧贴容器下沿会被裁掉半截(副图还要分一截高度给日期轴)
+        rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.12, bottom: 0.10 } },
         timeScale: { borderColor: 'rgba(255,255,255,0.08)', rightOffset: 4, minBarSpacing: 1.5,
           visible: true, timeVisible: false },
         handleScale: true, handleScroll: true,
@@ -437,7 +438,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
               <span>滚轮缩放 · 点蜡烛看当日分时</span>
             </span>}
       </div>
-      <div className={`relative ${fill ? 'flex-1 min-h-0' : ''}`} style={fill ? { width: '100%' } : { width: '100%', height: Math.max(120, height - 128) }}>
+      <div className={`relative ${fill ? 'flex-1 min-h-0' : ''}`} style={fill ? { width: '100%' } : { width: '100%', height: Math.max(120, height - 156) /* 156 = 副图132 + 切换条与间距 */ }}>
         <div ref={wrapRef} className="absolute inset-0" />
 
         {/* 点蜡烛 → 「分时›」tooltip(跟随点击位置) */}
@@ -554,7 +555,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
             </span>
           )}
         </div>
-        <div ref={volWrapRef} style={{ width: '100%', height: 104 }} />
+        <div ref={volWrapRef} style={{ width: '100%', height: 132 }} />
       </div>
       {err && <div className="absolute inset-0 flex items-center justify-center text-[12px] text-text-dim">{err}</div>}
       {loading && !err && <div className="absolute inset-x-0 top-1/2 text-center text-[12px] text-text-dim">加载 K 线…</div>}
