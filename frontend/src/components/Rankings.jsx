@@ -181,6 +181,11 @@ export default function Rankings() {
   const [sq, setSq] = useState('')                       // 自由查股输入
   const [sqCands, setSqCands] = useState([])             // 搜索候选
   const sqTimer = useRef(null)
+  const sqSeq = useRef(0)                                 // 请求序号, 丢弃乱序返回
+  const [sqBusy, setSqBusy] = useState(false)
+  const [wlGroup, setWlGroup] = useState('全部')          // 自选分组 chips 当前筛选
+  const [dragCode, setDragCode] = useState('')            // 正在拖动的自选代码
+  const [grpMenu, setGrpMenu] = useState('')              // 展开「移到分组」菜单的代码
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState(false)
   const [selected, setSelected] = useState(null)
@@ -224,16 +229,73 @@ export default function Rankings() {
     setSq(v)
     if (sqTimer.current) clearTimeout(sqTimer.current)
     const t = v.trim()
-    if (!t) { setSqCands([]); return }
+    if (!t) { setSqCands([]); setSqBusy(false); sqSeq.current++; return }
+    // 去抖 180ms(原 300ms): 后端已按查询词缓存 45s, 回退删字基本秒回, 不必等那么久。
+    // seq 防乱序: 快速输入时多个请求并发, 只认最后一次的结果, 否则短前缀的旧结果会
+    // 盖掉长前缀的新结果。加载期间保留上一次候选, 避免列表闪空。
+    const my = ++sqSeq.current
+    setSqBusy(true)
     sqTimer.current = setTimeout(() => {
       fetchJSON(`/api/market/stock-search?q=${encodeURIComponent(t)}`)
-        .then(d => setSqCands(d?.candidates || []))
-        .catch(() => setSqCands([]))
-    }, 300)
+        .then(d => { if (my === sqSeq.current) setSqCands(d?.candidates || []) })
+        .catch(() => { if (my === sqSeq.current) setSqCands([]) })
+        .finally(() => { if (my === sqSeq.current) setSqBusy(false) })
+    }, 180)
   }
   const pickCand = (c) => {
     setSelected({ code: String(c.code), name: c.name || String(c.code), pct: c.pct ?? 0 })
     setSq(''); setSqCands([])
+  }
+
+  // 自选重排: 把当前可见的手动自选顺序整组回写(后端整组覆盖 sort_order)
+  const wlManual = () => ((watch?.rows) || []).filter(r => r.source !== '持仓')
+  const wlGroupOf = (code) => (wlManual().find(r => r.code === code)?.['分组']) || ''
+
+  const commitOrder = async (group, codes) => {
+    // 乐观更新: 先按新顺序改本地 watch, 再回写; 失败则重拉纠正
+    setWatch(prev => {
+      if (!prev?.rows) return prev
+      const pos = new Map(codes.map((c, i) => [c, i]))
+      const rows = prev.rows.map(r => (pos.has(r.code) ? { ...r, 分组: group, sort_order: pos.get(r.code) } : r))
+      return { ...prev, rows }
+    })
+    try {
+      await fetchJSON('/api/market/watchlist-order', {
+        method: 'PUT', body: JSON.stringify({ group, codes }),
+      })
+    } catch { load() }
+  }
+
+  // ↑↓ 一格: 只在同组内换位
+  const nudge = (code, dir) => {
+    const g = wlGroupOf(code)
+    const codes = wlManual().filter(r => (r['分组'] || '') === g).map(r => r.code)
+    const i = codes.indexOf(code)
+    const j = i + dir
+    if (i < 0 || j < 0 || j >= codes.length) return
+    ;[codes[i], codes[j]] = [codes[j], codes[i]]
+    commitOrder(g, codes)
+  }
+
+  // 拖放: 把 dragCode 插到 targetCode 之前(同组内重排; 跨组时归入目标组)
+  const dropOn = (targetCode) => {
+    const from = dragCode
+    setDragCode('')
+    if (!from || from === targetCode) return
+    const g = wlGroupOf(targetCode)
+    const codes = wlManual().filter(r => (r['分组'] || '') === g && r.code !== from).map(r => r.code)
+    const at = codes.indexOf(targetCode)
+    codes.splice(at < 0 ? codes.length : at, 0, from)
+    commitOrder(g, codes)
+  }
+
+  const moveToGroup = async (code, group) => {
+    try {
+      await fetchJSON(`/api/market/watchlist/${code}/group`, {
+        method: 'PUT', body: JSON.stringify({ group }),
+      })
+    } catch { /* 失败下面照样重拉 */ }
+    load()
   }
 
   const toggleWatch = (stock) => {
@@ -335,10 +397,20 @@ export default function Rankings() {
     : tab === 'watch' ? (() => {
         const rs = (watch?.rows) || []
         const held = rs.filter(r => r.source === '持仓')
-        const manual = rs.filter(r => r.source !== '持仓')
+        // 分组 chips 只筛手动自选; 持仓组是虚拟组(现取), 不参与分组
+        let manual = rs.filter(r => r.source !== '持仓')
+        if (wlGroup !== '全部') manual = manual.filter(r => (r['分组'] || '') === (wlGroup === '未分组' ? '' : wlGroup))
+        // 本地按 (分组, 组内位次) 排: 服务端虽已排好, 但 ↑↓/拖动是乐观更新(只改了行上的
+        // sort_order 字段), 不在这里重排的话界面要等下一次拉取才动。
+        manual = [...manual].sort((a, b) =>
+          String(a['分组'] || '').localeCompare(String(b['分组'] || ''))
+          || (a.sort_order || 0) - (b.sort_order || 0))
         const merged = []
-        if (held.length) { merged.push({ _wh: true, 标题: `持仓 ${held.length}`, 说明: '现取, 清仓即消失' }); merged.push(...held) }
-        if (manual.length) { merged.push({ _wh: true, 标题: `自选 ${manual.length}`, 说明: '在看未必持有' }); merged.push(...manual) }
+        if (held.length && wlGroup === '全部') { merged.push({ _wh: true, 标题: `持仓 ${held.length}`, 说明: '现取, 清仓即消失' }); merged.push(...held) }
+        if (manual.length) {
+          merged.push({ _wh: true, 标题: `自选 ${manual.length}${wlGroup !== '全部' ? ` · ${wlGroup}` : ''}`, 说明: '在看未必持有; 拖 ⠿ 或点 ↑↓ 调顺序' })
+          merged.push(...manual)
+        }
         return merged
       })()
     : tab === 'lhb' ? ((lhbDaily?.rows) || []).map(r => ({ ...r, pct: r['涨跌幅'], _lhbDate: lhbDaily.date }))
@@ -386,8 +458,13 @@ export default function Rankings() {
               onKeyDown={e => { if (e.key === 'Enter' && sqCands.length) pickCand(sqCands[0]); if (e.key === 'Escape') { setSq(''); setSqCands([]) } }}
               placeholder="查任意股票" title="代码/名称/拼音子串, 选中后与榜单一样看K线/分时/龙虎榜/问AI"
               className="w-[86px] focus:w-[130px] transition-all text-[11px] px-2 py-1 rounded bg-surface-3 border border-border text-text placeholder:text-text-muted focus:border-accent/50 outline-none" />
+            {sqBusy && sqCands.length === 0 && sq.trim() && (
+              <div className="absolute right-0 top-full mt-1 z-30 w-56 bg-surface-2 border border-border rounded-lg px-2.5 py-1.5 text-[11px] text-text-muted shadow-xl">
+                查询中…
+              </div>
+            )}
             {sqCands.length > 0 && (
-              <div className="absolute right-0 top-full mt-1 z-30 w-56 bg-surface-2 border border-border rounded-lg overflow-hidden shadow-xl">
+              <div className={`absolute right-0 top-full mt-1 z-30 w-56 bg-surface-2 border border-border rounded-lg overflow-hidden shadow-xl ${sqBusy ? 'opacity-60' : ''}`}>
                 {sqCands.map(c => (
                   <button key={c.code} onClick={() => pickCand(c)}
                     className="w-full flex items-baseline gap-2 px-2.5 py-1.5 text-left hover:bg-surface-3/80 border-b border-border-subtle/50">
@@ -407,6 +484,25 @@ export default function Rankings() {
 
         {/* 板块筛选 */}
         <div className="flex items-center gap-1 px-3 py-1.5 border-b border-border-subtle flex-wrap">
+          {tab === 'watch' && (
+            <>
+              {['全部', ...((watch?.groups) || []), '未分组'].map(g => {
+                const n = g === '全部'
+                  ? ((watch?.rows) || []).filter(r => r.source !== '持仓').length
+                  : ((watch?.rows) || []).filter(r => r.source !== '持仓'
+                      && (r['分组'] || '') === (g === '未分组' ? '' : g)).length
+                if (g === '未分组' && n === 0) return null
+                return (
+                  <button key={g} onClick={() => setWlGroup(g)}
+                    className={`text-[11px] px-2 py-0.5 rounded ${wlGroup === g ? 'bg-accent/15 text-accent' : 'text-text-dim hover:text-text'}`}>
+                    {g}<span className="text-text-muted ml-1">{n}</span>
+                  </button>
+                )
+              })}
+              <span className="text-text-muted mx-0.5">·</span>
+              <span className="text-[10px] text-text-muted">行右侧 ⠿ 拖动排序 · ↑↓ 微调 · ⋯ 移到分组</span>
+            </>
+          )}
           {tab === 'structure' && (
             <>
               {['全部', '强势', '蓄势'].map(k => (
@@ -527,8 +623,14 @@ export default function Rankings() {
               )
             }
             const active = selected?.code === r.code
+            const wlCtl = tab === 'watch' && r.source !== '持仓'   // 手动自选才可排序/分组
             return (
-              <button key={r._k || r.code} data-row={r.code} onClick={() => setSelected(r)} title={r['AI理由'] || r['上榜原因'] || undefined}
+              <div key={r._k || r.code} className="relative group/row"
+                draggable={wlCtl}
+                onDragStart={wlCtl ? (e) => { setDragCode(r.code); e.dataTransfer.effectAllowed = 'move' } : undefined}
+                onDragOver={wlCtl ? (e) => e.preventDefault() : undefined}
+                onDrop={wlCtl ? (e) => { e.preventDefault(); dropOn(r.code) } : undefined}>
+              <button data-row={r.code} onClick={() => setSelected(r)} title={r['AI理由'] || r['上榜原因'] || undefined}
                 className={`w-full flex items-center gap-2 px-3 py-1.5 text-left border-b border-border-subtle/60 ${active ? 'bg-accent/15' : 'hover:bg-surface-3/60'}`}>
                 <span className="text-[10px] font-mono text-text-muted w-5 shrink-0 text-right">{r._idx ?? i + 1}</span>
                 <span className="min-w-0 flex-1">
@@ -605,6 +707,40 @@ export default function Rankings() {
                   </span>
                 </span>
               </button>
+              {wlCtl && (
+                <span className="absolute right-1.5 top-1/2 -translate-y-1/2 z-10 hidden group-hover/row:flex items-center gap-0.5
+                                 bg-surface-2/95 rounded px-1 py-0.5 border border-border-subtle">
+                  <span title="按住拖动排序" className="cursor-grab text-text-muted px-0.5 select-none">⠿</span>
+                  <button title="上移" onClick={(e) => { e.stopPropagation(); nudge(r.code, -1) }}
+                    className="text-[11px] leading-none px-1 text-text-dim hover:text-accent">↑</button>
+                  <button title="下移" onClick={(e) => { e.stopPropagation(); nudge(r.code, 1) }}
+                    className="text-[11px] leading-none px-1 text-text-dim hover:text-accent">↓</button>
+                  <button title="移到分组" onClick={(e) => { e.stopPropagation(); setGrpMenu(r.code) }}
+                    className="text-[11px] leading-none px-1 text-text-dim hover:text-accent">⋯</button>
+                </span>
+              )}
+              {grpMenu === r.code && (
+                <div className="absolute right-1.5 top-full -mt-1 z-30 w-40 bg-surface-2 border border-border rounded-lg shadow-xl py-1"
+                  onMouseLeave={() => setGrpMenu('')}>
+                  <div className="px-2.5 py-1 text-[10px] text-text-muted">移到分组</div>
+                  {[...new Set([...((watch?.groups) || []), ''])].map(g => (
+                    <button key={g || '_none'}
+                      onClick={(e) => { e.stopPropagation(); setGrpMenu(''); moveToGroup(r.code, g) }}
+                      className={`w-full text-left px-2.5 py-1 text-[11px] hover:bg-surface-3/80 ${(r['分组'] || '') === g ? 'text-accent' : 'text-text-dim'}`}>
+                      {g || '未分组'}{(r['分组'] || '') === g ? ' ✓' : ''}
+                    </button>
+                  ))}
+                  <button onClick={(e) => {
+                    e.stopPropagation()
+                    const g = (window.prompt('新分组名(20字内)') || '').trim().slice(0, 20)
+                    setGrpMenu('')
+                    if (g) moveToGroup(r.code, g)
+                  }} className="w-full text-left px-2.5 py-1 text-[11px] text-accent hover:bg-surface-3/80 border-t border-border-subtle mt-1">
+                    + 新建分组…
+                  </button>
+                </div>
+              )}
+              </div>
             )
           })}
 

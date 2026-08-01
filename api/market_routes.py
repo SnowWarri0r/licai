@@ -2,8 +2,10 @@
 from __future__ import annotations
 import asyncio
 import json as _json
+import time as _time
 from datetime import date, datetime, timedelta, timezone
 from fastapi import APIRouter
+from pydantic import BaseModel
 
 import services.llm_client as _llm
 
@@ -313,11 +315,23 @@ def _one_line_brief(profile: str, name: str | None, main_business=None) -> str |
     return None
 
 
+_search_cache: dict = {}          # 归一化查询词 → (结果, 时间戳)
+_SEARCH_TTL = 45
+
+
 @router.get("/stock-search")
 async def stock_search(q: str):
-    """自由查股: 代码/名称/子串 → 候选列表(带实时涨跌), 复用 agent 的 resolve 链路。"""
+    """自由查股: 代码/名称/子串 → 候选列表(带实时涨跌), 复用 agent 的 resolve 链路。
+
+    按查询词缓存 45s: 实测 resolve 只 0.05s, 但给候选池取实时行情要 0.3-0.4s(一次
+    外部请求), 逐字输入时每个前缀都付一次。缓存后回退删字/重复查同一词直接命中。
+    """
     from services.market_data import get_realtime_quotes
     from services.stock_agent import _tool_resolve_stock
+    key = (q or "").strip().lower()
+    c = _search_cache.get(key)
+    if c and _time.time() - c[1] < _SEARCH_TTL:
+        return c[0]
     r = await _tool_resolve_stock((q or "").strip())
     # 候选池(至多20)先取行情, 按 (匹配度tier, 成交额降序) 重排 → 热门/高流动性靠前, 再截8
     cands = (r.get("candidates")
@@ -341,7 +355,11 @@ async def stock_search(q: str):
         for c in cands:
             c.pop("_tier", None)
             c.pop("_amt", None)
-    return {"candidates": cands}
+    out = {"candidates": cands}
+    if len(_search_cache) > 400:                  # 逐字输入会攒很多前缀键, 简单封顶
+        _search_cache.clear()
+    _search_cache[key] = (out, _time.time())
+    return out
 
 
 @router.get("/volume")
@@ -395,6 +413,33 @@ async def watchlist_add(stock_code: str):
 async def watchlist_del(stock_code: str):
     from database import remove_watchlist
     await remove_watchlist(stock_code.split(".")[-1])
+    return {"ok": True}
+
+
+class WatchGroupReq(BaseModel):
+    group: str = ""
+
+
+class WatchReorderReq(BaseModel):
+    group: str = ""
+    codes: list[str] = []
+
+
+@router.put("/watchlist/{stock_code}/group")
+async def watchlist_set_group(stock_code: str, body: WatchGroupReq):
+    """把一只自选票移到某个分组(空字符串 = 未分组)。新组内排到末尾。"""
+    from database import set_watchlist_group
+    await set_watchlist_group(stock_code.split(".")[-1], (body.group or "").strip()[:20])
+    return {"ok": True}
+
+
+@router.put("/watchlist-order")
+async def watchlist_reorder(body: WatchReorderReq):
+    """整组覆盖写位次: 前端把该组拖动后的完整代码顺序发过来。
+    跨组拖动也走这个 —— 目标组的顺序里带上被拖进来的票即可, 会一并改它的分组。"""
+    from database import reorder_watchlist
+    await reorder_watchlist((body.group or "").strip()[:20],
+                            [str(c).split(".")[-1] for c in (body.codes or [])][:500])
     return {"ok": True}
 
 
@@ -555,7 +600,6 @@ async def get_macro_kline(symbol: str, days: int = 60):
 # ============================================================
 # 爱在冰川式 市场情绪温度计 (打板情绪: 涨停/连板/炸板/赚钱效应)
 # ============================================================
-import time as _time
 _senti_cache: dict = {}
 _SENTI_TTL = 300
 
