@@ -1,22 +1,22 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="760" height="400" viewBox="0 0 760 400" font-family="-apple-system,Segoe UI,Helvetica,Arial,sans-serif">
 <rect width="760" height="400" rx="8" fill="#ffffff" stroke="#e8e4dc"/>
 <text x="56" y="30" font-size="16" font-weight="600" fill="#24292f">Star History · SnowWarri0r/licai</text>
-<text x="732" y="30" font-size="11" fill="#57606a" text-anchor="end">updated 2026-07-22 UTC</text>
+<text x="732" y="30" font-size="11" fill="#57606a" text-anchor="end">updated 2026-07-26 UTC</text>
 <line x1="56" y1="356.0" x2="732" y2="356.0" stroke="#e8e4dc"/>
 <text x="48" y="360.0" font-size="11" fill="#57606a" text-anchor="end">0</text>
-<line x1="56" y1="271.6" x2="732" y2="271.6" stroke="#e8e4dc"/>
-<text x="48" y="275.6" font-size="11" fill="#57606a" text-anchor="end">10</text>
-<line x1="56" y1="187.1" x2="732" y2="187.1" stroke="#e8e4dc"/>
-<text x="48" y="191.1" font-size="11" fill="#57606a" text-anchor="end">20</text>
-<line x1="56" y1="102.7" x2="732" y2="102.7" stroke="#e8e4dc"/>
-<text x="48" y="106.7" font-size="11" fill="#57606a" text-anchor="end">30</text>
-<line x1="66.9" y1="52" x2="66.9" y2="356" stroke="#e8e4dc"/>
-<text x="66.9" y="374" font-size="11" fill="#57606a" text-anchor="middle">2026-05</text>
-<line x1="315.5" y1="52" x2="315.5" y2="356" stroke="#e8e4dc"/>
-<text x="315.5" y="374" font-size="11" fill="#57606a" text-anchor="middle">2026-06</text>
-<line x1="556.1" y1="52" x2="556.1" y2="356" stroke="#e8e4dc"/>
-<text x="556.1" y="374" font-size="11" fill="#57606a" text-anchor="middle">2026-07</text>
-<path d="M 56.0 347.6 H 56.0 V 339.1 H 61.1 V 330.7 H 64.7 V 322.2 H 203.9 V 313.8 H 296.3 V 305.3 H 312.4 V 296.9 H 334.4 V 288.4 H 437.1 V 280.0 H 464.5 V 271.6 H 488.2 V 263.1 H 493.8 V 254.7 H 494.8 V 246.2 H 502.2 V 237.8 H 513.2 V 229.3 H 537.4 V 220.9 H 545.1 V 212.4 H 545.7 V 204.0 H 550.7 V 195.6 H 558.4 V 187.1 H 573.5 V 178.7 H 574.2 V 170.2 H 584.9 V 161.8 H 623.7 V 153.3 H 624.0 V 144.9 H 649.6 V 136.4 H 670.3 V 128.0 H 672.3 V 119.6 H 672.5 V 111.1 H 677.7 V 102.7 H 719.4 V 94.2 H 727.9 V 85.8 H 732.0" fill="none" stroke="#c8a876" stroke-width="2.5" stroke-linejoin="round"/>
-<circle cx="732.0" cy="85.8" r="4" fill="#c8a876"/>
-<text x="724.0" y="75.8" font-size="13" font-weight="600" fill="#24292f" text-anchor="end">32 stars</text>
+<line x1="56" y1="276.0" x2="732" y2="276.0" stroke="#e8e4dc"/>
+<text x="48" y="280.0" font-size="11" fill="#57606a" text-anchor="end">10</text>
+<line x1="56" y1="196.0" x2="732" y2="196.0" stroke="#e8e4dc"/>
+<text x="48" y="200.0" font-size="11" fill="#57606a" text-anchor="end">20</text>
+<line x1="56" y1="116.0" x2="732" y2="116.0" stroke="#e8e4dc"/>
+<text x="48" y="120.0" font-size="11" fill="#57606a" text-anchor="end">30</text>
+<line x1="66.5" y1="52" x2="66.5" y2="356" stroke="#e8e4dc"/>
+<text x="66.5" y="374" font-size="11" fill="#57606a" text-anchor="middle">2026-05</text>
+<line x1="306.0" y1="52" x2="306.0" y2="356" stroke="#e8e4dc"/>
+<text x="306.0" y="374" font-size="11" fill="#57606a" text-anchor="middle">2026-06</text>
+<line x1="537.7" y1="52" x2="537.7" y2="356" stroke="#e8e4dc"/>
+<text x="537.7" y="374" font-size="11" fill="#57606a" text-anchor="middle">2026-07</text>
+<path d="M 56.0 348.0 H 56.0 V 340.0 H 60.9 V 332.0 H 64.3 V 324.0 H 198.5 V 316.0 H 287.5 V 308.0 H 302.9 V 300.0 H 324.2 V 292.0 H 423.1 V 284.0 H 449.5 V 276.0 H 472.3 V 268.0 H 477.6 V 260.0 H 478.6 V 252.0 H 485.8 V 244.0 H 496.4 V 236.0 H 519.7 V 228.0 H 527.1 V 220.0 H 527.6 V 212.0 H 532.5 V 204.0 H 539.8 V 196.0 H 554.4 V 188.0 H 555.1 V 180.0 H 565.4 V 172.0 H 602.8 V 164.0 H 603.1 V 156.0 H 627.7 V 148.0 H 647.7 V 140.0 H 649.6 V 132.0 H 649.8 V 124.0 H 654.8 V 116.0 H 695.0 V 108.0 H 703.2 V 100.0 H 712.2 V 92.0 H 723.8 V 84.0 H 732.0" fill="none" stroke="#c8a876" stroke-width="2.5" stroke-linejoin="round"/>
+<circle cx="732.0" cy="84.0" r="4" fill="#c8a876"/>
+<text x="724.0" y="74.0" font-size="13" font-weight="600" fill="#24292f" text-anchor="end">34 stars</text>
 </svg>
