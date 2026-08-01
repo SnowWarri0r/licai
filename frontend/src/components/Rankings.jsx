@@ -20,9 +20,11 @@ function pctColor(v) {
   return 'text-text-dim'
 }
 
-// 按代码前缀分板块
+// 按代码前缀分板块。场内基金(1x/5x)不属于任何"板块", 单独标出 —— 588xxx 是科创板
+// 主题 ETF, 标成「主板」是分类错误。榜单列表只有个股, 不受这条影响。
 function boardOf(code) {
   const c = String(code || '')
+  if (/^[15]\d{5}$/.test(c)) return '场内基金'
   if (c.startsWith('688') || c.startsWith('689')) return '科创板'
   if (c.startsWith('30')) return '创业板'
   // 北交所: 8xxxxx(83/87/88) / 4xxxxx(老三板迁移) / 920xxx(新代码段) —— 与后端
