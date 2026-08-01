@@ -423,6 +423,7 @@ class WatchGroupReq(BaseModel):
 class WatchReorderReq(BaseModel):
     group: str = ""
     codes: list[str] = []
+    scope: str = "global"        # global=写全局位次 | group=写组内位次(两套独立)
 
 
 @router.put("/watchlist/{stock_code}/group")
@@ -435,11 +436,16 @@ async def watchlist_set_group(stock_code: str, body: WatchGroupReq):
 
 @router.put("/watchlist-order")
 async def watchlist_reorder(body: WatchReorderReq):
-    """整组覆盖写位次: 前端把该组拖动后的完整代码顺序发过来。
-    跨组拖动也走这个 —— 目标组的顺序里带上被拖进来的票即可, 会一并改它的分组。"""
+    """覆盖写位次: 前端把拖动后的完整代码顺序发过来。
+
+    scope=global(「全部」视图): 只写全局位次, 不动分组;
+    scope=group (选中某分组): 只写该组内位次, 并把这些票归入该组(支持拖进别的组)。
+    两套位次独立 —— 组内调顺序不会打乱「全部」视图。
+    """
     from database import reorder_watchlist
-    await reorder_watchlist((body.group or "").strip()[:20],
-                            [str(c).split(".")[-1] for c in (body.codes or [])][:500])
+    scope = "group" if body.scope == "group" else "global"
+    await reorder_watchlist([str(c).split(".")[-1] for c in (body.codes or [])][:500],
+                            scope=scope, group=(body.group or "").strip()[:20])
     return {"ok": True}
 
 
