@@ -19,6 +19,9 @@ _MAX_ROUNDS = 14
 _code_name_cache: tuple[dict, dict, float] | None = None
 
 
+_etf_codes: set = set()      # 全表里属于场内基金的代码, 搜索排序用(个股优先于 ETF)
+
+
 def _load_a_code_name_sync():
     import os
     for k in list(os.environ):
@@ -33,6 +36,22 @@ def _load_a_code_name_sync():
         if code and name:
             name2code[name] = code
             code2name[code] = name
+    # 并入场内 ETF/LOF: stock_info_a_code_name 只有个股, ETF 此前只能靠"6位数字代码"
+    # 兜底分支精确命中, 按名称/前缀/拼音一律查不到(如 588710 科创半导体设备ETF华泰柏瑞)。
+    # 并进同一张表后, 名称匹配/子串/拼音索引(从这张表建)对 ETF 一并生效。
+    # 走新浪源: 东财 fund_etf_spot_em 在本机被网关拦。失败则跳过, 不影响个股。
+    try:
+        edf = ak.fund_etf_category_sina(symbol="ETF基金")
+        for _, r in edf.iterrows():
+            code = str(r.get("代码") or "").strip()[-6:]      # 源带 sh/sz 前缀
+            name = str(r.get("名称") or "").strip()
+            if not (len(code) == 6 and code.isdigit() and name):
+                continue
+            _etf_codes.add(code)
+            code2name.setdefault(code, name)
+            name2code.setdefault(name, code)                  # 不覆盖同名个股
+    except Exception as e:
+        print(f"[stock_agent] ETF 全表并入失败(个股不受影响): {e}")
     return name2code, code2name
 
 
@@ -274,6 +293,10 @@ async def _tool_resolve_stock(query: str) -> dict:
     qpy = _to_full_pinyin(q)
     has_cjk = any("一" <= ch <= "鿿" for ch in q)
     is_letters = bool(_re.fullmatch(r"[A-Za-z0-9]{2,12}", q)) and not q.isdigit()
+    # 数字代码前缀/子串: 此前代码只有"精确6位"一条路(纯数字被 is_letters 排除), 输一半
+    # 代码一律查不到(6005 查不到 600519, 5887 查不到 588710)。在持票能中是因为持仓分支
+    # 单独做了 q in cd 子串匹配, 全表没有 —— 这里补齐, 口径与持仓一致。
+    is_digits = q.isdigit() and 2 <= len(q) <= 6
     pool: dict = {}   # code -> (tier, name)
 
     def _add(cd, nm, tier):
@@ -281,6 +304,11 @@ async def _tool_resolve_stock(query: str) -> dict:
             pool[cd] = (tier, nm)
 
     for ini, full, nm, cd in rows:
+        if is_digits:
+            if cd.startswith(q):
+                _add(cd, nm, 0)
+            elif q in cd:
+                _add(cd, nm, 2)
         if q in nm:
             _add(cd, nm, 0 if nm.startswith(q) else 1)
         if is_letters:
@@ -300,7 +328,12 @@ async def _tool_resolve_stock(query: str) -> dict:
                 _add(cd, nm, 5)
 
     if pool:
-        ordered = sorted(pool.items(), key=lambda kv: (kv[1][0], len(kv[1][1])))[:20]
+        # 池上限 20(端点还要逐个取行情)。数字代码前缀能一次命中上百只, 若仍按"名称长度"
+        # 截断, 留下哪 20 只是任意的 —— 输 6005 会把 600519 茅台截掉, 后面按成交额重排
+        # 也救不回来。数字查询改按代码升序截断: 结果确定, 且天然覆盖输入相邻的号段。
+        key = ((lambda kv: (kv[1][0], kv[0])) if is_digits
+               else (lambda kv: (kv[1][0], len(kv[1][1]))))
+        ordered = sorted(pool.items(), key=key)[:20]
         return {"candidates": [{"name": nm, "code": cd, "_tier": tier}
                                for cd, (tier, nm) in ordered],
                 "note": "候选按匹配度+热度(成交额)排序"}
