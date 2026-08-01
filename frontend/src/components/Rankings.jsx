@@ -25,7 +25,9 @@ function boardOf(code) {
   const c = String(code || '')
   if (c.startsWith('688') || c.startsWith('689')) return '科创板'
   if (c.startsWith('30')) return '创业板'
-  if (c[0] === '8' || c[0] === '4') return '北交所'
+  // 北交所: 8xxxxx(83/87/88) / 4xxxxx(老三板迁移) / 920xxx(新代码段) —— 与后端
+  // market_data._is_bj_share 同口径; 漏掉 920 会把北交所票错标成主板
+  if (c.startsWith('920') || c[0] === '8' || c[0] === '4') return '北交所'
   return '主板'
 }
 const BOARDS = ['全部', '主板', '创业板', '科创板', '北交所']
@@ -35,9 +37,23 @@ function StockPanel({ stock, watched, onToggleWatch }) {
   const [askOpen, setAskOpen] = useState(false)
   const [seed, setSeed] = useState('')
   const [draft, setDraft] = useState('')
+  const [co, setCo] = useState(null)          // 公司画像(细分行业/一句话主营/简介/主营构成)
+  const [coOpen, setCoOpen] = useState(false)
 
   // 切换股票: 关弹窗、清空草稿
   useEffect(() => { setAskOpen(false); setSeed(''); setDraft('') }, [stock])
+
+  // 公司画像: 榜单只有粗板块(「半导体」), 这里补三级细分 + 做啥的。抓不到就静默不显示。
+  useEffect(() => {
+    setCo(null); setCoOpen(false)
+    const code = stock?.code
+    if (!code) return
+    let alive = true
+    prefetchJSON(`/api/market/company/${encodeURIComponent(code)}`)
+      .then(d => { if (alive && d && d.industry) setCo(d) })
+      .catch(() => {})
+    return () => { alive = false }
+  }, [stock?.code])
 
   const openAsk = (question = '') => { setSeed(question); setAskOpen(true) }
   const submitDraft = () => { const t = draft.trim(); if (t) { openAsk(t); setDraft('') } }
@@ -63,7 +79,18 @@ function StockPanel({ stock, watched, onToggleWatch }) {
             {stock.pct >= 0 ? '+' : ''}{stock.pct}%
           </span>
         )}
-        {stock['行业'] && <span className="text-[10.5px] text-text-dim ml-1">{stock['行业']}</span>}
+        {/* 板块 + 细分行业: 异动/龙虎榜等榜单行不带「行业」字段, 板块按代码前缀现算总是有;
+            细分行业(三级)拉到就替掉粗行业, 拉不到退回榜单给的粗行业 */}
+        <span className="text-[10.5px] text-text-dim ml-1">{boardOf(stock.code)}</span>
+        {(co?.industry || stock['行业']) && (
+          <span className="text-[10.5px] text-text-dim">· {co?.industry || stock['行业']}</span>
+        )}
+        {co?.brief && (
+          <button onClick={() => setCoOpen(v => !v)} title="点开看完整简介与主营构成"
+            className="text-[10.5px] text-text-muted hover:text-text truncate max-w-[22rem] cursor-pointer text-left">
+            {co.brief} <span className="text-text-dim">{coOpen ? '⌄' : '›'}</span>
+          </button>
+        )}
         <button onClick={() => onToggleWatch(stock)} title={watched ? '移出自选' : '加入自选(记录当前价, 之后看自选以来涨跌)'}
           className={`ml-auto text-[15px] leading-none px-1.5 py-0.5 rounded cursor-pointer ${watched ? 'text-accent' : 'text-text-dim hover:text-accent'}`}>
           {watched ? '★' : '☆'}
@@ -73,6 +100,36 @@ function StockPanel({ stock, watched, onToggleWatch }) {
           问 AI 分析
         </button>
       </div>
+
+      {/* 公司详情: 完整简介 + 主营构成(营收占比/毛利率). 默认收起, 不挤压 K 线 */}
+      {coOpen && co && (
+        <div className="px-4 py-2.5 border-b border-border-subtle bg-surface-2/40 shrink-0 max-h-52 overflow-y-auto">
+          {co.profile && (
+            <p className="text-[11px] text-text-dim leading-relaxed m-0 mb-2 whitespace-pre-wrap">{co.profile}</p>
+          )}
+          {(co.main_business || []).length > 0 && (
+            <div className="text-[10.5px]">
+              <div className="text-text-muted mb-1">
+                主营构成{co.report_date ? ` · ${co.report_date}` : ''}
+                <span className="text-text-dim ml-2">营收占比 / 毛利率</span>
+              </div>
+              {co.main_business.map((m, i) => (
+                <div key={i} className="flex items-center gap-2 py-[1px]">
+                  <span className="text-text-dim w-44 truncate" title={m['项目']}>{m['项目']}</span>
+                  <span className="font-mono text-text">{m['营收占比%'] != null ? `${m['营收占比%']}%` : '—'}</span>
+                  <span className="font-mono text-text-muted">
+                    {m['毛利率%'] != null ? `毛利 ${m['毛利率%']}%` : ''}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="text-[10px] text-text-muted mt-2 pt-1.5 border-t border-border-subtle">
+            {[co.employees ? `员工 ${co.employees}` : '', co.controller ? `实控 ${co.controller}` : '']
+              .filter(Boolean).join(' · ') || '数据来自公开披露'}
+          </div>
+        </div>
+      )}
 
       {/* K线铺满面板 */}
       <div className="flex-1 min-h-0 px-3 py-2">
@@ -241,7 +298,10 @@ export default function Rankings() {
         setSelected(prev => {
           if (!listRef.current?.length) return prev
           const arr = listRef.current
-          const i = arr.findIndex(x => x.code === prev?.code)
+          // 定位当前行优先用唯一键 _k: 异动榜同一只票会出现多条事件, 只按 code 找会永远
+          // 命中第一条, 于是「下一条」还是同一只票, 方向键原地打转下不去。
+          let i = prev?._k ? arr.findIndex(x => x._k === prev._k) : -1
+          if (i < 0) i = arr.findIndex(x => x.code === prev?.code)
           const ni = e.key === 'ArrowDown' ? Math.min(i + 1, arr.length - 1) : Math.max(i - 1, 0)
           return arr[ni] || prev
         })
