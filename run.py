@@ -43,6 +43,23 @@ from api.ws import router as ws_router, price_monitor_loop, backup_loop, briefin
 from services import feishu_notify
 
 
+async def _symbol_dict_prewarm():
+    """搜股底表(代码↔名称全表 + 拼音索引)后台预热。
+
+    库为空时现拉要 20s+, 若等用户第一次搜索才建, 那一次就卡几十秒。启动后台建好,
+    搜索永远走缓存。库里已有数据时这步只是读库 + 建拼音索引(<1s)。"""
+    try:
+        await asyncio.sleep(2)                     # 让端口先起来, 不拖慢启动
+        from services.stock_agent import _code_name_maps, _pinyin_rows
+        await _code_name_maps()
+        rows = await _pinyin_rows()
+        print(f"[startup] 搜股底表就绪: {len(rows)} 条")
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        print(f"[startup] 搜股底表预热失败(搜索首次会现拉): {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
@@ -108,6 +125,7 @@ async def lifespan(app: FastAPI):
     task7 = asyncio.create_task(coiled_prewarm_loop())
     task8 = asyncio.create_task(curve_prewarm_loop())
     task9 = asyncio.create_task(eod_summary_loop())
+    task10 = asyncio.create_task(_symbol_dict_prewarm())
     print(f"理财助手已启动: http://localhost:{config.port}")
     yield
     task1.cancel()
@@ -118,6 +136,8 @@ async def lifespan(app: FastAPI):
     task7.cancel()
     task6.cancel()
     task8.cancel()
+    task9.cancel()
+    task10.cancel()
 
 
 app = FastAPI(title="理财助手", lifespan=lifespan)

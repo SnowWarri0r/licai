@@ -111,7 +111,10 @@ async def watchlist_view() -> dict:
             "pct": q.get("change_pct"), "price": price, "source": "自选",
             "added_at": r["added_at"], "added_price": r.get("added_price"),
             "行业": (inds.get(code) or ("", ""))[1],
+            "分组": r.get("group") or "", "sort_order": r.get("sort_order") or 0,
             "自选以来%": since, "结构": tags.get(code, ""), "业绩预告": _fc_txt(code),
         })
-    return {"rows": out, "n_hold": len(holds), "n_watch": len(wl),
+    # 已有分组名(供前端下拉/移动菜单), 按名称排; 持仓组是虚拟组不算在内
+    groups = sorted({(r.get("group") or "") for r in wl} - {""})
+    return {"rows": out, "n_hold": len(holds), "n_watch": len(wl), "groups": groups,
             "note": "持仓组自动置顶(现取, 清仓即消失); 手动自选=在看未必持有。结构标签与业绩预告为客观描述, 不构成买卖建议。"}
