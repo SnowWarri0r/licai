@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS kline_cache (
     date TEXT NOT NULL,
     open REAL, high REAL, low REAL, close REAL,
     volume REAL DEFAULT 0,
+    amount REAL DEFAULT 0,               -- 成交额(元); 副图切「成交额」用, 源缺则 0
     PRIMARY KEY (stock_code, date)
 );
 
@@ -292,6 +293,11 @@ async def init_db():
         if "broker" not in cols:
             # 本笔成交的券商 (可选); NULL → 用持仓默认券商。支持同股跨券商, 手续费按各自费率
             await db.execute("ALTER TABLE position_actions ADD COLUMN broker TEXT")
+        # Migration: kline_cache 加成交额列(老库只有 volume)
+        cursor = await db.execute("PRAGMA table_info(kline_cache)")
+        kc_cols = {row[1] for row in await cursor.fetchall()}
+        if "amount" not in kc_cols:
+            await db.execute("ALTER TABLE kline_cache ADD COLUMN amount REAL DEFAULT 0")
         # Migration: 自选加「分组 + 组内手动排序」(老库建表时没有这两列)
         cursor = await db.execute("PRAGMA table_info(watchlist)")
         wl_cols = {row[1] for row in await cursor.fetchall()}
@@ -530,7 +536,8 @@ async def get_cached_klines(stock_code: str, limit: int = 250) -> list[dict]:
     db = await get_db()
     try:
         cursor = await db.execute(
-            "SELECT date, open, high, low, close, volume FROM kline_cache WHERE stock_code = ? ORDER BY date DESC LIMIT ?",
+            "SELECT date, open, high, low, close, volume, COALESCE(amount,0) AS amount "
+            "FROM kline_cache WHERE stock_code = ? ORDER BY date DESC LIMIT ?",
             (stock_code, limit),
         )
         rows = await cursor.fetchall()
@@ -557,8 +564,10 @@ async def save_klines(stock_code: str, rows: list[dict]):
     db = await get_db()
     try:
         await db.executemany(
-            "INSERT OR REPLACE INTO kline_cache (stock_code, date, open, high, low, close, volume) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [(stock_code, r["日期"], r["开盘"], r["最高"], r["最低"], r["收盘"], r.get("成交量", 0)) for r in rows],
+            "INSERT OR REPLACE INTO kline_cache (stock_code, date, open, high, low, close, volume, amount) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [(stock_code, r["日期"], r["开盘"], r["最高"], r["最低"], r["收盘"],
+              r.get("成交量", 0), r.get("成交额", 0) or 0) for r in rows],
         )
         await db.commit()
     finally:
