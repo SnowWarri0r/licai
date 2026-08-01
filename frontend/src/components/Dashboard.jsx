@@ -25,6 +25,7 @@ export default function Dashboard({ holdings }) {
   const [external, setExternal] = useState(null)
   const [tradingDay, setTradingDay] = useState(null)
   const [realized, setRealized] = useState({ stock: 0, asset: 0 })
+  const [srvToday, setSrvToday] = useState(null)   // 券商口径当日盈亏(后端算, 与持仓总览同源)
 
   useEffect(() => {
     const load = async () => {
@@ -67,6 +68,10 @@ export default function Dashboard({ holdings }) {
   useEffect(() => {
     const load = async () => {
       try { setExternal(await fetchJSON('/api/assets')) } catch {}
+      try {
+        const d = await fetchJSON('/api/portfolio/today-pnl')
+        setSrvToday(d && typeof d.total === 'number' ? d : null)
+      } catch { setSrvToday(null) }
     }
     load()
     // 24/7 crypto + OKX bots — faster refresh, server caches handle upstream rate limits
@@ -153,7 +158,12 @@ export default function Dashboard({ holdings }) {
         return s + (a.current_value * pct / 100) / (1 + pct / 100)
       }, 0)
     : 0
-  const todayPnl = aTodayPnl + fundTodayPnl + cryptoTodayPnl
+  // 当日盈亏优先用后端券商口径(含今日清仓的已实现 + 今日新建仓按买入价为基准), 与持仓
+  // 总览 SummaryStrip 同源, 两处必须一致 —— 否则顶栏和总览会给出两个数。
+  // 后端只算有"份额×单价"口径的品种, 加密/OKX机器人(24/7, 走 floatProfit)仍在前端补。
+  // 后端已覆盖 A股/基金/ETF/加密/机器人, 前端不再补算, 避免重复计数。
+  const srvOk = srvToday && typeof srvToday.total === 'number'
+  const todayPnl = srvOk ? srvToday.total : aTodayPnl + fundTodayPnl + cryptoTodayPnl
 
   // --- Combined ---
   const totalValue = aValue + eValue
@@ -281,7 +291,7 @@ export default function Dashboard({ holdings }) {
           <div className="w-px h-4 bg-border shrink-0" />
           <div className="flex items-center gap-1.5 shrink-0">
             <span className="text-[11px] text-text-muted">
-              {!isTradingDay && cryptoTodayPnl !== 0 ? '24h 浮动' : '今日浮动'}
+              {!isTradingDay && cryptoTodayPnl !== 0 ? '24h 浮动' : (srvOk ? '今日盈亏' : '今日浮动')}
             </span>
             <span className={`text-[13px] font-mono font-medium ${priceColor(todayPnl)}`}>
               {todayPnl >= 0 ? '+' : ''}{fmtMoney(todayPnl)}
