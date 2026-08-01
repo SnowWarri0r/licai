@@ -479,6 +479,28 @@ def _fetch_history_em(stock_code: str, days: int) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+async def _save_klines_complete(stock_code: str, records: list) -> None:
+    """回写 SQLite, 但盘中丢掉「今日」那根未收盘的 bar。
+
+    各源(腾讯/EM/akshare)的日K都带今日盘中 bar。直接整段持久化会出事:
+    get_cached_latest_date 变成今天 → need_fetch=False → 整个交易日都服务这份早盘
+    快照, 今日那根冻在第一次抓取的瞬间。实测 300308 缓存里存着
+    (开919.01 高933 低919.01 收929.79, 量仅1.2万手 = 早盘), 而当时实际已跌到 800.99,
+    K线legend 显示 -2.23% 而表头(走实时行情)是 -15.77%, 两处对不上就是这么来的。
+
+    收盘后(15:00 起)今日已定格, 照常持久化, 免得盘后每次都回源。
+    """
+    from database import save_klines
+    if not records:
+        return
+    cst = _cst_now()
+    if (cst.hour * 60 + cst.minute) < 900:            # 15:00 前视为未收盘
+        today = cst.strftime("%Y-%m-%d")
+        records = [r for r in records if str(r.get("日期") or r.get("date") or "")[:10] != today]
+    if records:
+        await save_klines(stock_code, records)
+
+
 async def get_historical_data(stock_code: str, days: int = 60) -> pd.DataFrame:
     """Get historical daily OHLCV data(带盘中今日 bar 兜底)。"""
     df = await _get_historical_data_inner(stock_code, days)
@@ -539,7 +561,7 @@ async def _get_historical_data_inner(stock_code: str, days: int = 60) -> pd.Data
         if df is not None and not df.empty:
             # 前复权结果写回 SQLite(INSERT OR REPLACE)→ 覆盖历史不复权污染行, 缓存自愈;
             # 即便下次 EM 抽风失败, 兜底也是连续的前复权数据. 除权再发生时下次成功抓取会重新覆盖.
-            await save_klines(stock_code, df.to_dict("records"))
+            await _save_klines_complete(stock_code, df.to_dict("records"))
             df = df.tail(days)
             _cache_set(cache_key, df)
             return df
@@ -584,7 +606,7 @@ async def _get_historical_data_inner(stock_code: str, days: int = 60) -> pd.Data
                 start_date=start_date, end_date=end_date, adjust="qfq",
             )
             if df is not None and not df.empty:
-                await save_klines(stock_code, df.to_dict("records"))   # 前复权回写自愈缓存
+                await _save_klines_complete(stock_code, df.to_dict("records"))   # 前复权回写自愈缓存
                 df = df.tail(days)
                 _cache_set(cache_key, df)
                 return df
@@ -598,7 +620,7 @@ async def _get_historical_data_inner(stock_code: str, days: int = 60) -> pd.Data
         if df is not None and not df.empty:
             # akshare 也是前复权 → ETF 回写自愈缓存(覆盖历史不复权污染行), 即便 EM 抽风也连续
             if is_etf:
-                await save_klines(stock_code, df.to_dict("records"))
+                await _save_klines_complete(stock_code, df.to_dict("records"))
             df = df.tail(days)
             _cache_set(cache_key, df)
             return df
@@ -609,7 +631,7 @@ async def _get_historical_data_inner(stock_code: str, days: int = 60) -> pd.Data
     try:
         df = await asyncio.to_thread(_kline_tencent_a, stock_code, max(days, 120))
         if df is not None and not df.empty:
-            await save_klines(stock_code, df.to_dict("records"))   # 前复权回写自愈缓存
+            await _save_klines_complete(stock_code, df.to_dict("records"))   # 前复权回写自愈缓存
             df = df.tail(days)
             _cache_set(cache_key, df)
             return df
