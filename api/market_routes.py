@@ -72,14 +72,56 @@ async def tdx_minute(stock_code: str, date: str = ""):
     return {"enabled": True, "data": data}
 
 
+def _agg_bars(daily: list, period: str) -> list:
+    """日线 → 周/月线: 桶内 开=首根开, 高=最高, 低=最低, 收=末根收, 量=求和。
+    周按 ISO 周(年,周号)分桶, 月按 年-月。daily 需按日期升序。"""
+    from datetime import date as _date
+    buckets: dict = {}
+    order: list = []
+    for b in daily:
+        d = str(b.get("time") or "")[:10]
+        try:
+            y, m, dd = int(d[:4]), int(d[5:7]), int(d[8:10])
+            key = f"{y}-{m:02d}" if period == "month" else "W%s-%s" % _date(y, m, dd).isocalendar()[:2]
+        except (ValueError, IndexError):
+            continue
+        if key not in buckets:
+            buckets[key] = {"date": d, "open": b["open"], "high": b["high"],
+                            "low": b["low"], "close": b["close"], "volume": b.get("volume") or 0}
+            order.append(key)
+        else:
+            k = buckets[key]
+            k["high"] = max(k["high"], b["high"])
+            k["low"] = min(k["low"], b["low"])
+            k["close"] = b["close"]
+            k["volume"] = (k["volume"] or 0) + (b.get("volume") or 0)
+    return [buckets[k] for k in order]
+
+
 @router.get("/tdx/kline/{stock_code}")
 async def tdx_kline(stock_code: str, type: str = "day", limit: int = 200):
-    """多周期 K 线(TDX): type=day/week/month/hour/minute1/5/15/30。"""
+    """多周期 K 线(TDX): type=day/week/month/hour/minute1/5/15/30。
+
+    TDX 拿不到时对 day/week/month 回退到日线源聚合——TDX 的前复权那步在新股上市
+    首日会失败(无复权因子记录, 报 total=0), TDX 本身挂掉时同理, 不该让周/月直接空。
+    分钟级周期没有日线可聚合, 仍返回 None。
+    """
     import services.tdx_client as _tdx
     bare = _tdx_bare(stock_code)
     if not _tdx.is_enabled() or not bare:
         return {"enabled": _tdx.is_enabled(), "data": None}
-    return {"enabled": True, "data": await _tdx.kline(bare, type, limit)}
+    data = await _tdx.kline(bare, type, limit)
+    if data or type not in ("day", "week", "month"):
+        return {"enabled": True, "data": data}
+    # 回退: 日线聚合(周/月各多取几倍天数保证够根数)
+    span = {"day": 1, "week": 7, "month": 31}[type]
+    daily = await get_history(stock_code, days=min(2400, max(60, limit * span)))
+    if not daily:
+        return {"enabled": True, "data": None}
+    bars = daily if type == "day" else _agg_bars(daily, type)
+    bars = [{"date": b["date"] if "date" in b else b["time"], "open": b["open"], "high": b["high"],
+             "low": b["low"], "close": b["close"], "volume": b.get("volume")} for b in bars[-limit:]]
+    return {"enabled": True, "data": {"type": type, "bars": bars, "source": "daily-agg"}}
 
 
 @router.get("/tdx/trade/{stock_code}")
