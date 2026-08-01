@@ -106,17 +106,34 @@ class LotAdd(BaseModel):
 _split_checked: dict[str, str] = {}   # code -> 已探测日期(每天每只最多探测一次)
 
 
+def _schedule_etf_split_check(asset: dict) -> None:
+    """拆分探测移出请求关键路径: 数据源(fund_etf_hist_em 走东财)本机被网关拦时会卡 ~10s,
+    放进 GET /api/assets 会让列表每次加载都干等。改为后台每天每只最多探一次, 结果下次加载
+    生效, 绝不阻塞列表渲染。占位标记在启动前就打(失败也不当天重试), 避免反复重打慢/被拦的源。"""
+    from datetime import date as _d
+    code = asset.get("code") or ""
+    if not code or _split_checked.get(code) == _d.today().isoformat():
+        return
+    _split_checked[code] = _d.today().isoformat()
+
+    async def _run(a):
+        try:
+            await asyncio.wait_for(_maybe_sync_etf_split(a), timeout=15)
+        except Exception as e:                            # 超时/拉取失败/被拦: 静默跳过, 明天再探
+            print(f"[split-sync bg] {code} skipped: {e}")
+
+    try:
+        asyncio.create_task(_run(dict(asset)))            # 传副本: 后台改 DB, 不动本次响应对象
+    except RuntimeError:
+        pass                                              # 无运行中的事件循环(同步上下文)则跳过
+
+
 async def _maybe_sync_etf_split(asset: dict) -> bool:
     """场内 ETF 份额拆分自动同步: raw/qfq 日K检测到拆分且账本未记录时, 补一条
-    SPLIT 流水(份额×F、单价÷F、成本不动)。返回是否新入账。"""
-    from datetime import date as _d
+    SPLIT 流水(份额×F、单价÷F、成本不动)。返回是否新入账。节流由 _schedule_etf_split_check 负责。"""
     from services.external_assets import detect_etf_split
     code = asset.get("code") or ""
-    today = _d.today().isoformat()
-    if _split_checked.get(code) == today:
-        return False
-    hit = await asyncio.to_thread(detect_etf_split, code)   # 拉数失败抛异常 → 不打节流标记, 下次再试
-    _split_checked[code] = today                            # 只有检测真正完成才记"今天查过"
+    hit = await asyncio.to_thread(detect_etf_split, code)
     if not hit:
         return False
     split_date, factor = hit
@@ -185,19 +202,10 @@ async def _enrich(asset: dict) -> dict:
     out["pending_actions_count"] = pending_count
 
     if t == "FUND":
-        # 场内 ETF 份额拆分自动同步(在持仓上, 每天探测一次): 券商份额已×F 而账本还是旧份额时,
-        # 市值会假性腰斩; 检测到就补 SPLIT 流水并重刷 shares/cost
+        # 场内 ETF 份额拆分自动同步: 券商份额已×F 而账本还是旧份额时市值会假性腰斩。
+        # 探测走后台(数据源慢/被拦时不拖累列表), 补账结果下次加载生效——见 _schedule_etf_split_check。
         if _is_etf_code(asset["code"]) and float(out.get("shares") or 0) > 0:
-            try:
-                if await _maybe_sync_etf_split(asset):
-                    actions = await list_external_actions(asset["id"])
-                    ledger_state = compute_external_state(actions, t)
-                    out["shares"] = ledger_state["shares"]
-                    out["cost_amount"] = ledger_state["cost_amount"]
-                    out["cycle_realized"] = ledger_state.get("cycle_realized") or 0.0
-                    out["diluted_cost"] = ledger_state.get("diluted_cost")
-            except Exception as e:
-                print(f"[split-sync] {asset.get('code')} failed: {e}")
+            _schedule_etf_split_check(asset)
         quote = await get_fund_quote(asset["code"])
         # current_value 含 pending (资产总额视角: 钱已经投进去了),
         # 但下面算 pnl 时会减去 pending (浮动只看已确认 lot vs 确认成本).
