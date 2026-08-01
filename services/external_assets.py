@@ -315,36 +315,69 @@ def _split_factor_from_series(dates: list, raw: list[float], qfq: list[float]) -
     return hit
 
 
-def detect_etf_split(code: str, lookback_days: int = 30) -> tuple[str, float] | None:
-    """检测场内 ETF 近段是否发生份额拆分。无拆分返回 None;
-    数据拉不到抛异常(与'没有拆分'区分开, 调用方按失败重试)。"""
-    for k in list(os.environ):
-        if "proxy" in k.lower():
-            os.environ.pop(k, None)
-    if True:
-        import akshare as ak
-        from datetime import date, timedelta
-        end = date.today().strftime("%Y%m%d")
-        start = (date.today() - timedelta(days=lookback_days)).strftime("%Y%m%d")
+def _etf_tx_symbol(code: str) -> str | None:
+    """ETF 代码 → 腾讯符号。沪 5xx/6xx→sh, 深 1xx/0xx/3xx→sz。"""
+    c = (code or "").strip()
+    if len(c) != 6 or not c.isdigit():
+        return None
+    if c[0] in ("5", "6"):
+        return "sh" + c
+    if c[0] in ("1", "0", "3"):
+        return "sz" + c
+    return None
 
-        def _hist(adjust):
-            # 东财历史K接口偶发 RemoteDisconnected/空响应, 重试 4 次
-            for i in range(4):
-                try:
-                    df = ak.fund_etf_hist_em(symbol=code, period="daily",
-                                             start_date=start, end_date=end, adjust=adjust)
-                    if df is not None and len(df) >= 2:
-                        return df
-                except Exception:
-                    pass
-                time.sleep(0.8 * (i + 1))
-            raise RuntimeError(f"etf hist {code} adjust={adjust!r} 拉取失败/为空")
-        raw = _hist("")
-        qfq = _hist("qfq")
-        if len(raw) != len(qfq):
-            raise RuntimeError(f"etf hist {code} raw/qfq 长度不一致 {len(raw)}/{len(qfq)}")
-        return _split_factor_from_series(
-            list(raw["日期"]), [float(v) for v in raw["收盘"]], [float(v) for v in qfq["收盘"]])
+
+def _tx_etf_close(sym: str, adjust: str, n: int) -> dict:
+    """腾讯日K收盘 → {YYYY-MM-DD: 收盘}。adjust='qfq' 前复权(newfqkline), 否则不复权(kline)。
+    收盘在行 index[2]。走 trust_env=False 绕系统代理; 空响应/异常抛出交调用方重试。"""
+    import requests
+    import json as _json
+    if adjust == "qfq":
+        url = (f"https://web.ifzq.gtimg.cn/appstock/app/newfqkline/get?param={sym},day,,,{n},qfq")
+    else:
+        url = (f"https://web.ifzq.gtimg.cn/appstock/app/kline/kline?param={sym},day,,,{n}")
+    s = requests.Session()
+    s.trust_env = False
+    t = s.get(url, timeout=8).text.strip()
+    if t[:1] not in ("{", "["):
+        t = t[t.find("=") + 1:]
+    d = (_json.loads(t).get("data") or {}).get(sym) or {}
+    rows = d.get("qfqday") or d.get("day") or []   # 有复权返 qfqday, 无动作回退 day
+    out = {}
+    for x in rows:
+        try:
+            if len(x) > 2 and float(x[2]):
+                out[str(x[0])[:10]] = float(x[2])
+        except (ValueError, TypeError):
+            continue
+    return out
+
+
+def detect_etf_split(code: str, lookback_days: int = 40) -> tuple[str, float] | None:
+    """检测场内 ETF 近段是否发生份额拆分。无拆分返回 None;
+    数据拉不到抛异常(与'没有拆分'区分开, 调用方按失败重试)。
+    源: 腾讯 web.ifzq.gtimg.cn(东财 push2his 本机被网关拦, 换腾讯 raw+qfq 日K)。"""
+    sym = _etf_tx_symbol(code)
+    if not sym:
+        raise RuntimeError(f"etf split: 无法映射代码 {code} 到腾讯符号")
+
+    def _fetch(adjust):
+        for i in range(3):
+            try:
+                m = _tx_etf_close(sym, adjust, lookback_days)
+                if len(m) >= 2:
+                    return m
+            except Exception:
+                pass
+            time.sleep(0.6 * (i + 1))
+        raise RuntimeError(f"etf hist {sym} adjust={adjust!r} 拉取失败/为空")
+
+    raw = _fetch("")
+    qfq = _fetch("qfq")
+    dates = sorted(set(raw) & set(qfq))     # 按共同交易日对齐
+    if len(dates) < 2:
+        raise RuntimeError(f"etf hist {sym} raw/qfq 共同交易日不足 {len(dates)}")
+    return _split_factor_from_series(dates, [raw[d] for d in dates], [qfq[d] for d in dates])
 
 
 def fund_theme_word(name: str) -> str:
