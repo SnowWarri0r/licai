@@ -22,6 +22,16 @@ function maLine(bars, n) {
 
 const fmt = (v) => v == null ? '--' : Math.abs(v) >= 100 ? v.toFixed(1) : Math.abs(v) >= 10 ? v.toFixed(2) : v.toFixed(3)
 
+// 成交量(手) / 成交额(元) 的人读格式: 万/亿分档, 小数点后一位够看
+const fmtVol = (v) => v == null ? '--'
+  : v >= 1e8 ? (v / 1e8).toFixed(2) + '亿手'
+  : v >= 1e4 ? (v / 1e4).toFixed(1) + '万手'
+  : Math.round(v).toLocaleString() + '手'
+const fmtAmt = (v) => !v ? '--'
+  : v >= 1e8 ? (v / 1e8).toFixed(2) + '亿'
+  : v >= 1e4 ? (v / 1e4).toFixed(1) + '万'
+  : Math.round(v).toLocaleString() + '元'
+
 const GAP_UP = 'rgba(207,92,92,0.18)', GAP_DOWN = 'rgba(95,168,108,0.18)'   // 跳空缺口阴影: 红跳空/绿跳空
 const GAP_MIN = 0.015   // 缺口≥1.5%才标, 过滤碎口, 只留"两根离得远"的真跳空
 
@@ -85,6 +95,12 @@ class GapPrimitive {
 // 券商式可拖动/缩放 K线(TradingView lightweight-charts): 蜡烛 + 量能 + MA5/10/20, 滚轮缩放/拖动平移/十字光标。
 export default function ProKline({ code, days = 250, height = 460, fill = false, lhbDate = '' }) {
   const wrapRef = useRef(null)
+  const volWrapRef = useRef(null)                  // 独立量/额副图容器
+  const volChartRef = useRef(null)
+  const volSeriesRef = useRef(null)
+  const syncingRef = useRef(false)                 // 两图时间轴互相同步时防回环
+  const [volMode, setVolMode] = useState('量')     // 量 | 额
+  const [volLegend, setVolLegend] = useState(null) // 副图 hover 的具体数字
   const chartRef = useRef(null)
   const seriesRef = useRef({})
   const prevCloseLineRef = useRef(null)
@@ -108,6 +124,17 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
   const exhaustedRef = useRef(false)               // 服务端没有更早历史了(新股/次新)
   const loadMoreRef = useRef(null)                 // 数据 effect 里注入, 建图 effect 的订阅回调调用
 
+  // 切换 量/额: 用已有 bars 重绘副图, 不重新请求
+  useEffect(() => {
+    const bars = barsRef.current
+    if (!volSeriesRef.current || !bars?.length) return
+    volSeriesRef.current.setData(bars.map(b => ({
+      time: b.time,
+      value: volMode === '额' ? (b.amount || 0) : (b.volume || 0),
+      color: b.close >= b.open ? 'rgba(207,92,92,0.55)' : 'rgba(95,168,108,0.55)',
+    })))
+  }, [volMode])
+
   // 建图(一次)
   useEffect(() => {
     if (!wrapRef.current) return
@@ -119,19 +146,67 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
       crosshair: { mode: CrosshairMode.Normal,
         vertLine: { color: 'rgba(200,168,118,0.5)', width: 1, style: 2 },
         horzLine: { color: 'rgba(200,168,118,0.5)', width: 1, style: 2 } },
-      rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.08, bottom: 0.28 } },
-      timeScale: { borderColor: 'rgba(255,255,255,0.08)', rightOffset: 4, minBarSpacing: 1.5 },
+      rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.08, bottom: 0.06 } },
+      // 日期轴交给下方量/额副图统一显示, 主图隐掉避免上下两条重复
+      timeScale: { borderColor: 'rgba(255,255,255,0.08)', rightOffset: 4, minBarSpacing: 1.5, visible: false },
     })
     chartRef.current = chart
     const candle = chart.addSeries(CandlestickSeries, {
       upColor: UP, downColor: DOWN, borderUpColor: UP, borderDownColor: DOWN, wickUpColor: UP, wickDownColor: DOWN,
     })
-    const vol = chart.addSeries(HistogramSeries, { priceFormat: { type: 'volume' }, priceScaleId: 'vol' })
-    chart.priceScale('vol').applyOptions({ scaleMargins: { top: 0.78, bottom: 0 } })
     const mas = MA_DEFS.map(m => chart.addSeries(LineSeries, { color: m.c, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }))
     const gapPrim = new GapPrimitive()
     candle.attachPrimitive(gapPrim)
-    seriesRef.current = { candle, vol, mas, gapPrim }
+    seriesRef.current = { candle, mas, gapPrim }
+
+    // 量/额独立副图: 叠在主图里只有一条压扁的色带, 读不出某天到底多少; 拆成自己的图表
+    // 后有独立纵轴刻度, 加上 hover 出具体数字。两图时间轴双向同步, 拖动/缩放一起走。
+    let volChart = null
+    if (volWrapRef.current) {
+      volChart = createChart(volWrapRef.current, {
+        autoSize: true,
+        layout: { background: { color: 'transparent' }, textColor: '#9aa0a6', fontSize: 11,
+          fontFamily: 'ui-sans-serif, system-ui, -apple-system, sans-serif' },
+        grid: { vertLines: { color: 'rgba(255,255,255,0.04)' }, horzLines: { color: 'rgba(255,255,255,0.04)' } },
+        crosshair: { mode: CrosshairMode.Normal,
+          vertLine: { color: 'rgba(200,168,118,0.5)', width: 1, style: 2 },
+          horzLine: { color: 'rgba(200,168,118,0.5)', width: 1, style: 2 } },
+        rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.12, bottom: 0.02 } },
+        timeScale: { borderColor: 'rgba(255,255,255,0.08)', rightOffset: 4, minBarSpacing: 1.5,
+          visible: true, timeVisible: false },
+        handleScale: true, handleScroll: true,
+      })
+      volChartRef.current = volChart
+      // 纵轴刻度自定义: 内置 volume 格式是英文 K/M/B(成交额会显示成 1.98B), 换成万/亿
+      volSeriesRef.current = volChart.addSeries(HistogramSeries, {
+        priceFormat: {
+          type: 'custom', minMove: 1,
+          formatter: (v) => !v ? '0'
+            : v >= 1e8 ? (v / 1e8).toFixed(v >= 1e9 ? 0 : 1) + '亿'
+            : v >= 1e4 ? (v / 1e4).toFixed(0) + '万'
+            : String(Math.round(v)),
+        },
+      })
+
+      const syncFrom = (src, dst) => (range) => {
+        if (!range || syncingRef.current) return
+        syncingRef.current = true
+        try { dst.timeScale().setVisibleLogicalRange(range) } catch { /* 尺寸未就绪时忽略 */ }
+        syncingRef.current = false
+      }
+      chart.timeScale().subscribeVisibleLogicalRangeChange(syncFrom(chart, volChart))
+      volChart.timeScale().subscribeVisibleLogicalRangeChange(syncFrom(volChart, chart))
+
+      volChart.subscribeCrosshairMove(param => {
+        const d = param.seriesData?.get(volSeriesRef.current)
+        if (!d || !param.time) { setVolLegend(null); return }
+        const t = param.time
+        const key = typeof t === 'string' ? t
+          : `${t.year}-${String(t.month).padStart(2, '0')}-${String(t.day).padStart(2, '0')}`
+        const bar = barsRef.current.find(b => b.time === key)
+        setVolLegend({ time: key, volume: bar?.volume, amount: bar?.amount })
+      })
+    }
 
     // 十字光标 → 顶部图例(日期/OHLC/较昨收涨跌%)
     chart.subscribeCrosshairMove(param => {
@@ -170,7 +245,10 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
       if (r && r.from < 12) loadMoreRef.current?.()
     })
 
-    return () => { chart.remove(); chartRef.current = null }
+    return () => {
+      volChartRef.current?.remove(); volChartRef.current = null; volSeriesRef.current = null
+      chart.remove(); chartRef.current = null
+    }
   }, [])
 
   // 浮层: 拉该日分钟数据; ESC 关闭; 龙虎榜页签懒加载
@@ -252,9 +330,14 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
 
     const paint = (bars) => {
       barsRef.current = bars
-      const { candle, vol, mas, gapPrim } = seriesRef.current
+      const { candle, mas, gapPrim } = seriesRef.current
       candle.setData(bars.map(b => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close })))
-      vol.setData(bars.map(b => ({ time: b.time, value: b.volume, color: b.close >= b.open ? 'rgba(207,92,92,0.5)' : 'rgba(95,168,108,0.5)' })))
+      // 量/额画到独立副图(见下方 volChart): 叠在主图里读不出具体数字, 拆开后有独立刻度
+      volSeriesRef.current?.setData(bars.map(b => ({
+        time: b.time,
+        value: volMode === '额' ? (b.amount || 0) : (b.volume || 0),
+        color: b.close >= b.open ? 'rgba(207,92,92,0.55)' : 'rgba(95,168,108,0.55)',
+      })))
       mas.forEach((s, i) => s.setData(maLine(bars, MA_DEFS[i].n)))
       gapPrim?.setGaps(detectGaps(bars))
       // 昨收线: 最新一根的前一日收盘 → 一眼看出今天这根(哪怕收红阳线)是否还在昨收下方
@@ -281,7 +364,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
           if (!alive || !Array.isArray(k)) return
           depthRef.current = want
           if (k.length <= barsRef.current.length) { exhaustedRef.current = true; return }
-          const bars = k.map(x => ({ time: x.time, open: x.open, high: x.high, low: x.low, close: x.close, volume: x.volume }))
+          const bars = k.map(x => ({ time: x.time, open: x.open, high: x.high, low: x.low, close: x.close, volume: x.volume, amount: x.amount }))
           const ts = chartRef.current?.timeScale()
           const vr = ts?.getVisibleRange()          // 时间坐标的视窗, 数据前插后原样恢复
           paint(bars)
@@ -297,7 +380,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
       .then(k => {
         if (!alive) return
         if (!Array.isArray(k) || !k.length) { setErr('暂无 K 线数据'); return }
-        paint(k.map(x => ({ time: x.time, open: x.open, high: x.high, low: x.low, close: x.close, volume: x.volume })))
+        paint(k.map(x => ({ time: x.time, open: x.open, high: x.high, low: x.low, close: x.close, volume: x.volume, amount: x.amount })))
         const bars = barsRef.current
         // 初始视窗只看最近约3个月(70根), 更长的历史往左拖/滚轮缩放就有——
         // fitContent 会把250根全塞进屏幕, 蜡烛细得看不清近期形态
@@ -354,7 +437,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
               <span>滚轮缩放 · 点蜡烛看当日分时</span>
             </span>}
       </div>
-      <div className={`relative ${fill ? 'flex-1 min-h-0' : ''}`} style={fill ? { width: '100%' } : { width: '100%', height }}>
+      <div className={`relative ${fill ? 'flex-1 min-h-0' : ''}`} style={fill ? { width: '100%' } : { width: '100%', height: Math.max(120, height - 128) }}>
         <div ref={wrapRef} className="absolute inset-0" />
 
         {/* 点蜡烛 → 「分时›」tooltip(跟随点击位置) */}
@@ -450,6 +533,28 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
             )}
           </div>
         )}
+      </div>
+
+      {/* 量/额 独立副图: 自己的纵轴刻度 + hover 出具体数字; 与主图时间轴双向同步 */}
+      <div className="shrink-0 mt-0.5">
+        <div className="flex items-center gap-2 px-0.5 h-4 text-[10px]">
+          {['量', '额'].map(m => (
+            <button key={m} onClick={() => setVolMode(m)}
+              title={m === '量' ? '成交量(手)' : '成交额(元)'}
+              className={`px-1.5 rounded leading-4 ${volMode === m ? 'bg-accent/20 text-accent' : 'text-text-dim hover:text-text'}`}>
+              {m === '量' ? '成交量' : '成交额'}
+            </button>
+          ))}
+          {volLegend && (
+            <span className="font-mono text-text-dim">
+              <span className="text-text-muted mr-1.5">{volLegend.time}</span>
+              量 <span className="text-text">{fmtVol(volLegend.volume)}</span>
+              <span className="text-text-muted mx-1">·</span>
+              额 <span className="text-text">{fmtAmt(volLegend.amount)}</span>
+            </span>
+          )}
+        </div>
+        <div ref={volWrapRef} style={{ width: '100%', height: 104 }} />
       </div>
       {err && <div className="absolute inset-0 flex items-center justify-center text-[12px] text-text-dim">{err}</div>}
       {loading && !err && <div className="absolute inset-x-0 top-1/2 text-center text-[12px] text-text-dim">加载 K 线…</div>}
