@@ -419,11 +419,17 @@ export default function Rankings() {
         manual = [...manual].sort((a, b) => (wlGroup === '全部'
           ? (a.sort_order || 0) - (b.sort_order || 0)
           : (a.group_order || 0) - (b.group_order || 0)))
+        // 显式编号: 行号渲染兜底用的是数组下标 i+1, 而数组里混着分组标题行, 标题占掉
+        // index 0 会让第一只票显示成 2。这里按"只数着真实行"自己编。
+        let sn = 0
         const merged = []
-        if (held.length && wlGroup === '全部') { merged.push({ _wh: true, 标题: `持仓 ${held.length}`, 说明: '现取, 清仓即消失' }); merged.push(...held) }
+        if (held.length && wlGroup === '全部') {
+          merged.push({ _wh: true, 标题: `持仓 ${held.length}`, 说明: '现取, 清仓即消失' })
+          merged.push(...held.map(r => ({ ...r, _idx: ++sn })))
+        }
         if (manual.length) {
           merged.push({ _wh: true, 标题: `自选 ${manual.length}${wlGroup !== '全部' ? ` · ${wlGroup}` : ''}`, 说明: '在看未必持有; 拖 ⠿ 或点 ↑↓ 调顺序' })
-          merged.push(...manual)
+          merged.push(...manual.map(r => ({ ...r, _idx: ++sn })))
         }
         return merged
       })()
