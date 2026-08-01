@@ -143,8 +143,12 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
       const arr = barsRef.current
       const i = arr.findIndex(b => b.time === key)
       const prev = i > 0 ? arr[i - 1].close : null
+      // 距今: 从这根收盘到最新一根收盘的累计涨跌 —— 回看"那天到现在赚/亏多少"
+      const last = arr.length ? arr[arr.length - 1].close : null
       setLegend({ time: param.time, o: d.open, h: d.high, l: d.low, c: d.close,
-                  pct: prev ? (d.close / prev - 1) * 100 : null })
+                  pct: prev ? (d.close / prev - 1) * 100 : null,
+                  since: (last && d.close && i >= 0 && i < arr.length - 1)
+                    ? (last / d.close - 1) * 100 : null })
     })
 
     // 点蜡烛 → 出「分时›」tooltip; 浮层开着时点K线 → 收起浮层(同花顺式浮层交互)
@@ -334,6 +338,13 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
               {legend.pct != null && (
                 <span className={`font-semibold ${legend.pct >= 0 ? 'text-bear' : 'text-bull'}`}>
                   {legend.pct >= 0 ? '+' : ''}{legend.pct.toFixed(2)}%
+                </span>
+              )}
+              {legend.since != null && (
+                <span className="text-text-muted">
+                  距今<span className={`font-semibold ${legend.since >= 0 ? 'text-bear' : 'text-bull'}`}>
+                    {legend.since >= 0 ? '+' : ''}{legend.since.toFixed(2)}%
+                  </span>
                 </span>
               )}
             </span>
