@@ -367,10 +367,14 @@ async def get_bot_details(algo_id: str, algo_ord_type: str = "grid") -> dict | N
 
 
 def _pick_by_algo(data: list, algo_id: str) -> dict | None:
-    """history 列表里按 algoId 取该策略那条(取不到按第一条兜底)。"""
+    """history 列表里按 algoId 取该策略那条; 没有就是没有。
+
+    以前取不到按 data[0] 兜底 —— 有两个以上已停策略时会把别人的最终盈亏当成
+    这条的, 而且看不出来。宁可返回 None(上层退回旧快照并打 sync_error)。
+    """
     if not data:
         return None
-    return next((x for x in data if str(x.get("algoId")) == str(algo_id)), data[0])
+    return next((x for x in data if str(x.get("algoId")) == str(algo_id)), None)
 
 
 async def _fetch_bot_details_raw(algo_id: str, algo_ord_type: str) -> dict | None:
@@ -384,9 +388,11 @@ async def _fetch_bot_details_raw(algo_id: str, algo_ord_type: str) -> dict | Non
         if r and not r.get("error") and r.get("data"):
             raw = r["data"][0]
             return _normalize_dca(raw, active=raw.get("state") == "running")
+        # DCA 的已结束列表叫 history-list; orders-algo-history 是 grid/recurring 的命名,
+        # 打到 DCA 上是 404 —— 这条兜底以前等于没有, 马丁停掉只会退回过时的 manual_value。
         h = await asyncio.to_thread(
-            _authed_get, "/api/v5/tradingBot/dca/orders-algo-history",
-            {"algoOrdType": algo_ord_type, "limit": "50"},
+            _authed_get, "/api/v5/tradingBot/dca/history-list",
+            {"algoOrdType": algo_ord_type, "algoId": algo_id, "limit": "50"},
         )
         raw = _pick_by_algo((h or {}).get("data") if h and not h.get("error") else None, algo_id)
         return _normalize_dca(raw, active=False) if raw else None
@@ -400,7 +406,7 @@ async def _fetch_bot_details_raw(algo_id: str, algo_ord_type: str) -> dict | Non
         return _normalize_bot(raw, active=raw.get("state") == "running")
     h = await asyncio.to_thread(
         _authed_get, "/api/v5/tradingBot/grid/orders-algo-history",
-        {"algoOrdType": algo_ord_type, "limit": "50"},
+        {"algoOrdType": algo_ord_type, "algoId": algo_id, "limit": "50"},
     )
     raw = _pick_by_algo((h or {}).get("data") if h and not h.get("error") else None, algo_id)
     return _normalize_bot(raw, active=False) if raw else None
