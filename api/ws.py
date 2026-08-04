@@ -222,8 +222,9 @@ async def dca_loop():
         from api.assets_routes import settle_pending_dca
         try:
             r = await settle_pending_dca()
+            # 一笔没结算也要打, 否则"净值没出"和"结算逻辑挂了"在日志里长得一样
+            print(f"[dca] {reason}: 结算 {r.get('settled', 0)} 笔, 净值未出跳过 {r.get('skipped', 0)} 笔")
             if r.get("settled"):
-                print(f"[dca] {reason}: 结算 {r['settled']} 笔, 净值未出跳过 {r.get('skipped', 0)} 笔")
                 if feishu_notify.is_enabled():
                     await feishu_notify.send_text(
                         f"{reason}: 自动确认定投 {r['settled']} 笔"
