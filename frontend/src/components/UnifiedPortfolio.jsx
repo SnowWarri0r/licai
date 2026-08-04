@@ -255,6 +255,9 @@ function normalizeAsset(a) {
       lockUntil: null,
       okxSynced: q?.auto_synced,
       syncError: q?.sync_error,
+      // 同步正常但策略已停止: 数字是最终态而非实时, 钱其实已回现货账户 —— 该归档退出在持
+      okxStopped: q?.auto_synced === true && q?.active === false,
+      okxState: q?.state,
       okxPnlPct: q?.pnl_pct,
       // OKX 马丁: 总预算 / 已投入 / 未投入 (反推自策略参数 initOrdAmt + safetyOrdAmt × volMult^k)
       okxInvestmentUsdt: q?.investment_usdt,
@@ -1366,9 +1369,22 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
                           {row.broker}
                         </span>
                       )}
-                      {row.extra?.okxSynced && (
+                      {row.extra?.okxSynced && !row.extra?.okxStopped && (
                         <Tooltip content="OKX 自动同步中">
                           <span className="text-bull cursor-help text-[12px] leading-none">🔗</span>
+                        </Tooltip>
+                      )}
+                      {row.extra?.okxStopped && (
+                        <Tooltip content={
+                          <div>
+                            <div className="text-text-bright font-semibold mb-1">
+                              策略已停止{row.extra?.okxState ? ` (${row.extra.okxState})` : ''} · 待归档
+                            </div>
+                            <div>OKX 拉到的是结束时的最终数字, 不再变动; 钱已回到现货账户。</div>
+                            <div className="mt-1 text-text-dim text-[10.5px]">在这一行点「平仓归档」把盈亏定格转入已实现, 它就退出在持列表</div>
+                          </div>
+                        }>
+                          <span className="text-warn cursor-help text-[11px] leading-none px-1 rounded bg-warn/15 border border-warn/40 shrink-0 whitespace-nowrap">已停止</span>
                         </Tooltip>
                       )}
                       {row.extra?.okxSynced === false && (
