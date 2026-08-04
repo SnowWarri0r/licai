@@ -192,6 +192,30 @@ def day_flows(actions: list[dict], dates: list[str], stock: bool = False) -> dic
     return flows
 
 
+CASH_DAILY_BAND = 0.003   # 现金/理财单日收益上限 0.3%(≈年化110%), 超出必然是存取转账
+
+
+def infer_cash_transfers(vals: list[float], dates: list[str], fl: dict,
+                         band: float = CASH_DAILY_BAND) -> list[str]:
+    """现金/理财桶: 把"无流水解释"的市值跳变补记成外部流量, 就地改 fl。
+
+    这类桶市值是手填的(manual_value), 存取转账不产生 action。不补的话
+    TWR 会把一笔转账当成当天的盈亏 —— 实测一笔 2.4w 转出压掉曲线 6.4 个点。
+    判据: 当日残差 = 市值变动 − 已登记流量; 残差超出日收益带宽即整笔算转账。
+    带宽内的小额差(理财每天几块钱利息)保留为真实收益。
+    返回被判定为转账的日期, 便于回归测试与排查。
+    """
+    hit = []
+    for i in range(1, len(vals)):
+        prev = vals[i - 1]
+        dt = dates[i]
+        resid = (vals[i] - prev) - fl.get(dt, 0.0)
+        if abs(resid) > max(1.0, abs(prev) * band):
+            fl[dt] = fl.get(dt, 0.0) + resid
+            hit.append(dt)
+    return hit
+
+
 def twr_series(values: list[float], flows: list[float]) -> list[float]:
     """时间加权净值(起点=100)。分母≤0 或起点无持仓的日子收益记 0。"""
     nav, out = 100.0, []
@@ -250,7 +274,8 @@ async def build_curve(days: int = 120) -> dict:
             kind = "px" if _is_onchain_etf(code) else "otc"
             tasks.append((kind, code, acts))
         else:
-            tasks.append(("cost", f"EXT:{x['id']}", acts))
+            # 现金/理财市值是手填的, 存取转账不写流水 → 单独一档做转账推断(见 _one)
+            tasks.append(("cash" if at in ("CASH", "WEALTH") else "cost", f"EXT:{x['id']}", acts))
 
     sem = asyncio.Semaphore(4)
     try:
@@ -259,8 +284,10 @@ async def build_curve(days: int = 120) -> dict:
     except Exception:
         snaps = {}
 
+    inferred: set = set()      # 被判为"无流水转账"的日期(现金/理财桶), 只为透出提示
+
     async def _one(kind: str, code: str, acts: list[dict]):
-        if kind == "cost":
+        if kind in ("cost", "cash"):
             vals = cost_basis_series(acts, axis)
             fl = day_flows(acts, axis)
             # 有快照的日子用真实市值覆盖成本基线(快照日之间前向填充);
@@ -272,6 +299,8 @@ async def build_curve(days: int = 120) -> dict:
                     last = v
                 if last is not None:
                     vals[i] = last
+            if kind == "cash":
+                inferred.update(infer_cash_transfers(vals, axis, fl))
             return vals, fl, None
         async with sem:
             hist = await _price_hist(kind, code, days + 60)
@@ -337,6 +366,9 @@ async def build_curve(days: int = 120) -> dict:
         },
         "note": "TWR=时间加权收益(出入金已剥离, 与基金净值同口径), 与沪深300同起点归一100。"
                 "现金/理财/加密/机器人按成本基线近似(无市场波动)。"
+                + (f" 现金/理财桶有 {len(inferred)} 天的市值跳变没有对应流水, "
+                   f"已按转账处理(不计入收益): {'、'.join(sorted(inferred)[:4])}"
+                   f"{'…' if len(inferred) > 4 else ''}。" if inferred else "")
                 + (f" {skipped}项资产异常已跳过。" if skipped else "")
                 + (f" 价史暂缺按成本基线近似: {'、'.join(degraded[:5])}。" if degraded else "")
                 + " 纯客观展示, 不构成任何买卖建议。",

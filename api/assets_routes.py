@@ -999,9 +999,12 @@ async def confirm_action(asset_id: int, action_id: int, data: ConfirmAction):
 
 @router.post("/settle-pending")
 async def settle_pending_dca():
-    """一键确认所有到期定投: 按每条 pending 的 trade_date 拉当日已确认净值, 自动结算份额。
+    """一键确认所有到期 pending: 按每条的 trade_date 拉当日已确认净值, 自动结算份额/金额。
     净值未公布的 (海外休市 / T+1 未出) 跳过, 仍保持 pending, 等下次再点。
-    仅处理场外基金 (FUND) 的申购 pending (ADD/BUY); 加密等没历史净值的不动。
+    仅处理场外基金 (FUND); 加密等没历史净值的不动。
+
+    申购(ADD/BUY)和赎回(REDEEM/SELL)都要处理 —— 只管申购的话 pending 赎回会永久卡住,
+    账本继续算已经赎掉的份额, 市值虚高(实测卡了两条 6 周)。
     """
     from services.external_assets import get_fund_nav_on_date
     from database import update_external_action
@@ -1019,7 +1022,7 @@ async def settle_pending_dca():
         actions = await list_external_actions(asset["id"])
         pend = [a for a in actions
                 if (a.get("status") or "confirmed") == "pending"
-                and (a.get("action_type") or "").upper() in ("ADD", "BUY")]
+                and (a.get("action_type") or "").upper() in ("ADD", "BUY", "REDEEM", "SELL")]
         if not pend:
             continue
         changed = False
@@ -1035,6 +1038,25 @@ async def settle_pending_dca():
             nav = float(navinfo["nav"])
             amount = float(a.get("amount") or 0)
             known_shares = float(a.get("shares") or 0)
+            if (a.get("action_type") or "").upper() in ("REDEEM", "SELL"):
+                # 赎回: 份额已知 → 到账金额 = 份额×净值(无赎回费字段, 不倒扣);
+                # 金额赎回 → 反算份额。两个都空的跳过。
+                if known_shares > 0:
+                    shares, final_amount = known_shares, round(known_shares * nav, 2)
+                elif amount > 0 and nav > 0:
+                    shares, final_amount = round(amount / nav, 6), amount
+                else:
+                    skipped += 1
+                    continue
+                await update_external_action(
+                    a["id"], amount=final_amount, shares=shares,
+                    unit_price=round(nav, 6), status="confirmed",
+                )
+                settled += 1
+                changed = True
+                details.append({"asset": asset.get("name"), "date": td, "nav": round(nav, 4),
+                                "shares": -shares, "amount": final_amount, "fee": 0})
+                continue
             # 申购费内扣: 净申购额 = 申购金额 / (1+费率), 申购费 = 金额 - 净额, 份额 = 净额/净值。
             # C 类/无申购费 → rate=0 → 净额=金额, fee=0 (跟原来一致)。
             rate = float(asset.get("purchase_fee_rate") or 0)
