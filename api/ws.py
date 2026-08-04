@@ -200,16 +200,51 @@ async def eod_summary_loop():
 
 
 _dca_done_date: str = ""
+_dca_settle_date: str = ""      # 已跑过自动结算的日期
+_dca_catchup_done: bool = False  # 本进程是否已补过隔夜积压
 
 async def dca_loop():
     """每天最多跑一次定投扫描.
 
     策略: 当天还没跑过 (today != _dca_done_date) 就立即跑, 不再卡时间窗口
     避免漏触发 (server 中午才开机也能补)。fire_due_dcas 自身扫所有 next_due<=today
-    所以多日漏跑也能一次补齐."""
-    global _dca_done_date
+    所以多日漏跑也能一次补齐.
+
+    触发之后还要结算: 定投份额靠 T+1 净值确认, 以前只有手动「一键确认」接口,
+    出门几天回来就是一堆 pending, 成本口径一直飘。这里每晚 19:00 后自动跑一次,
+    另外进程启动时若发现隔夜积压立即补一次(出差回来打开就是干净的)。
+    settle_pending 扫的是全部 pending 而不只今天的, 所以漏几天也能一次追平。"""
+    global _dca_done_date, _dca_settle_date, _dca_catchup_done
     from datetime import datetime, timezone, timedelta
     from services.dca import fire_due_dcas
+
+    async def _settle(reason: str):
+        from api.assets_routes import settle_pending_dca
+        try:
+            r = await settle_pending_dca()
+            if r.get("settled"):
+                print(f"[dca] {reason}: 结算 {r['settled']} 笔, 净值未出跳过 {r.get('skipped', 0)} 笔")
+                if feishu_notify.is_enabled():
+                    await feishu_notify.send_text(
+                        f"{reason}: 自动确认定投 {r['settled']} 笔"
+                        + (f", 净值未出 {r['skipped']} 笔待下次" if r.get("skipped") else ""))
+            return True
+        except Exception as e:
+            print(f"[dca] settle_pending failed: {e}")
+            return False
+
+    async def _has_stale_pending(today: str) -> bool:
+        """存在早于今天的 pending 流水 → 说明漏结算了(通常是 server 关着)。"""
+        from database import list_external_assets, list_external_actions
+        for a in await list_external_assets():
+            if (a.get("asset_type") or "") != "FUND":
+                continue
+            for x in await list_external_actions(a["id"]):
+                if ((x.get("status") or "confirmed") == "pending"
+                        and (x.get("action_type") or "").upper() in ("ADD", "BUY", "REDEEM", "SELL")
+                        and (x.get("trade_date") or "")[:10] < today):
+                    return True
+        return False
 
     while True:
         try:
@@ -231,6 +266,20 @@ async def dca_loop():
                             await feishu_notify.send_text("\n".join(lines))
                 except Exception as e:
                     print(f"[dca] fire_due_dcas failed: {e}")
+
+            # 启动补账: 有隔夜积压就立刻结算一次, 不等到晚上
+            if not _dca_catchup_done:
+                _dca_catchup_done = True
+                try:
+                    if await _has_stale_pending(today):
+                        await _settle("隔夜积压补账")
+                except Exception as e:
+                    print(f"[dca] catchup check failed: {e}")
+
+            # 每晚净值出了之后自动结算一次(海外基金当天没出的, 明晚这一轮补上)
+            if today != _dca_settle_date and cst_now.hour >= 19:
+                if await _settle(f"{today} 自动结算"):
+                    _dca_settle_date = today
 
             await asyncio.sleep(60)
         except Exception as e:
