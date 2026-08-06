@@ -122,9 +122,11 @@ export default function BenchmarkCompare() {
           </span>
         </div>
         {!alphaPos && (
+          /* 原文案写「如果不动」是错的 —— 模型并不是买入持有, 它把你每一笔买卖
+             都同金额同日镜像到基准上。选股这件事才是被对照的变量。 */
           <div className="text-[10.5px] text-text-dim mt-1">
-            如果不动, 只买 {SYMBOLS.find(s => s.v === symbol)?.label || symbol}, 这段时间会多 ¥{fmtMoney(Math.abs(a.pnl_diff))}.
-            操作产生了负贡献.
+            同样的钱、同样的时点，如果全买 {SYMBOLS.find(s => s.v === symbol)?.label || symbol} 而不是自己选股，
+            这段时间会多 ¥{fmtMoney(Math.abs(a.pnl_diff))}.
           </div>
         )}
       </div>
@@ -175,7 +177,15 @@ export default function BenchmarkCompare() {
 
       <div className="px-3 md:px-5 py-2 bg-surface-2/40 text-[10.5px] text-text-muted leading-relaxed">
         模型: dollar-matched 等额对比. 你每次买/卖, 假设同金额同日期在基准上同向操作.
-        手续费已含 (你的: 万1.854+5起+印花税; 基准默认 0). 仅 A 股, 不含港美股.
+        手续费已含 (你的: 万1.854+5起+印花税, 按费率估算非实录; 基准默认 0). 仅 A 股, 不含港美股.
+        {data.opening?.mv > 0 && (
+          <> 窗口起点已持有的仓位按当日收盘 ¥{fmtMoney(data.opening.mv)} 计为期初投入
+            {data.opening.priced_all ? '' : '（有个股取不到历史价，该部分未计入）'}.
+          </>
+        )}
+        {data.bench_underwater && (
+          <span className="text-warn"> 注意: 区间内净卖出超过基准仓位价值，基准份额为负，该档数字仅供参考.</span>
+        )}
       </div>
     </section>
   )
