@@ -100,6 +100,25 @@ def test_etf_xray_theme_classify_and_match():
     assert _matches("创新药", "生物制品", "百济神州")
 
 
+def test_etf_xray_cloud_chain_counts_as_on_theme():
+    """云计算是 IaaS→SaaS 一条链: 服务器 / IDC / 云网络 / 集成 / 云软件都算贴题。
+
+    THEME_SYN 缺「云计算」键时只剩「主题词与行业名互相包含」的兜底, 字面对不上就
+    全判偏题 —— 实测把 516510 云计算ETF易方达 打成 0.0%「偏离显著」, 是表缺条目
+    不是基金挂羊头。同理补了 数据中心 / 算力 / 大数据 / 数字经济。
+    """
+    from services.etf_xray import _matches
+    for ind in ("计算机设备", "通信服务", "通信设备", "IT服务", "软件开发"):
+        assert _matches("云计算", ind, "中科曙光"), ind
+    assert _matches("数据中心", "通信服务", "润泽科技")
+    assert _matches("算力", "半导体", "寒武纪")
+    # 仍要有鉴别力: 云计算 ETF 重仓白酒/银行照样判偏题
+    assert not _matches("云计算", "白酒", "贵州茅台")
+    assert not _matches("云计算", "银行", "招商银行")
+    # 数字经济 ETF 前十大全是半导体设备 → 判偏题(实测 560800 匹配 0%)
+    assert not _matches("数字经济", "半导体", "北方华创")
+
+
 def test_etf_xray_compound_theme_matches_via_substring_key():
     """复合主题词(科创创新药)命中同义词表里的子串键(创新药)。"""
     from services.etf_xray import _matches
