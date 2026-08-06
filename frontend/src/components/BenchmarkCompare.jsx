@@ -177,7 +177,10 @@ export default function BenchmarkCompare() {
 
       <div className="px-3 md:px-5 py-2 bg-surface-2/40 text-[10.5px] text-text-muted leading-relaxed">
         模型: dollar-matched 等额对比. 你每次买/卖, 假设同金额同日期在基准上同向操作.
-        手续费已含 (你的: 万1.854+5起+印花税, 按费率估算非实录; 基准默认 0). 仅 A 股, 不含港美股.
+        手续费已含 (你的: 万1.854+5起+印花税, 按费率估算非实录; 基准默认 0).
+        范围: A 股个股 {data.scope?.a_share_actions ?? 0} 笔
+        {data.scope?.etf_actions > 0 && <> + 场内 ETF {data.scope.etf_actions} 笔（{data.scope.etf_codes?.length} 只）</>}
+        ；不含港美股与场外基金 / 理财 / 现金 / 机器人.
         {data.opening?.mv > 0 && (
           <> 窗口起点已持有的仓位按当日收盘 ¥{fmtMoney(data.opening.mv)} 计为期初投入
             {data.opening.priced_all ? '' : '（有个股取不到历史价，该部分未计入）'}.
