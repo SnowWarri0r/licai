@@ -1034,6 +1034,42 @@ async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
         all_actions.extend(await get_position_actions(code, limit=500))
     all_actions.sort(key=lambda a: (a.get("trade_date") or "", a.get("id") or 0))
 
+    # 2b) 场内 ETF: 记在外部资产表里, 但买卖行为跟个股没有区别(实时市价、按手成交)。
+    #     不并进来这张卡只覆盖两成仓位 —— 实测 A股 亏 6.3k 而场内 ETF 亏 23.5k,
+    #     光看 A股 会把「跑输基准」的幅度严重低估。场外基金(定投/T+1 净值)、理财、
+    #     现金、机器人不并: 那是另一种行为, 混进来对照不出「择时+选标的」这件事。
+    from database import list_external_assets, list_external_actions
+    from services.external_assets import _is_onchain_etf
+    etf_assets = [x for x in await list_external_assets()
+                  if (x.get("asset_type") or "") == "FUND"
+                  and _is_onchain_etf(str(x.get("code") or ""))]
+    etf_flows: list[dict] = []          # 归一成 {date, cash, sign} —— cash 一律正数
+    etf_splits: dict[str, list] = {}    # code → [(date, factor)]; 份额折算是按标的的, 不能全局套
+    for x in etf_assets:
+        code_e = str(x.get("code") or "")
+        for act in await list_external_actions(x["id"]):
+            if (act.get("status") or "confirmed") != "confirmed":
+                continue
+            t_e = (act.get("action_type") or "").upper()
+            td_e = (act.get("trade_date") or "")[:10]
+            amt_e = float(act.get("amount") or 0)
+            fee_e = float(act.get("fee") or 0)
+            sh_e = float(act.get("shares") or 0)
+            if t_e == "SPLIT":
+                if sh_e > 0 and td_e:
+                    etf_splits.setdefault(code_e, []).append((td_e, sh_e))
+                continue
+            if not td_e or amt_e <= 0:
+                continue
+            # 外部流水的 amount 语义: 买入已含手续费, 卖出是毛额需自减
+            if t_e in ("BUY", "ADD"):
+                etf_flows.append({"code": code_e, "trade_date": td_e, "cash": amt_e,
+                                  "sign": 1, "shares": sh_e})
+            elif t_e in ("REDEEM", "SELL", "REDUCE"):
+                etf_flows.append({"code": code_e, "trade_date": td_e, "cash": amt_e - fee_e,
+                                  "sign": -1, "shares": sh_e})
+    etf_flows.sort(key=lambda f: f["trade_date"])
+
     # 2.5) 窗口档必须带上「期初持仓」, 否则窗口内卖掉的老仓位有「收回」没「投入」,
     #      凭空变成收益。实测 3 月档因此把 -4324 报成 +6675, 连正负号都是反的;
     #      基准份额也会被这些无源卖出扣穿(3月档 26.26 反而小于 1月档 31.99, 非单调)。
@@ -1064,6 +1100,35 @@ async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
             else:
                 # 价拉不到就如实标 null, 别拿成本价冒充市值 —— 前端据此提示口径不完整
                 opening_detail.append({"code": c0, "shares": sh0, "close": None})
+
+        # 场内 ETF 的期初持仓。份额要折算到现行标度: _close_on_or_before 取的是前复权价,
+        # 而截止日之后若发生过份额折算(SPLIT), 当时的原始份额与前复权价不同标度,
+        # 直接相乘会把市值算成 1/F。做法与 portfolio_curve.adjust_to_final_scale 一致。
+        etf_pos: dict[str, float] = {}
+        for f in etf_flows:
+            if f["trade_date"] >= cutoff:
+                continue
+            etf_pos[f["code"]] = etf_pos.get(f["code"], 0.0) + f["sign"] * f["shares"]
+        for c0, sh0 in etf_pos.items():
+            if sh0 <= 0:
+                continue
+            for sd, fac in etf_splits.get(c0, []):
+                if sd < cutoff:
+                    sh0 *= fac          # 截止日之前的折算: 直接作用在余额上
+            scale_after = 1.0
+            for sd, fac in etf_splits.get(c0, []):
+                if sd >= cutoff:
+                    scale_after *= fac   # 截止日之后的折算: 折到现行标度与前复权价对齐
+            sh_adj = sh0 * scale_after
+            px0 = await _close_on_or_before(c0, cutoff)
+            if px0:
+                opening_mv += sh_adj * px0
+                opening_detail.append({"code": c0, "shares": round(sh_adj, 2),
+                                       "close": round(px0, 3), "kind": "ETF"})
+            else:
+                opening_detail.append({"code": c0, "shares": round(sh_adj, 2),
+                                       "close": None, "kind": "ETF"})
+        etf_flows = [f for f in etf_flows if f["trade_date"] >= cutoff]
 
     # 3) 累计现金流 + 基准等额份额
     buy_total = 0.0
@@ -1106,6 +1171,21 @@ async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
             bench_shares_total -= cash_in / close
         # 其他类型 (DIVIDEND etc) 暂忽略
 
+    # 3b) 场内 ETF 的现金流(手续费已在 cash 里处理好, 见上面归一那段)
+    for f in etf_flows:
+        td = f["trade_date"]
+        if first_action_date is None or td < first_action_date:
+            first_action_date = td
+        close = bench_close_on_or_after(td)
+        if close is None or close <= 0:
+            skipped += 1; continue
+        if f["sign"] > 0:
+            buy_total += f["cash"]
+            bench_shares_total += f["cash"] / close
+        else:
+            sell_total += f["cash"]
+            bench_shares_total -= f["cash"] / close
+
     # 4) 用户当前 A 股市值
     holdings = await get_all_holdings()
     a_holdings = [h for h in holdings
@@ -1122,6 +1202,19 @@ async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
             price = float(q["price"]) if q and q.get("price") else 0.0
             if price > 0:
                 user_cur_mv += price * int(h.get("shares") or 0)
+    # 4b) 场内 ETF 现值。走看板同一套 enrich(份额已含 SPLIT 折算), 不自己再算一遍份额。
+    etf_cur_mv = 0.0
+    if etf_assets:
+        try:
+            from api.assets_routes import list_assets as _list_assets
+            live = {a["id"]: a for a in ((await _list_assets()).get("assets") or [])}
+            for x in etf_assets:
+                v = live.get(x["id"], {}).get("current_value")
+                if v:
+                    etf_cur_mv += float(v)
+        except Exception:
+            pass
+    user_cur_mv += etf_cur_mv
 
     # 5) 计算 (opening_mv 已计入 buy_total, 所以窗口档这里不用再单独减)
     user_pnl = user_cur_mv + sell_total - buy_total
@@ -1151,6 +1244,14 @@ async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
             "priced_all": all(x["close"] is not None for x in opening_detail),
         } if days > 0 else None,
         "bench_underwater": bench_underwater,
+        # 覆盖范围: A股个股 + 场内 ETF。场外基金/理财/现金/机器人不在内 —— 前端据此说明,
+        # 免得再出现「顶栏 -3万 而这里只有 -6千」对不上的困惑。
+        "scope": {
+            "a_share_actions": len(all_actions),
+            "etf_actions": len(etf_flows),
+            "etf_codes": sorted({f["code"] for f in etf_flows}),
+            "etf_current_mv": round(etf_cur_mv, 2),
+        },
         "user": {
             "buy_total": round(buy_total, 2),
             "sell_total": round(sell_total, 2),
