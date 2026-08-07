@@ -2320,9 +2320,52 @@ async def _tool_asset_allocation() -> dict:
             "持有天数": q.get("days_held"),
         })
 
+    # 盈亏: 原来这个工具只给市值不给盈亏, get_holdings 也只有成本没有市值 ——
+    # 于是 agent 手里凑不出「我总共赚亏多少」, 问到就只能瞎猜或说没数据。
+    # 口径必须与看板顶栏逐字一致(Dashboard.jsx 的算法), 否则一个问题两个答案:
+    #   总盈亏 = 浮动 + 已实现
+    #   已实现只补「已平仓段 + 分红」—— 持仓段的已实现早已摊进浮动, 再加就重复
+    #   场外排除 CASH: 现金利息已作为现金行的 pnl 计入浮动
+    pnl: dict = {}
+    try:
+        unrealized = round(sum(float(a.get("pnl") or 0) for a in assets), 2)
+        try:
+            from api.portfolio_routes import list_holdings as _lh
+            for h in await _lh():
+                h = h if isinstance(h, dict) else h.model_dump()
+                if (h.get("shares") or 0) > 0:
+                    unrealized += float(h.get("unrealized_pnl") or 0)
+        except Exception:
+            pass
+        unrealized = round(unrealized, 2)
+
+        from api.portfolio_routes import realized_pnl as _rs
+        from api.assets_routes import assets_realized as _ar
+        s = await _rs()
+        stock_carry = s.get("total_realized_carry")
+        if stock_carry is None:
+            stock_carry = sum(i.get("realized_pnl", 0) for i in (s.get("items") or [])
+                              if not i.get("still_holding"))
+        asset_realized = sum(
+            (i.get("closed_realized") if i.get("closed_realized") is not None else i.get("realized_pnl", 0))
+            for i in ((await _ar()).get("items") or []) if i.get("asset_type") != "CASH")
+        realized = round(float(stock_carry) + float(asset_realized), 2)
+        pnl = {
+            "总盈亏": round(unrealized + realized, 2),
+            "浮动盈亏": unrealized,
+            "已实现": realized,
+            "已实现_股票": round(float(stock_carry), 2),
+            "已实现_基金理财加密机器人": round(float(asset_realized), 2),
+        }
+    except Exception as e:
+        pnl = {"error": f"盈亏取数失败: {e}"}
+
     return {"unit": "元(CNY)", "total_asset": total, "breakdown": breakdown,
+            "pnl": pnl,
             "cash_and_wealth_detail": liquid,
-            "note": "breakdown=各大类市值与占比; cash_and_wealth_detail=现金/理财逐笔(流动性与收益)。"
+            "note": "breakdown=各大类市值与占比; pnl=全口径盈亏(总盈亏=浮动+已实现, "
+                    "与看板顶栏同一算法; 已实现只含已平仓段与分红, 持仓段的已实现已摊进浮动不重复计); "
+                    "cash_and_wealth_detail=现金/理财逐笔(流动性与收益)。"
                     "据此可分析流动性分层/应急金/收益-期限权衡, 但具体怎么分由用户自己决定。"}
 
 
@@ -2629,7 +2672,7 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_thesis", "description": "读用户当初记录的买入逻辑(为什么买这只)。回答'我当初为什么买X、X的逻辑还成立吗、帮我复盘X'时用: 拿到 thesis 后对照现价/基本面/消息/红线, 客观说每条理由还成不成立。不传 code 看全部持仓的逻辑。仅当用户记过才有。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选, 留空看全部"}}}},
-    {"name": "get_asset_allocation", "description": "查用户全量资产配置: 各大类(股票/现金/理财/基金/加密/机器人)市值+占比 + 现金与理财逐笔明细(金额/年化/持有天数)。回答'现金/理财怎么分配、应急金够不够、资产结构合不合理、流动性够不够'这类资产配置问题时用。不涉及个股买卖。",
+    {"name": "get_asset_allocation", "description": "查用户全量资产配置与总盈亏: 总资产 + 各大类(股票/现金/理财/基金/加密/机器人)市值占比 + **全口径盈亏**(总盈亏/浮动/已实现, 与看板顶栏同一算法) + 现金理财逐笔明细(金额/年化/持有天数)。回答'我总共赚了/亏了多少、我的总盈亏、回本了吗、浮亏多少、已经亏掉多少'以及'现金理财怎么分配、应急金够不够、资产结构合不合理'时用——总盈亏只有这个工具有, get_holdings 只给成本与份额、不含盈亏。不涉及个股买卖。",
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_trades", "description": "查用户成交记录(含个股/场内ETF/场外基金): 传 code→该标的买卖/加减仓/分红或申赎流水(A股另给综合成本/已实现盈亏/持有天数, 同日有买有卖=做T); 不传→最近全部成交(三类合并)。可用 start/end(YYYY-MM-DD)按成交日期筛区间('这周/6月/上个月'自己换算成日期传)。回答'我什么时候买的、成本多少、做过几次T、这票赚没赚、持有多久、最近/某段时间交易了啥、哪些买入是定投'时用(定投计划自动买入的行带 来源=定投)。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选; 留空看全部"}, "start": {"type": "string", "description": "可选, 起始日 YYYY-MM-DD"}, "end": {"type": "string", "description": "可选, 截止日 YYYY-MM-DD"}}}},
