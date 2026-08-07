@@ -15,13 +15,13 @@
 <text x="48" y="70.5" font-size="11" fill="#57606a" text-anchor="end">40</text>
 <line x1="65.2" y1="52" x2="65.2" y2="356" stroke="#e8e4dc"/>
 <text x="65.2" y="374" font-size="11" fill="#57606a" text-anchor="middle">2026-05</text>
-<line x1="276.1" y1="52" x2="276.1" y2="356" stroke="#e8e4dc"/>
-<text x="276.1" y="374" font-size="11" fill="#57606a" text-anchor="middle">2026-06</text>
-<line x1="480.1" y1="52" x2="480.1" y2="356" stroke="#e8e4dc"/>
-<text x="480.1" y="374" font-size="11" fill="#57606a" text-anchor="middle">2026-07</text>
-<line x1="690.9" y1="52" x2="690.9" y2="356" stroke="#e8e4dc"/>
-<text x="690.9" y="374" font-size="11" fill="#57606a" text-anchor="middle">2026-08</text>
-<path d="M 56.0 348.8 H 56.0 V 341.5 H 60.3 V 334.3 H 63.3 V 327.0 H 181.5 V 319.8 H 259.8 V 312.6 H 273.4 V 305.3 H 292.1 V 298.1 H 379.2 V 290.9 H 402.4 V 283.6 H 422.5 V 276.4 H 427.2 V 269.1 H 428.1 V 261.9 H 434.4 V 254.7 H 443.7 V 247.4 H 464.2 V 240.2 H 470.7 V 233.0 H 471.2 V 225.7 H 475.5 V 218.5 H 482.0 V 211.2 H 494.8 V 204.0 H 495.4 V 196.8 H 504.4 V 189.5 H 537.4 V 182.3 H 537.7 V 175.0 H 559.3 V 167.8 H 576.9 V 160.6 H 578.6 V 153.3 H 578.8 V 146.1 H 583.1 V 138.9 H 618.5 V 131.6 H 625.8 V 124.4 H 633.7 V 117.1 H 643.9 V 109.9 H 676.8 V 95.4 H 683.6 V 88.2 H 724.5 V 81.0 H 732.0" fill="none" stroke="#c8a876" stroke-width="2.5" stroke-linejoin="round"/>
+<line x1="274.2" y1="52" x2="274.2" y2="356" stroke="#e8e4dc"/>
+<text x="274.2" y="374" font-size="11" fill="#57606a" text-anchor="middle">2026-06</text>
+<line x1="476.4" y1="52" x2="476.4" y2="356" stroke="#e8e4dc"/>
+<text x="476.4" y="374" font-size="11" fill="#57606a" text-anchor="middle">2026-07</text>
+<line x1="685.4" y1="52" x2="685.4" y2="356" stroke="#e8e4dc"/>
+<text x="685.4" y="374" font-size="11" fill="#57606a" text-anchor="middle">2026-08</text>
+<path d="M 56.0 348.8 H 56.0 V 341.5 H 60.3 V 334.3 H 63.3 V 327.0 H 180.4 V 319.8 H 258.0 V 312.6 H 271.5 V 305.3 H 290.0 V 298.1 H 376.4 V 290.9 H 399.4 V 283.6 H 419.3 V 276.4 H 424.0 V 269.1 H 424.9 V 261.9 H 431.1 V 254.7 H 440.3 V 247.4 H 460.7 V 240.2 H 467.1 V 233.0 H 467.6 V 225.7 H 471.8 V 218.5 H 478.3 V 211.2 H 491.0 V 204.0 H 491.6 V 196.8 H 500.5 V 189.5 H 533.2 V 182.3 H 533.5 V 175.0 H 555.0 V 167.8 H 572.4 V 160.6 H 574.1 V 153.3 H 574.2 V 146.1 H 578.6 V 138.9 H 613.7 V 131.6 H 620.8 V 124.4 H 628.7 V 117.1 H 638.8 V 109.9 H 671.4 V 95.4 H 678.2 V 88.2 H 718.7 V 81.0 H 732.0" fill="none" stroke="#c8a876" stroke-width="2.5" stroke-linejoin="round"/>
 <circle cx="732.0" cy="81.0" r="4" fill="#c8a876"/>
 <text x="724.0" y="71.0" font-size="13" font-weight="600" fill="#24292f" text-anchor="end">38 stars</text>
 </svg>
