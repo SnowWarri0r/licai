@@ -1,12 +1,48 @@
+<div align="center">
+
+<img src="docs/logo.svg" width="112" alt="理财助手 licai">
+
 # 理财助手 · licai
 
-> 一个本地化的**个人理财助手**——把 A股 / 基金 / 银行理财 / 现金账户 / 数字资产 / 量化机器人 全部装进一个看板，再叠加市场 AI 问答、个股详情页（K线/盘口/分时）、全市场涨跌幅/成交额榜单、板块对比、配置建议、早盘信息简报、资讯 AI 解读等决策辅助。**只给客观信息，不给买卖建议。**
+**把 A股 / 基金 / 银行理财 / 现金 / 数字资产 / 量化机器人 装进一个看板**
 
-**没有云端**、**没有账号**、**数据全部跑在你自己的机器上**。SQLite 单文件存储，你随时可以拷走、删掉、备份。
+再叠加市场 AI 问答 · 个股详情（K线/盘口/分时）· 全市场榜单 · 板块雷达 · 配置建议 · 早盘简报 · 复盘归因
+
+<!-- badge 必须整行写在一起: 源码里换行会被渲染成一个一列, 排不成横排 -->
+[![release](https://img.shields.io/github/v/release/SnowWarri0r/licai?style=flat-square&label=release&color=c8a876&labelColor=201f2a)](https://github.com/SnowWarri0r/licai/releases) [![license](https://img.shields.io/github/license/SnowWarri0r/licai?style=flat-square&color=85a0b4&labelColor=201f2a)](./LICENSE) [![stars](https://img.shields.io/github/stars/SnowWarri0r/licai?style=flat-square&color=d4a05c&labelColor=201f2a)](https://github.com/SnowWarri0r/licai/stargazers) [![last commit](https://img.shields.io/github/last-commit/SnowWarri0r/licai?style=flat-square&color=5fa86c&labelColor=201f2a)](https://github.com/SnowWarri0r/licai/commits/main)
+
+[![Python](https://img.shields.io/badge/Python-3.9+-c8a876?style=flat-square&labelColor=201f2a&logo=python&logoColor=c8a876)](https://www.python.org/) [![FastAPI](https://img.shields.io/badge/FastAPI-backend-7a9b8e?style=flat-square&labelColor=201f2a&logo=fastapi&logoColor=7a9b8e)](https://fastapi.tiangolo.com/) [![React](https://img.shields.io/badge/React_+_Vite-frontend-85a0b4?style=flat-square&labelColor=201f2a&logo=react&logoColor=85a0b4)](https://react.dev/) [![SQLite](https://img.shields.io/badge/SQLite-local--first-d4a05c?style=flat-square&labelColor=201f2a&logo=sqlite&logoColor=d4a05c)](https://www.sqlite.org/) [![PWA](https://img.shields.io/badge/PWA-installable-5fa86c?style=flat-square&labelColor=201f2a)](#技术栈)
+
+**没有云端** · **没有账号** · **数据全部跑在你自己的机器上**
+
+SQLite 单文件存储，你随时可以拷走、删掉、备份
+
+**只给客观信息，不给买卖建议。**
+
+<a href="#快速启动"><b>快速启动</b></a> · <a href="#功能地图"><b>功能地图</b></a> · <a href="#ask"><b>问问市场</b></a> · <a href="#技术栈"><b>技术栈</b></a> · <a href="#定位与免责声明"><b>免责声明</b></a>
+
+</div>
 
 ![主看板](docs/screenshots/01-dashboard.png)
 
 > 演示数据，运行 `python scripts/seed_demo.py --use` 一键重现。
+
+<h2 id="功能地图">功能地图</h2>
+
+| | 模块 | 一句话 |
+|---|---|---|
+| 🔍 | [问问市场](#ask) | 挂 35 个数据工具的问答 agent，自己决定调哪些工具取数再客观解读 |
+| 💼 | [全资产看板](#1-全资产看板unifiedportfolio) | 六大类一屏，含手续费综合成本、份额拆分自动入账、集中度与同源风险 |
+| 📡 | [板块雷达](#2-板块雷达) | 每只票 vs 同花顺行业实时 α，外加情绪周期时间轴 + 板块成交份额迁移 |
+| 🌅 | [早盘简报 / 收盘小结](#3-早盘-llm-简报--收盘小结) | 9:00 客观信息摘要 + 风险提示；15:10 全组合浮动归因 + 事件区 |
+| ⚖️ | [配置建议](#4-配置建议allocationadvisor) | 保守/平衡/激进三套模板的当前 vs 目标差额 |
+| 🔮 | [基金代理标的](#5-基金代理标的场外基金盘中预判) | 拉真实 top10 持仓股实时涨跌，补场外基金 T+1 净值的盘中盲区 |
+| 📊 | [全市场榜单](#6-全市场榜单八个页签--自由查股--k-线浮层--ai-抽屉) | 八页签 + 自由查股 + 券商级 K 线浮层 + 龙虎榜席位画像 + 盘口异动 |
+| ⚠️ | [风险提醒](#7-风险提醒客观警示非操作信号) | 集中度 / 跨大类同源共振 / 基本面红黄灯，只警示不发信号 |
+| 📈 | [个股详情页](#8-个股详情页k线--盘口--分时) | 多周期 K 线 + 自己的买卖点 + 五档盘口 + 逐笔成交 |
+| 📰 | [资讯流 + AI 解读](#9-资讯流--ai-解读五源合一) | 五源合一，三段式解读「讲了啥 / 为何重要 / 跟你持仓什么关系」 |
+| 🩻 | [ETF 题材透视](#10-etf-题材透视避雷雷达) | 用季报真实成分股对照宣称主题，专治挂羊头 ETF |
+| 🪞 | [复盘](#11-复盘今日--周--月--总览) | TWR 净值曲线对比沪深300 + 持仓相关性矩阵 + 今日组合归因 |
 
 ## 为啥做这个
 
@@ -16,7 +52,7 @@
 
 我自己的需求很简单：**把所有理财头寸装进一个屏幕，看清楚自己的钱在哪、配比合不合理、今天该不该动**。
 
-## 🔍 问问市场 · 市场 AI 问答（独立页）
+<h2 id="ask">🔍 问问市场 · 市场 AI 问答（独立页）</h2>
 
 一个挂了 **35 个数据工具**的问答 agent，自由问个股涨跌 / 市场风格 / 资金主线 / 产业链 / 自己的成交，它自己决定调哪些工具取数据（并行调用），再客观解读——**只给客观信息，不给任何买卖建议**。流式打字机展示每一步在调什么工具，支持多轮追问（"它明天呢"会顺着上文标的继续）。
 
@@ -193,7 +229,9 @@ K 线本体是券商级可缩放蜡烛图（量 + MA5/10/20/30/60 彩色图例 +
 
 **前端**：React + Vite + Tailwind CSS + PWA（可装到桌面）
 
-**数据源**（全部公开免费）：
+<details>
+<summary><b>数据源清单</b>（全部公开免费，点开看逐条来源）</summary>
+
 - A股 行情：Sina `hq.sinajs.cn`
 - A股 历史 K 线 + 行业：Sina money.finance + EastMoney emweb
 - 基金 NAV：天天基金（fund.eastmoney.com）
@@ -212,10 +250,12 @@ K 线本体是券商级可缩放蜡烛图（量 + MA5/10/20/30/60 彩色图例 +
 - 网页全文（read_url）：Firecrawl 免 key `/v1/scrape` 主源 + Jina Reader（r.jina.ai）免 key 备用，配额用完自动切换
 - LLM：Claude API（OAuth via Claude Code 或 ANTHROPIC_API_KEY），个股问答 agent 走 tool-calling + 服务端联网搜索 + 网页全文抓取
 
+</details>
+
 ## 快速启动
 
 ```bash
-git clone https://github.com/<your-name>/licai
+git clone https://github.com/SnowWarri0r/licai
 cd licai
 
 # Python 后端
@@ -265,6 +305,9 @@ python scripts/seed_demo.py --restore   # 看完恢复真实 DB
 
 ## 项目结构
 
+<details>
+<summary><b>目录树</b>（点开看每个模块干什么）</summary>
+
 ```
 licai/
 ├── api/                  # FastAPI 路由
@@ -277,7 +320,7 @@ licai/
 │   ├── ask_routes        # 问问市场 agent 端点（SSE 流式 + 多轮）
 │   └── ws.py             # WebSocket + 后台任务
 ├── services/
-│   ├── stock_agent       # 问问市场 agent（34 个工具 + tool-calling loop + 裸K量价/结构形态/产业链/来源角标/read_url）
+│   ├── stock_agent       # 问问市场 agent（35 个工具 + tool-calling loop + 裸K量价/结构形态/产业链/来源角标/read_url）
 │   ├── portfolio_curve   # 组合净值曲线（TWR/回撤/相关性矩阵/每日快照预热）
 │   ├── coiled_scanner    # 蓄势/强势结构扫描（规则闸 + AI 看图复核）
 │   ├── lhb_detail        # 龙虎榜席位明细 + 每日全榜单 + 席位画像 + 席位追踪
@@ -309,6 +352,8 @@ licai/
 ├── run.py                # FastAPI entry
 └── requirements.txt
 ```
+
+</details>
 
 ## 定位与免责声明
 
