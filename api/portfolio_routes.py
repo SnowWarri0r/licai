@@ -955,6 +955,29 @@ async def trade_review_ai(period: str = "all", force: int = 0):
     return result
 
 
+async def _close_on_or_before(code: str, day: str) -> float | None:
+    """个股在 day 当日或之前最近一个交易日的收盘价(前复权)。取不到返回 None。
+
+    给「跑赢基准对照」的窗口档估期初持仓市值用。不能拿成本价代替 —— 那样窗口
+    收益会把开窗前的浮盈浮亏也算进来。
+    """
+    try:
+        from services.market_data import get_historical_data
+        df = await get_historical_data(code, 400)
+        if df is None or not len(df):
+            return None
+        last = None
+        for _, r in df.iterrows():
+            d = str(r.get("日期") or r.get("date") or "")[:10]
+            if d and d <= day:
+                last = float(r["收盘"])
+            else:
+                break
+        return last
+    except Exception:
+        return None
+
+
 @router.get("/benchmark")
 async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
     """跑赢基准对照: 假设你 A 股的每次买卖, 同金额同日期都买在基准上 (默认沪深300).
@@ -1011,10 +1034,36 @@ async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
         all_actions.extend(await get_position_actions(code, limit=500))
     all_actions.sort(key=lambda a: (a.get("trade_date") or "", a.get("id") or 0))
 
+    # 2.5) 窗口档必须带上「期初持仓」, 否则窗口内卖掉的老仓位有「收回」没「投入」,
+    #      凭空变成收益。实测 3 月档因此把 -4324 报成 +6675, 连正负号都是反的;
+    #      基准份额也会被这些无源卖出扣穿(3月档 26.26 反而小于 1月档 31.99, 非单调)。
+    #      正确口径: 期初持仓按截止日收盘估值当作一笔「投入」, 基准同额建仓。
     cutoff = None
+    opening_mv = 0.0
+    opening_detail: list[dict] = []
     if days > 0:
         cutoff = (date.today() - timedelta(days=days)).isoformat()
+        prior = [a for a in all_actions if (a.get("trade_date") or "") < cutoff]
         all_actions = [a for a in all_actions if (a.get("trade_date") or "") >= cutoff]
+        pos: dict[str, int] = {}
+        for a in prior:
+            t0 = a.get("action_type", "")
+            s0 = int(a.get("shares") or 0)
+            c0 = a.get("stock_code") or ""
+            if t0 in ACQUIRE:
+                pos[c0] = pos.get(c0, 0) + s0
+            elif t0 in RELEASE:
+                pos[c0] = pos.get(c0, 0) - s0
+        for c0, sh0 in pos.items():
+            if sh0 <= 0:
+                continue
+            px0 = await _close_on_or_before(c0, cutoff)
+            if px0:
+                opening_mv += sh0 * px0
+                opening_detail.append({"code": c0, "shares": sh0, "close": round(px0, 3)})
+            else:
+                # 价拉不到就如实标 null, 别拿成本价冒充市值 —— 前端据此提示口径不完整
+                opening_detail.append({"code": c0, "shares": sh0, "close": None})
 
     # 3) 累计现金流 + 基准等额份额
     buy_total = 0.0
@@ -1022,6 +1071,12 @@ async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
     bench_shares_total = 0.0
     skipped = 0
     first_action_date = None
+    # 期初持仓 = 窗口起点就压在场上的钱, 两边同额起步
+    if opening_mv > 0:
+        buy_total += opening_mv
+        c_cut = bench_close_on_or_after(cutoff)
+        if c_cut and c_cut > 0:
+            bench_shares_total += opening_mv / c_cut
     for a in all_actions:
         td = (a.get("trade_date") or "")[:10]
         if not td:
@@ -1068,9 +1123,12 @@ async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
             if price > 0:
                 user_cur_mv += price * int(h.get("shares") or 0)
 
-    # 5) 计算
+    # 5) 计算 (opening_mv 已计入 buy_total, 所以窗口档这里不用再单独减)
     user_pnl = user_cur_mv + sell_total - buy_total
-    bench_cur_mv = max(0.0, bench_shares_total) * bench_today
+    # 净卖出超过基准仓位价值时份额会转负。以前直接 max(0,·) 抹平, 数字静默失真;
+    # 现在保留真值参与计算, 只把「穿仓」透出去让前端提示。
+    bench_underwater = bench_shares_total < 0
+    bench_cur_mv = bench_shares_total * bench_today
     bench_pnl = bench_cur_mv + sell_total - buy_total
     alpha_pnl = user_pnl - bench_pnl
 
@@ -1085,6 +1143,14 @@ async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
         "last_bench_date": bench_last_date,
         "action_count": len(all_actions),
         "skipped": skipped,
+        # 窗口档的期初持仓(按截止日收盘估值), 已并入 buy_total 当作一笔投入。
+        # close 为 null 的条目表示价没拉到, 那部分市值缺口不在口径里。
+        "opening": {
+            "mv": round(opening_mv, 2),
+            "positions": opening_detail,
+            "priced_all": all(x["close"] is not None for x in opening_detail),
+        } if days > 0 else None,
+        "bench_underwater": bench_underwater,
         "user": {
             "buy_total": round(buy_total, 2),
             "sell_total": round(sell_total, 2),
