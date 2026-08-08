@@ -48,9 +48,13 @@ class Config:
     host: str = "0.0.0.0"
     port: int = 8888
 
-    # --- 可插拔数据源: 通达信(TDX) REST 服务 (https://github.com/oficcejo/tdx-api) ---
+    # --- 可插拔数据源: 通达信(TDX) REST 服务 ---
+    # 本项目对着这个 fork 测: https://github.com/SnowWarri0r/tdx-api
+    # (比上游 oficcejo/tdx-api 多了 588/56x 场内 ETF 市场前缀、kline-history 日期范围
+    #  和可配端口的修复。上游也能跑 —— tdx_client._mkcode 一律显式带 sh/sz/bj 前缀请求,
+    #  绕开了上游按代码长度推断市场的那个坑。)
     # 空 = 禁用(默认走东财/新浪)。跑起那个 Go 服务后填 base_url(如 http://localhost:8080),
-    # agent 的盘口/分时会用它(五档盘口 + 当日分时)。也可用环境变量 TDX_BASE_URL 覆盖。
+    # 盘口/逐笔/历史分时会用它。也可用环境变量 TDX_BASE_URL 覆盖。
     tdx_base_url: str = ""
 
 
