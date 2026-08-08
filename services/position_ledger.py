@@ -117,6 +117,7 @@ def compute_position_state(
     ep_buy_fees = ep_sell_fees = 0.0
     ep_realized_excl_fees = 0.0
     running_shares = 0
+    flat_date = None               # 最近一次卖到 0 的日期; 同日买回则本段延续
 
     def _episode_realized():
         rf = ep_sell_fees + (ep_buy_fees * (ep_matched / ep_buy_shares) if ep_buy_shares > 0 else 0.0)
@@ -129,6 +130,18 @@ def compute_position_state(
         ad = _parse_date(a.get("trade_date") or a.get("created_at"))
 
         if t in ACQUIRE and shares > 0:
+            # 卖光后再买入: 隔夜才算新一段, 日内买回视为同一段延续 —— 券商就是这么算的
+            # (与 external_ledger 的口径统一; 那边注释写明是招商实测行为)。
+            # 之前 A股 这边是"卖到 0 立刻结算", 于是日内清仓再买会把本段盈亏踢出浮动
+            # 变成落袋, 新仓成本从买回价重新起算, 跟券商 App 对不上。
+            if flat_date is not None:
+                if ad > flat_date:
+                    realized_carry += _episode_realized()
+                    ep_buy_amt = ep_sell_amt = ep_fees = 0.0
+                    ep_buy_shares = ep_matched = 0
+                    ep_buy_fees = ep_sell_fees = 0.0
+                    ep_realized_excl_fees = 0.0
+                flat_date = None
             # BONUS 是送股: price=0 → lot 的 shares 累加但 fifo_total 不变, cost_price 被动摊薄。
             lots.append({"shares": shares, "price": price, "trade_date": ad})
             f = _fee_of(a, t, price, shares)
@@ -156,20 +169,26 @@ def compute_position_state(
             total_fees += f
             running_shares -= shares
             if running_shares <= 0:
-                # 本段平仓: 沉淀已实现到 carry, 清空本段累计 (开启新段)
-                realized_carry += _episode_realized()
+                # 卖光了: 先只记下平仓日, 本段累计留着 —— 当天买回就接着算同一段,
+                # 隔夜没买回才在下次买入(或收尾)时结算进 carry。
                 running_shares = 0
                 lots = []
-                ep_buy_amt = ep_sell_amt = ep_fees = 0.0
-                ep_buy_shares = ep_matched = 0
-                ep_buy_fees = ep_sell_fees = 0.0
-                ep_realized_excl_fees = 0.0
+                flat_date = ad
         elif t in INCOME:
             # 现金分红: 显式 amount, 或 price(每股股息) × shares(持股数)
             amt = float(a.get("amount") or 0)
             if amt <= 0:
                 amt = float(a.get("price") or 0) * int(a.get("shares") or 0)
             income_realized += amt
+
+    # 收尾: 还停在空仓状态说明这一段确实平掉了(没有当日买回), 结算进 carry。
+    # 不结算的话 realized_carry 会漏掉最后一段, 顶栏「已实现」少一块。
+    if flat_date is not None and running_shares == 0:
+        realized_carry += _episode_realized()
+        ep_buy_amt = ep_sell_amt = ep_fees = 0.0
+        ep_buy_shares = ep_matched = 0
+        ep_buy_fees = ep_sell_fees = 0.0
+        ep_realized_excl_fees = 0.0
 
     # 总已实现 = 已平仓段 + 当前段已实现 + 现金分红
     realized_pnl = round(realized_carry + _episode_realized() + income_realized, 2)
