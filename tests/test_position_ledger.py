@@ -108,6 +108,42 @@ def test_clear_then_rebuy_at_loss_carry():
     assert abs(s["realized_carry"] - (-30.0)) < 1e-6
 
 
+def test_same_day_clear_then_rebuy_keeps_episode():
+    """日内卖光再买回 = 同一段延续, 本段盈亏留在浮动(摊进成本), 不踢出去当落袋。
+
+    券商就是这么算的 —— external_ledger 早就按招商实测行为做了「隔夜才重置」,
+    A股 这边却是卖到 0 立刻结算, 两套账本对同一个动作给不同答案。
+    实测 603993 日内清仓再买: 综合成本被从 20.36 抬到 21.18, +1394 的 T 收益
+    被踢出浮动记成落袋。
+    """
+    actions = [
+        {"action_type": "BUY", "price": 10.0, "shares": 100, "trade_date": "2026-03-02"},
+        {"action_type": "SELL", "price": 12.0, "shares": 100, "trade_date": "2026-03-10"},  # 清零, +200
+        {"action_type": "BUY", "price": 11.0, "shares": 100, "trade_date": "2026-03-10"},   # 同日买回
+    ]
+    s = compute_position_state(actions, today=date(2026, 3, 20))
+    assert s["shares"] == 100
+    # +200 摊进新仓: 成本 11.0 - 200/100 = 9.0
+    assert abs(s["cost_price"] - 9.0) < 1e-6
+    assert abs(s["realized_pnl"] - 200.0) < 1e-6     # 总账不变
+    assert s["realized_carry"] == 0.0                # 没有已平仓段 —— 仓位一直延续着
+
+    # 隔夜买回仍旧重置(不能把上面的规则扩大化)
+    overnight = list(actions[:2]) + [
+        {"action_type": "BUY", "price": 11.0, "shares": 100, "trade_date": "2026-03-11"},
+    ]
+    s2 = compute_position_state(overnight, today=date(2026, 3, 20))
+    assert abs(s2["cost_price"] - 11.0) < 1e-6
+    assert abs(s2["realized_carry"] - 200.0) < 1e-6
+
+    # 卖光后一直没买回: 这一段确实平了, 要结算进 carry 而不是漏掉
+    flat = list(actions[:2])
+    s3 = compute_position_state(flat, today=date(2026, 3, 20))
+    assert s3["shares"] == 0
+    assert abs(s3["realized_pnl"] - 200.0) < 1e-6
+    assert abs(s3["realized_carry"] - 200.0) < 1e-6
+
+
 def test_partial_sell_within_episode_still_folds():
     # 同一段持仓内部分卖出(做T) 仍走综合成本法摊薄, 不重置。
     actions = [
