@@ -4,7 +4,11 @@
 - A股/场内ETF: 前复权收盘(主K线链路 EM→腾讯→缓存, 与全应用一致) × 折算到现行标度的份额
   (份额×其后所有拆分因子之积)——任一价源都是前复权, 标度天然一致, 不依赖原始价源的可用性
 - 场外基金: 官方单位净值 × 当日份额
-- 现金/理财/加密/机器人: 成本基线(累计净投入 + 累计利息分红), 无市场波动, 属近似
+- 现金/理财/加密/机器人: 成本基线(累计净投入 + 累计利息分红), 有快照的日子用真实市值覆盖
+  · 现金/理财的市值是手填的, 存取转账不写流水 → 无流水解释的跳变按转账处理(infer_cash_transfers),
+    否则一笔转账会被 TWR 当成当天的盈亏(实测 2.46w 转出压掉 6.4 个点)
+  · 理财到期一次性结息, 账上只有本金 → 赎回超出本金的部分摊回持有期(overdraw_accruals),
+    否则"市值 13876 却流出 14299"会让分母变负, 真实收益凭空蒸发
 - TWR: r_t = (V_t − V_{t−1} − F_t) / (V_{t−1} + F_t); F=当日净外部投入
   (买入/申购/转入为正, 卖出/赎回/转出为负; 利息/分红是收益不是流入)
 - 基准: 沪深300, 与 TWR 同起点归一到 100
@@ -144,11 +148,75 @@ def adjust_to_final_scale(actions: list[dict], dates: list[str],
     return out
 
 
-def cost_basis_series(actions: list[dict], dates: list[str]) -> list[float]:
-    """无价史资产(现金/理财/加密/机器人): 累计净投入 + 累计利息分红 的时间线。"""
+def _days_between(a: str, b: str) -> int:
+    try:
+        return (date.fromisoformat(b[:10]) - date.fromisoformat(a[:10])).days
+    except Exception:
+        return 0
+
+
+def overdraw_accruals(actions: list[dict]) -> list[tuple]:
+    """找出"赎回金额超过累计本金"的部分 → 从没登记过的应计利息。
+
+    理财到期一次性结息, 我们没有逐日净值, 账上只有本金。于是赎回那天市值 13876
+    却流出 14299 —— TWR 分母被打成负数, 这笔真实收益在曲线上直接蒸发。
+    返回 [(起始日, 结息日, 金额)], 由调用方按持有天数线性摊回每一天。
+
+    只对现金/理财这类没有价格序列的桶成立。基金/ETF 卖超成本那是交易盈亏,
+    曲线已经用 份额×价格 算过了, 再摊一遍就是重复计收益 —— 所以
+    cost_basis_series 默认不摊, 由 build_curve 只给 CASH/WEALTH 打开。
+    """
     evs = sorted(
         (a for a in actions if (a.get("status") or "confirmed") == "confirmed"),
         key=lambda a: (_d(a.get("trade_date")), a.get("id") or 0))
+    bands, basis, first_in = [], 0.0, None
+    for a in evs:
+        at = (a.get("action_type") or "").upper()
+        amt = float(a.get("amount") or 0)
+        dt = _d(a.get("trade_date"))
+        if at in _IN or at in _INCOME:
+            if at in _IN and first_in is None:
+                first_in = dt
+            basis += amt
+        elif at in _OUT:
+            if amt > basis and first_in and _days_between(first_in, dt) > 0:
+                bands.append((first_in, dt, amt - basis))
+                basis = 0.0
+            else:
+                basis -= amt
+    return bands
+
+
+def accrued_on(bands: list[tuple], dt: str) -> float:
+    """某天尚未兑付的应计利息: 从起始日到结息日线性爬升, 结息当天归零(钱已随本金流出)。
+
+    结息日之前一天爬到 ~满额, 于是赎回那天"市值≈流出额", TWR 当天收益是 0 而
+    收益早已在爬升过程中逐日计入 —— 这才是时间加权该有的样子。
+    """
+    tot = 0.0
+    for s, e, amt in bands:
+        if dt >= e or dt < s:
+            continue
+        span = _days_between(s, e)
+        if span <= 0:
+            continue
+        tot += amt * min(1.0, _days_between(s, dt) / span)
+    return tot
+
+
+def cost_basis_series(actions: list[dict], dates: list[str],
+                      accrue: bool = False) -> list[float]:
+    """无价史资产(现金/理财/加密/机器人): 累计净投入 + 累计利息分红 的时间线。
+
+    accrue=True 额外补上"赎回超过本金"那部分应计利息(见 overdraw_accruals):
+    线性摊回持有期, 只有落在轴内的那段进收益 —— 理财收益率近似恒定, 比一次性
+    计入更贴近实际。残差 ≤ 金额/持有天数(百元级利息摊一年 → 不到 1 块), 可忽略。
+    只对现金/理财打开; 加密/机器人的超额赎回是交易盈亏, 由快照市值体现。
+    """
+    evs = sorted(
+        (a for a in actions if (a.get("status") or "confirmed") == "confirmed"),
+        key=lambda a: (_d(a.get("trade_date")), a.get("id") or 0))
+    bands = overdraw_accruals(actions) if accrue else []
     out, val, j = [], 0.0, 0
     for dt in dates:
         while j < len(evs) and _d(evs[j].get("trade_date")) <= dt:
@@ -160,7 +228,7 @@ def cost_basis_series(actions: list[dict], dates: list[str]) -> list[float]:
             elif at in _OUT:
                 val -= amt
             j += 1
-        out.append(max(val, 0.0))
+        out.append(max(val, 0.0) + accrued_on(bands, dt))
     return out
 
 
@@ -288,7 +356,7 @@ async def build_curve(days: int = 120) -> dict:
 
     async def _one(kind: str, code: str, acts: list[dict]):
         if kind in ("cost", "cash"):
-            vals = cost_basis_series(acts, axis)
+            vals = cost_basis_series(acts, axis, accrue=(kind == "cash"))
             fl = day_flows(acts, axis)
             # 有快照的日子用真实市值覆盖成本基线(快照日之间前向填充);
             # 快照含当日盈亏而流量不含 → TWR 从此吃到这部分资产的真实收益
