@@ -58,6 +58,54 @@ def estimate_trade_fee(action_type: str, price: float, shares: int, stock_code: 
     return commission + stamp + transfer + regulatory
 
 
+def _order_key(a: dict) -> tuple:
+    """把「同一笔委托的多次成交」归到一组。
+
+    一张委托单挂出去可能分几个价位成交, 券商按整张单清算、5 元最低佣金只收一次;
+    我们却把每次成交单独记一行, 逐行取 max(额×费率, 5) 就把最低佣金收了好几遍。
+    分组键取 代码+日期+方向+成交时刻: 有时刻的按分钟分(同分钟视作一单),
+    没记时刻的整天同方向合成一组(实测这些都是 2-4 笔百来股的分笔成交)。
+    代价是同日同方向的两张独立委托若都没记时刻会被并成一单、少算一次最低佣金 ——
+    真实费用请直接填 action 的 fee 字段, 它优先级高于估算。
+    """
+    t = (a.get("action_type") or "")
+    side = "A" if t in ACQUIRE else ("R" if t in RELEASE else "?")
+    return (a.get("stock_code") or "", str(a.get("trade_date") or "")[:10],
+            side, str(a.get("trade_time") or ""))
+
+
+def allocate_trade_fees(actions: list[dict], commission_rate: float | None = None,
+                        commission_min: float | None = None) -> list[float]:
+    """按「委托单」算佣金最低值, 再按成交额分摊回每一笔。返回与 actions 等长的费用列表。
+
+    印花税/过户费/规费都是按比例收的, 逐笔算不会出错, 只有最低佣金需要合并。
+    """
+    c_rate = _COMMISSION_RATE if commission_rate is None else commission_rate
+    c_min = _COMMISSION_MIN if commission_min is None else commission_min
+    groups: dict[tuple, list[int]] = {}
+    for i, a in enumerate(actions):
+        groups.setdefault(_order_key(a), []).append(i)
+
+    out = [0.0] * len(actions)
+    for key, idxs in groups.items():
+        code = key[0]
+        if code and not is_a_share(code):
+            continue
+        t0 = (actions[idxs[0]].get("action_type") or "")
+        if t0 not in ACQUIRE and t0 not in RELEASE:
+            continue
+        amts = [float(actions[i].get("price") or 0) * int(actions[i].get("shares") or 0) for i in idxs]
+        total = sum(amts)
+        if total <= 0:
+            continue
+        commission = max(total * c_rate, c_min)     # ← 整张委托只收一次最低佣金
+        stamp_rate = _STAMP_RATE if t0 in RELEASE else 0.0
+        per_unit = stamp_rate + _TRANSFER_RATE + _EXCHANGE_HANDLE_RATE + _REGULATORY_FEE_RATE
+        for i, amt in zip(idxs, amts):
+            out[i] = commission * (amt / total) + amt * per_unit
+    return out
+
+
 def _parse_date(s: str | None) -> date:
     if not s:
         return date.today()
@@ -92,9 +140,15 @@ def compute_position_state(
 
     sorted_actions = sorted(actions, key=sort_key)
 
-    def _fee_of(a, t, price, shares):
+    # 估算费用先按「委托单」整体算一遍再分摊回每笔 —— 逐笔各取一次 5 元最低佣金
+    # 会把同一张委托的分笔成交重复收费(实测这份流水多收 101.22 元)。
+    _alloc = allocate_trade_fees(
+        [dict(a, stock_code=a.get("stock_code") or stock_code) for a in sorted_actions],
+        commission_rate, commission_min) if stock_code else []
+
+    def _fee_of(a, t, price, shares, idx=None):
         # action.fee 非 NULL = 用户手填覆盖; 否则用调用方按每笔 broker 预算的 _auto_fee;
-        # 都没有再用单一费率兜底。无 stock_code 不计费。
+        # 都没有再用分摊后的估算。无 stock_code 不计费。
         if not stock_code:
             return 0.0
         override = a.get("fee")
@@ -102,7 +156,7 @@ def compute_position_state(
             return float(override)
         if a.get("_auto_fee") is not None:
             return float(a["_auto_fee"])
-        return estimate_trade_fee(t, price, shares, stock_code, commission_rate, commission_min)
+        return _alloc[idx] if (idx is not None and idx < len(_alloc)) else 0.0
 
     # 单次按时间顺序遍历: 同时跑 FIFO + 按"持仓段"算综合成本。
     # 一段持仓 = 从份数 0→正 到再次归 0。完全清仓后再买入会开启全新一段,
@@ -123,7 +177,7 @@ def compute_position_state(
         rf = ep_sell_fees + (ep_buy_fees * (ep_matched / ep_buy_shares) if ep_buy_shares > 0 else 0.0)
         return ep_realized_excl_fees - rf
 
-    for a in sorted_actions:
+    for _i, a in enumerate(sorted_actions):
         t = a.get("action_type", "")
         price = float(a.get("price", 0))
         shares = int(a.get("shares", 0))
@@ -144,7 +198,7 @@ def compute_position_state(
                 flat_date = None
             # BONUS 是送股: price=0 → lot 的 shares 累加但 fifo_total 不变, cost_price 被动摊薄。
             lots.append({"shares": shares, "price": price, "trade_date": ad})
-            f = _fee_of(a, t, price, shares)
+            f = _fee_of(a, t, price, shares, _i)
             ep_buy_amt += price * shares
             ep_buy_shares += shares
             ep_buy_fees += f
@@ -162,7 +216,7 @@ def compute_position_state(
                 remaining -= consumed
                 if lot["shares"] == 0:
                     lots.pop(0)
-            f = _fee_of(a, t, price, shares)
+            f = _fee_of(a, t, price, shares, _i)
             ep_sell_amt += price * shares
             ep_sell_fees += f
             ep_fees += f
