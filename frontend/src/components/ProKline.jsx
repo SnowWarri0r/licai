@@ -142,7 +142,11 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
     if (!wrapRef.current) return
     const chart = createChart(wrapRef.current, {
       autoSize: true,
+      // attributionLogo: 关掉图上那枚 TradingView 角标。许可要求的是「用户可见页面上有
+      // 署名 + tradingview.com 链接」, 图上角标只是满足它的一种方式 —— 我们改成放在
+      // 设置页的开源许可区(见 Settings.jsx), 所以这里可以关。别直接删了不补。
       layout: { background: { color: 'transparent' }, textColor: '#9aa0a6', fontSize: 11,
+        attributionLogo: false,
         fontFamily: 'ui-sans-serif, system-ui, -apple-system, sans-serif' },
       grid: { vertLines: { color: 'rgba(255,255,255,0.04)' }, horzLines: { color: 'rgba(255,255,255,0.04)' } },
       crosshair: { mode: CrosshairMode.Normal,
@@ -168,6 +172,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
       volChart = createChart(volWrapRef.current, {
         autoSize: true,
         layout: { background: { color: 'transparent' }, textColor: '#9aa0a6', fontSize: 11,
+          attributionLogo: false,
           fontFamily: 'ui-sans-serif, system-ui, -apple-system, sans-serif' },
         grid: { vertLines: { color: 'rgba(255,255,255,0.04)' }, horzLines: { color: 'rgba(255,255,255,0.04)' } },
         crosshair: { mode: CrosshairMode.Normal,
