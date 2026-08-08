@@ -140,6 +140,36 @@ def test_curve_twr_ignores_flows():
     assert max_drawdown([100, 120, 90, 110]) == -25.0
 
 
+def test_curve_infers_untracked_cash_transfers():
+    """现金/理财桶市值手填、转账不写流水 → 跳变必须补记成流量, 否则 TWR 当成盈亏。
+
+    实测过的坑: 朝朝宝 2026-07-31 从 28490 转出到 3898, 曲线当天掉 6.4 个点。
+    """
+    from services.portfolio_curve import infer_cash_transfers, twr_series
+    dates = ["d1", "d2", "d3"]
+
+    # 1) 大额转出: 整笔判为流量, 当天收益归零
+    vals, fl = [28490.0, 28490.0, 3898.0], {}
+    assert infer_cash_transfers(vals, dates, fl) == ["d3"]
+    assert abs(fl["d3"] - (-24592.0)) < 0.01
+    tw = twr_series(vals, [fl.get(d, 0.0) for d in dates])
+    assert abs(tw[-1] - 100.0) < 1e-6          # 转账不产生收益
+
+    # 2) 带宽内的真实利息保留为收益, 不误判成转账
+    vals, fl = [10080.0, 10082.0, 10085.0], {}
+    assert infer_cash_transfers(vals, dates, fl) == []
+    assert twr_series(vals, [0.0, 0.0, 0.0])[-1] > 100.0
+
+    # 3) 已登记的存取流水不再重复补记
+    vals, fl = [10000.0, 15000.0, 15000.0], {"d2": 5000.0}
+    assert infer_cash_transfers(vals, dates, fl) == []
+    assert fl == {"d2": 5000.0}
+
+    # 4) 余额极小的桶用绝对下限兜底(2元→83元是入金, 不是 4000% 利息)
+    vals, fl = [2.02, 83.0], {}
+    assert infer_cash_transfers(vals, ["d1", "d2"], fl) == ["d2"]
+
+
 def test_structure_2b_rules():
     """2B法则: 冲过前高又收回其下=假突破; 击穿前低又收回其上=假破位。"""
     from services.stock_agent import _structure_scan
