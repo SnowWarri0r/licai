@@ -170,6 +170,48 @@ def test_curve_infers_untracked_cash_transfers():
     assert infer_cash_transfers(vals, ["d1", "d2"], fl) == ["d2"]
 
 
+def test_curve_accrues_interest_realized_at_redemption():
+    """理财到期一次性结息: 赎回额超过本金的部分是应计利息, 必须摊回持有期。
+
+    不摊的话账上只有本金 13876 却流出 14299, TWR 分母打成负数 → 收益蒸发。
+    实测过的两笔: 中邮 +423.77 / 交银 +190.90 在曲线上完全看不见。
+    """
+    from services.portfolio_curve import (overdraw_accruals, cost_basis_series,
+                                          accrued_on, twr_series, day_flows)
+    acts = [
+        {"id": 1, "action_type": "DEPOSIT", "amount": 20000.0, "trade_date": "2025-04-08"},
+        {"id": 2, "action_type": "WITHDRAW", "amount": 6123.82, "trade_date": "2026-05-21"},
+        {"id": 3, "action_type": "WITHDRAW", "amount": 14299.95, "trade_date": "2026-06-16"},
+    ]
+    # 部分赎回不算超额(本金还够); 只有最后清仓那笔透出 423.77
+    bands = overdraw_accruals(acts)
+    assert len(bands) == 1
+    assert bands[0][0] == "2025-04-08" and bands[0][1] == "2026-06-16"
+    assert abs(bands[0][2] - 423.77) < 0.01
+
+    # 结息当天归零(钱已随本金流出), 前一天爬到接近满额
+    assert accrued_on(bands, "2026-06-16") == 0.0
+    assert accrued_on(bands, "2026-06-17") == 0.0
+    assert accrued_on(bands, "2025-04-07") == 0.0
+    assert 422.0 < accrued_on(bands, "2026-06-15") <= 423.77
+
+    dates = ["2026-05-21", "2026-06-15", "2026-06-16"]
+    vals = cost_basis_series(acts, dates, accrue=True)
+    fl = day_flows(acts, dates)
+    # 赎回前市值 ≈ 赎回金额(差额 ≤ 利息/持有天数), 于是赎回当天不产生假收益
+    assert abs(vals[1] - 14299.95) < 2.0
+    tw = twr_series(vals, [fl.get(d, 0.0) for d in dates])
+    assert tw[1] > tw[0]          # 收益在爬升里逐日计入
+    assert abs(tw[2] - tw[1]) < 1e-6   # 赎回当天 r=0
+
+    # 没有超额赎回的资产完全不受影响
+    plain = [{"id": 1, "action_type": "DEPOSIT", "amount": 100.0, "trade_date": "2026-01-01"}]
+    assert overdraw_accruals(plain) == []
+    assert cost_basis_series(plain, ["2026-01-01", "2026-01-02"], accrue=True) == [100.0, 100.0]
+    # 默认关闭: 基金/ETF 的超额赎回是交易盈亏, 不能当利息再摊一遍
+    assert cost_basis_series(acts, ["2026-06-15"]) == [13876.18]
+
+
 def test_structure_2b_rules():
     """2B法则: 冲过前高又收回其下=假突破; 击穿前低又收回其上=假破位。"""
     from services.stock_agent import _structure_scan
