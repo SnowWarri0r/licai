@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="理财助手 licai">
+  <!-- README 用的应用图标: 与 frontend/public/icon-512.svg 同一环比例与配色,
+       加了底色渐变/外发光/金色段渐变, 在 100px 左右也立得住。改配色请两处同步。 -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#201f2a"/>
+      <stop offset="1" stop-color="#131218"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#e6c68e"/>
+      <stop offset="1" stop-color="#b8945f"/>
+    </linearGradient>
+    <filter id="soft" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="17"/>
+    </filter>
+  </defs>
+
+  <rect width="512" height="512" rx="104" fill="url(#bg)"/>
+  <rect x="1.5" y="1.5" width="509" height="509" rx="102.5"
+        fill="none" stroke="#c8a876" stroke-opacity="0.22" stroke-width="3"/>
+
+  <g transform="translate(256 256)">
+    <!-- 光晕: 贴着环的模糊描边, 不是填充圆 —— 填充圆会把中心染成一片浑浊 -->
+    <circle r="150" fill="none" stroke="#c8a876" stroke-width="70" stroke-opacity="0.26" filter="url(#soft)"/>
+    <!-- 底环 -->
+    <circle r="150" fill="none" stroke="#2d2c38" stroke-width="54"/>
+    <!-- 五段配比环(dasharray 之和 = 2πr = 942.48, 铺满整圈) -->
+    <g transform="rotate(-90)" fill="none" stroke-width="54" stroke-linecap="butt">
+      <circle r="150" stroke="url(#gold)" stroke-dasharray="243.2 942.48"/>
+      <circle r="150" stroke="#85a0b4" stroke-dasharray="207.3 942.48" stroke-dashoffset="-243.2"/>
+      <circle r="150" stroke="#5fa86c" stroke-dasharray="169.6 942.48" stroke-dashoffset="-450.5"/>
+      <circle r="150" stroke="#7a9b8e" stroke-dasharray="214.4 942.48" stroke-dashoffset="-620.1"/>
+      <circle r="150" stroke="#d4a05c" stroke-dasharray="108.2 942.48" stroke-dashoffset="-834.5"/>
+    </g>
+    <text y="62" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Helvetica Neue','Noto Sans SC','PingFang SC',sans-serif"
+          font-weight="700" font-size="176" fill="#f4efe3">¥</text>
+  </g>
+</svg>
