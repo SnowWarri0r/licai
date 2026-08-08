@@ -17,6 +17,8 @@ export default function PriceChart({ stockCode, buyZoneLow, buyZoneHigh, sellZon
         background: { type: ColorType.Solid, color: 'transparent' },
         textColor: '#958f82',
         fontSize: 11,
+        // 图上 TradingView 角标关掉, 署名改放设置页的开源许可区(见 Settings.jsx)
+        attributionLogo: false,
         fontFamily: "'JetBrains Mono', monospace",
       },
       grid: {
