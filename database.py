@@ -974,8 +974,17 @@ async def update_external_asset(asset_id: int, **kwargs):
 
 
 async def delete_external_asset(asset_id: int):
+    """删资产时连带清掉它的定投计划和流水。
+
+    不连带的后果实测过: 计划还 active, 每天往已不存在的 asset_id 写一条 pending
+    流水, settle-pending 又扫不到(它只遍历现存资产), 于是无限攒垃圾。
+    流水离了资产在 UI 上也已经不可达。合并资产走 reassign_external_actions
+    先搬走再删, 所以这里删到的只会是真正的孤儿。
+    """
     db = await get_db()
     try:
+        await db.execute("DELETE FROM dca_schedules WHERE asset_id = ?", (asset_id,))
+        await db.execute("DELETE FROM external_asset_actions WHERE asset_id = ?", (asset_id,))
         await db.execute("DELETE FROM external_assets WHERE id = ?", (asset_id,))
         await db.commit()
     finally:
