@@ -75,15 +75,24 @@ async def _broker_fee_resolver():
 
 
 async def _attach_auto_fees(actions: list, stock_code: str, holding_broker, resolve=None):
-    """给每笔流水按自己的 broker(没有则用持仓默认)预算自动手续费 → a['_auto_fee']。"""
-    from services.position_ledger import estimate_trade_fee
+    """给每笔流水按自己的 broker(没有则用持仓默认)预算自动手续费 → a['_auto_fee']。
+
+    佣金最低值(5 元起)按「委托单」收一次, 不是按成交笔 —— 一张单分几个价位成交时
+    逐笔各取一次最低值会重复收费(实测这份流水多收 101.22 元)。所以先按券商分组,
+    组内交给 allocate_trade_fees 合并同一委托再分摊。
+    """
+    from services.position_ledger import allocate_trade_fees
     if resolve is None:
         resolve = await _broker_fee_resolver()
+    by_broker: dict = {}
     for a in actions:
         r, m = resolve(a.get("broker") or holding_broker)
-        a["_auto_fee"] = estimate_trade_fee(
-            a.get("action_type", ""), float(a.get("price") or 0),
-            int(a.get("shares") or 0), stock_code, r, m)
+        by_broker.setdefault((r, m), []).append(a)
+    for (r, m), group in by_broker.items():
+        fees = allocate_trade_fees(
+            [dict(a, stock_code=a.get("stock_code") or stock_code) for a in group], r, m)
+        for a, f in zip(group, fees):
+            a["_auto_fee"] = f
     return resolve
 
 
@@ -1130,6 +1139,10 @@ async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
                                        "close": None, "kind": "ETF"})
         etf_flows = [f for f in etf_flows if f["trade_date"] >= cutoff]
 
+    # 佣金 5 元起按「委托单」收一次 —— 逐笔各取一次会把分笔成交重复计费
+    from services.position_ledger import allocate_trade_fees as _alloc_fees
+    _bench_fees = _alloc_fees(all_actions)
+
     # 3) 累计现金流 + 基准等额份额
     buy_total = 0.0
     sell_total = 0.0
@@ -1142,7 +1155,7 @@ async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
         c_cut = bench_close_on_or_after(cutoff)
         if c_cut and c_cut > 0:
             bench_shares_total += opening_mv / c_cut
-    for a in all_actions:
+    for _ai, a in enumerate(all_actions):
         td = (a.get("trade_date") or "")[:10]
         if not td:
             skipped += 1; continue
@@ -1157,7 +1170,8 @@ async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
         # 手续费 (override or estimate, 跟综合成本口径对齐)
         fee_override = a.get("fee")
         code = a.get("stock_code") or ""
-        fee = float(fee_override) if fee_override is not None else estimate_trade_fee(t, price, shares_i, code)
+        fee = float(fee_override) if fee_override is not None else (
+            _bench_fees[_ai] if _ai < len(_bench_fees) else 0.0)
         close = bench_close_on_or_after(td)
         if close is None or close <= 0:
             skipped += 1; continue
