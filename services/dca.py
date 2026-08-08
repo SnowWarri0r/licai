@@ -182,7 +182,13 @@ async def fire_due_dcas(today: date | None = None) -> list[dict]:
             # daily_trading 模式: 按底层市场日历判断, 海外休市日跳过 fire,
             # next_due 推到下一个对应市场交易日 (保持 active, 不写脏 pending 流水).
             asset = await get_external_asset(s["asset_id"])
-            market = _market_of_asset_name((asset or {}).get("name", ""))
+            if asset is None:
+                # 资产已删除但计划还 active → 每天往空 asset_id 写 pending 流水,
+                # 谁也结算不掉。直接停掉, 别再攒垃圾(实测攒过 99 条 / 9900 元)。
+                await update_dca_schedule(s["id"], status="paused")
+                print(f"[dca] pause #{s['id']}: asset#{s['asset_id']} 已不存在")
+                continue
+            market = _market_of_asset_name(asset.get("name", ""))
             if freq == "daily_trading" and not _is_market_trading_day(today, market):
                 next_due = _next_market_trading_day(today, market).isoformat()
                 await update_dca_schedule(s["id"], next_due=next_due)
