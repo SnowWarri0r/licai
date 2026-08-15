@@ -305,7 +305,11 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
   // r=52: 右侧涨跌幅轴标专属条带——线画到 W-P.r 为止, 标签在条带里, 互不相压
   const W = 720, H = height, P = { l: 64, r: 52, t: 30, b: 28 }
   const innerW = W - P.l - P.r, innerH = H - P.t - P.b
-  const volH = 48, volGap = 24
+  // volH/volGap 按可用高度给, 不能写死。调用方的 viewBox 高是 720*h/w 算出来的,
+  // 容器越宽这个值越小 —— 宽屏 + 简介展开时实测 H 掉到 150, 而固定的
+  // t30+b28+volH48+volGap24=130 会把价格区压到只剩 20 单位, 5 个刻度全叠成一坨。
+  const volH = Math.round(Math.min(48, innerH * 0.30))
+  const volGap = Math.round(Math.min(24, innerH * 0.12))
   const priceH = innerH - volH - volGap
   const volTop = P.t + priceH + volGap
 
@@ -335,7 +339,10 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
   }, [points, prevClose, priceH, innerW])
 
   const yTicks = useMemo(() => {
-    const N = 4, step = range / N
+    // 刻度条数按价格区高度给: 标签字号约 11 个 viewBox 单位, 至少留 22 单位间距,
+    // 否则矮图上 5 个标签会首尾相压(实测 priceH=20 时全叠成一坨)
+    const N = Math.max(1, Math.min(4, Math.floor(priceH / 22)))
+    const step = range / N
     return Array.from({ length: N + 1 }, (_, i) => {
       const v = rangeMin + step * i
       return { v, pct: prevClose > 0 ? ((v / prevClose) - 1) * 100 : 0, y: P.t + priceH - ((v - rangeMin) / range) * priceH }
