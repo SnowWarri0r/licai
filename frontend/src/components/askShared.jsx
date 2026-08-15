@@ -111,13 +111,29 @@ export function colorizeSigned(text, kp) {
   })
 }
 
+// 模型有时用 HTML 而不是 markdown 做强调(<mark>/<b>/<br>), read_url 抓回的正文里也会夹带。
+// 这里是纯文本渲染, 认不出的标签会原样显示给用户(见过 <mark>...</mark> 裸奔), 故先归一。
+const HTML_INLINE_TAG = /<\/?(?:mark|b|strong|em|i|u|s|small|span|font|cite|code|p|div)\b[^>]*>/gi
+
+// 能对上 markdown 的转成 markdown, 其余留给 renderInlineBase 按标签处理
+function normalizeHtml(text) {
+  return (text || '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/?(?:b|strong)\b[^>]*>/gi, '**')
+}
+
 function renderInlineBase(text, kp, sources) {
-  return text.split(/(\*\*[^*]+\*\*|⟦\d+⟧)/g).map((p, i) => {
+  return text.split(/(\*\*[^*]+\*\*|<mark\b[^>]*>[\s\S]*?<\/mark>|⟦\d+⟧)/gi).map((p, i) => {
     if (p.startsWith('**') && p.endsWith('**'))
       return <strong key={`${kp}-${i}`} className="text-text-bright">{colorizeSigned(p.slice(2, -2), `${kp}-${i}`)}</strong>
+    const hl = p.match(/^<mark\b[^>]*>([\s\S]*?)<\/mark>$/i)
+    if (hl)
+      return <mark key={`${kp}-${i}`} className="bg-accent/15 text-text-bright rounded px-[3px] py-[1px]">
+        {colorizeSigned(hl[1].replace(HTML_INLINE_TAG, '').replace(/\*\*/g, ''), `${kp}-${i}`)}</mark>
     const m = p.match(/^⟦(\d+)⟧$/)
     if (m) { const n = parseInt(m[1], 10); return <CiteMark key={`${kp}-${i}`} n={n} src={sources && sources[n - 1]} /> }
-    return <span key={`${kp}-${i}`}>{colorizeSigned(p, `${kp}-${i}`)}</span>
+    // 落单的开/闭标签(流式还没吐完、或跨行的 <mark>)也抹掉标签留文字
+    return <span key={`${kp}-${i}`}>{colorizeSigned(p.replace(HTML_INLINE_TAG, ''), `${kp}-${i}`)}</span>
   })
 }
 
@@ -128,7 +144,7 @@ const splitCells = (t) => t.replace(/^\||\|$/g, '').split('|').map(c => c.trim()
 // 极简 markdown(## 标题/**粗**/列表/表格/⟦N⟧引用/红涨绿跌), 不引依赖
 export function MiniMarkdown({ text, sources }) {
   const renderInline = (t, kp) => renderInlineBase(t, kp, sources)
-  const lines = (text || '').replace(/<\/?cite[^>]*>/g, '').split('\n')
+  const lines = normalizeHtml(text).split('\n')
   const out = []
   let i = 0
   while (i < lines.length) {
