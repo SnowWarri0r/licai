@@ -24,6 +24,7 @@ _MEDIA_DIR = os.path.join(os.path.dirname(os.path.abspath(config.db_path)) or ".
 # 深色主题配色(对齐前端 --color-*)
 _BG = "#15171c"; _GRID = "#23262e"; _FG = "#cdd0d6"
 _UP = "#cf5c5c"; _DOWN = "#5fa86c"          # 红涨绿跌
+_FLAT = "#8b8f98"                           # 开=收且与昨收持平(平盘/停牌): 中性灰
 _ACCENT = "#c8a876"; _NECK = "#6f9fd8"      # 台阶支撑=金 / 颈线=蓝
 
 
@@ -75,6 +76,27 @@ def _fractals(seq, low: bool, w: int = 3, gap: int = 3):
     return out
 
 
+def flat_bar_colors(opens, closes, start: int) -> list:
+    """开盘=收盘的 K 线(一字板/十字星)按「与昨收比」定色, 返回展示窗口内每根的覆盖色(不覆盖为 None)。
+
+    mplfinance 判涨跌用的是 open < close, 开=收时落到 else 分支一律取跌色 —— 一字涨停
+    (开=收=最高=最低, 较昨收 +10%)因此被画成绿柱。通达信/东财对这类 K 线看的是昨收,
+    这里对齐: 高于昨收红、低于昨收绿、与昨收持平用中性灰(平盘/停牌)。
+    opens/closes 传完整序列(含展示窗口之前的前置数据), 首根才有昨收可比。
+    """
+    out = []
+    for i in range(start, len(closes)):
+        if abs(opens[i] - closes[i]) > 1e-9:
+            out.append(None)                       # 正常阴阳线, 用 mplfinance 默认判定
+            continue
+        prev = closes[i - 1] if i > 0 else None
+        if prev is None or abs(closes[i] - prev) <= 1e-9:
+            out.append(_FLAT if prev is not None else None)
+        else:
+            out.append(_UP if closes[i] > prev else _DOWN)
+    return out
+
+
 def render_trend_chart(bars: list, *, code: str = "", name: str = "",
                        structure: dict | None = None, display: int = 50) -> bytes | None:
     """bars: [(date, close, high, low, vol, open), ...] 升序。传入比展示窗口更长的序列(含前置数据),
@@ -121,6 +143,10 @@ def render_trend_chart(bars: list, *, code: str = "", name: str = "",
                   figsize=(10, 6.2), returnfig=True, tight_layout=True,
                   ylabel="", ylabel_lower="", datetime_format="%m-%d", xrotation=0,
                   update_width_config=dict(candle_linewidth=0.7, candle_width=0.62))
+    # 一字板/十字星按昨收定色(见 flat_bar_colors); 量柱不吃 overrides, 画完再逐根补
+    flat_cols = flat_bar_colors([r[0] for r in rows], [r[3] for r in rows], start)
+    if any(flat_cols):
+        kwargs["marketcolor_overrides"] = flat_cols
     if line_specs:
         kwargs["hlines"] = dict(hlines=[s[0] for s in line_specs], colors=[s[1] for s in line_specs],
                                 linestyle="--", linewidths=1.0, alpha=0.9)
@@ -140,6 +166,13 @@ def render_trend_chart(bars: list, *, code: str = "", name: str = "",
         fig, axes = mpf.plot(df, **kwargs)
         ax = axes[0]
         n = len(df)
+        # 量柱颜色由 mplfinance 用同一套 open<close 判定生成, 一字板同样会绿; 按 K 线的覆盖色改回
+        if any(flat_cols) and len(axes) > 2:
+            vbars = axes[2].patches
+            for i, col in enumerate(flat_cols):
+                if col and i < len(vbars):
+                    vbars[i].set_facecolor(col)
+                    vbars[i].set_edgecolor(col)
         _tkw = {"fontproperties": _FP} if _FP else {}
         fig.suptitle(title, color="#e8e6e1", fontsize=12, y=0.985, **_tkw)
         # 跳空缺口阴影带(价位区间)
@@ -159,18 +192,19 @@ def render_trend_chart(bars: list, *, code: str = "", name: str = "",
         # 结构线右端标名称+价位(自解释, 不靠图例)。
         # 两条结构线价位接近时标签会原地叠印成重影字: 按价序往上错开;
         # 推到坐标区顶端外会被裁掉, 越界时整簇下移(相互间距保持)
-        ymin_ax, ymax_ax = ax.get_ylim()
-        min_gap = (ymax_ax - ymin_ax) * 0.035
-        sorted_specs = sorted(line_specs, key=lambda s: s[0])
-        ys = []
-        for lv, _c, _lb in sorted_specs:
-            ys.append(lv if not ys else max(lv, ys[-1] + min_gap))
-        over = ys[-1] - (ymax_ax - min_gap * 0.6)
-        if over > 0:
-            ys = [y - over for y in ys]
-        label_y = {(lv, lb): y for (lv, _c, lb), y in zip(sorted_specs, ys)}
-        for lv, col, lb in line_specs:
-            ax.text(n - 0.5, label_y[(lv, lb)], f" {lb} {lv}", color=col, fontsize=8, va="center", ha="left", **_tkw)
+        if line_specs:   # 一根结构线都没检出时(没有台阶/颈线)跳过标注, 图照出
+            ymin_ax, ymax_ax = ax.get_ylim()
+            min_gap = (ymax_ax - ymin_ax) * 0.035
+            sorted_specs = sorted(line_specs, key=lambda s: s[0])
+            ys = []
+            for lv, _c, _lb in sorted_specs:
+                ys.append(lv if not ys else max(lv, ys[-1] + min_gap))
+            over = ys[-1] - (ymax_ax - min_gap * 0.6)
+            if over > 0:
+                ys = [y - over for y in ys]
+            label_y = {(lv, lb): y for (lv, _c, lb), y in zip(sorted_specs, ys)}
+            for lv, col, lb in line_specs:
+                ax.text(n - 0.5, label_y[(lv, lb)], f" {lb} {lv}", color=col, fontsize=8, va="center", ha="left", **_tkw)
         buf = io.BytesIO()
         fig.savefig(buf, format="png", dpi=160, facecolor=_BG, bbox_inches="tight")
         plt.close(fig)
