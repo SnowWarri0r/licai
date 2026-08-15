@@ -1007,7 +1007,7 @@ async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
     import asyncio as _asyncio
     from datetime import date, timedelta
     from services.market_data import _fetch_benchmark_history
-    from services.position_ledger import estimate_trade_fee, ACQUIRE, RELEASE
+    from services.position_ledger import ACQUIRE, RELEASE
 
     # 1) 拿基准价格序列 (近 1200 个交易日, ~5 年)
     df = await _asyncio.to_thread(_fetch_benchmark_history, symbol, 1200)
@@ -1453,20 +1453,22 @@ async def list_actions(stock_code: str):
     每条附加 fee_effective (override 或估算的实际值) 和 fee_auto (估算值, 用作 UI placeholder).
     """
     stock_code = normalize_stock_code(stock_code)
-    from services.position_ledger import estimate_trade_fee
     from database import resolve_action_time
     actions = await get_position_actions(stock_code, limit=500)
     is_a = stock_code and not stock_code.upper().startswith(("HK.", "US."))
     h = await get_holding(stock_code)
     hb = (h or {}).get("broker") or await _default_broker_name()   # 未指定→持仓→配置默认, 让默认也有 tag
     resolve = await _broker_fee_resolver()
+    # 估算费用走 _attach_auto_fees(内部按「委托单」合并 5 元最低佣金再分摊)。
+    # 这里曾经自己逐笔调 estimate_trade_fee, 于是一张委托分两笔成交时列表显示
+    # 各收一次 5 元 —— 账本那边早就合并了, 列表却还在按老口径显示, 两处对不上。
+    if is_a:
+        await _attach_auto_fees(actions, stock_code, hb, resolve)
     for a in actions:
         a["at_time"] = resolve_action_time(a)    # 成交时刻(供分时图打点)
         a["broker_effective"] = a.get("broker") or hb   # 本笔实际券商(展示用)
         if is_a:
-            r, m = resolve(a.get("broker") or hb)         # 每笔按各自券商费率
-            est = estimate_trade_fee(a.get("action_type", ""), float(a.get("price") or 0),
-                                     int(a.get("shares") or 0), stock_code, r, m)
+            est = float(a.get("_auto_fee") or 0)
             a["fee_auto"] = round(est, 2)
             a["fee_effective"] = round(float(a["fee"]) if a.get("fee") is not None else est, 2)
         else:
