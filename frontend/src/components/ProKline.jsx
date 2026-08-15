@@ -305,7 +305,10 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
     if (!el) return
     const compute = () => {
       const w = el.clientWidth || 720, h = el.clientHeight || 200
-      setMinH(Math.max(140, Math.round(720 * h / w)))
+      // 下限 170: 容器越宽 720*h/w 越小, 宽屏下会压到 140 出头, 价格区所剩无几。
+      // 抬到 170 后即使触底, MinuteChart 按比例分配也还能留出 ~60 单位画价格。
+      // 代价是极宽屏下 svg 按高度贴合、左右留一点白, 好过刻度糊成一片。
+      setMinH(Math.max(170, Math.round(720 * h / w)))
     }
     compute()
     const ro = new ResizeObserver(compute)
