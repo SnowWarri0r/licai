@@ -619,6 +619,13 @@ async def macro_minute(symbol: str):
         return {"symbol": sym, "session": "hk" if sym.startswith("hk") else "us",
                 "vol_unit": "股", "date": (d or {}).get("date") or "",
                 "points": (d or {}).get("points") or []}
+    if sym in ("int_nikkei", "znb_KOSPI", "int_ftse"):
+        # 新浪 gi.finance: 有分时但没有成交量; session 按当天首点算好一并给前端(跟夏令时)
+        from services.market_data import _minute_sina_global
+        d = await asyncio.to_thread(_minute_sina_global, sym)
+        return {"symbol": sym, "session": (d or {}).get("session"),
+                "date": (d or {}).get("date") or "", "points": (d or {}).get("points") or [],
+                "note": "源只提供价格, 没有成交量"}
     return {"symbol": sym, "points": [], "note": "该指数的源里没有分时数据"}
 
 

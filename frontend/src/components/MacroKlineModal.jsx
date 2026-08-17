@@ -4,10 +4,12 @@ import { fetchJSON } from '../hooks/useApi'
 import KlineChart from './KlineChart'
 import { MinuteChart } from './StockKlineModal'
 
-// 有分时的指数: A股(TDX) / 港股·美股(腾讯)。日经/KOSPI/FTSE 两个源都不给分时。
+// 有分时的指数: A股(TDX) / 港股·美股(腾讯) / 日经·KOSPI·FTSE(新浪 gi.finance, 只有价没有量)。
+// 'gi' 这档的时段随夏令时漂, 由后端按当天首个分时点算好回传, 前端不预设。
 const MINUTE_SESSION = (sym) =>
   /^(sh|sz|bj)/.test(sym) ? 'cn' : sym.startsWith('hk') ? 'hk'
-    : ['gb_dji', 'gb_ixic', 'gb_inx'].includes(sym) ? 'us' : null
+    : ['gb_dji', 'gb_ixic', 'gb_inx'].includes(sym) ? 'us'
+      : ['int_nikkei', 'znb_KOSPI', 'int_ftse'].includes(sym) ? 'gi' : null
 
 // 宏观指标 K 线放大图. item: {symbol, name, price, change_pct, prev_close, open?, high?, low?, amount?, kline?}
 // 周期切换 + 真 K 线由 KlineChart 负责; 本组件只管外壳 + 口径统计行。
@@ -160,7 +162,8 @@ export default function MacroKlineModal({ item, items, onPick, onClose }) {
             <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-text-dim">
               {statLine}
               <span className="text-text-muted ml-auto">
-                {session === 'us' ? '美东时间' : session === 'hk' ? '香港时间' : '北京时间'} · 仅展示数据，不构成投资建议
+                {session === 'us' ? '美东时间' : session === 'hk' ? '香港时间' : '北京时间'}
+                {mData?.note ? ` · ${mData.note}` : ''} · 仅展示数据，不构成投资建议
               </span>
             </div>
           </>

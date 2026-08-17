@@ -1299,6 +1299,45 @@ def _fetch_macro_sina() -> dict:
             continue
         sym, body = m.group(1), m.group(2)
         parsed[sym] = _parse_macro_line(sym, body)
+    # hq.sinajs 的 int_nikkei / int_ftse 停更在某个旧点位不动了: 实测日经报 44,946 而当日真实
+    # 点位 69,220(差 35%)、FTSE 报 9,285 而真实 10,736 —— 与 Yahoo ^N225/^FTSE 以及新浪自家
+    # gi.finance 日K 逐日核对(68,713.7969 对 68,713.8), gi 的对、hq 的错。
+    # 所以拿 gi 的当日分时交叉校验: 两边对得上就保留 hq 的价(它是含收盘竞价的官方收盘,
+    # KOSPI 实测 6,977.94 比分时末点 6,970.07 更准), 只补日内开高低; 差得离谱就整块换成 gi。
+    for sym in _GI_SESSION_SHAPE:
+        try:
+            g = _minute_sina_global(sym)
+        except Exception:
+            g = None
+        if not g or not g.get("price") or not g.get("prev_close"):
+            continue
+        px, prev = g["price"], g["prev_close"]
+        pxs = [p["price"] for p in g["points"]]
+        ohl = {"open": pxs[0], "high": max(pxs), "low": min(pxs)}
+        hq = parsed.get(sym) or {}
+        if hq.get("price") and abs(hq["price"] / px - 1) < 0.02:
+            parsed[sym] = {**hq, **ohl}
+        else:
+            parsed[sym] = {"price": round(px, 4), "prev_close": round(prev, 4),
+                           "change_pct": round((px - prev) / prev * 100, 3) if prev else 0,
+                           **ohl}
+
+    # 美股开盘前(北京时间约 20:00 到 21:30)新浪把当日涨跌额与开高低全清零, 照字段算出来
+    # 就是"昨收=现价, +0.00%"——看着像平盘, 其实是还没开盘。这段窗口用日K倒数两根收盘补出
+    # 上一个交易日的涨跌(实测道指 53,732.41 对 53,839.99 = -0.20%, 与盘中新浪自报的一致)。
+    for sym in ("gb_dji", "gb_ixic", "gb_inx"):
+        p = parsed.get(sym)
+        if not p or p.get("change_pct") or p.get("open"):
+            continue
+        try:
+            closes = [r["close"] for r in _kline_for_symbol(sym, 4) if r.get("close")]
+        except Exception:
+            closes = []
+        if len(closes) >= 2 and closes[-2] > 0:
+            prev = closes[-2]
+            p["prev_close"] = round(prev, 4)
+            p["change_pct"] = round((p["price"] - prev) / prev * 100, 3)
+
     groups: dict[str, list[dict]] = {}
     for grp, sym, label in MACRO_SYMBOLS:
         p = parsed.get(sym)
@@ -1541,6 +1580,58 @@ _SINA_GLOBAL_IDX = {
     "znb_KOSPI": "KOSPI",    # 首尔综合
     "int_ftse": "UKX",       # 英国富时100
 }
+
+
+# 环球指数(日经/KOSPI/FTSE)的交易时段: 只写"上午多少分钟 / 午休多少分钟 / 下午多少分钟",
+# 起点由当天首个分时点推出 —— 这样夏令时/冬令时切换(伦敦差 1 小时)自动跟着走, 不用改表。
+_GI_SESSION_SHAPE = {
+    "int_nikkei": (150, 60, 180),   # 东京 9:00-11:30 / 12:30-15:30
+    "znb_KOSPI": (390, 0, 0),       # 首尔 9:00-15:30 连续
+    "int_ftse": (510, 0, 0),        # 伦敦 8:00-16:30 连续
+}
+
+
+def _minute_sina_global(sym: str) -> dict | None:
+    """日经/KOSPI/FTSE 分时(新浪 gi.finance)。时刻是北京时间, 没有成交量(源只给价)。
+
+    返回 {date, prev_close, price, points, session}; session 的分钟数可能 >1440(伦敦冬令时
+    收盘落到北京时间次日 0:30), 前端按"起点+偏移"落位, 不按绝对时钟。
+    """
+    code = _SINA_GLOBAL_IDX.get(sym)
+    shape = _GI_SESSION_SHAPE.get(sym)
+    if not code or not shape:
+        return None
+    r = _requests.get("https://gi.finance.sina.com.cn/hq/min", params={"symbol": code},
+                      headers={"Referer": "https://finance.sina.com.cn"}, timeout=6)
+    rows = ((r.json() or {}).get("result") or {}).get("data") or []
+    pts = []
+    for row in rows:
+        if not isinstance(row, list) or len(row) < 2:
+            continue
+        t = str(row[0])
+        try:
+            px = float(row[1])
+        except (TypeError, ValueError):
+            continue
+        if px <= 0 or len(t) != 5 or t[2] != ":":
+            continue
+        pts.append({"time": t, "price": px, "手": 0})
+    if not pts:
+        return None
+    head = rows[0]
+    day = str(head[4]) if len(head) > 4 else ""
+    try:
+        prev = float(head[5]) if len(head) > 5 else 0.0
+    except (TypeError, ValueError):
+        prev = 0.0
+    am, lunch, pm = shape
+    s = int(pts[0]["time"][:2]) * 60 + int(pts[0]["time"][3:])
+    bounds = {"am": [s, s + am], "pm": [s + am + lunch, s + am + lunch + pm] if pm else None}
+    fmt = lambda m: f"{(m // 60) % 24:02d}:{m % 60:02d}"          # noqa: E731
+    bounds["labels"] = ([fmt(s), f"{fmt(s + am)}/{fmt(s + am + lunch)}", fmt(bounds['pm'][1])]
+                        if pm else [fmt(s), fmt(s + am // 2), fmt(s + am)])
+    return {"date": day, "prev_close": prev or None, "price": pts[-1]["price"],
+            "points": pts, "session": bounds}
 
 
 def _kline_sina_global_index(sym: str, datalen: int = 30) -> list[dict]:
