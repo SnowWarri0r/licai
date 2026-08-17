@@ -122,3 +122,112 @@ def test_tencent_minute_unsupported_symbol_is_none(monkeypatch):
     import services.market_data as md
     monkeypatch.setattr(md._requests, "get", _fake_get([]))
     assert md._minute_tencent("int_nikkei") is None     # 日经没有腾讯分时, 不发请求
+
+
+# --- 环球指数(日经/KOSPI/FTSE): hq.sinajs 那几个符号停更了, 要用 gi.finance 交叉校验 ---
+_GI_NKY = {"result": {"data": [
+    ["08:00", "68882.0600", "0.0000", "0", "2026-08-17", "68713.8000"],
+    ["08:01", "68951.8300", "0.0000", "0"],
+    ["10:30", "69009.4400", "0.0000", "0"],
+    ["11:30", "68900.0000", "0.0000", "0"],
+    ["14:30", "69170.4100", "0.0000", "0"],
+]}}
+
+
+def _gi_only(payload, sym_ok="NKY"):
+    """只放行 gi.finance/hq/min 的请求, 其余原样报错(确保测的是这条路径)。"""
+    def _get(url, params=None, timeout=None, headers=None):
+        assert "gi.finance.sina.com.cn/hq/min" in url and params["symbol"] == sym_ok
+        class R:
+            def json(self_inner):
+                return payload
+        return R()
+    return _get
+
+
+def test_gi_minute_derives_session_from_first_point(monkeypatch):
+    """时段起点按当天首个分时点推(日经 08:00 北京时间), 不写死时钟 —— 夏令时切换才不用改表。"""
+    import services.market_data as md
+    monkeypatch.setattr(md._requests, "get", _gi_only(_GI_NKY))
+    d = md._minute_sina_global("int_nikkei")
+    assert d["date"] == "2026-08-17" and d["prev_close"] == 68713.8
+    assert d["price"] == 69170.41                       # 末点即最新价
+    assert d["session"]["am"] == [480, 630]             # 08:00-10:30
+    assert d["session"]["pm"] == [690, 870]             # 11:30-14:30
+    assert d["session"]["labels"] == ["08:00", "10:30/11:30", "14:30"]
+    assert all(p["手"] == 0 for p in d["points"])       # 源不给成交量
+
+
+def test_gi_minute_continuous_market_has_no_afternoon(monkeypatch):
+    """伦敦无午休: pm=None, 且收盘时刻可以越过 24:00(冬令时落到北京时间次日)。"""
+    import services.market_data as md
+    payload = {"result": {"data": [["16:00", "10749.95", "0", "0", "2026-08-17", "10750.11"],
+                                   ["21:00", "10739.40", "0", "0"]]}}
+    monkeypatch.setattr(md._requests, "get", _gi_only(payload, sym_ok="UKX"))
+    d = md._minute_sina_global("int_ftse")
+    assert d["session"]["pm"] is None
+    assert d["session"]["am"] == [960, 1470]            # 16:00 → 次日 00:30
+    assert d["session"]["labels"] == ["16:00", "20:15", "00:30"]
+
+
+def test_gi_minute_unknown_symbol(monkeypatch):
+    import services.market_data as md
+    monkeypatch.setattr(md._requests, "get", _gi_only(_GI_NKY))
+    assert md._minute_sina_global("hkHSI") is None      # 只管日经/KOSPI/FTSE
+
+
+def test_macro_replaces_stale_hq_quote(monkeypatch):
+    """hq 报的日经点位与 gi 差 35% → 整块换成 gi; 差得少(KOSPI)则保留 hq 的官方收盘价。"""
+    import services.market_data as md
+
+    hq_body = ('var hq_str_int_nikkei="日经指数,44946.64,-408.35,-0.90";\n'
+               'var hq_str_znb_KOSPI="首尔综合指数,6977.9400,164.60,2.42,2:27 AM,0,2026-08-14,"'
+               ';\n')
+    gi_kospi = {"result": {"data": [["08:00", "6995.67", "0", "0", "2026-08-14", "6813.3400"],
+                                    ["14:30", "6970.07", "0", "0"]]}}
+
+    def _get(url, params=None, timeout=None, headers=None):
+        class R:
+            text = hq_body
+            encoding = "gbk"
+
+            def json(self_inner):
+                if params["symbol"] == "NKY":
+                    return _GI_NKY
+                if params["symbol"] == "KOSPI":
+                    return gi_kospi
+                return {"result": {"data": []}}
+        return R()
+
+    monkeypatch.setattr(md._requests, "get", _get)
+    monkeypatch.setattr(md, "MACRO_SYMBOLS",
+                        [("overseas_index", "int_nikkei", "日经225"),
+                         ("overseas_index", "znb_KOSPI", "韩国KOSPI")])
+    g = {it["symbol"]: it for it in md._fetch_macro_sina()["overseas_index"]}
+    nk = g["int_nikkei"]
+    assert nk["price"] == 69170.41 and nk["prev_close"] == 68713.8   # 换成 gi, 不再是 44946.64
+    assert abs(nk["change_pct"] - 0.665) < 0.01
+    ks = g["znb_KOSPI"]
+    assert ks["price"] == 6977.94                                    # 官方收盘(含收盘竞价)保留
+    assert ks["high"] == 6995.67 and ks["low"] == 6970.07             # 日内高低来自 gi 分时
+
+
+def test_us_preopen_zeros_backfilled_from_daily(monkeypatch):
+    """美股盘前新浪把涨跌与开高低清零, 直接算是「昨收=现价 +0.00%」(看着像平盘, 实际没开盘)。
+    这段窗口应改用日K倒数两根补出上一交易日涨跌。"""
+    import services.market_data as md
+    zeroed = ('var hq_str_gb_dji="道琼斯,53732.4102,0.00,2026-08-17 21:10:02,0.0000,0.0000,'
+              '0.0000,0.0000,54744.3281,44579.0312,0,444937283,0,0.00";\n')
+
+    class R:
+        text = zeroed
+        encoding = "gbk"
+
+    monkeypatch.setattr(md._requests, "get", lambda *a, **k: R())
+    monkeypatch.setattr(md, "MACRO_SYMBOLS", [("us_index", "gb_dji", "道琼斯")])
+    monkeypatch.setattr(md, "_kline_for_symbol",
+                        lambda sym, n=30: [{"date": "2026-08-13", "close": 53839.99},
+                                           {"date": "2026-08-14", "close": 53732.41}])
+    it = md._fetch_macro_sina()["us_index"][0]
+    assert it["prev_close"] == 53839.99
+    assert abs(it["change_pct"] - (-0.2)) < 0.01        # 不再是 0.00%
