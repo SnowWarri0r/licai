@@ -22,6 +22,21 @@ def test_hk_prev_close_is_not_today_open():
     assert d["open"] == 25303.41
 
 
+def test_hk_amount_is_thousands_of_hkd():
+    """港股那两个大数字是「成交额(千元)」在前、「成交量(股)」在后, 顺序反了会把
+    2107 亿的成交额显示成 125.8 亿。判据: fields[11]×1000 与腾讯分时末行的累计成交额相等。"""
+    d = _parse_macro_line("hkHSI", LINE_HK)
+    assert d["amount"] == 210770397 * 1000        # 腾讯累计额 210,770,397,254 HKD
+    assert d["volume"] == 12584632671             # 成交量(股)
+
+
+def test_us_has_volume_but_no_amount():
+    """美股指数源里只有成交量(股), 没有成交额 —— 前端据此退一格显示成交量。"""
+    d = _parse_macro_line("gb_ixic", LINE_US)
+    assert d["volume"] == 6405507373
+    assert "amount" not in d
+
+
 def test_us_prev_close_backs_out_of_change():
     d = _parse_macro_line("gb_ixic", LINE_US)
     assert abs(d["change_pct"] - (-0.28)) < 0.005  # 新浪自带涨跌幅 -0.28
@@ -50,3 +65,60 @@ def test_overseas_and_fx_unaffected():
     assert "amount" not in nk
     fx = _parse_macro_line("fx_susdcnh", "20:00:00,7.1234,7.1240,0,0,7.1300,7.1310,7.1305")
     assert fx["price"] == 7.1234 and fx["prev_close"] == 7.13
+
+
+# --- 腾讯分时(港股/美股指数): 源给累计值, 必须差分成逐分钟增量 ---
+class _FakeResp:
+    def __init__(self, payload):
+        self._p = payload
+
+    def json(self):
+        return self._p
+
+
+def _fake_get(rows, code="hkHSI"):
+    def _get(url, params=None, timeout=None):
+        assert params and params.get("code") == code
+        return _FakeResp({"data": {code: {"data": {"data": rows, "date": "20260817"}}}})
+    return _get
+
+
+def test_tencent_minute_diffs_cumulative_volume(monkeypatch):
+    import services.market_data as md
+    rows = [
+        "0930 25303.410 238534 2385342863.120",
+        "0931 25363.910 682009 6820085442.068",
+        "0932 25334.170 998023 9980234870.355",
+    ]
+    monkeypatch.setattr(md._requests, "get", _fake_get(rows))
+    d = md._minute_tencent("hkHSI")
+    pts = d["points"]
+    assert [p["time"] for p in pts] == ["09:30", "09:31", "09:32"]
+    assert pts[0]["手"] == 238534                       # 首根就是它自己的累计值
+    assert pts[1]["手"] == 682009 - 238534              # 之后是增量, 不是累计
+    assert pts[2]["手"] == 998023 - 682009
+    assert abs(pts[1]["额"] - (6820085442.068 - 2385342863.120)) < 1
+
+
+def test_tencent_minute_us_rows_have_no_amount_column(monkeypatch):
+    import services.market_data as md
+    monkeypatch.setattr(md._requests, "get",
+                        _fake_get(["1630 53700.10 100", "1631 53710.20 350"], code="usDJI"))
+    d = md._minute_tencent("gb_dji")                    # gb_dji → usDJI 的映射
+    assert [p["price"] for p in d["points"]] == [53700.10, 53710.20]
+    assert d["points"][1]["手"] == 250 and d["points"][1]["额"] == 0.0
+
+
+def test_tencent_minute_skips_junk_rows(monkeypatch):
+    """收盘后源里会混进 "  0" 这种占位行, 混进去会画出一根 0 价的线。"""
+    import services.market_data as md
+    monkeypatch.setattr(md._requests, "get",
+                        _fake_get(["  0", "0930 25303.410 238534 100.0", "bad row here"]))
+    d = md._minute_tencent("hkHSI")
+    assert len(d["points"]) == 1 and d["points"][0]["price"] == 25303.41
+
+
+def test_tencent_minute_unsupported_symbol_is_none(monkeypatch):
+    import services.market_data as md
+    monkeypatch.setattr(md._requests, "get", _fake_get([]))
+    assert md._minute_tencent("int_nikkei") is None     # 日经没有腾讯分时, 不发请求
