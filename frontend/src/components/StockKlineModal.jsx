@@ -67,17 +67,28 @@ export function CandleChart({ series, cost, actions, warmup = [] }) {
     if (!points.length || !actions?.length) return []
     const dateIdx = {}
     points.forEach((p, i) => { dateIdx[p.date] = i })
-    const out = []
+    // 同一天同方向的多笔(分价成交/加仓)三角标与 B 字全落在同一根K线的同一位置, 会叠成一个,
+    // 数不出几笔 → 合成一个标记(均价 + 笔数), 明细留在 fills 里给悬浮框逐笔列出
+    const byDay = new Map()
     for (const a of actions) {
       const td = (a.trade_date || '').slice(0, 10)
       const idx = dateIdx[td]
       if (idx == null) continue
       const p = points[idx]
       const isBuy = ACQUIRE.has(a.action_type)
-      const yPrice = (a.price != null && range > 0) ? P.t + priceH - ((a.price - rangeMin) / range) * priceH : (isBuy ? p.yLow : p.yHigh)
-      out.push({ id: a.id, x: p.x, yPrice, yHigh: p.yHigh, yLow: p.yLow, date: td, price: a.price, shares: a.shares, type: a.action_type, isBuy })
+      const fill = { price: Number(a.price) || 0, shares: Number(a.shares) || 0, type: a.action_type }
+      const k = `${isBuy ? 'B' : 'S'}@${td}`
+      const g = byDay.get(k)
+      if (g) { g.n++; g.shares += fill.shares; g.amt += fill.price * fill.shares; g.fills.push(fill) }
+      else byDay.set(k, { id: a.id, x: p.x, yHigh: p.yHigh, yLow: p.yLow, date: td, isBuy,
+                          n: 1, shares: fill.shares, amt: fill.price * fill.shares, fills: [fill] })
     }
-    return out
+    return [...byDay.values()].map(g => {
+      const price = g.shares > 0 ? g.amt / g.shares : g.fills[0].price
+      const yPrice = (price > 0 && range > 0) ? P.t + priceH - ((price - rangeMin) / range) * priceH
+                                              : (g.isBuy ? g.yLow : g.yHigh)
+      return { ...g, price, yPrice }
+    })
   }, [points, actions, rangeMin, range, innerH])
 
   const lastI = points.length ? points[points.length - 1].i : 0
@@ -257,7 +268,8 @@ export function CandleChart({ series, cost, actions, warmup = [] }) {
               <line x1={m.x} y1={m.yPrice} x2={m.x} y2={tipY} stroke={lineColor} strokeWidth="1.4" strokeDasharray="3 2" opacity="0.95" />
               <circle cx={m.x} cy={m.yPrice} r="2.4" fill={lineColor} stroke="var(--color-bg)" strokeWidth="1" />
               <polygon points={`${m.x},${tipY} ${m.x - 5},${baseY} ${m.x + 5},${baseY}`} fill={color} stroke="var(--color-bg)" strokeWidth="0.5" />
-              <text x={m.x} y={labelY} fontSize="9" fill={color} textAnchor="middle" fontFamily="monospace" fontWeight="600">{m.isBuy ? 'B' : 'S'}</text>
+              <text x={m.x} y={labelY} fontSize="9" fill={color} textAnchor="middle" fontFamily="monospace" fontWeight="600">
+                {(m.isBuy ? 'B' : 'S') + (m.n > 1 ? `×${m.n}` : '')}</text>
             </g>
           )
         })}
@@ -273,9 +285,10 @@ export function CandleChart({ series, cost, actions, warmup = [] }) {
             <span>C <span className="text-text-bright">{fmtVal(hover.close)}</span></span>
           </div>
           {cost > 0 && <div className={colorPct(((hover.close / cost) - 1) * 100)}>{fmtPct(((hover.close / cost) - 1) * 100)} (成本)</div>}
-          {bsMarkers.filter(m => m.date === hover.date).map((m, i) => (
-            <div key={i} style={{ color: m.isBuy ? BUY_COLOR : SELL_COLOR }}>{m.isBuy ? 'B' : 'S'} {fmtVal(m.price)} × {m.shares}</div>
-          ))}
+          {/* 图上合成了一个标记, 悬浮框把当天每一笔单独列出来 */}
+          {bsMarkers.filter(m => m.date === hover.date).flatMap((m, i) => m.fills.map((f, j) => (
+            <div key={`${i}-${j}`} style={{ color: m.isBuy ? BUY_COLOR : SELL_COLOR }}>{m.isBuy ? 'B' : 'S'} {fmtVal(f.price)} × {f.shares}</div>
+          )))}
         </div>
       )}
     </div>
@@ -357,16 +370,34 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
     const today = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
     const matchDay = norm(day) || today
     const yOf = (val) => P.t + priceH - ((val - rangeMin) / range) * priceH
-    const out = []
+    // 同一分钟同方向的几笔是一张委托分价成交(实测 601138 09:45 三笔), 圆点和 B 字会原地
+    // 叠印成一团 → 合成一个标记, 标 均价 与笔数(B×3)
+    const byOrder = new Map()
     for (const a of actions) {
       if (norm(a.trade_date) !== matchDay) continue
       if (!a.at_time) continue
       const slot = _minuteSlot(a.at_time)
-      const x = P.l + (slot / 240) * innerW
       const isBuy = ACQUIRE.has(a.action_type)
-      const price = Number(a.price)
-      const y = price > 0 ? yOf(price) : (isBuy ? P.t + priceH : P.t)
-      out.push({ id: a.id, x, y, isBuy, price, at: a.at_time, shares: a.shares })
+      const price = Number(a.price) || 0
+      const sh = Number(a.shares) || 0
+      const k = `${isBuy ? 'B' : 'S'}@${slot}`
+      const g = byOrder.get(k)
+      if (g) { g.n++; g.shares += sh; g.amt += price * sh }
+      else byOrder.set(k, { id: a.id, slot, isBuy, at: a.at_time, n: 1, shares: sh, amt: price * sh, price })
+    }
+    const out = [...byOrder.values()].map(g => {
+      const price = g.shares > 0 ? g.amt / g.shares : g.price   // 分价成交取成交额加权均价
+      return { ...g, price, x: P.l + (g.slot / 240) * innerW,
+               y: price > 0 ? yOf(price) : (g.isBuy ? P.t + priceH : P.t) }
+    })
+    // 合并后相邻分钟的标记仍可能横向压字(标签约 18 单位宽), 同向且挨得近的逐个错开一行
+    out.sort((a, b) => a.x - b.x)
+    const placed = []
+    for (const m of out) {
+      let lane = 0
+      while (placed.some(p => p.isBuy === m.isBuy && Math.abs(p.x - m.x) < 20 && p.lane === lane)) lane++
+      m.lane = lane
+      placed.push(m)
     }
     return out
   }, [rows, actions, day, rangeMin, range, priceH, innerW])
@@ -418,12 +449,17 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
         {/* 当日买卖点: B 在下方, S 在上方, 虚线连到成交价圆点 */}
         {bsMarks.map(m => {
           const col = m.isBuy ? '#8df0b4' : '#ff9a9a'
-          const labelY = m.isBuy ? Math.min(m.y + 16, P.t + priceH - 2) : Math.max(m.y - 10, P.t + 8)
+          const off = 16 + m.lane * 11        // lane: 挨得近的同向标记错开的行号
+          // B 默认在下 / S 默认在上; 错行后顶到价格区边界就翻到另一侧, 免得贴边又叠回一起
+          const down = m.isBuy ? m.y + off <= P.t + priceH - 2 : m.y - off < P.t + 8
+          const labelY = down ? Math.min(m.y + off, P.t + priceH - 2) : Math.max(m.y - off + 6, P.t + 8)
           return (
             <g key={'bs' + m.id}>
+              <title>{`${m.at} ${m.isBuy ? '买入' : '卖出'} ${m.shares}股 @${fmtVal(m.price)}${m.n > 1 ? ` (${m.n}笔均价)` : ''}`}</title>
               <line x1={m.x} y1={labelY} x2={m.x} y2={m.y} stroke={col} strokeWidth="1" strokeDasharray="2 2" opacity="0.8" />
               <circle cx={m.x} cy={m.y} r="2.5" fill={col} />
-              <text x={m.x} y={labelY} fontSize="10" fill={col} textAnchor="middle" fontWeight="bold">{m.isBuy ? 'B' : 'S'}</text>
+              <text x={m.x} y={labelY} fontSize="10" fill={col} textAnchor="middle" fontWeight="bold">
+                {(m.isBuy ? 'B' : 'S') + (m.n > 1 ? `×${m.n}` : '')}</text>
             </g>
           )
         })}
