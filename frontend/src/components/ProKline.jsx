@@ -134,6 +134,9 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
       value: volMode === '额' ? (b.amount || 0) : (b.volume || 0),
       color: b.close >= b.open ? 'rgba(207,92,92,0.55)' : 'rgba(95,168,108,0.55)',
     })))
+    // 量与额差着好几个量级(80万 vs 500亿): 在轴上拖过一下就退出自动量程, 之后换口径
+    // 量程不跟着走, 柱子被压成一条(或顶出画面)。每次换口径把自动量程重新打开。
+    try { volChartRef.current?.priceScale('right').applyOptions({ autoScale: true }) } catch { /* 尺寸未就绪 */ }
     requestAnimationFrame(() => alignScalesRef.current?.())   // 量↔额 刻度宽度不同, 重新对齐
   }, [volMode])
 
@@ -182,7 +185,11 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
         rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.12, bottom: 0.10 } },
         timeScale: { borderColor: 'rgba(255,255,255,0.08)', rightOffset: 4, minBarSpacing: 1.5,
           visible: true, timeVisible: false },
-        handleScale: true, handleScroll: true,
+        // 副图纵轴不给拖: 量柱看的是相对高低, 手工量程没有用处, 却一拖就退出自动量程
+        // (再切「量↔额」量级差 5 个数量级, 柱子被压平)。时间轴照旧可拖可缩, 与主图同步。
+        handleScale: { mouseWheel: true, pinch: true,
+                       axisPressedMouseMove: { time: true, price: false } },
+        handleScroll: true,
       })
       volChartRef.current = volChart
       // 纵轴刻度自定义: 内置 volume 格式是英文 K/M/B(成交额会显示成 1.98B), 换成万/亿
@@ -372,6 +379,11 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
       })))
       mas.forEach((s, i) => s.setData(maLine(bars, MA_DEFS[i].n)))
       gapPrim?.setGaps(detectGaps(bars))
+      // 换股票/周期是全新价位与量级: 之前在轴上拖出来的手工量程留着必然不合身, 一并复位
+      try {
+        chartRef.current?.priceScale('right').applyOptions({ autoScale: true })
+        volChartRef.current?.priceScale('right').applyOptions({ autoScale: true })
+      } catch { /* 尺寸未就绪 */ }
       requestAnimationFrame(() => alignScalesRef.current?.())   // 刻度文本变长 → 轴宽变 → 重新对齐
       // 昨收线: 最新一根的前一日收盘 → 一眼看出今天这根(哪怕收红阳线)是否还在昨收下方
       if (prevCloseLineRef.current) { candle.removePriceLine(prevCloseLineRef.current); prevCloseLineRef.current = null }
