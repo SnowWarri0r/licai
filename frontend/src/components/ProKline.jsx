@@ -120,6 +120,9 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
   const [minH, setMinH] = useState(200)            // 分时 viewBox 高: 按浮层实际宽高比算, 铺满不留白
   const intradayRef = useRef(null)
   intradayRef.current = intraday
+  const volModeRef = useRef(volMode)               // 建图 effect 里的回调要读当前口径
+  volModeRef.current = volMode
+  const xhairRef = useRef(false)                   // 两图光标互相同步时防回环
   const depthRef = useRef(days)                    // 当前已加载的K线深度(根数), 往左拖到头自动升档
   const moreBusyRef = useRef(false)
   const exhaustedRef = useRef(false)               // 服务端没有更早历史了(新股/次新)
@@ -167,6 +170,36 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
     const gapPrim = new GapPrimitive()
     candle.attachPrimitive(gapPrim)
     seriesRef.current = { candle, mas, gapPrim }
+
+    const timeKey = (t) => typeof t === 'string' ? t
+      : `${t.year}-${String(t.month).padStart(2, '0')}-${String(t.day).padStart(2, '0')}`
+
+    // 两图各有一套十字光标: 只在主图上比划时, 副图没有竖线, 对不出那根柱子是哪一天。
+    // 把光标位置双向同步 —— 悬到哪一根, 上下两图同时亮同一根, 两行图例也一起给出该日
+    // 的 OHLC 与 量/额。value 传该图自己那根的值, 让横线落在蜡烛/柱子上而不是乱飘。
+    const syncXhair = (dst, dstSeries, value, time) => {
+      if (!dst || xhairRef.current) return
+      xhairRef.current = true
+      try {
+        if (time == null || value == null) dst.clearCrosshairPosition()
+        else dst.setCrosshairPosition(value, time, dstSeries)
+      } catch { /* 尺寸未就绪/系列已销毁 */ }
+      xhairRef.current = false
+    }
+
+    const fillPriceLegend = (key) => {
+      const arr = barsRef.current
+      const i = arr.findIndex(b => b.time === key)
+      if (i < 0) { setLegend(null); return }
+      const d = arr[i]
+      const prev = i > 0 ? arr[i - 1].close : null
+      // 距今: 从这根收盘到最新一根收盘的累计涨跌 —— 回看"那天到现在赚/亏多少"
+      const last = arr.length ? arr[arr.length - 1].close : null
+      setLegend({ time: key, o: d.open, h: d.high, l: d.low, c: d.close,
+                  pct: prev ? (d.close / prev - 1) * 100 : null,
+                  since: (last && d.close && i < arr.length - 1) ? (last / d.close - 1) * 100 : null })
+    }
+
 
     // 量/额独立副图: 叠在主图里只有一条压扁的色带, 读不出某天到底多少; 拆成自己的图表
     // 后有独立纵轴刻度, 加上 hover 出具体数字。两图时间轴双向同步, 拖动/缩放一起走。
@@ -234,32 +267,28 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
       requestAnimationFrame(alignScales)
 
       volChart.subscribeCrosshairMove(param => {
-        const d = param.seriesData?.get(volSeriesRef.current)
-        if (!d || !param.time) { setVolLegend(null); return }
-        const t = param.time
-        const key = typeof t === 'string' ? t
-          : `${t.year}-${String(t.month).padStart(2, '0')}-${String(t.day).padStart(2, '0')}`
+        if (!param.time) { setVolLegend(null); syncXhair(chart, candle, null); return }
+        const key = timeKey(param.time)
         const bar = barsRef.current.find(b => b.time === key)
         setVolLegend({ time: key, volume: bar?.volume, amount: bar?.amount })
+        fillPriceLegend(key)                              // 上图那行也给出这天的 OHLC
+        syncXhair(chart, candle, bar ? bar.close : null, param.time)
       })
     }
 
-    // 十字光标 → 顶部图例(日期/OHLC/较昨收涨跌%)
+    // 十字光标 → 顶部图例(日期/OHLC/较昨收涨跌%) + 副图那行的量/额
     chart.subscribeCrosshairMove(param => {
-      const d = param.seriesData?.get(candle)
-      if (!d || !param.time) { setLegend(null); return }
-      const t = param.time
-      const key = typeof t === 'string' ? t
-        : `${t.year}-${String(t.month).padStart(2, '0')}-${String(t.day).padStart(2, '0')}`
-      const arr = barsRef.current
-      const i = arr.findIndex(b => b.time === key)
-      const prev = i > 0 ? arr[i - 1].close : null
-      // 距今: 从这根收盘到最新一根收盘的累计涨跌 —— 回看"那天到现在赚/亏多少"
-      const last = arr.length ? arr[arr.length - 1].close : null
-      setLegend({ time: param.time, o: d.open, h: d.high, l: d.low, c: d.close,
-                  pct: prev ? (d.close / prev - 1) * 100 : null,
-                  since: (last && d.close && i >= 0 && i < arr.length - 1)
-                    ? (last / d.close - 1) * 100 : null })
+      if (!param.time) {
+        setLegend(null); setVolLegend(null)
+        syncXhair(volChart, volSeriesRef.current, null)
+        return
+      }
+      const key = timeKey(param.time)
+      const bar = barsRef.current.find(b => b.time === key)
+      fillPriceLegend(key)
+      setVolLegend({ time: key, volume: bar?.volume, amount: bar?.amount })
+      const v = volModeRef.current === '额' ? bar?.amount : bar?.volume
+      syncXhair(volChart, volSeriesRef.current, v ?? null, param.time)
     })
 
     // 点蜡烛 → 出「分时›」tooltip; 浮层开着时点K线 → 收起浮层(同花顺式浮层交互)
