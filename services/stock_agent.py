@@ -316,11 +316,11 @@ async def _tool_resolve_stock(query: str) -> dict:
             at = x.get("asset_type")
             has_bal = (x.get("manual_value") or x.get("cost_amount") or 0) and at not in ("FUND", "CRYPTO")
             hit = {"code": cd or nm, "name": nm,
-                   "asset_class": _ASSET_CLASS_CN.get(at, "场外资产")}
+                   "asset_class": _ASSET_CLASS_CN.get(at, "其他持仓")}
             if sh > 0 or has_bal:
-                held_hit = held_hit or {**hit, "in_holdings": True, "note": "在持(场外资产账本)"}
+                held_hit = held_hit or {**hit, "in_holdings": True, "note": "在持(资产看板账本)"}
             else:
-                cleared_hit = cleared_hit or {**hit, "in_holdings": False, "note": "该场外资产已赎回/清仓"}
+                cleared_hit = cleared_hit or {**hit, "in_holdings": False, "note": "该标的已赎回/清仓"}
         if held_hit:
             return held_hit
         if cleared_hit:
@@ -2211,11 +2211,12 @@ async def _tool_get_holdings() -> dict:
                      "shares": h.get("shares"), "综合成本": h.get("cost_price"),
                      "每股已收分红": h.get("每股已收分红"),
                      "持有天数": h.get("hold_days"), "开仓日": h.get("open_date")} for h in hs]
-        # 场外资产: 基金/场内ETF/理财/现金/加密/机器人 —— 持仓不止 A 股, 一并读出来
+        # 其他持仓: 场内ETF/场外基金/理财/现金/加密/机器人 —— 持仓不止 A 股, 一并读出来
         other = {}
         try:
             from database import list_external_assets, list_external_actions
             from services.external_ledger import compute_external_state
+            from services.external_assets import _is_onchain_etf
             for x in await list_external_assets():
                 at = x.get("asset_type")
                 sh = x.get("shares")
@@ -2240,13 +2241,18 @@ async def _tool_get_holdings() -> dict:
                             row["摊薄成本"] = round((st.get("diluted_cost") or 0) / led_sh, 4)
                     except Exception:
                         pass
-                other.setdefault(_ASSET_CLASS_CN.get(at, at), []).append(row)
+                cls = _ASSET_CLASS_CN.get(at, at)
+                if at == "FUND":   # 场内按市价+佣金成交, 场外按 T+1 净值申赎, 分开归类
+                    cls = "场内ETF" if _is_onchain_etf(str(x.get("code") or "")) else "场外基金"
+                other.setdefault(cls, []).append(row)
         except Exception:
             pass
-        return {"A股": a_shares, "场外资产": other,
-                "note": "我的全部在持: A股(holdings) + 场外资产(基金/场内ETF/理财/现金/加密/机器人, 来自资产看板)。已清仓/已赎回的不在此列。"
+        return {"A股": a_shares, "其他持仓": other,
+                "note": "我的全部在持: A股(holdings) + 其他持仓(场内ETF/场外基金/理财/现金/加密/机器人, 来自资产看板)。已清仓/已赎回的不在此列。"
                         "A股: 综合成本=含手续费+分红摊薄(对齐券商); 持有天数=资金加权(0=今天才开仓); 开仓日已带星期照抄。"
-                        "场外: 基金/ETF 给份额+摊薄成本(单价, 份额拆分与减仓已实现均已折算, 与现价同标度, 对齐券商口径);"
+                        "分类按交易场所据实表述: 场内ETF(代码 5xxxxx/1xxxxx)在交易所按市价+券商佣金成交, "
+                        "场外基金(支付宝/天天基金等)按 T+1 净值申赎, 两类各按自己的名字说。"
+                        "基金/ETF 给份额+摊薄成本(单价, 份额拆分与减仓已实现均已折算, 与现价同标度, 对齐券商口径);"
                         "浮动盈亏=(现价−摊薄成本)×份额, 成本一律以本字段为准。现金/理财/机器人给金额(元)。"
                         "带 定投计划 字段的资产在自动定投(频率+每期金额, 已暂停会标注)——这类持仓的规律小额买入是策略性定投, 不是主观追高。"
                         "要各大类占比/现金理财结构分析用 get_asset_allocation。"}
@@ -2668,7 +2674,7 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_shareholders", "description": "筹码面: 十大流通股东及增减持、北向(香港中央结算)持股变动、未来限售解禁(抛压)。回答'谁在持股、控股股东/国家队/北向在加还是减、有没有解禁压力'时用。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
-    {"name": "get_holdings", "description": "查用户当前**全部**在持: A股(代码/名称/股数/综合成本/持有天数) + 场外资产(基金/场内ETF/理财/现金/加密/机器人, 含份额或金额; 有定投计划的基金带 定投计划 字段——频率+每期金额)。回答'我的持仓/我有什么/我持有啥/哪些在定投/跟我持仓的关系'时用——持仓不止A股, 用户还有基金/ETF/现金/理财/机器人。要各大类占比或现金理财结构分析则用 get_asset_allocation。",
+    {"name": "get_holdings", "description": "查用户当前**全部**在持: A股(代码/名称/股数/综合成本/持有天数) + 其他持仓(场内ETF/场外基金/理财/现金/加密/机器人, 含份额或金额; 有定投计划的基金带 定投计划 字段——频率+每期金额)。回答'我的持仓/我有什么/我持有啥/哪些在定投/跟我持仓的关系'时用——持仓不止A股, 用户还有基金/ETF/现金/理财/机器人。要各大类占比或现金理财结构分析则用 get_asset_allocation。",
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_thesis", "description": "读用户当初记录的买入逻辑(为什么买这只)。回答'我当初为什么买X、X的逻辑还成立吗、帮我复盘X'时用: 拿到 thesis 后对照现价/基本面/消息/红线, 客观说每条理由还成不成立。不传 code 看全部持仓的逻辑。仅当用户记过才有。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选, 留空看全部"}}}},

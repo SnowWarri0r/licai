@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { fetchJSON, MUTATED_EVENT } from '../hooks/useApi'
-import { fmtMoney, fmtPct, priceColor } from '../helpers'
+import { fmtMoney, fmtPct, priceColor, isOnchainEtf } from '../helpers'
 import Tooltip from './Tooltip'
 import IndexTicker from './IndexTicker'
 
@@ -117,10 +117,21 @@ export default function Dashboard({ holdings }) {
     return acc
   }, {})).filter(e => e.originalMarketValue > 0)
 
-  // --- 场外 aggregates ---
+  // --- 非 A股直持 的 aggregates ---
   const eValue = external?.summary?.total_value || 0
   const eCost = external?.summary?.total_cost || 0
   const ePnl = external?.summary?.total_pnl || 0
+  // 场内 ETF(券商买的 5xxxxx/1xxxxx)跟支付宝/天天基金买的场外基金都存在 external_assets 里,
+  // 但它们是场内按市价成交的, 统统标"场外"是错的 —— 按代码拆出来单独一格。
+  const onchain = (external?.assets || []).reduce((s, a) => {
+    if (a.asset_type === 'FUND' && isOnchainEtf(a.code)) {
+      s.value += a.current_value || 0
+      s.pnl += a.pnl || 0
+    }
+    return s
+  }, { value: 0, pnl: 0 })
+  const otcValue = eValue - onchain.value
+  const otcPnl = ePnl - onchain.pnl
   // 24/7 资产（CRYPTO + BOT）任何时候都算今日浮动。
   // 基金 (FUND) 是 T+1，跟 A 股一样周末/假日不算。
   const cryptoTodayPnl = (external?.assets || []).reduce((s, a) => {
@@ -265,15 +276,28 @@ export default function Dashboard({ holdings }) {
               {aPnl >= 0 ? '+' : ''}{fmtMoney(aPnl)}
             </span>
           </div>
-          <div className="flex items-center gap-1.5 shrink-0">
-            <span className="text-[10px] px-1.5 py-0.5 rounded border border-accent/30 text-accent">
-              场外
-            </span>
-            <span className="text-[12px] font-mono text-text">¥{fmtMoney(eValue)}</span>
-            <span className={`text-[10px] font-mono ${priceColor(ePnl)}`}>
-              {ePnl >= 0 ? '+' : ''}{fmtMoney(ePnl)}
-            </span>
-          </div>
+          {onchain.value > 0 && (
+            <div className="flex items-center gap-1.5 shrink-0">
+              <span className="text-[10px] px-1.5 py-0.5 rounded border border-accent/30 text-accent">
+                场内ETF
+              </span>
+              <span className="text-[12px] font-mono text-text">¥{fmtMoney(onchain.value)}</span>
+              <span className={`text-[10px] font-mono ${priceColor(onchain.pnl)}`}>
+                {onchain.pnl >= 0 ? '+' : ''}{fmtMoney(onchain.pnl)}
+              </span>
+            </div>
+          )}
+          {otcValue > 0 && (
+            <div className="flex items-center gap-1.5 shrink-0">
+              <span className="text-[10px] px-1.5 py-0.5 rounded border border-accent/30 text-accent">
+                场外
+              </span>
+              <span className="text-[12px] font-mono text-text">¥{fmtMoney(otcValue)}</span>
+              <span className={`text-[10px] font-mono ${priceColor(otcPnl)}`}>
+                {otcPnl >= 0 ? '+' : ''}{fmtMoney(otcPnl)}
+              </span>
+            </div>
+          )}
         </>
       )}
 
