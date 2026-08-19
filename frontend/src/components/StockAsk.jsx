@@ -116,7 +116,9 @@ export default function StockAsk({ page = false }) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           session_id: sessionId.current, role: 'assistant', content: item.answer || '',
-          meta: { tools_used: (item.steps || []).map(s => s.tool), sources: item.sources || [], charts: item.charts || [] },
+          // llm_retry 是过载重试提示不是工具, 别存进历史(否则重开会话会多出一个假工具)
+          meta: { tools_used: (item.steps || []).map(s => s.tool).filter(t => t !== 'llm_retry'),
+                  sources: item.sources || [], charts: item.charts || [] },
         }),
       })
     } catch { /* 持久化失败不影响使用 */ }
@@ -209,7 +211,8 @@ export default function StockAsk({ page = false }) {
       <div className="flex items-baseline gap-2 mb-3">
         <h3 className={`${page ? 'text-[16px]' : 'text-[14px]'} font-semibold text-text-bright m-0`}>问问市场</h3>
         <span className="text-[10.5px] text-text-muted hidden sm:inline">
-          {page ? '挂了28个数据工具的AI · 裸K量价/资金流/基本面/筹码 · 产业链全景 · 联网带来源' : '个股涨跌/消息 · 这周市场什么风格 · 资金主线'}
+          {/* 不写死具体个数: 工具一直在加, 写 28 的时候是对的, 现在实际 35(接星球 38) */}
+          {page ? '挂了30多个数据工具的AI · 裸K量价/资金流/基本面/筹码 · 产业链全景 · 联网带来源' : '个股涨跌/消息 · 这周市场什么风格 · 资金主线'}
         </span>
         <div className="ml-auto flex items-center gap-1">
           {history.some(it => it.answer != null) && (
