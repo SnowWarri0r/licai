@@ -231,3 +231,55 @@ def test_us_preopen_zeros_backfilled_from_daily(monkeypatch):
     it = md._fetch_macro_sina()["us_index"][0]
     assert it["prev_close"] == 53839.99
     assert abs(it["change_pct"] - (-0.2)) < 0.01        # 不再是 0.00%
+
+
+# --- 美股指数分时: 腾讯对指数只回一个收盘快照点, 改用 Yahoo 的 1 分钟线 ---
+def _yahoo_payload(gmtoffset=-14400):
+    # 09:30 / 09:31 / 09:32 美东(EDT) 对应的 UTC 秒
+    base = 1787059800          # 2026-08-18 09:30 EDT
+    return {"chart": {"result": [{
+        "meta": {"gmtoffset": gmtoffset, "exchangeTimezoneName": "America/New_York",
+                 "chartPreviousClose": 53459.8},
+        "timestamp": [base, base + 60, base + 120, base + 180],
+        "indicators": {"quote": [{"close": [53272.98, None, 53300.5, 53310.0],
+                                  "volume": [0, 1329031, 1134685, None]}]},
+    }]}}
+
+
+def test_yahoo_minute_converts_to_exchange_local_time(monkeypatch):
+    import services.market_data as md
+
+    class R:
+        def json(self_inner):
+            return _yahoo_payload()
+
+    monkeypatch.setattr(md._requests, "get", lambda *a, **k: R())
+    d = md._minute_yahoo("gb_dji")
+    # close 为 None 的那根跳过(停牌/无成交的空槽), 其余按美东时刻落位
+    assert [p["time"] for p in d["points"]] == ["09:30", "09:32", "09:33"]
+    assert d["date"] == "2026-08-18"
+    assert d["prev_close"] == 53459.8
+    assert d["points"][1]["price"] == 53300.5
+    assert d["points"][2]["手"] == 0.0            # volume 缺失按 0, 不让整根丢掉
+
+
+def test_yahoo_minute_follows_dst_offset(monkeypatch):
+    """冬令时 gmtoffset 变成 -18000, 时刻要跟着源给的偏移走, 不写死。"""
+    import services.market_data as md
+
+    class R:
+        def json(self_inner):
+            return _yahoo_payload(gmtoffset=-18000)
+
+    monkeypatch.setattr(md._requests, "get", lambda *a, **k: R())
+    d = md._minute_yahoo("gb_ixic")
+    assert [p["time"] for p in d["points"]] == ["08:30", "08:32", "08:33"]
+
+
+def test_yahoo_minute_only_us_indices(monkeypatch):
+    import services.market_data as md
+    called = []
+    monkeypatch.setattr(md._requests, "get", lambda *a, **k: called.append(1))
+    assert md._minute_yahoo("hkHSI") is None
+    assert md._minute_yahoo("sh000001") is None
+    assert not called                              # 不是美股指数就别发请求
