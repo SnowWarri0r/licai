@@ -352,3 +352,86 @@ def test_kospi_turnover_none_when_source_empty(monkeypatch):
 
     monkeypatch.setattr(md._requests, "get", lambda *a, **k: R())
     assert md._kospi_turnover() is None
+
+
+# ── 美股个股: 报价属于哪个时段 ───────────────────────────
+# 起因: 亚洲白天问"迈威尔现在涨还是跌", 工具给的是上一个交易日收盘的 -7.82% 且不带
+# 时刻, 模型只能当成"现在"。而同一行里盘前价 240.56(+11.37%) 一直都在, 只是原实现
+# 读到第 3 个字段就 return 了。
+
+# 2026-08-19 20:43 北京时间(= 08:43AM EDT, 美股盘前)实盘抓取
+LINE_MRVL = ("迈威尔科技,216.0000,-7.82,2026-08-19 20:43:00,-18.3300,220.5200,225.0100,"
+             "211.1000,329.8200,61.2000,25860604,19558053,189165548232,2.95,73.220000,"
+             ",,,,875766427,97,240.5601,11.37,24.75,Aug 19 08:43AM EDT,Aug 18 04:00PM EDT,"
+             "234.3300,2852147,1,2026,5592757081.2627,245.1200,209.0000,654787255.9188,"
+             "216.8050,216.0000")
+
+
+def test_us_session_from_exchange_clock():
+    from services.market_data import _us_session_of
+    assert _us_session_of("Aug 19 08:43AM EDT") == "pre"
+    assert _us_session_of("Aug 19 04:00AM EDT") == "pre"
+    assert _us_session_of("Aug 19 09:29AM EDT") == "pre"
+    assert _us_session_of("Aug 19 09:30AM EDT") == "regular"
+    assert _us_session_of("Aug 18 04:00PM EDT") == "post"      # 收盘那一刻起算盘后
+    assert _us_session_of("Aug 18 12:30PM EDT") == "regular"    # 12 点是中午不是午夜
+    assert _us_session_of("Aug 18 12:30AM EST") == "closed"
+    assert _us_session_of("Aug 18 07:59PM EST") == "post"
+    assert _us_session_of("Aug 18 08:00PM EST") == "closed"
+    assert _us_session_of("") == ""
+
+
+def test_us_quote_separates_last_session_from_premarket(monkeypatch):
+    from services import market_data as md
+
+    class R:
+        text = f'var hq_str_gb_mrvl="{LINE_MRVL}";'
+        encoding = "gbk"
+
+    monkeypatch.setattr(md._requests, "get", lambda *a, **k: R())
+    q = md._fetch_us_stock_quote("MRVL")
+
+    # 正式时段那一档: 价与涨跌幅是 8/18 收盘的, 并且带上时刻
+    assert q["price"] == 216.0 and q["change_pct"] == -7.82
+    assert q["price_as_of"] == "Aug 18 04:00PM EDT"
+    # 昨收取源里真值, 不是 last/(1+pct) 反推(反推得 234.3241)
+    assert q["prev_close"] == 234.33
+    # 原实现把这四个硬编码成 0, 而同一行里都有
+    assert (q["open"], q["high"], q["low"]) == (220.52, 225.01, 211.10)
+    assert q["volume"] == 25860604
+    assert q["amplitude"] == round((225.01 - 211.10) / 234.33 * 100, 2)
+    # 盘前单列, change_pct 是相对上一时段收盘
+    assert q["session"] == "pre"
+    assert q["ext_hours"] == {"label": "盘前", "price": 240.5601,
+                              "change_pct": 11.37, "as_of": "Aug 19 08:43AM EDT"}
+    assert abs((240.5601 - 216.0) / 216.0 * 100 - 11.37) < 0.05      # 口径自洽
+
+
+def test_us_quote_hides_ext_block_during_regular_session(monkeypatch):
+    """盘中时源里的 [21] 跟着最新价走, 再单列一块会和 price 重复, 反而让人分不清。"""
+    from services import market_data as md
+    line = LINE_MRVL.replace("Aug 19 08:43AM EDT", "Aug 19 10:15AM EDT")
+
+    class R:
+        text = f'var hq_str_gb_mrvl="{line}";'
+        encoding = "gbk"
+
+    monkeypatch.setattr(md._requests, "get", lambda *a, **k: R())
+    q = md._fetch_us_stock_quote("MRVL")
+    assert q["session"] == "regular"
+    assert "ext_hours" not in q
+
+
+def test_us_quote_survives_short_line(monkeypatch):
+    """有的票字段少, 不能因为读不到 [21]/[26] 就把整条行情丢了。"""
+    from services import market_data as md
+
+    class R:
+        text = 'var hq_str_gb_xyz="某公司,10.0000,2.00,2026-08-19,0.2000";'
+        encoding = "gbk"
+
+    monkeypatch.setattr(md._requests, "get", lambda *a, **k: R())
+    q = md._fetch_us_stock_quote("XYZ")
+    assert q["price"] == 10.0 and q["change_pct"] == 2.0
+    assert q["prev_close"] == round(10.0 / 1.02, 4)      # 缺 [26] 才反推
+    assert "ext_hours" not in q and q["session"] == ""
