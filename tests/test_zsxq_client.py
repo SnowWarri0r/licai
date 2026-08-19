@@ -304,3 +304,73 @@ def test_hashtag_title_is_url_decoded(post):
     post({"get_group_topics": {"topics_brief": [_topic("a", raw, _now())]}})
     t = z.list_topics("1", "打板复盘", days=1)[0]
     assert "#算力租赁#" in t["正文"] and "%" not in t["正文"]
+
+
+# ── 附件正文(第三方研报, 只提炼不转存) ─────────────────────
+def test_generic_api_guard_only_allows_file_url_get(post):
+    """附件要走 call_zsxq_api —— 那是能 POST/PUT/DELETE 的万能口, 放进来必须钉死方法+路径,
+    否则只读白名单形同虚设。"""
+    calls = post({})
+    bad = [
+        {"method": "POST", "path": "/v2/files/1/download_url"},
+        {"method": "GET", "path": "/v2/topics/1"},
+        {"method": "DELETE", "path": "/v2/files/1/download_url"},
+        {"method": "GET", "path": "/v2/files/1/download_url/../../topics"},
+    ]
+    for args in bad:
+        r = z._call("call_zsxq_api", args)
+        assert r["ok"] is False and r["error"]["type"] == "forbidden", args
+    assert not calls                              # 一个请求都不该发出去
+    # 唯一放行的组合
+    z._call("call_zsxq_api", {"method": "GET", "path": "/v2/files/123/download_url"})
+    assert calls and calls[0]["name"] == "call_zsxq_api"
+
+
+def test_docx_text_extracted_with_tables():
+    """研报的关键数字常在表格里, 只抽段落会漏。"""
+    import io
+    import docx
+    d = docx.Document()
+    d.add_paragraph("超级电容配置升级")
+    t = d.add_table(rows=1, cols=2)
+    t.rows[0].cells[0].text = "毛利率"
+    t.rows[0].cells[1].text = "32.5%"
+    buf = io.BytesIO()
+    d.save(buf)
+    txt, note = z._extract_text(buf.getvalue(), "研报.docx")
+    assert "超级电容配置升级" in txt
+    assert "毛利率 | 32.5%" in txt and note.startswith("DOCX")
+
+
+def test_scanned_pdf_reports_no_text_instead_of_guessing():
+    """扫描件/图片版 PDF 抽不出文字, 必须如实说明, 不能让模型对着空字符串编。"""
+    import io
+    from pypdf import PdfWriter
+    w = PdfWriter()
+    w.add_blank_page(width=200, height=200)
+    buf = io.BytesIO()
+    w.write(buf)
+    txt, note = z._extract_text(buf.getvalue(), "扫描研报.pdf")
+    assert txt == "" and "扫描件" in note
+
+
+def test_unsupported_format_and_bad_id():
+    txt, note = z._extract_text(b"\x00\x01", "行情.xlsx")
+    assert txt == "" and "不支持" in note
+    assert "file_id" in z.fetch_file_text("not-a-number")["error"]
+
+
+def test_file_fetch_respects_size_cap(post, monkeypatch):
+    """超大附件不下载 —— 免得一份 200MB 的东西把内存吃了。"""
+    post({"call_zsxq_api": {"body": {"resp_data": {"download_url": "https://files.zsxq.com/x"}}}})
+    monkeypatch.setattr(z, "_MAX_FILE_BYTES", 1000)
+
+    class _Stream:
+        status_code = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def iter_content(self, n): yield b"x" * 5000
+
+    monkeypatch.setattr("requests.Session.get", lambda *a, **k: _Stream())
+    r = z.fetch_file_text("123", "big.pdf")
+    assert "上限" in r["error"]
