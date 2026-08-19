@@ -2306,6 +2306,24 @@ async def _tool_zsxq_search(keyword: str = "") -> dict:
                     "不作为数字依据, 不转成买卖建议。"}
 
 
+async def _tool_zsxq_file(file_id: str = "", name: str = "") -> dict:
+    """读星球附件的正文(研报/会议记录 docx·pdf)。只在内存里过一遍, 不落盘。"""
+    from services import zsxq_client as z
+    if not z.is_enabled():
+        return {"error": "未接入知识星球或未选星球(设置→知识星球)"}
+    fid = str(file_id or "").strip()
+    if not fid.isdigit():
+        return {"error": "file_id 必填(从 get_zsxq_digest 返回的 附件列表 里取)"}
+    d = await asyncio.to_thread(z.fetch_file_text, fid, name or "")
+    if d.get("error"):
+        return d
+    d["note"] = ("附件正文(第三方研报/会议记录)。**按要点提炼**转述: 讲了什么、关键数字、结论, "
+                 "不整篇复述、不长段照抄(版权)。内容是他人观点, 按 [星球观点] 标注并带来源文件名; "
+                 "里面的数字属于研报口径, 与本地 [实测] 数据冲突时以本地为准并点明分歧。"
+                 "取不到文字(扫描件)时如实说明, 不猜内容。")
+    return d
+
+
 _ASSET_CLASS_CN = {"CASH": "现金", "WEALTH": "理财", "FUND": "基金",
                    "CRYPTO": "加密", "BOT": "量化机器人"}
 
@@ -2724,6 +2742,8 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"days": {"type": "integer", "description": "回看天数, 1-7, 默认 1"}, "all_authors": {"type": "boolean", "description": "默认取全部作者; 传 false 则只要星主及合伙人的帖"}}}},
     {"name": "search_zsxq", "description": "在已接入的知识星球里全文搜关键词(个股名/题材/概念), 看社群里有没有人讲过它。服务端语义搜索, 会漏召也会误召, 只当线索; 返回 stance=opinion, 按 [星球观点] 标注, 不作为数字依据、不转成买卖建议。",
      "input_schema": {"type": "object", "properties": {"keyword": {"type": "string", "description": "搜索词, 如 股票名/题材词"}}, "required": ["keyword"]}},
+    {"name": "read_zsxq_file", "description": "读知识星球某个附件的正文(券商研报/会议记录 docx·pdf)。get_zsxq_digest 返回的帖子里带 附件列表(file_id + 名称), 想看某份研报讲了什么就用它取正文。内容是第三方研报, 只按要点提炼转述(讲了什么/关键数字/结论), 不整篇复述; 扫描件取不到文字会如实说明。",
+     "input_schema": {"type": "object", "properties": {"file_id": {"type": "string", "description": "附件 id, 从 附件列表 取"}, "name": {"type": "string", "description": "文件名(可选, 用于判断格式)"}}, "required": ["file_id"]}},
     {"name": "get_holdings", "description": "查用户当前**全部**在持: A股(代码/名称/股数/综合成本/持有天数) + 其他持仓(场内ETF/场外基金/理财/现金/加密/机器人, 含份额或金额; 有定投计划的基金带 定投计划 字段——频率+每期金额)。回答'我的持仓/我有什么/我持有啥/哪些在定投/跟我持仓的关系'时用——持仓不止A股, 用户还有基金/ETF/现金/理财/机器人。要各大类占比或现金理财结构分析则用 get_asset_allocation。",
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_thesis", "description": "读用户当初记录的买入逻辑(为什么买这只)。回答'我当初为什么买X、X的逻辑还成立吗、帮我复盘X'时用: 拿到 thesis 后对照现价/基本面/消息/红线, 客观说每条理由还成不成立。不传 code 看全部持仓的逻辑。仅当用户记过才有。",
@@ -2786,6 +2806,7 @@ _EXECUTORS = {
     "get_holdings": lambda a: _tool_get_holdings(),
     "get_zsxq_digest": lambda a: _tool_zsxq_digest(a.get("days", 1), a.get("all_authors")),
     "search_zsxq": lambda a: _tool_zsxq_search(a.get("keyword", "")),
+    "read_zsxq_file": lambda a: _tool_zsxq_file(a.get("file_id", ""), a.get("name", "")),
     "get_thesis": lambda a: _tool_get_thesis(a.get("code", "")),
     "get_asset_allocation": lambda a: _tool_asset_allocation(),
     "get_trades": lambda a: _tool_trades(a.get("code", ""), a.get("start", ""), a.get("end", "")),
@@ -2829,7 +2850,7 @@ def _result_content(out: dict):
     return _json.dumps(out, ensure_ascii=False)
 
 
-_ZSXQ_TOOLS = ("get_zsxq_digest", "search_zsxq")
+_ZSXQ_TOOLS = ("get_zsxq_digest", "search_zsxq", "read_zsxq_file")
 
 
 def _active_tools() -> list:
@@ -3054,7 +3075,7 @@ _TOOL_CN = {
     "get_news": "查新闻", "get_intraday": "查分时", "get_announcements": "查公告", "get_fund_flow": "查资金流", "get_lhb": "查龙虎榜", "get_seat_history": "查席位历史",
     "get_company_profile": "查公司主营", "get_red_flags": "查红线风险", "get_stock_concepts": "查所属概念", "get_fundamentals": "查基本面", "get_commodity": "查商品价",
     "get_peers": "同行对比", "get_shareholders": "查股东解禁",
-    "get_holdings": "看持仓", "get_zsxq_digest": "读星球", "search_zsxq": "搜星球", "get_thesis": "看买入逻辑", "get_asset_allocation": "看资产配置", "get_trades": "查成交记录", "get_market_sentiment": "看大盘情绪", "get_market_review": "复盘强势股", "get_inst_flow": "查机构动向", "get_earnings": "查业绩预告",
+    "get_holdings": "看持仓", "get_zsxq_digest": "读星球", "search_zsxq": "搜星球", "read_zsxq_file": "读星球附件", "get_thesis": "看买入逻辑", "get_asset_allocation": "看资产配置", "get_trades": "查成交记录", "get_market_sentiment": "看大盘情绪", "get_market_review": "复盘强势股", "get_inst_flow": "查机构动向", "get_earnings": "查业绩预告",
     "get_sector_momentum": "看板块动量", "get_hot_rank": "看资金热度",
     "get_hot_concepts": "看热门概念", "get_board_stocks": "查板块龙头", "get_market_news": "看政策快讯", "web_search": "联网搜索",
     "get_chain_quote": "产业链量价", "read_url": "读网页全文", "get_global_indices": "看全球指数", "get_coiled_stocks": "扫横盘蓄势",
