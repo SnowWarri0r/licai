@@ -3180,6 +3180,40 @@ def _seed_messages(question: str, history: list | None, images: list | None = No
     return msgs
 
 
+# 上游过载时在 loop 层再重发几次。llm_client 内部已按指数退避等到 ~15s, 这里是第二道:
+# 一次问答会跑十几轮, 第 12 轮撞上过载就把前面所有工具结果都扔了太亏 —— 同一个 messages
+# 原样重发即可(工具结果都在 messages 里, 不用重跑取数)。
+_OVERLOAD_ROUND_RETRIES = 3
+_OVERLOAD_ROUND_WAIT_S = 20      # 第 n 次等 n×20 秒
+
+
+async def _llm_round(messages: list):
+    """跑一轮 LLM 调用, 上游过载则原样重发。
+
+    async generator, 产出 (kind, value):
+      ("wait", 事件dict)  等待重试中, 调用方把它推给前端(顺带当 SSE 心跳)
+      ("resp", 响应dict)  成功
+      ("error", 文案)     不可重试的错误, 或过载重试也用尽了
+    """
+    for attempt in range(_OVERLOAD_ROUND_RETRIES + 1):
+        try:
+            resp = await asyncio.to_thread(
+                _llm.call_claude_messages, messages, _system(), _MODEL, 4096, _active_tools())
+            yield ("resp", resp)
+            return
+        except _llm.LLMOverloaded as e:
+            if attempt >= _OVERLOAD_ROUND_RETRIES:
+                yield ("error", f"{e}。这是上游服务器忙, 不是你的配置问题 —— 过一两分钟重问一次即可")
+                return
+            wait = _OVERLOAD_ROUND_WAIT_S * (attempt + 1)
+            yield ("wait", {"type": "step", "tool": "llm_retry", "label": "上游过载, 等待重试",
+                            "arg": f"{wait}s (第 {attempt + 1}/{_OVERLOAD_ROUND_RETRIES} 次)"})
+            await asyncio.sleep(wait)
+        except Exception as e:
+            yield ("error", str(e))
+            return
+
+
 async def ask_stock_stream(question: str, history: list | None = None, images: list | None = None):
     """流式版: 边跑边 yield 事件 (step/answer/done/error), 供 SSE 推给前端。
     每轮 LLM 调用之间 yield 工具步骤, 步骤实时出现; 末轮文本作为答案。
@@ -3193,11 +3227,17 @@ async def ask_stock_stream(question: str, history: list | None = None, images: l
     sources: list = []
     seen_urls: set = set()
     for rnd in range(_MAX_ROUNDS):
-        try:
-            resp = await asyncio.to_thread(
-                _llm.call_claude_messages, messages, _system(), _MODEL, 4096, _active_tools())
-        except Exception as e:
-            yield {"type": "error", "error": str(e)}
+        resp = None
+        async for kind, val in _llm_round(messages):
+            if kind == "wait":
+                yield val
+            elif kind == "error":
+                yield {"type": "error", "error": val}
+                return
+            else:
+                resp = val
+        if resp is None:                    # 理论到不了(上面两支都 return 了), 兜一下防静默空转
+            yield {"type": "error", "error": "LLM 无响应"}
             return
         content = resp.get("content", [])
         messages.append({"role": "assistant", "content": content})
@@ -3251,11 +3291,14 @@ async def ask_stock(question: str, history: list | None = None, images: list | N
     seen_urls: set = set()
     charts: list = []
     for rnd in range(_MAX_ROUNDS):
-        try:
-            resp = await asyncio.to_thread(
-                _llm.call_claude_messages, messages, _system(), _MODEL, 4096, _active_tools())
-        except Exception as e:
-            return {"answer": "", "error": str(e), "tools_used": tools_used, "rounds": rnd}
+        resp = None
+        async for kind, val in _llm_round(messages):     # "wait" 事件非流式版没处可推, 丢掉
+            if kind == "error":
+                return {"answer": "", "error": val, "tools_used": tools_used, "rounds": rnd}
+            if kind == "resp":
+                resp = val
+        if resp is None:
+            return {"answer": "", "error": "LLM 无响应", "tools_used": tools_used, "rounds": rnd}
         content = resp.get("content", [])
         messages.append({"role": "assistant", "content": content})
         # 服务端 web_search 也计入 tools_used(它是 server_tool_use, 不在 tus 里, 否则会被漏记成"没联网")

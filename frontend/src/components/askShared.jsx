@@ -30,6 +30,11 @@ const TOOL_ICONS = {
   web_search: <><circle cx="12" cy="12" r="8" /><path d="M4 12h16M12 4c2.5 2.4 2.5 13.6 0 16M12 4c-2.5 2.4-2.5 13.6 0 16" /></>,
   get_chain_quote: <><circle cx="6" cy="6" r="2.2" /><circle cx="18" cy="6" r="2.2" /><circle cx="12" cy="18" r="2.2" /><path d="M8 7l8 0M7 8l4 8M17 8l-4 8" /></>,
   read_url: <><rect x="5" y="3.5" width="14" height="17" rx="2" /><path d="M8 8h8M8 11.5h8M8 15h5" /></>,
+  get_zsxq_digest: <><path d="M12 3l2.6 5.4 5.9.8-4.3 4.2 1 5.9-5.2-2.8-5.2 2.8 1-5.9L3.5 9.2l5.9-.8z" /></>,
+  search_zsxq: <><circle cx="10.5" cy="10.5" r="6.5" /><path d="M19.5 19.5l-4.2-4.2M8 10.5h5M10.5 8v5" /></>,
+  read_zsxq_file: <><path d="M7 4h7l4 4v12H7z" /><path d="M14 4v4h4M10 13h5M10 16.5h3" /></>,
+  // 不是工具, 是"上游过载正在等重试"的提示胶囊(见 ToolCallStrip 里的 retry 分支)
+  llm_retry: <><path d="M20 12a8 8 0 11-2.3-5.7" /><path d="M20 4v3.5h-3.5" /></>,
 }
 const DEFAULT_ICON = <><circle cx="12" cy="12" r="2.6" /><path d="M12 4v2.5M12 17.5V20M4 12h2.5M17.5 12H20M6.3 6.3l1.8 1.8M15.9 15.9l1.8 1.8M17.7 6.3l-1.8 1.8M8.1 15.9l-1.8 1.8" /></>
 
@@ -46,6 +51,8 @@ export function ToolIcon({ tool }) {
 // 问问市场 / 排行榜弹窗共用, 保证两处样式一致。
 export function ToolCallStrip({ steps, settled }) {
   if (!steps || steps.length === 0) return null
+  // llm_retry 是"上游过载在等重试"的提示, 不是工具调用 —— 不能进"调用了 N 个工具"的计数
+  const nTools = steps.reduce((n, s) => n + (s.tool === 'llm_retry' ? 0 : 1), 0)
   return (
     <div className="mb-2">
       <div className="flex items-center gap-1.5 mb-1.5 text-[10px] text-text-muted">
@@ -53,9 +60,11 @@ export function ToolCallStrip({ steps, settled }) {
           strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
           <path d="M14.5 4.5a4 4 0 00-5 5L4 15v5h5l5.5-5.5a4 4 0 005-5l-3 3-2.5-2.5z" />
         </svg>
-        <span>{settled ? '调用了' : '正在取数据'}</span>
-        <span className="font-mono text-text-dim">{steps.length}</span>
-        <span>个工具</span>
+        {nTools > 0 ? <>
+          <span>{settled ? '调用了' : '正在取数据'}</span>
+          <span className="font-mono text-text-dim">{nTools}</span>
+          <span>个工具</span>
+        </> : <span>等待上游</span>}
         {!settled && <span className="flex gap-0.5 ml-0.5">
           <span className="w-1 h-1 rounded-full bg-accent animate-bounce" style={{ animationDelay: '0ms' }} />
           <span className="w-1 h-1 rounded-full bg-accent animate-bounce" style={{ animationDelay: '150ms' }} />
@@ -64,18 +73,22 @@ export function ToolCallStrip({ steps, settled }) {
         <span className="flex-1 h-px bg-border-subtle ml-1" />
       </div>
       <div className="flex flex-wrap items-center gap-1.5">
-        {steps.map((s, j) => (
-          <span key={j}
-            className={`inline-flex items-center gap-1 text-[10.5px] pl-1.5 pr-2 py-[3px] rounded-full border transition-colors ${
-              settled ? 'bg-accent/8 border-accent/25 text-text-dim' : 'bg-accent/12 border-accent/40 text-text'}`}>
-            <ToolIcon tool={s.tool} />
-            <span>{s.label}</span>
-            {s.arg ? <span className="font-mono text-text-muted">{s.arg}</span> : null}
-            {settled
-              ? <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="text-bull shrink-0"><path d="M5 12.5l4.5 4.5L19 7" /></svg>
-              : <span className="text-accent/50 leading-none">·</span>}
-          </span>
-        ))}
+        {steps.map((s, j) => {
+          const retry = s.tool === 'llm_retry'
+          return (
+            <span key={j}
+              className={`inline-flex items-center gap-1 text-[10.5px] pl-1.5 pr-2 py-[3px] rounded-full border transition-colors ${
+                retry ? 'bg-warn/12 border-warn/40 text-warn'
+                : settled ? 'bg-accent/8 border-accent/25 text-text-dim' : 'bg-accent/12 border-accent/40 text-text'}`}>
+              <ToolIcon tool={s.tool} />
+              <span>{s.label}</span>
+              {s.arg ? <span className="font-mono text-text-muted">{s.arg}</span> : null}
+              {retry ? null : settled
+                ? <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="text-bull shrink-0"><path d="M5 12.5l4.5 4.5L19 7" /></svg>
+                : <span className="text-accent/50 leading-none">·</span>}
+            </span>
+          )
+        })}
       </div>
     </div>
   )

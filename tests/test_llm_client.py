@@ -667,3 +667,103 @@ def test_call_claude_retries_on_503(mock_post, mock_sleep):
         assert mock_post.call_count == 2
     finally:
         llm._MAX_RETRIES = saved_retries
+
+
+# ── 529 overloaded_error (Anthropic 私有码) ─────────────
+# 这一档单独测: 529 曾经不在 _RETRYABLE_STATUS 里, 高峰期每个过载都零重试直接抛给用户,
+# 而隔壁 500/503 老老实实退避三次。回归的代价是"问一句就报错", 所以钉死。
+
+@mock.patch("time.sleep")
+@mock.patch.object(llm._llm_session, "post")
+def test_529_is_retried(mock_post, mock_sleep):
+    """529 overloaded → 退避重试 → 第二次成功。"""
+    err = mock.MagicMock(status_code=529, headers={})
+    ok = mock.MagicMock(status_code=200, ok=True)
+    mock_post.side_effect = [err, ok]
+
+    resp = llm._post_with_retry({}, {})
+    assert resp is ok
+    assert mock_post.call_count == 2
+    assert mock_sleep.called
+
+
+@mock.patch("time.sleep")
+@mock.patch.object(llm._llm_session, "post")
+def test_overload_gets_more_attempts_than_generic(mock_post, mock_sleep):
+    """过载档的重试上限独立于 _MAX_RETRIES —— 一般错误重试 1 次, 过载重试 4 次。"""
+    saved_retries, saved_overload = llm._MAX_RETRIES, llm._OVERLOAD_RETRIES
+    llm._MAX_RETRIES, llm._OVERLOAD_RETRIES = 1, 4
+    try:
+        for code, want_calls in ((500, 2), (529, 5), (429, 5)):
+            mock_post.reset_mock()
+            mock_post.return_value = mock.MagicMock(status_code=code, headers={})
+            llm._post_with_retry({}, {})
+            assert mock_post.call_count == want_calls, f"{code} 应尝试 {want_calls} 次"
+    finally:
+        llm._MAX_RETRIES, llm._OVERLOAD_RETRIES = saved_retries, saved_overload
+
+
+@mock.patch("time.sleep")
+@mock.patch.object(llm._llm_session, "post")
+def test_529_exhausted_raises_llm_overloaded(mock_post, mock_sleep):
+    """重试用尽后抛 LLMOverloaded(带 status), 让 agent loop 能识别是暂时性过载。"""
+    saved = llm._OVERLOAD_RETRIES
+    llm._OVERLOAD_RETRIES = 1
+    try:
+        mock_post.return_value = mock.MagicMock(
+            status_code=529, headers={}, ok=False,
+            text='{"type":"error","error":{"type":"overloaded_error"}}')
+        llm._api_key = "sk-test"
+
+        with pytest.raises(llm.LLMOverloaded) as ei:
+            llm.call_claude_messages([{"role": "user", "content": "hi"}])
+        assert ei.value.status == 529
+        assert isinstance(ei.value, RuntimeError)      # 老的 except RuntimeError 仍能兜住
+    finally:
+        llm._OVERLOAD_RETRIES = saved
+
+
+@mock.patch("time.sleep")
+@mock.patch.object(llm._llm_session, "post")
+def test_429_exhausted_raises_llm_overloaded_with_429(mock_post, mock_sleep):
+    saved = llm._OVERLOAD_RETRIES
+    llm._OVERLOAD_RETRIES = 0
+    try:
+        mock_post.return_value = mock.MagicMock(status_code=429, headers={}, ok=False, text="rate limited")
+        llm._api_key = "sk-test"
+        with pytest.raises(llm.LLMOverloaded) as ei:
+            llm.call_claude_messages([{"role": "user", "content": "hi"}])
+        assert ei.value.status == 429
+        assert "限流" in str(ei.value)
+    finally:
+        llm._OVERLOAD_RETRIES = saved
+
+
+@mock.patch.object(llm._llm_session, "post")
+def test_non_overload_error_is_plain_runtimeerror(mock_post):
+    """400 这类客户端错误不能被认成过载 —— 否则 agent 会白等两分钟再重发一遍同样错的请求。"""
+    mock_post.return_value = mock.MagicMock(status_code=400, headers={}, ok=False, text="bad request")
+    llm._api_key = "sk-test"
+    with pytest.raises(RuntimeError) as ei:
+        llm.call_claude_messages([{"role": "user", "content": "hi"}])
+    assert not isinstance(ei.value, llm.LLMOverloaded)
+
+
+def test_compute_backoff_overload_uses_higher_cap_with_jitter():
+    """过载档封顶更高(几十秒), 且带 ±25% 抖动防同时重发。"""
+    saved_cap, saved_over = llm._RETRY_MAX_BACKOFF_S, llm._OVERLOAD_MAX_BACKOFF_S
+    llm._RETRY_MAX_BACKOFF_S, llm._OVERLOAD_MAX_BACKOFF_S = 8.0, 30.0
+    try:
+        assert llm._compute_backoff(10, None) == 8.0                    # 普通档: 8 秒封顶
+        vals = [llm._compute_backoff(10, None, overload=True) for _ in range(50)]
+        assert all(22.5 <= v <= 37.5 for v in vals), vals               # 30 ± 25%
+        assert len(set(vals)) > 1                                       # 确实有抖动, 不是定值
+        # 抖动只加在过载档, 普通档必须可预测(别的测试依赖精确值)
+        assert llm._compute_backoff(1, None) == 2.0
+    finally:
+        llm._RETRY_MAX_BACKOFF_S, llm._OVERLOAD_MAX_BACKOFF_S = saved_cap, saved_over
+
+
+def test_compute_backoff_overload_still_honors_retry_after():
+    """服务端明确说了等多久就等多久, 不叠抖动。"""
+    assert llm._compute_backoff(3, "7", overload=True) == 7.0
