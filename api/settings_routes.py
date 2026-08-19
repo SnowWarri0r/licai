@@ -66,12 +66,27 @@ async def test_tdx_config(data: TDXConfig):
 
 # ── 知识星球(可选, 只读观点面) ──────────────────────────────
 class ZsxqConfig(BaseModel):
-    """选哪些星球进财经流水线。只存 id+名字, 不存任何 token(token 在系统 Keychain 里由 CLI 管)。"""
-    groups: list = []
+    """MCP 端点 URL(带 api_key) + 选哪些星球。URL 存 DB 不进 config.py, 返回前端一律脱敏。"""
+    url: Optional[str] = None
+    groups: Optional[list] = None
+
+    @field_validator("url")
+    @classmethod
+    def _vu(cls, v):
+        if v is None:
+            return v
+        v = (v or "").strip()
+        if not v:
+            return ""
+        if not v.startswith("https://"):
+            raise ValueError("MCP 端点必须是 https(URL 里带 api_key, 明文 http 会泄露)")
+        return v
 
     @field_validator("groups")
     @classmethod
-    def _v(cls, v: list) -> list:
+    def _vg(cls, v):
+        if v is None:
+            return v
         out = []
         for g in (v or [])[:20]:
             if not isinstance(g, dict):
@@ -79,21 +94,23 @@ class ZsxqConfig(BaseModel):
             gid = str(g.get("group_id") or "").strip()
             if not gid.isdigit():
                 continue
-            out.append({"group_id": gid, "name": str(g.get("name") or gid)[:60]})
+            out.append({"group_id": gid, "name": str(g.get("name") or gid)[:60],
+                        "owner_only": bool(g.get("owner_only", True))})
         return out
 
 
 @router.get("/zsxq")
 async def get_zsxq_config():
-    """当前选中的星球 + CLI 健康度(装了没/登录没)。登录要用户自己跑 zsxq-cli auth login。"""
+    """当前配置 + 端点健康度。绝不回传含 api_key 的 URL, 只给脱敏 host+path。"""
     import asyncio
     h = await asyncio.to_thread(zsxq_client.health)
-    return {"groups": zsxq_client.configured_groups(), "enabled": zsxq_client.is_enabled(), **h}
+    return {"groups": zsxq_client.configured_groups(), "enabled": zsxq_client.is_enabled(),
+            "endpoint": zsxq_client.endpoint_label(), **h}
 
 
 @router.get("/zsxq/available")
 async def list_zsxq_groups():
-    """列出该账号加入/创建的全部星球, 供勾选。"""
+    """列出该账号加入的全部星球, 供勾选。"""
     import asyncio
     return await asyncio.to_thread(zsxq_client.list_groups, 50)
 
@@ -101,9 +118,14 @@ async def list_zsxq_groups():
 @router.post("/zsxq")
 async def set_zsxq_config(data: ZsxqConfig):
     import json as _json
-    await set_config("zsxq_groups", _json.dumps(data.groups, ensure_ascii=False))
-    zsxq_client.configure(groups=data.groups)
+    if data.url is not None:
+        await set_config("zsxq_mcp_url", data.url)
+        zsxq_client.configure(url=data.url)
+    if data.groups is not None:
+        await set_config("zsxq_groups", _json.dumps(data.groups, ensure_ascii=False))
+        zsxq_client.configure(groups=data.groups)
     return {"message": "saved", "enabled": zsxq_client.is_enabled(),
+            "endpoint": zsxq_client.endpoint_label(),
             "groups": zsxq_client.configured_groups()}
 
 
