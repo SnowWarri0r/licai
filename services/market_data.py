@@ -930,10 +930,44 @@ def _fetch_hk_stock_quote(code: str) -> dict | None:
         return None
 
 
+def _us_session_of(clock: str) -> str:
+    """把新浪给的交易所本地时刻(如 "Aug 19 08:41AM EDT")归到哪个时段。
+
+    时刻本身已经是交易所本地时间, 不用做时区换算, 只看墙上钟点:
+      04:00-09:29 盘前 / 09:30-15:59 盘中 / 16:00-19:59 盘后 / 其余 休市
+    """
+    m = re.search(r"(\d{1,2}):(\d{2})\s*(AM|PM)", clock or "", re.I)
+    if not m:
+        return ""
+    h, mi, ap = int(m.group(1)), int(m.group(2)), m.group(3).upper()
+    if h == 12:
+        h = 0
+    if ap == "PM":
+        h += 12
+    t = h * 60 + mi
+    if 4 * 60 <= t < 9 * 60 + 30:
+        return "pre"
+    if 9 * 60 + 30 <= t < 16 * 60:
+        return "regular"
+    if 16 * 60 <= t < 20 * 60:
+        return "post"
+    return "closed"
+
+
 def _fetch_us_stock_quote(symbol: str) -> dict | None:
-    """美股个股实时 via Sina (gb_<lowercase>). 字段:
-       name, last, change_pct, time, change_amt, open, high, low, 52w_high, 52w_low, ...
-    亚洲盘外返回最新成交，盘内是 delayed real-time.
+    """美股个股实时 via Sina (gb_<lowercase>)。
+
+    字段位置在 mrvl/aapl/nvda/ko/sndl 五只上逐一核过, 并拿 Yahoo(含 includePrePost)
+    交叉验证:
+      [1] 最新成交价(正式时段; 盘外时=上一时段收盘)  [2] 对应涨跌%    [5][6][7] 开/高/低
+      [10] 成交量(股)   [21] 盘前或盘后价   [22] 盘外相对 [1] 的涨跌%
+      [24] [21] 那个价的时刻   [25] [1] 那个价的时刻   [26] 昨收(真值)
+    实测 [21] 与 Yahoo 盘前末点吻合(AAPL 309.80/309.8, NVDA 220.6757/220.68,
+    KO 88.7147/88.7147)。
+
+    price 保持"正式时段成交价"语义不变(持仓估值按它算, 别让盘前几十分钟的跳动改写
+    组合市值), 盘外价另开 ext_hours 一块给出, 并带上两个时刻 —— 否则亚洲白天看到的
+    "现在 -7.82%" 其实是上一个交易日的事, 模型无从分辨。
     """
     try:
         url = f"https://hq.sinajs.cn/list=gb_{symbol.lower()}"
@@ -946,25 +980,57 @@ def _fetch_us_stock_quote(symbol: str) -> dict | None:
         f = m.group(1).split(",")
         if len(f) < 5:
             return None
+
+        def _f(i):
+            try:
+                v = float(f[i])
+                return v if v > 0 else None
+            except (ValueError, IndexError):
+                return None
+
         last = float(f[1]) if f[1] else 0
         change_pct = float(f[2]) if f[2] else 0
-        # prev_close = last / (1 + change_pct/100)
-        prev = round(last / (1 + change_pct / 100), 4) if last > 0 and change_pct != 0 else last
-        return {
+        # 昨收优先取源里的真值 [26]; 缺了才用 last/(1+pct) 反推(反推会被 pct 的两位
+        # 小数放大, MRVL 实测反推 234.3241 vs 真值 234.33)
+        prev = _f(26)
+        if not prev:
+            prev = round(last / (1 + change_pct / 100), 4) if last > 0 and change_pct != 0 else last
+        high, low = _f(6), _f(7)
+        out = {
             "stock_name": f[0] or symbol.upper(),
             "price": last,
-            "open": 0,
-            "high": 0,
-            "low": 0,
+            "open": _f(5) or 0,
+            "high": high or 0,
+            "low": low or 0,
             "prev_close": prev,
-            "volume": 0,
-            "amount": 0,
+            "volume": _f(10) or 0,
+            "amount": 0,            # 新浪美股行只给成交量, 没有成交额
             "change_pct": round(change_pct, 2),
-            "amplitude": 0,
+            "amplitude": round((high - low) / prev * 100, 2) if (high and low and prev) else 0,
             "turnover_rate": 0,
             "market": "US",
             "currency": "USD",
         }
+        if len(f) > 25 and f[25]:
+            out["price_as_of"] = f[25].strip()          # 如 "Aug 18 04:00PM EDT"
+
+        # 盘外(盘前/盘后)。盘中时 [21] 跟着最新价走、[22] 约等于 0, 这时不单列, 免得
+        # 多出一块和 price 重复的信息让模型犯迷糊。
+        ext_px, ext_clock = _f(21), (f[24].strip() if len(f) > 24 else "")
+        sess = _us_session_of(ext_clock)
+        out["session"] = sess or ""
+        if ext_px and sess in ("pre", "post"):
+            try:
+                ext_pct = round(float(f[22]), 2)
+            except (ValueError, IndexError):
+                ext_pct = round((ext_px - last) / last * 100, 2) if last else 0
+            out["ext_hours"] = {
+                "label": "盘前" if sess == "pre" else "盘后",
+                "price": ext_px,
+                "change_pct": ext_pct,       # 相对 price(上一时段收盘)
+                "as_of": ext_clock,
+            }
+        return out
     except Exception as e:
         print(f"[us-stock] {symbol} failed: {e}")
         return None
