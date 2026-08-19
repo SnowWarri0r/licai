@@ -7,6 +7,8 @@ import json as _json
 import re
 import socket
 import time
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -54,6 +56,101 @@ def _fetch_stock_news_em_sync(code: str) -> list[dict]:
         return out
     except Exception:
         return []
+
+
+_YAHOO_NEWS_SEARCH = "https://query1.finance.yahoo.com/v1/finance/search"
+_YAHOO_NEWS_RSS = "https://feeds.finance.yahoo.com/rss/2.0/headline"
+_CST = timezone(timedelta(hours=8))          # 时间一律折成北京时间, 与 A 股新闻同口径
+
+
+def _yahoo_symbol(code: str) -> str:
+    """内部代码 → Yahoo 符号。US.MRVL → MRVL; HK.00700 → 0700.HK。"""
+    up = (code or "").upper()
+    bare = up.split(".")[-1]
+    if up.startswith("HK."):
+        try:
+            return f"{int(bare):04d}.HK"     # Yahoo 港股是 4 位, 00700 要写成 0700.HK
+        except ValueError:
+            return f"{bare}.HK"
+    return bare
+
+
+def _fetch_overseas_news_yahoo_sync(code: str) -> list[dict]:
+    """美股/港股个股新闻。两个 Yahoo 端点合并去重 —— 单用一个都会漏:
+
+      · search 端点: 当天最新的在这里。实测 2026-08-19 盘前 MRVL 的谷歌认股权证那条
+        (Reuters, 08-19 08:38 EDT)只有它有
+      · 按符号的 RSS: 覆盖稳定(港股 0700.HK 也能取), 但比 search 慢半天 —— 同一时刻
+        MRVL 的 RSS 最新只到 08-18 21:45, 正好漏掉当天异动的那条
+
+    美股不走东财的 stock_news_em: 它是按关键词搜中文新闻, 实测 MRVL 十条里最新 8-16,
+    且一半与本股无关("段永平持仓""创业板指上涨""央行货币政策")。
+    """
+    import requests
+    sym = _yahoo_symbol(code)
+    ua = {"User-Agent": "Mozilla/5.0"}
+    s = requests.Session()
+    s.trust_env = False
+    out: list[dict] = []
+
+    try:
+        j = s.get(_YAHOO_NEWS_SEARCH, params={"q": sym, "newsCount": 12, "quotesCount": 0},
+                  headers=ua, timeout=8).json()
+        base = sym.split(".")[0]
+        for it in (j.get("news") or []):
+            # search 端点会掺进整片市场的泛新闻: 对港股 0700.HK 实测能返回"Kraft 芝士"
+            # "拜仁球员受伤"这种, 且一条都不带本股 ticker。带了 relatedTickers 却不含
+            # 本股的一律丢掉, 冷门票才不会被灌满噪音。
+            rel = it.get("relatedTickers")
+            if rel and base not in rel:
+                continue
+            ts = it.get("providerPublishTime")
+            out.append({
+                "kind": "news", "code": code,
+                "title": (it.get("title") or "").strip(),
+                "content": "",
+                "time": datetime.fromtimestamp(ts, _CST).strftime("%Y-%m-%d %H:%M:%S") if ts else "",
+                "source": (it.get("publisher") or "Yahoo").strip(),
+                "url": it.get("link") or "",
+            })
+    except Exception as e:
+        print(f"[news] yahoo search {sym} failed: {e}")
+
+    try:
+        r = s.get(_YAHOO_NEWS_RSS, params={"s": sym, "region": "US", "lang": "en-US"},
+                  headers=ua, timeout=8)
+        # 用正则抠 <item> 而不是走 XML 解析器: 这是远端 XML, ElementTree 对实体膨胀
+        # (billion laughs)没有防护, 而为了一个 RSS 引 defusedxml 不值当。RSS 结构固定,
+        # 只取 title/pubDate/link 三个标签, 正则够且没有实体展开这个面。
+        for block in re.findall(r"<item>(.*?)</item>", r.text, re.S)[:15]:
+            def _tag(name, b=block):
+                m = re.search(rf"<{name}>(.*?)</{name}>", b, re.S)
+                if not m:
+                    return ""
+                return re.sub(r"<!\[CDATA\[|\]\]>", "", m.group(1)).strip()
+            pub = _tag("pubDate")
+            when = ""
+            if pub:
+                try:
+                    when = parsedate_to_datetime(pub).astimezone(_CST).strftime("%Y-%m-%d %H:%M:%S")
+                except (TypeError, ValueError):
+                    when = ""
+            out.append({"kind": "news", "code": code, "title": _tag("title"), "content": "",
+                        "time": when, "source": "Yahoo Finance", "url": _tag("link")})
+    except Exception as e:
+        print(f"[news] yahoo rss {sym} failed: {e}")
+
+    # 去重: 同一条稿子两个端点都会有, 标题归一化后作键; 保留先出现的(search 的带真实来源名)
+    seen: set[str] = set()
+    uniq = []
+    for it in out:
+        key = re.sub(r"\W+", "", (it["title"] or "").lower())[:80]
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        uniq.append(it)
+    uniq.sort(key=lambda x: x["time"] or "", reverse=True)
+    return uniq
 
 
 def _fetch_all_notices_sync() -> dict[str, list[dict]]:
