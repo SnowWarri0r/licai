@@ -107,6 +107,17 @@ async def lifespan(app: FastAPI):
     if tdx_url:
         print(f"TDX 数据源已启用: {tdx_url}")
 
+    # 知识星球(可选, 只读观点面): 选中的星球存在 app_config, token 由 CLI 放系统 Keychain
+    from services import zsxq_client
+    import json as _json
+    try:
+        _zg = _json.loads((await get_config("zsxq_groups")) or "[]")
+    except (ValueError, TypeError):
+        _zg = []
+    zsxq_client.configure(os.environ.get("ZSXQ_CLI") or "", _zg if isinstance(_zg, list) else [])
+    if zsxq_client.is_enabled():
+        print(f"知识星球已接入: {len(zsxq_client.configured_groups())} 个星球(只读)")
+
     # Restore saved feishu webhook config + 静音状态
     url = await get_config("feishu_webhook_url")
     if url:
