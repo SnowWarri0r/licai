@@ -2260,6 +2260,49 @@ async def _tool_get_holdings() -> dict:
         return {"error": str(e)}
 
 
+async def _tool_zsxq_digest(days: int = 1) -> dict:
+    """知识星球最近主题(观点面)。只读, 原文只在内存过一遍不落库。"""
+    from services import zsxq_client as z
+    if not z.is_enabled():
+        return {"error": "未接入知识星球或未选星球(设置→知识星球)"}
+    d = max(1, min(int(days or 1), 7))
+    out = []
+    for g in z.configured_groups():
+        try:
+            out += await asyncio.to_thread(z.list_topics, g["group_id"], g.get("name") or "", d, 20)
+        except Exception:
+            continue
+    if not out:
+        h = await asyncio.to_thread(z.health)
+        if not h.get("logged_in"):
+            return {"error": f"知识星球未登录({h.get('error') or ''}), 需用户自行执行 zsxq-cli auth login"}
+        return {"topics": [], "note": f"最近{d}天该星球没有新主题"}
+    out.sort(key=lambda x: x.get("时间") or "", reverse=True)
+    return {"days": d, "count": len(out), "topics": out[:30],
+            "note": "知识星球主题, 字段 stance=opinion —— 这是**某个人的观点不是事实**, 按 [星球观点] 标注,"
+                    "转述带作者与日期; 数字与结论以 [实测]/[联网] 为准; 原文里的操作倾向只当舆情记录, "
+                    "不据此给买卖建议。"}
+
+
+async def _tool_zsxq_search(keyword: str = "") -> dict:
+    """在已选星球里全文搜(服务端 RAG 语义匹配, 会漏召也会误召, 只当线索)。"""
+    from services import zsxq_client as z
+    if not z.is_enabled():
+        return {"error": "未接入知识星球或未选星球(设置→知识星球)"}
+    kw = (keyword or "").strip()
+    if not kw:
+        return {"error": "keyword 必填"}
+    out = []
+    for g in z.configured_groups():
+        try:
+            out += await asyncio.to_thread(z.search_topics, kw, g["group_id"], g.get("name") or "")
+        except Exception:
+            continue
+    return {"keyword": kw, "count": len(out), "topics": out[:20],
+            "note": "语义搜索结果, 相关性需自行复核(可能误召); stance=opinion, 按 [星球观点] 标注, "
+                    "不作为数字依据, 不转成买卖建议。"}
+
+
 _ASSET_CLASS_CN = {"CASH": "现金", "WEALTH": "理财", "FUND": "基金",
                    "CRYPTO": "加密", "BOT": "量化机器人"}
 
@@ -2674,6 +2717,10 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_shareholders", "description": "筹码面: 十大流通股东及增减持、北向(香港中央结算)持股变动、未来限售解禁(抛压)。回答'谁在持股、控股股东/国家队/北向在加还是减、有没有解禁压力'时用。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
+    {"name": "get_zsxq_digest", "description": "读用户已接入的知识星球最近 N 天主题(默认1天)。用于回答「情绪面/复盘博主怎么看今天的盘」「星球里在讲什么逻辑」这类**观点面**问题, 补指标看不到的文本面。返回字段 stance=opinion —— 是某个人的看法不是事实, 按 [星球观点] 标注并带作者与日期; 数字与结论仍以 [实测]/[联网] 为准。仅在用户问观点/社群/复盘看法时用。",
+     "input_schema": {"type": "object", "properties": {"days": {"type": "integer", "description": "回看天数, 1-7, 默认 1"}}}},
+    {"name": "search_zsxq", "description": "在已接入的知识星球里全文搜关键词(个股名/题材/概念), 看社群里有没有人讲过它。服务端语义搜索, 会漏召也会误召, 只当线索; 返回 stance=opinion, 按 [星球观点] 标注, 不作为数字依据、不转成买卖建议。",
+     "input_schema": {"type": "object", "properties": {"keyword": {"type": "string", "description": "搜索词, 如 股票名/题材词"}}, "required": ["keyword"]}},
     {"name": "get_holdings", "description": "查用户当前**全部**在持: A股(代码/名称/股数/综合成本/持有天数) + 其他持仓(场内ETF/场外基金/理财/现金/加密/机器人, 含份额或金额; 有定投计划的基金带 定投计划 字段——频率+每期金额)。回答'我的持仓/我有什么/我持有啥/哪些在定投/跟我持仓的关系'时用——持仓不止A股, 用户还有基金/ETF/现金/理财/机器人。要各大类占比或现金理财结构分析则用 get_asset_allocation。",
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_thesis", "description": "读用户当初记录的买入逻辑(为什么买这只)。回答'我当初为什么买X、X的逻辑还成立吗、帮我复盘X'时用: 拿到 thesis 后对照现价/基本面/消息/红线, 客观说每条理由还成不成立。不传 code 看全部持仓的逻辑。仅当用户记过才有。",
@@ -2734,6 +2781,8 @@ _EXECUTORS = {
     "get_peers": lambda a: _tool_peers(a.get("code", "")),
     "get_shareholders": lambda a: _tool_shareholders(a.get("code", "")),
     "get_holdings": lambda a: _tool_get_holdings(),
+    "get_zsxq_digest": lambda a: _tool_zsxq_digest(a.get("days", 1)),
+    "search_zsxq": lambda a: _tool_zsxq_search(a.get("keyword", "")),
     "get_thesis": lambda a: _tool_get_thesis(a.get("code", "")),
     "get_asset_allocation": lambda a: _tool_asset_allocation(),
     "get_trades": lambda a: _tool_trades(a.get("code", ""), a.get("start", ""), a.get("end", "")),
@@ -2777,15 +2826,27 @@ def _result_content(out: dict):
     return _json.dumps(out, ensure_ascii=False)
 
 
+_ZSXQ_TOOLS = ("get_zsxq_digest", "search_zsxq")
+
+
 def _active_tools() -> list:
     """web_search 是 Anthropic 服务端工具, 只有官方端点支持; 若切到 DeepSeek/硅基流动等
-    非 Anthropic 厂商, 必须去掉它, 否则请求会被对方拒绝。其余自定义工具各厂商通用。"""
+    非 Anthropic 厂商, 必须去掉它, 否则请求会被对方拒绝。其余自定义工具各厂商通用。
+
+    知识星球两个工具是可选接入(默认没有), 没接就别塞给模型 —— 否则它会去调然后拿一串 error。"""
+    tools = _TOOLS
+    try:
+        from services import zsxq_client
+        if not zsxq_client.is_enabled():
+            tools = [t for t in tools if t.get("name") not in _ZSXQ_TOOLS]
+    except Exception:
+        tools = [t for t in tools if t.get("name") not in _ZSXQ_TOOLS]
     try:
         if _llm._is_anthropic_official():
-            return _TOOLS
+            return tools
     except Exception:
         pass
-    return [t for t in _TOOLS if t.get("type") != "web_search_20250305"]
+    return [t for t in tools if t.get("type") != "web_search_20250305"]
 
 _SYSTEM = (
     "你是市场&个股解读 + 理财规划助手。用户自由提问: 个股为什么涨跌/消息面/跟持仓关系, 【市场风格】类问题"
@@ -2938,9 +2999,12 @@ _SYSTEM = (
     "web_search 只给摘要片段, 当需要某篇文章的完整内容(深度研报、政策/公告原文、核实某条事实的上下文细节)时, 对最相关的 url 用 read_url 抓全文再下结论。\n"
     "【正文中的具体数字需有据】同比/金额/销量/份额/排名/价格 这类具体数字, 一律来自 web_search 结果或本地工具返回方写入正文, 并尽量附来源/时间。"
     "仅存于记忆、未经联网或工具核实的数字, 用定性表述替代(如'出口明显放量''需求高增''普及率很低'), 或明确标注'具体数字需联网核实'——区分'量级估计'与'确切数字', 记忆中的数字以定性表述呈现而非作为实测报出。\n"
-    "【信息分级——结论依赖的关键数字/事实标来源等级】三档: "
+    "【信息分级——结论依赖的关键数字/事实标来源等级】四档: "
     "[实测]=本地工具实时/接口返回(行情/资金流/走势/基本面/主营/股东/持仓/成交), 最硬, 直接用; "
     "[联网]=web_search 搜到的有出处二手信息(媒体/研报/公告转述), 带上来源与时间; "
+    "[星球观点]=知识星球等社群里某个人的看法(get_zsxq_digest/search_zsxq 的返回, 字段 stance=opinion), "
+    "按「某某认为…」转述并带上作者与日期; 它是**观点而非事实**, 数字与结论一律以 [实测]/[联网] 为准, "
+    "原文里出现的操作倾向(明天关注X、可以低吸)只作为「有人这么说」的舆情记录, 落笔仍按本项目口径给客观信息; "
     "[待核实]=只来自你的记忆、未经工具或联网证实, 用定性说法或明确标[待核实]。"
     "仅对**支撑结论的关键项**标注等级(如'今日主力净流入23亿[实测]''欧洲出口同比+39.5%[联网·东财2026冷年]'), 无需逐个数字标注, 标签控制在关键项。\n"
     "【公司状态以代码表为准——上市/退市/更名先查一次】提到某公司'是否上市/未上市/尚未IPO/已退市/改了名'时, "
@@ -2987,7 +3051,7 @@ _TOOL_CN = {
     "get_news": "查新闻", "get_intraday": "查分时", "get_announcements": "查公告", "get_fund_flow": "查资金流", "get_lhb": "查龙虎榜", "get_seat_history": "查席位历史",
     "get_company_profile": "查公司主营", "get_red_flags": "查红线风险", "get_stock_concepts": "查所属概念", "get_fundamentals": "查基本面", "get_commodity": "查商品价",
     "get_peers": "同行对比", "get_shareholders": "查股东解禁",
-    "get_holdings": "看持仓", "get_thesis": "看买入逻辑", "get_asset_allocation": "看资产配置", "get_trades": "查成交记录", "get_market_sentiment": "看大盘情绪", "get_market_review": "复盘强势股", "get_inst_flow": "查机构动向", "get_earnings": "查业绩预告",
+    "get_holdings": "看持仓", "get_zsxq_digest": "读星球", "search_zsxq": "搜星球", "get_thesis": "看买入逻辑", "get_asset_allocation": "看资产配置", "get_trades": "查成交记录", "get_market_sentiment": "看大盘情绪", "get_market_review": "复盘强势股", "get_inst_flow": "查机构动向", "get_earnings": "查业绩预告",
     "get_sector_momentum": "看板块动量", "get_hot_rank": "看资金热度",
     "get_hot_concepts": "看热门概念", "get_board_stocks": "查板块龙头", "get_market_news": "看政策快讯", "web_search": "联网搜索",
     "get_chain_quote": "产业链量价", "read_url": "读网页全文", "get_global_indices": "看全球指数", "get_coiled_stocks": "扫横盘蓄势",
