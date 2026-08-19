@@ -6,7 +6,7 @@
 
 **把 A股 / 基金 / 银行理财 / 现金 / 数字资产 / 量化机器人 装进一个看板**
 
-再叠加市场 AI 问答 · 个股详情（K线/盘口/分时）· 全市场榜单 · 板块雷达 · 配置建议 · 早盘简报 · 复盘归因
+再叠加市场 AI 问答 · 个股详情（K线/盘口/分时）· 全市场榜单 · 板块雷达 · 全球指数 · 早盘简报 · 复盘归因
 
 <!-- badge 必须整行写在一起: 源码里换行会被渲染成一个一列, 排不成横排 -->
 [![release](https://img.shields.io/github/v/release/SnowWarri0r/licai?style=flat-square&label=release&color=c8a876&labelColor=201f2a)](https://github.com/SnowWarri0r/licai/releases) [![license](https://img.shields.io/github/license/SnowWarri0r/licai?style=flat-square&color=85a0b4&labelColor=201f2a)](./LICENSE) [![stars](https://img.shields.io/github/stars/SnowWarri0r/licai?style=flat-square&color=d4a05c&labelColor=201f2a)](https://github.com/SnowWarri0r/licai/stargazers) [![last commit](https://img.shields.io/github/last-commit/SnowWarri0r/licai?style=flat-square&color=5fa86c&labelColor=201f2a)](https://github.com/SnowWarri0r/licai/commits/main)
@@ -43,6 +43,7 @@ SQLite 单文件存储，你随时可以拷走、删掉、备份
 | 📰 | [资讯流 + AI 解读](#9-资讯流--ai-解读五源合一) | 五源合一，三段式解读「讲了啥 / 为何重要 / 跟你持仓什么关系」 |
 | 🩻 | [ETF 题材透视](#10-etf-题材透视避雷雷达) | 用季报真实成分股对照宣称主题，专治挂羊头 ETF |
 | 🪞 | [复盘](#11-复盘今日--周--月--总览) | TWR 净值曲线对比沪深300 + 持仓相关性矩阵 + 今日组合归因 |
+| 🌐 | [全球指数条](#index-bar) | 顶栏一格切 16 个指数，点开 K线 / 分时；纠了两个停更源的错值 |
 
 ## 为啥做这个
 
@@ -134,6 +135,7 @@ SQLite 单文件存储，你随时可以拷走、删掉、备份
 
 - **份额拆分自动检测入账** — 对比原始 / 前复权日 K 探测拆分因子，份额 ×N、单价 ÷N，零盈亏
 - **盈亏用摊薄成本口径** — 减仓已实现摊进持仓成本，隔夜清仓重置，跟券商 App 逐分对齐
+- **场内 ETF 与场外基金分开算、分开标** — 前者在交易所按市价 + 券商佣金成交，后者按 T+1 净值申赎，顶栏与 AI 问答都按各自的名字表述，不混成一个「场外」
 
 **附配套**
 
@@ -289,7 +291,8 @@ A股 / 港股 / 美股个股实时报价全部走 Sina 免费接口，无需 API
 任意 A股 / 场内 ETF 持仓点开看专业详情页：
 
 - **多周期 K 线**（日 / 周 / 月）：蜡烛 + MA5/10/20 + 成本线 + 可切换 量 / MACD / KDJ 副图
-  - 图上标**自己的买卖点**（B/S，精确到成交时刻）
+  - 图上标**自己的买卖点**（B/S，精确到成交时刻）。同一张委托分几个价位成交的，合成一个标记标 `B×3`（否则圆点与字母原地叠印成一团），均价按成交额加权，明细留在悬浮框里逐笔列出
+  - **上下两图光标联动**：悬到任意一根，K线与量能同时亮同一根，两行图例一起给出该日 OHLC 与量/额
   - K 线走**前复权**，**除权与份额拆分自动折算到同标度**——不再断崖，拆分前的买入点照样贴得准
 - **当日分时**：价 / 均价线 + 昨收基准 + 成交量按主动买卖着色（红买绿卖）+ 09:30 开盘点
 - **五档盘口**（封单 / 内外盘，5s 刷新）+ **逐笔成交**（同价归并、大单高亮）
@@ -348,6 +351,30 @@ A股 / 港股 / 美股个股实时报价全部走 Sina 免费接口，无需 API
 
 ![持仓事件日历](docs/screenshots/10-event-calendar.png)
 
+<h3 id="index-bar">12. 全球指数条（顶栏一格 · 16 个指数）</h3>
+
+顶栏只占一格（选哪个记在本地），点开是 K 线 + 分时，面板顶部横向滚动条换指数——A股宽基 → 港股 → 美股 → 日韩欧。
+
+![全球指数面板](docs/screenshots/15-index-panel.png)
+
+| 市场 | 指数 | 分时源 · 时段（各市场本地时间） | 成交额 |
+|---|---|---|---|
+| A股 | 上证 / 深成 / 沪深300 / 创业板 / 科创50 / 科创100 / 北证50 | 通达信 · 9:30-11:30 + 13:00-15:00 | 有 |
+| 港股 | 恒生 / 恒生科技 / 恒生国企 | 腾讯 · 9:30-12:00 + 13:00-16:00 | 有 |
+| 美股 | 道琼斯 / 纳斯达克 / 标普500 | Yahoo 1 分钟线 · 9:30-16:00 美东 | 源只给成交股数 |
+| 海外 | 日经225 / 韩国KOSPI / 伦敦FTSE | 新浪环球 · 起点按当天首个分时点推 | 源不提供 |
+
+<details>
+<summary><b>四个源踩过的坑</b>（都留了可复现的判据）</summary>
+
+- **新浪 `int_nikkei` / `int_ftse` 这两个符号停更了** — 日经报 44,946 而当日真实 69,220（差 35%），FTSE 报 9,285 而真实 10,736。判据：Yahoo `^N225`/`^FTSE` 与新浪自家 gi.finance 日K 逐日吻合（68,713.7969 对 68,713.8）。改成两源交叉校验：对得上保留原值（含收盘竞价的官方收盘更准），差得离谱整块换成 gi
+- **港股那个大数字是「成交额(千港元)」不是成交量** — 顺序搞反会把恒生 2,108 亿显示成 125.8 亿。判据：该字段 ×1000 与腾讯分时末行的累计成交额逐一相等
+- **美股指数没有成交额口径** — 某源那个"额"实测等于 `成交量 × 指数点位`（道指算出来每股 5.3 万美元），不是钱，所以这里显示成交量并标注「无成交额」。同理腾讯对美股**指数**只回一个收盘快照点，画不出分时，改用 Yahoo
+- **美股盘前会把当日涨跌与开高低清零** — 照字段算就是「昨收=现价 +0.00%」，看着像平盘其实没开盘；这段窗口改用日K倒数两根补出上一交易日涨跌
+- **时段起点按当天首个分时点推，不写死时钟** — 伦敦夏令时北京 15:00 开、冬令时 16:00 开且收盘跨零点（次日 00:30），自动跟着走
+
+</details>
+
 ## 技术栈
 
 **后端**：FastAPI + SQLite + akshare + Sina API + 东方财富 API + 同花顺 API + Claude API（OAuth，含 tool-calling agent + SSE 流式）
@@ -364,7 +391,9 @@ A股 / 港股 / 美股个股实时报价全部走 Sina 免费接口，无需 API
 - ETF 题材透视：东财场内 ETF 列表 + 基金季报持仓（akshare）+ 全 A 行业快照
 - 港股个股：Sina hk
 - 美股个股：Sina gb_
-- 商品期货 / 海外指数：Sina nf_ / hf_
+- 商品期货：Sina nf_ / hf_
+- 指数分时：A股走通达信；港股走腾讯 `ifzq.gtimg.cn`（累计量额差分成逐分钟）；美股走 Yahoo `chart` 1 分钟线（时刻按其 gmtoffset 折成美东，自动跟夏令时）；日经/KOSPI/FTSE 走 Sina `gi.finance`
+- 日经 / KOSPI / FTSE 实时点位：Sina `gi.finance`（`hq.sinajs` 的 int_ 符号已停更，见[全球指数条](#index-bar)）
 - 行业板块：同花顺（akshare 内置）
 - 数字资产：交易所公开 ticker
 - 问问市场 agent：东财 个股资金流(fflow/kline) / 龙虎榜(全榜单+席位明细, akshare; 营业部历史明细走 datacenter dataapi) / 涨跌家数与涨跌分布(push2/push2ex) / F10 所属概念 / 财务摘要 / 港美股财务(em) / 板块成分 / 个股公告(np-anotice) / 业绩预告(akshare)
@@ -511,9 +540,10 @@ licai/
 
 ## 已知限制
 
-- **akshare** 依赖东方财富 API，部分接口（push2.eastmoney.com）会限流，已对这种情况做了 fallback（同花顺 + 硬编码 ETF 兜底）
+- **akshare** 依赖东方财富 API，部分接口（push2.eastmoney.com）会限流甚至整段不可达（实测某些网络下直接断连），已对这种情况做了 fallback（同花顺 + 新浪 gi.finance + 硬编码 ETF 兜底）
 - **LibreSSL 老版本** macOS 系统 Python 3.9 用 LibreSSL 2.8.3，跟某些 EM 接口 TLS 握手不稳，已用 subprocess curl 兜底
-- 跑在国内非代理环境，海外接口（Claude API / 交易所）需要自行处理网络
+- **数据源的口径要自己验** — 免费源里字段错位（昨收取成今开）、单位不明（千元当成股数）、符号停更都遇到过，本项目的处理方式是拿第二个源交叉校验后写进注释与测试，而不是信任单一来源
+- 跑在国内非代理环境，海外接口（Claude API / 交易所 / Yahoo）需要自行处理网络
 
 ## License
 
