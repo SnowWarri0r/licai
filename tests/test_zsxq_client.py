@@ -52,10 +52,16 @@ def post(monkeypatch):
     z.configure("", [])
 
 
-def _topic(tid, text, t, author="爱在冰川"):
-    return {"topic_id": tid, "type": "talk", "create_time": t,
-            "likes_count": 3, "comments_count": 1,
-            "talk": {"text": text, "owner": {"name": author}}}
+def _topic(tid, text, t, author="基业长青", **extra):
+    """真实返回形态(实测 get_group_topics): 平铺结构, 正文在 content, 作者在顶层 owner,
+    计数在 counts —— 不是嵌在 talk 里。假数据必须跟真的一致, 否则测试全绿而线上取不到。"""
+    d = {"topic_id": tid, "type": "talk", "create_time": t, "title": "",
+         "content": text, "owner": {"name": author, "alias": "", "user_id": "9"},
+         "counts": {"likes": 3, "comments": 1, "readers": 10},
+         "digested": False, "images": [], "files": [],
+         "group": {"group_id": "1", "name": "打板复盘"}}
+    d.update(extra)
+    return d
 
 
 def _now(hours_ago=1):
@@ -129,14 +135,15 @@ def test_list_groups_goes_through_self_info(post):
     assert calls[1]["args"]["user_id"] == "42"
 
 
-def test_topics_default_to_owner_only(post):
-    """复盘星球里成员闲聊占九成, 默认只要星主的帖(scope=by_owner)。"""
-    calls = post({"get_group_topics": {"topics": [_topic("a", "情绪退潮", _now())]}})
+def test_topics_scope_defaults_to_all(post):
+    """默认 scope=all。实测「短评&信息」用 by_owner 只回三月份两条图片帖, scope=all 才是
+    当天真有价值的研报摘要 —— 发帖人不一定被算成星主/合伙人, 所以默认别筛。"""
+    calls = post({"get_group_topics": {"topics_brief": [_topic("a", "情绪退潮", _now())]}})
     z.list_topics("1", "打板复盘", days=1)
-    assert calls[0]["args"]["scope"] == "by_owner"
-    calls.clear()
-    z.list_topics("1", "打板复盘", days=1, owner_only=False)
     assert calls[0]["args"]["scope"] == "all"
+    calls.clear()
+    z.list_topics("1", "打板复盘", days=1, owner_only=True)
+    assert calls[0]["args"]["scope"] == "by_owner"
 
 
 def test_topics_dedupe_across_pages(monkeypatch):
@@ -144,14 +151,14 @@ def test_topics_dedupe_across_pages(monkeypatch):
     必须按 topic_id 去重, 否则「今天几条」会虚高。"""
     t1, t2, t3 = _now(1), _now(2), _now(3)
     pages = [
-        {"topics": [_topic("1", "情绪退潮", t1), _topic("2", "承接一般", t2)],
+        {"topics_brief": [_topic("1", "情绪退潮", t1), _topic("2", "承接一般", t2)],
          "next_end_time": t2},
-        {"topics": [_topic("2", "承接一般", t2), _topic("3", "再看一天", t3)]},
+        {"topics_brief": [_topic("2", "承接一般", t2), _topic("3", "再看一天", t3)]},
     ]
     seq = iter(pages)
 
     def _post(self, url, json=None, headers=None, timeout=None):
-        return _Resp(_tool_ok(next(seq, {"topics": []})))
+        return _Resp(_tool_ok(next(seq, {"topics_brief": []})))
 
     monkeypatch.setattr("requests.Session.post", _post)
     z.configure(URL, [{"group_id": "1", "name": "打板复盘"}])
@@ -161,7 +168,7 @@ def test_topics_dedupe_across_pages(monkeypatch):
 
 
 def test_topics_drop_older_than_window(post):
-    post({"get_group_topics": {"topics": [_topic("a", "今天", _now(2)),
+    post({"get_group_topics": {"topics_brief": [_topic("a", "今天", _now(2)),
                                           _topic("b", "上周", _now(24 * 9))]}})
     assert [t["topic_id"] for t in z.list_topics("1", "打板复盘", days=1)] == ["a"]
 
@@ -170,15 +177,15 @@ def test_rich_text_markers_cleaned(post):
     """正文里混着 <e type="hashtag" title="%23复盘%23"/> 这类富文本标记, 直接喂模型会脏。"""
     raw = ('今天 <e type="hashtag" hid="1" title="%23打板复盘%23" /> 情绪退潮, '
            '<e type="mention" uid="9" title="@某人" />说注意接力。')
-    post({"get_group_topics": {"topics": [_topic("a", raw, _now())]}})
+    post({"get_group_topics": {"topics_brief": [_topic("a", raw, _now())]}})
     t = z.list_topics("1", "打板复盘", days=1)[0]
     assert "<e" not in t["正文"] and "#打板复盘#" in t["正文"]
-    assert t["作者"] == "爱在冰川"
+    assert t["作者"] == "基业长青"
     assert t["stance"] == "opinion"      # 观点标记必须在, agent 靠它打 [星球观点]
 
 
 def test_search_marks_opinion(post):
-    post({"search_topics": {"topics": [_topic("s1", "中钨高新 是资源涨价逻辑", _now())]}})
+    post({"search_topics": {"topics_brief": [_topic("s1", "中钨高新 是资源涨价逻辑", _now())]}})
     got = z.search_topics("中钨高新", "1", "打板复盘")
     assert len(got) == 1 and got[0]["stance"] == "opinion" and got[0]["星球"] == "打板复盘"
     assert z.search_topics("", "1") == []          # 空词不发请求
@@ -189,10 +196,10 @@ def test_topic_detail_can_include_comments(post):
     calls = post({
         "get_topic_info": {"topic": _topic("t9", "正文判断", _now())},
         "get_topic_comments": {"comments": [
-            {"text": "补充: 尾盘又炸了", "owner": {"name": "爱在冰川"}}]},
+            {"text": "补充: 尾盘又炸了", "owner": {"name": "基业长青"}}]},
     })
     d = z.topic_detail("t9", "打板复盘", with_comments=True)
-    assert d["评论摘录"] == [{"作者": "爱在冰川", "内容": "补充: 尾盘又炸了"}]
+    assert d["评论摘录"] == [{"作者": "基业长青", "内容": "补充: 尾盘又炸了"}]
     assert [c["name"] for c in calls] == ["get_topic_info", "get_topic_comments"]
 
 
@@ -223,3 +230,77 @@ def test_agent_hides_tools_when_not_configured():
     names = {t.get("name") for t in sa._active_tools()}
     assert "get_zsxq_digest" in names and "search_zsxq" in names
     z.configure("", [])
+
+
+def test_utf8_body_not_decoded_as_latin1(monkeypatch):
+    """SSE 的 Content-Type 不带 charset, requests 的 r.text 会按 ISO-8859-1 解 —— 中文星球名
+    直接变「æ°´」这种乱码(「水」的 UTF-8 三字节被当 latin-1)。必须自己按 UTF-8 解字节。"""
+    payload = {"groups": [{"group": {"group_id": 1, "name": "水调歌头 Plus"}}]}
+    frame = ("event: message\ndata: " + json.dumps(
+        {"jsonrpc": "2.0", "id": 2,
+         "result": {"content": [{"type": "text",
+                                 "text": json.dumps(payload, ensure_ascii=False)}]}},
+        ensure_ascii=False) + "\n\n")
+
+    class _Bytes:
+        content = frame.encode("utf-8")
+        status_code = 200
+        # requests 在没有 charset 的 text/* 上就是这么干的, 复现它
+        text = frame.encode("utf-8").decode("latin-1")
+
+    monkeypatch.setattr("requests.Session.post", lambda *a, **k: _Bytes())
+    r = mcp_http.call_tool(URL, "get_user_groups", {"user_id": "1"})
+    assert r["ok"] and r["data"]["groups"][0]["group"]["name"] == "水调歌头 Plus"
+    assert "æ" not in json.dumps(r["data"], ensure_ascii=False)
+
+
+def test_saving_groups_must_not_wipe_endpoint():
+    """configure(groups=...) 不能顺手清掉 URL —— url 默认值写成 "" 时会被当成「清空端点」,
+    实测「保存星球选择」那一下就把 api_key 抹了, 接入直接失效。"""
+    z.configure(URL, [])
+    z.configure(groups=[{"group_id": "1", "name": "x"}])
+    assert z.endpoint_label() == "mcp.zsxq.com/topic/mcp"
+    assert z.is_enabled() is True
+    # 反向: 只改端点不该动已选星球
+    z.configure(url="https://mcp.zsxq.com/topic/mcp?api_key=OTHER")
+    assert [g["group_id"] for g in z.configured_groups()] == ["1"]
+    z.configure("", [])
+
+
+def test_health_count_key_does_not_collide_with_group_list():
+    """路由里曾把 health() 盲展开进响应, 里面同名的计数字段把 groups 列表覆盖成整数,
+    前端 picked 变数字、.find 一调就白屏。计数字段单独命名。"""
+    z.configure(URL, [{"group_id": "1", "name": "x"}])
+    h = z.health()
+    assert "groups" not in h and h.get("group_count") == 1
+    z.configure("", [])
+
+
+def test_real_payload_fields_are_read(post):
+    """正文/作者/计数分别在 content / owner.name / counts —— 这三处曾按 talk.text 那套猜错,
+    线上拿到 0 条正文。"""
+    post({"get_group_topics": {"topics_brief": [
+        dict(_topic("a", "华虹宏力基本面无实际利空", _now()),
+             counts={"likes": 7, "comments": 2}, digested=True)]}})
+    t = z.list_topics("1", "打板复盘", days=1)[0]
+    assert t["正文"] == "华虹宏力基本面无实际利空"
+    assert t["作者"] == "基业长青"
+    assert (t["点赞"], t["评论"]) == (7, 2)
+    assert t["精华"] is True
+
+
+def test_attachment_only_topic_reports_no_body(post):
+    """纯文件/图片帖的 content 是「文件」这种占位串。别让模型把占位串当正文分析。"""
+    post({"get_group_topics": {"topics_brief": [
+        dict(_topic("a", "「文件」", _now()), files=[{"name": "研报.pdf"}] * 5)]}})
+    t = z.list_topics("1", "打板复盘", days=1)[0]
+    assert t["正文"] == "" and t["附件"] == "5个文件"
+
+
+def test_hashtag_title_is_url_decoded(post):
+    """标签 title 是整段 URL 编码的; 只替 %23 会在正文里留下 %E3%80%90 这种串(实测搜索结果里
+    就这么糊着)。"""
+    raw = '正文 <e type="hashtag" hid="1" title="%23%E7%AE%97%E5%8A%9B%E7%A7%9F%E8%B5%81%23" /> 收尾'
+    post({"get_group_topics": {"topics_brief": [_topic("a", raw, _now())]}})
+    t = z.list_topics("1", "打板复盘", days=1)[0]
+    assert "#算力租赁#" in t["正文"] and "%" not in t["正文"]

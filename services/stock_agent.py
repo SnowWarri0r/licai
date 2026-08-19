@@ -2268,8 +2268,8 @@ async def _tool_zsxq_digest(days: int = 1, all_authors=None) -> dict:
     d = max(1, min(int(days or 1), 7))
     out = []
     for g in z.configured_groups():
-        # owner_only: 只取星主及合伙人的帖 —— 复盘星球里成员闲聊常占九成, 要的是博主自己的定性
-        oo = bool(g.get("owner_only", True)) if all_authors is None else (not all_authors)
+        # owner_only 默认关: 实测 by_owner 会把发帖人不算"星主/合伙人"的星球筛成空
+        oo = bool(g.get("owner_only", False)) if all_authors is None else (not all_authors)
         try:
             out += await asyncio.to_thread(z.list_topics, g["group_id"], g.get("name") or "",
                                            d, 20, oo)
@@ -2279,7 +2279,7 @@ async def _tool_zsxq_digest(days: int = 1, all_authors=None) -> dict:
         h = await asyncio.to_thread(z.health)
         if not h.get("ok"):
             return {"error": f"知识星球端点不可用({h.get('error') or ''})"}
-        return {"topics": [], "note": f"最近{d}天没有新主题(只看星主; 想看全部传 all_authors=true)"}
+        return {"topics": [], "note": f"最近{d}天没有新主题"}
     out.sort(key=lambda x: x.get("时间") or "", reverse=True)
     return {"days": d, "count": len(out), "topics": out[:30],
             "note": "知识星球主题, 字段 stance=opinion —— 这是**某个人的观点不是事实**, 按 [星球观点] 标注,"
@@ -2721,7 +2721,7 @@ _TOOLS = [
     {"name": "get_shareholders", "description": "筹码面: 十大流通股东及增减持、北向(香港中央结算)持股变动、未来限售解禁(抛压)。回答'谁在持股、控股股东/国家队/北向在加还是减、有没有解禁压力'时用。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_zsxq_digest", "description": "读用户已接入的知识星球最近 N 天主题(默认1天)。用于回答「情绪面/复盘博主怎么看今天的盘」「星球里在讲什么逻辑」这类**观点面**问题, 补指标看不到的文本面。返回字段 stance=opinion —— 是某个人的看法不是事实, 按 [星球观点] 标注并带作者与日期; 数字与结论仍以 [实测]/[联网] 为准。仅在用户问观点/社群/复盘看法时用。",
-     "input_schema": {"type": "object", "properties": {"days": {"type": "integer", "description": "回看天数, 1-7, 默认 1"}, "all_authors": {"type": "boolean", "description": "默认只取星主及合伙人的帖(信噪比高); 要连成员发言一起看时传 true"}}}},
+     "input_schema": {"type": "object", "properties": {"days": {"type": "integer", "description": "回看天数, 1-7, 默认 1"}, "all_authors": {"type": "boolean", "description": "默认取全部作者; 传 false 则只要星主及合伙人的帖"}}}},
     {"name": "search_zsxq", "description": "在已接入的知识星球里全文搜关键词(个股名/题材/概念), 看社群里有没有人讲过它。服务端语义搜索, 会漏召也会误召, 只当线索; 返回 stance=opinion, 按 [星球观点] 标注, 不作为数字依据、不转成买卖建议。",
      "input_schema": {"type": "object", "properties": {"keyword": {"type": "string", "description": "搜索词, 如 股票名/题材词"}}, "required": ["keyword"]}},
     {"name": "get_holdings", "description": "查用户当前**全部**在持: A股(代码/名称/股数/综合成本/持有天数) + 其他持仓(场内ETF/场外基金/理财/现金/加密/机器人, 含份额或金额; 有定投计划的基金带 定投计划 字段——频率+每期金额)。回答'我的持仓/我有什么/我持有啥/哪些在定投/跟我持仓的关系'时用——持仓不止A股, 用户还有基金/ETF/现金/理财/机器人。要各大类占比或现金理财结构分析则用 get_asset_allocation。",

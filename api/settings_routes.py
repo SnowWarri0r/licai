@@ -104,8 +104,16 @@ async def get_zsxq_config():
     """当前配置 + 端点健康度。绝不回传含 api_key 的 URL, 只给脱敏 host+path。"""
     import asyncio
     h = await asyncio.to_thread(zsxq_client.health)
-    return {"groups": zsxq_client.configured_groups(), "enabled": zsxq_client.is_enabled(),
-            "endpoint": zsxq_client.endpoint_label(), **h}
+    # 显式列字段, 不 **h —— health 里也有个同名的计数字段, 盲展开会把 groups 列表覆盖成整数,
+    # 前端拿到数字再 .find 就白屏了(实测踩过)
+    return {"groups": zsxq_client.configured_groups(),
+            "enabled": zsxq_client.is_enabled(),
+            "endpoint": zsxq_client.endpoint_label(),
+            "configured": h.get("configured", False),
+            "ok": h.get("ok", False),
+            "account": h.get("account", ""),
+            "error": h.get("error", ""),
+            "hint": h.get("hint", "")}
 
 
 @router.get("/zsxq/available")
