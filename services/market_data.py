@@ -10,7 +10,7 @@ import asyncio
 import os
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # Bypass proxy for domestic A-share API calls
 _saved_proxies = {}
@@ -1724,6 +1724,44 @@ def _minute_tencent(sym: str) -> dict | None:
     if not pts:
         return None
     return {"date": (blob.get("data") or {}).get("date") or "", "points": pts}
+
+
+# 美股指数分时: 腾讯那条 /appstock/app/minute 对**指数**只回一个收盘快照点(实测收盘后
+# 仍只有 1 个点), 画不出分时; Yahoo 的 chart 接口给整段 1 分钟线(391 点 = 9:30-16:00)
+# 且带每分钟成交量。时刻用它自带的 gmtoffset 折成交易所本地时间, 夏令时自动跟着走。
+_YAHOO_INDEX = {"gb_dji": "^DJI", "gb_ixic": "^IXIC", "gb_inx": "^GSPC"}
+
+
+def _minute_yahoo(sym: str) -> dict | None:
+    """美股指数分时。返回 {date, prev_close, points:[{time, price, 手}]}(美东时刻)。"""
+    code = _YAHOO_INDEX.get(sym)
+    if not code:
+        return None
+    r = _requests.get(f"https://query1.finance.yahoo.com/v8/finance/chart/{code}",
+                      params={"interval": "1m", "range": "1d"},
+                      headers={"User-Agent": "Mozilla/5.0"}, timeout=8)
+    res = ((r.json() or {}).get("chart") or {}).get("result") or []
+    if not res:
+        return None
+    j = res[0]
+    meta = j.get("meta") or {}
+    ts = j.get("timestamp") or []
+    q = ((j.get("indicators") or {}).get("quote") or [{}])[0]
+    closes, vols = q.get("close") or [], q.get("volume") or []
+    off = int(meta.get("gmtoffset") or 0)
+    pts, day = [], ""
+    for i, t in enumerate(ts):
+        c = closes[i] if i < len(closes) else None
+        if c is None or c <= 0:
+            continue
+        local = datetime.fromtimestamp(t + off, timezone.utc)
+        if not day:
+            day = local.strftime("%Y-%m-%d")
+        pts.append({"time": local.strftime("%H:%M"), "price": round(float(c), 4),
+                    "手": float(vols[i] or 0) if i < len(vols) else 0.0})
+    if not pts:
+        return None
+    return {"date": day, "prev_close": meta.get("chartPreviousClose"), "points": pts}
 
 
 def _kline_for_symbol(sym: str, datalen: int = 30) -> list[dict]:
