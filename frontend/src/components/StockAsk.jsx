@@ -116,8 +116,9 @@ export default function StockAsk({ page = false }) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           session_id: sessionId.current, role: 'assistant', content: item.answer || '',
-          // llm_retry 是过载重试提示不是工具, 别存进历史(否则重开会话会多出一个假工具)
-          meta: { tools_used: (item.steps || []).map(s => s.tool).filter(t => t !== 'llm_retry'),
+          // llm_retry/self_check 是过程提示不是工具, 别存进历史(否则重开会话会多出假工具)
+          meta: { tools_used: (item.steps || []).map(s => s.tool)
+                    .filter(t => t !== 'llm_retry' && t !== 'self_check'),
                   sources: item.sources || [], charts: item.charts || [] },
         }),
       })

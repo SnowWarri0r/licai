@@ -33,9 +33,13 @@ const TOOL_ICONS = {
   get_zsxq_digest: <><path d="M12 3l2.6 5.4 5.9.8-4.3 4.2 1 5.9-5.2-2.8-5.2 2.8 1-5.9L3.5 9.2l5.9-.8z" /></>,
   search_zsxq: <><circle cx="10.5" cy="10.5" r="6.5" /><path d="M19.5 19.5l-4.2-4.2M8 10.5h5M10.5 8v5" /></>,
   read_zsxq_file: <><path d="M7 4h7l4 4v12H7z" /><path d="M14 4v4h4M10 13h5M10 16.5h3" /></>,
-  // 不是工具, 是"上游过载正在等重试"的提示胶囊(见 ToolCallStrip 里的 retry 分支)
+  // 下面两个不是工具, 是过程提示胶囊(见 ToolCallStrip 里的 meta 分支)
   llm_retry: <><path d="M20 12a8 8 0 11-2.3-5.7" /><path d="M20 4v3.5h-3.5" /></>,
+  self_check: <><path d="M4 12.5l4.5 4.5L20 5.5" /><path d="M4 19h9" /></>,
 }
+// 这两个 step 是过程提示不是工具调用: 不进"调用了 N 个工具"的计数, 也不写进历史
+const META_STEPS = ['llm_retry', 'self_check']
+
 const DEFAULT_ICON = <><circle cx="12" cy="12" r="2.6" /><path d="M12 4v2.5M12 17.5V20M4 12h2.5M17.5 12H20M6.3 6.3l1.8 1.8M15.9 15.9l1.8 1.8M17.7 6.3l-1.8 1.8M8.1 15.9l-1.8 1.8" /></>
 
 export function ToolIcon({ tool }) {
@@ -51,8 +55,9 @@ export function ToolIcon({ tool }) {
 // 问问市场 / 排行榜弹窗共用, 保证两处样式一致。
 export function ToolCallStrip({ steps, settled }) {
   if (!steps || steps.length === 0) return null
-  // llm_retry 是"上游过载在等重试"的提示, 不是工具调用 —— 不能进"调用了 N 个工具"的计数
-  const nTools = steps.reduce((n, s) => n + (s.tool === 'llm_retry' ? 0 : 1), 0)
+  // llm_retry(上游过载等重试) 与 self_check(回答自查) 是过程提示, 不是工具调用 ——
+  // 不能进"调用了 N 个工具"的计数
+  const nTools = steps.reduce((n, s) => n + (META_STEPS.includes(s.tool) ? 0 : 1), 0)
   return (
     <div className="mb-2">
       <div className="flex items-center gap-1.5 mb-1.5 text-[10px] text-text-muted">
@@ -74,7 +79,7 @@ export function ToolCallStrip({ steps, settled }) {
       </div>
       <div className="flex flex-wrap items-center gap-1.5">
         {steps.map((s, j) => {
-          const retry = s.tool === 'llm_retry'
+          const retry = META_STEPS.includes(s.tool)
           return (
             <span key={j}
               className={`inline-flex items-center gap-1 text-[10.5px] pl-1.5 pr-2 py-[3px] rounded-full border transition-colors ${
