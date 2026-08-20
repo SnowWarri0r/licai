@@ -2850,14 +2850,26 @@ _EXECUTORS = {
 
 
 async def _run_tool(tu: dict) -> dict:
-    """跑单个工具调用, 把异常/未知工具兜成 {"error":...}。供 asyncio.gather 并发执行。"""
+    """跑单个工具调用, 把异常/未知工具兜成 {"error":...}。供 asyncio.gather 并发执行。
+
+    顺便记工具缺口: 取不到数时"工具没报错、模型照着空数据往下答"是最难发现的一类问题
+    (实测 get_news 对美股返回 10 条但最新一条比异动早三天), 记成台账才不用等用户看出来。
+    """
+    name = tu.get("name")
+    args = tu.get("input") or {}
     try:
-        fn = _EXECUTORS.get(tu.get("name"))
+        fn = _EXECUTORS.get(name)
         if not fn:
-            return {"error": f"未知工具 {tu.get('name')}"}
-        return await fn(tu.get("input") or {})
+            return {"error": f"未知工具 {name}"}
+        out = await fn(args)
     except Exception as e:
-        return {"error": str(e)}
+        out = {"error": str(e)}
+    try:
+        from services import tool_gaps
+        await tool_gaps.record(name, args, out)
+    except Exception:
+        pass
+    return out
 
 
 def _result_content(out: dict):
