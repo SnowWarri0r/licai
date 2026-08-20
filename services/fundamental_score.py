@@ -91,8 +91,11 @@ async def _fetch_news_sentiment(stock_code: str, stock_name: str = "") -> float:
     prompt = f"【个股】{stock_name or stock_code}({stock_code})\n【近期新闻】\n{titles}\n\n请评估以上新闻对该股短期的综合情感影响，输出 JSON。"
 
     try:
+        # 预算别给到 200: 模型的思考 token 走的是同一个 max_tokens, 难一点的输入会把额度
+        # 全花在思考上, 正文一个字都出不来(实测 700 的预算被吃掉 698)。这里的失败还是静默
+        # 的 —— 回落成 score=0.0, 看不出是"新闻中性"还是"根本没答上", 所以留足余量。
         resp = await asyncio.to_thread(
-            call_claude, prompt, SENTIMENT_SYSTEM, "claude-sonnet-5", 200
+            call_claude, prompt, SENTIMENT_SYSTEM, "claude-sonnet-5", 600
         )
         resp = resp.strip()
         if resp.startswith("```"):
@@ -149,7 +152,7 @@ async def _fetch_announcement_sentiment(stock_code: str, stock_name: str = "") -
 
     try:
         resp = await asyncio.to_thread(
-            call_claude, prompt, ANNOUNCEMENT_SYSTEM, "claude-sonnet-5", 200
+            call_claude, prompt, ANNOUNCEMENT_SYSTEM, "claude-sonnet-5", 600
         )
         resp = resp.strip()
         if resp.startswith("```"):

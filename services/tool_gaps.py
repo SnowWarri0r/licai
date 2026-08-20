@@ -35,7 +35,10 @@ _STALE_SESSIONS = 2
 # 这些工具"返回空"是正常结果而不是缺口: 每天只有几十只票上龙虎榜, 绝大多数票查了就是没有。
 # 不排除的话台账顶部会被它们长期占满, 真正的覆盖漏洞反而看不见。
 _EMPTY_IS_NORMAL = {"get_lhb", "get_inst_flow", "get_announcements", "get_red_flags",
-                    "get_seat_history"}
+                    "get_seat_history",
+                    # 查了没有 ≠ 取不到: 用户没给这只票记买入逻辑是常态, 不是数据缺口。
+                    # 台账实测被它顶到前排 —— 与 get_lhb 当初同一个毛病。
+                    "get_thesis"}
 
 
 def _market_of(args: dict) -> str:
