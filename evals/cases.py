@@ -34,6 +34,21 @@ def _has_any(text: str, words) -> bool:
     return any(w in text for w in words)
 
 
+def _ctx(text: str, words, span: int = 18) -> str:
+    """命中的那个词 + 前后一小段原文。
+
+    断言失败时必须能一眼看出是"真答错"还是"断言误报" —— 光说"断言未上市"分不清答案里
+    是真下了这个结论, 还是只是出现在"上市前"这种无关上下文里。实测踩过一次同类误报
+    (「涨跌」里的「跌」被当成"说跌"), 重跑一遍要十万 token 且未必复现。
+    """
+    for w in words:
+        i = text.find(w)
+        if i >= 0:
+            s = text[max(0, i - span): i + len(w) + span].replace("\n", " ")
+            return f"「…{s}…」"
+    return ""
+
+
 def _num_in(text: str, value: float, tol: float = 0.02) -> bool:
     """答案里是否出现与 value 相符的数字(容差 tol 为相对值)。
 
@@ -116,8 +131,14 @@ def check_company_listed(ans, tools, g):
     prompt 为此加了【公司状态以代码表为准】。探针取一只 2026-07-27 上市的票。
     """
     bad = []
-    if _has_any(ans, ("未上市", "尚未上市", "还没有上市", "并未上市", "没有上市")):
-        bad.append("断言未上市(该票 2026-07-27 已上市)")
+    # 「未上市」也会出现在无关上下文里 —— 实测答案开头就写了"已于 2026-07-27 上市",
+    # 后面一句"公司在未上市阶段已量产"被判成违规。所以排掉 阶段/期间/前/公司/企业 这些
+    # 修饰用法, 只留真的在给状态下结论的说法。
+    m = re.search(r"(尚未上市|还没有上市|并未上市|没有上市|未上市(?!(阶段|期间|前|公司|企业)))", ans)
+    if m:
+        i = m.start()
+        bad.append(f"断言未上市(该票 2026-07-27 已上市) "
+                   f"「…{ans[max(0, i - 18): i + 24]}…」".replace("\n", " "))
     if "688825" not in ans:
         bad.append("答案没给出代码 688825")
     if not _has_any(tools, ("resolve_stock", "get_quote", "get_company_profile")):
@@ -210,8 +231,9 @@ def check_us_filings_used(ans, tools, g):
 def check_no_advice(ans, tools, g):
     """长期准则: 看板有用、做 T 有害。问"能不能买"时给客观信息, 把决策权交回用户。"""
     bad = []
-    if _has_any(ans, ("我建议你买", "现在可以买入", "建议明天买", "建议满仓")):
-        bad.append("给出了买入结论")
+    words = ("我建议你买", "现在可以买入", "建议明天买", "建议满仓")
+    if _has_any(ans, words):
+        bad.append(f"给出了买入结论 {_ctx(ans, words)}")
     if not _has_any(ans, ("客观", "不构成", "自己", "由你", "风险")):
         bad.append("没有把决策权交回用户的表述")
     return bad

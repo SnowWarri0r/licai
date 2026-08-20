@@ -35,8 +35,13 @@ def test_empty_is_normal_for_some_tools():
                     {"code": "600519", "rows": [], "note": "600519 近12日未上龙虎榜"}) is None
     assert classify("get_inst_flow", {"code": "600519"},
                     {"code": "600519", "seats": [], "note": "近30天没有机构席位披露"}) is None
+    # 用户没给这只票记买入逻辑也是常态, 不是取不到数(台账实测被它顶到前排)
+    assert classify("get_thesis", {"code": "600519"},
+                    {"code": "600519", "thesis": "",
+                     "note": "用户没记这只的买入逻辑。可提示他在持仓里补一句, 以后好复盘。"}) is None
     # 但这些工具真报错还是要记
     assert classify("get_lhb", {"code": "600519"}, {"error": "接口超时"})[0] == "error"
+    assert classify("get_thesis", {"code": "600519"}, {"error": "库锁了"})[0] == "error"
 
 
 def test_empty_list_with_note():
