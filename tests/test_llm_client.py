@@ -916,3 +916,59 @@ def test_usage_stats_tolerates_missing_usage():
     llm._record_usage({})
     llm._record_usage(None)
     assert isinstance(llm.get_usage_stats()["hit_rate"], float)
+
+
+# ── 正文被思考吃光时自救 ─────────────────────────────────
+# 实测: 规则起草那类判断题上 max_tokens=700 → thinking_tokens=698,
+# stop_reason=max_tokens, 文本长度 0。thinking 按题目难度自适应开, 光调大默认值挡不住。
+
+@mock.patch.object(llm._llm_session, "post")
+def test_empty_text_from_thinking_budget_retries_bigger(mock_post):
+    llm._api_key = "sk-test"
+    empty = mock.MagicMock(status_code=200, ok=True)
+    empty.json.return_value = {
+        "content": [], "stop_reason": "max_tokens",
+        "usage": {"output_tokens": 700,
+                  "output_tokens_details": {"thinking_tokens": 698}}}
+    good = mock.MagicMock(status_code=200, ok=True)
+    good.json.return_value = {"content": [{"type": "text", "text": '{"verdict":"rule"}'}],
+                              "stop_reason": "end_turn", "usage": {}}
+    mock_post.side_effect = [empty, good]
+
+    out = llm.call_claude("起草一条规则", "只输出 JSON", "claude-sonnet-5", 700)
+    assert out == '{"verdict":"rule"}'
+    assert mock_post.call_count == 2
+    assert mock_post.call_args_list[1][1]["json"]["max_tokens"] == 2800   # 700×4
+
+
+@mock.patch.object(llm._llm_session, "post")
+def test_no_retry_when_text_present(mock_post):
+    """正常有正文时不能多花调用 —— 那是绝大多数情况。"""
+    llm._api_key = "sk-test"
+    ok = mock.MagicMock(status_code=200, ok=True)
+    ok.json.return_value = {"content": [{"type": "text", "text": "答案"}],
+                            "stop_reason": "max_tokens", "usage": {}}
+    mock_post.return_value = ok
+    assert llm.call_claude("x", None, "claude-sonnet-5", 200) == "答案"
+    assert mock_post.call_count == 1
+
+
+@mock.patch.object(llm._llm_session, "post")
+def test_retry_happens_at_most_once(mock_post):
+    """放大一次仍为空就返回空, 不无限加预算。"""
+    llm._api_key = "sk-test"
+    empty = mock.MagicMock(status_code=200, ok=True)
+    empty.json.return_value = {"content": [], "stop_reason": "max_tokens", "usage": {}}
+    mock_post.return_value = empty
+    assert llm.call_claude("x", None, "claude-sonnet-5", 700) == ""
+    assert mock_post.call_count == 2
+
+
+@mock.patch.object(llm._llm_session, "post")
+def test_no_retry_when_already_at_cap(mock_post):
+    llm._api_key = "sk-test"
+    empty = mock.MagicMock(status_code=200, ok=True)
+    empty.json.return_value = {"content": [], "stop_reason": "max_tokens", "usage": {}}
+    mock_post.return_value = empty
+    assert llm.call_claude("x", None, "claude-sonnet-5", llm._NO_TEXT_RETRY_CAP) == ""
+    assert mock_post.call_count == 1
