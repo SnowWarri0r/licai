@@ -184,6 +184,24 @@ async def index():
     )
 
 
+@app.get("/api/app-version")
+async def app_version():
+    """当前 index.html 引用的 bundle 文件名。
+
+    给已经开着的标签页判断"我这份 JS 是不是过期了"用: static/assets 从磁盘直接伺服,
+    重新构建立刻生效, 但开着的页面不会自己换 bundle —— 旧 JS 对着新 API 跑出来的毛病
+    最难查(界面上没有任何地方显示版本)。读不到就回空串, 让前端别乱报。
+    """
+    import re
+    from pathlib import Path
+    try:
+        html = Path("static/index.html").read_text(encoding="utf-8")
+        m = re.search(r'assets/(index-[A-Za-z0-9_\-]+\.js)', html)
+        return {"bundle": m.group(1) if m else ""}
+    except Exception:
+        return {"bundle": ""}
+
+
 @app.get("/sw.js")
 async def sw_js():
     return FileResponse(

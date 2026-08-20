@@ -5,6 +5,7 @@ import Header from './components/Header'
 import Sidebar from './components/Sidebar'
 import Dashboard from './components/Dashboard'
 import RiskBanner from './components/RiskBanner'
+import StaleBundleNotice from './components/StaleBundleNotice'
 import UnifiedPortfolio from './components/UnifiedPortfolio'
 import Rankings from './components/Rankings'
 import StockAsk from './components/StockAsk'
@@ -191,6 +192,7 @@ export default function App() {
           onChange={handleHoldingChange}
         />
       )}
+      <StaleBundleNotice />
     </div>
   )
 }
