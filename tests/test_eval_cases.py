@@ -167,3 +167,24 @@ def test_global_catches_trade_instruction():
 
 def test_global_passes_clean_markdown():
     assert C.global_checks("**要点**：成交额 1.22 万亿，较昨日放量。", NO_TOOLS) == []
+
+
+# ── 断言的误报(第一轮全量评测抓出来的) ─────────────────
+
+def test_premarket_check_does_not_trip_on_neutral_word():
+    """"涨跌"是中性复合词, 里面的"跌"不算"说跌"。第一版正则把
+    "现在美股处于盘后时段, 若问此刻涨跌" 判成违规 —— 断言自己误报。"""
+    g = {"close": 216.0, "ext": {"label": "盘后", "price": 240.5, "change_pct": 11.4}}
+    ans = ("8/19 收盘 216.00；盘后 240.5 涨 11.4%。"
+           "现在美股处于盘后时段，若问此刻涨跌以盘后为准。")
+    assert C.check_us_premarket(ans, ["get_quote"], g) == []
+
+
+def test_onchain_check_is_line_scoped():
+    """答案通常是"场内 ETF: …" / "场外基金: …" 两段。按字符距离匹配会把场内那行的
+    代码和下一段的"场外"配上(第一版误报了 518880)。"""
+    g = {"codes": ["518880"]}
+    ok = "**场内 ETF**\n- 黄金ETF(518880) 券商买卖\n\n**场外基金**\n- 某全球股票基金"
+    assert C.check_onchain_etf(ok, NO_TOOLS, g) == []
+    bad = "场外基金：518880 黄金ETF"
+    assert C.check_onchain_etf(bad, NO_TOOLS, g)

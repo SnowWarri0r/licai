@@ -11,6 +11,7 @@ import re as _re
 import time as _time
 
 import services.llm_client as _llm
+import services.answer_guard as _guard
 
 _MODEL = "claude-opus-4-8"
 _MAX_ROUNDS = 14
@@ -263,14 +264,27 @@ async def _tool_global_indices(query: str = "") -> dict:
     q = (query or "").strip().lower()
     out: dict = {}
     for grp, items in groups.items():
-        rows = [{"name": it["name"], "price": it["price"], "涨跌%": it["change_pct"]} for it in items]
+        rows = []
+        for it in items:
+            row = {"name": it["name"], "price": it["price"], "涨跌%": it["change_pct"]}
+            # 成交额只有交易所自己披露才有: A股/港股/KOSPI 有真额(带币种), 美股三大指数
+            # 与日经/富时没有 —— 有额给额, 没额给量并写明"无成交额", 免得模型拿量当额、
+            # 或者干脆自己编一个数出来。
+            if it.get("amount"):
+                row["成交额"] = it["amount"]
+                row["成交额币种"] = it.get("amount_ccy") or "元"
+            elif it.get("volume"):
+                row["成交量"] = it["volume"]
+                row["成交额"] = "无(该指数不披露成交额)"
+            rows.append(row)
         if q:
             rows = [r for r in rows if q in r["name"].lower() or q in grp.lower()]
         if rows:
             out[grp] = rows
     if not out:
         return {"error": f"没有匹配 {query} 的指标; 可用分组: {', '.join(groups.keys())}"}
-    out["note"] = "实时快照(Sina/东财), A股大盘/海外指数/汇率/商品同一时点; 涨跌%相对昨收。"
+    out["note"] = ("实时快照(Sina/东财), A股大盘/海外指数/汇率/商品同一时点; 涨跌%相对昨收。"
+                   "成交额务必连币种一起表述(恒生=港元, KOSPI=韩元, A股=人民币)。")
     return out
 
 
@@ -3302,6 +3316,9 @@ async def ask_stock_stream(question: str, history: list | None = None, images: l
     messages = _seed_messages(question, history, images)
     sources: list = []
     seen_urls: set = set()
+    tool_outs: dict = {}
+    used: list = []
+    repaired = False
     for rnd in range(_MAX_ROUNDS):
         resp = None
         async for kind, val in _llm_round(messages):
@@ -3320,6 +3337,7 @@ async def ask_stock_stream(question: str, history: list | None = None, images: l
         # 服务端联网搜索(web_search)已由 API 执行完, 这里只把"联网搜索"作为步骤推给前端
         for b in content:
             if b.get("type") == "server_tool_use" and b.get("name") == "web_search":
+                used.append("web_search")
                 yield {"type": "step", "tool": "web_search", "label": "联网搜索",
                        "arg": (b.get("input") or {}).get("query", "")}
         # 抽取本轮 web_search 命中的网页来源, 实时推给前端(去重累加)
@@ -3330,6 +3348,13 @@ async def ask_stock_stream(question: str, history: list | None = None, images: l
         if not tus:
             before = len(sources)
             text = _assemble_cited_text(content, sources, seen_urls)
+            problems = _guard.inspect(text, used, tool_outs) if not repaired else []
+            if problems:
+                repaired = True
+                yield {"type": "step", "tool": "self_check", "label": "回答自查",
+                       "arg": f"{len(problems)} 处待修"}
+                messages.append(_guard.repair_message(problems))
+                continue
             if len(sources) > before:        # citations 引到的新 url 补推一条 sources 事件, 保证角标可解析
                 yield {"type": "sources", "sources": sources[before:]}
             yield {"type": "answer", "text": text}
@@ -3339,12 +3364,15 @@ async def ask_stock_stream(question: str, history: list | None = None, images: l
         think = "".join(b.get("text", "") for b in content if b.get("type") == "text").strip()
         if think:
             yield {"type": "thought", "text": think[:120]}
+        used.extend(tu.get("name") or "" for tu in tus)
         for tu in tus:
             yield {"type": "step", "tool": tu.get("name"),
                    "label": _TOOL_CN.get(tu.get("name"), tu.get("name")),
                    "arg": (tu.get("input") or {}).get("query") or (tu.get("input") or {}).get("code") or ""}
         # 同一轮里的工具相互独立(各自的网络请求), 并发跑, 顺序保留, 单个失败不连累其他
         outs = await asyncio.gather(*[_run_tool(tu) for tu in tus])
+        for tu, out in zip(tus, outs):
+            tool_outs.setdefault(tu.get("name") or "", []).append(out)
         for out in outs:
             if isinstance(out, dict) and out.get("chart_url"):
                 yield {"type": "chart", "url": out["chart_url"], "code": out.get("code", "")}
@@ -3366,6 +3394,8 @@ async def ask_stock(question: str, history: list | None = None, images: list | N
     sources: list = []
     seen_urls: set = set()
     charts: list = []
+    tool_outs: dict = {}          # 工具名 → [返回值], 给护栏对答案
+    repaired = False              # 护栏只补一轮, 防来回拉锯
     for rnd in range(_MAX_ROUNDS):
         resp = None
         async for kind, val in _llm_round(messages):     # "wait" 事件非流式版没处可推, 丢掉
@@ -3384,11 +3414,20 @@ async def ask_stock(question: str, history: list | None = None, images: list | N
         tus = [b for b in content if b.get("type") == "tool_use"]
         if not tus:
             text = _assemble_cited_text(content, sources, seen_urls)
+            problems = _guard.inspect(text, tools_used, tool_outs) if not repaired else []
+            if problems:
+                # 只补一轮: 让模型只改这几点。不违规时这段完全不执行(常态零成本)。
+                repaired = True
+                messages.append(_guard.repair_message(problems))
+                continue
             return {"answer": text, "tools_used": tools_used, "rounds": rnd + 1,
-                    "sources": sources, "charts": charts}
+                    "sources": sources, "charts": charts,
+                    "guard_repaired": repaired}
         tools_used.extend(tu.get("name", "") for tu in tus)
         # 同一轮里的工具并发跑(相互独立), 顺序保留, 单个失败不连累其他
         outs = await asyncio.gather(*[_run_tool(tu) for tu in tus])
+        for tu, out in zip(tus, outs):
+            tool_outs.setdefault(tu.get("name") or "", []).append(out)
         charts.extend(out["chart_url"] for out in outs
                       if isinstance(out, dict) and out.get("chart_url"))
         results = [{"type": "tool_result", "tool_use_id": tu.get("id"),
