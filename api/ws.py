@@ -286,3 +286,32 @@ async def dca_loop():
         except Exception as e:
             print(f"[dca] Loop error: {e}")
             await asyncio.sleep(120)
+
+
+_rule_mine_date: str = ""
+
+
+async def rule_mine_loop():
+    """每周挖一次"用户纠正"→ 起草候选规则进待审队列(人批准才进 prompt)。
+
+    周一早上 9:20 前后跑, 每次最多起草 3 条 —— 后台循环不该悄悄烧模型额度, 而且待审
+    队列一次涌进十条也没人看得完。批准/否决在设置页里点。
+    """
+    global _rule_mine_date
+    from datetime import datetime, timezone, timedelta
+    while True:
+        try:
+            cst_now = datetime.now(timezone.utc) + timedelta(hours=8)
+            today = cst_now.strftime("%Y-%m-%d")
+            t = cst_now.hour * 60 + cst_now.minute
+            if cst_now.weekday() == 0 and 560 <= t <= 600 and today != _rule_mine_date:
+                _rule_mine_date = today          # 先占位: 失败也不在同一窗口内反复重试
+                from services import rule_forge as rf
+                st = await rf.mine_new(max_drafts=3)
+                print(f"[rules] 本周挖掘: 新纠正 {st['corrections']} 条, "
+                      f"新增候选 {st['added']}, 判为非规则 {st['skipped']}, "
+                      f"重复 {st['dup']}, 失败 {st['failed']}")
+            await asyncio.sleep(600)
+        except Exception as e:
+            print(f"[rules] Loop error: {e}")
+            await asyncio.sleep(1800)

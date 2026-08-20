@@ -152,3 +152,119 @@ def test_draft_system_includes_existing_titles():
     assert len(titles) > 30
     assert titles[0] in sysp
     assert "已被现有规则覆盖的" in sysp
+
+
+# ── 每周自动挖掘(后台循环用) ─────────────────────────────
+
+import asyncio
+import os
+import tempfile
+
+import pytest
+
+
+@pytest.fixture
+def wf_db(monkeypatch):
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    monkeypatch.setattr("config.config.db_path", path)   # 单例, 不是 Config 类
+    from database import init_db
+    asyncio.run(init_db())
+    yield path
+    os.unlink(path)
+
+
+def _seed_messages(path, rows):
+    import sqlite3
+    con = sqlite3.connect(path)
+    try:
+        con.execute("INSERT OR IGNORE INTO ask_session (id, title) VALUES (1, 't')")
+        for role, content in rows:
+            con.execute("INSERT INTO ask_message (session_id, role, content) VALUES (1,?,?)",
+                        (role, content))
+        con.commit()
+    finally:
+        con.close()
+
+
+_TALK = [("user", "迈威尔为什么涨"), ("assistant", "现在是大跌 7.82%"),
+         ("user", "怎么还是说大跌，盘前不是涨了吗"), ("assistant", "抱歉, 盘前 240.56")]
+
+
+def test_mine_new_adds_candidate(wf_db, monkeypatch):
+    _seed_messages(wf_db, _TALK)
+    draft = ('{"verdict":"rule","title":"美股报价按时段表述",'
+             '"body":"带盘前盘后时分开写两个时点。","why":"会复发"}')
+    import services.llm_client as llm
+    monkeypatch.setattr(llm, "call_claude", lambda *a, **k: draft)
+    st = asyncio.run(rf.mine_new(max_drafts=3))
+    assert st["corrections"] == 1 and st["added"] == 1
+    rules = asyncio.run(rf.list_rules())
+    assert [r["title"] for r in rules] == ["美股报价按时段表述"]
+    assert rules[0]["status"] == "pending"              # 闸门: 挖出来不自动生效
+
+
+def test_mine_new_skips_already_drafted(wf_db, monkeypatch):
+    """第二周再跑不能把同一句纠正再起草一遍 —— 一条起草要调一次模型。"""
+    _seed_messages(wf_db, _TALK)
+    calls = []
+    import services.llm_client as llm
+    monkeypatch.setattr(llm, "call_claude", lambda *a, **k: (
+        calls.append(1) or '{"verdict":"rule","title":"甲","body":"正文。","why":"x"}'))
+    asyncio.run(rf.mine_new())
+    asyncio.run(rf.mine_new())
+    assert len(calls) == 1, f"重复起草了 {len(calls)} 次"
+
+
+def test_rejected_never_comes_back(wf_db, monkeypatch):
+    """去重要对着"起草过的", 不是"批准的" —— 否则否掉的规则每周原样回来。
+
+    两层都要拦住: 连模型都不该再调(按 evidence 跳过), 万一调了也不该插进去(标题已存在)。
+    """
+    _seed_messages(wf_db, _TALK)
+    calls = []
+    import services.llm_client as llm
+    monkeypatch.setattr(llm, "call_claude", lambda *a, **k: (
+        calls.append(1) or '{"verdict":"rule","title":"甲","body":"正文。","why":"x"}'))
+    asyncio.run(rf.mine_new())
+    rid = asyncio.run(rf.list_rules())[0]["id"]
+    asyncio.run(rf.decide(rid, "rejected"))
+    asyncio.run(rf.mine_new())
+    rules = asyncio.run(rf.list_rules())
+    assert len(rules) == 1 and rules[0]["status"] == "rejected"
+    assert len(calls) == 1, "被否决过的纠正又花了一次模型额度"
+
+
+def test_non_rule_verdict_is_remembered(wf_db, monkeypatch):
+    """判为"不是规则问题"也要留痕, 否则下周再挖到它、再花一次额度得同一个结论。"""
+    _seed_messages(wf_db, _TALK)
+    calls = []
+    import services.llm_client as llm
+    monkeypatch.setattr(llm, "call_claude", lambda *a, **k: (
+        calls.append(1) or '{"verdict":"skip","why":"数据源抖动, 偶发"}'))
+    st = asyncio.run(rf.mine_new())
+    assert st["skipped"] == 1 and st["added"] == 0
+    asyncio.run(rf.mine_new())
+    assert len(calls) == 1
+    # 留痕的那条不能进 prompt
+    assert rf.active_rules_sync() == []
+
+
+def test_mine_new_caps_drafts(wf_db, monkeypatch):
+    """后台循环不该悄悄烧额度: 一次最多起草 max_drafts 条。"""
+    rows = []
+    for i in range(5):
+        rows += [("user", f"问题{i}"), ("assistant", f"答{i}"), ("user", f"不对，这里错了{i}")]
+    _seed_messages(wf_db, rows)
+    calls = []
+    import services.llm_client as llm
+    monkeypatch.setattr(llm, "call_claude", lambda *a, **k: (
+        calls.append(1) or f'{{"verdict":"rule","title":"甲{len(calls)}","body":"正文。","why":"x"}}'))
+    st = asyncio.run(rf.mine_new(max_drafts=2))
+    assert st["corrections"] == 5 and len(calls) == 2 and st["added"] == 2
+
+
+def test_pending_count(wf_db):
+    assert asyncio.run(rf.pending_count()) == 0
+    asyncio.run(rf.add_candidate("甲", "正文。", "不对"))
+    assert asyncio.run(rf.pending_count()) == 1
