@@ -35,12 +35,41 @@ function boardOf(code) {
 const BOARDS = ['全部', '主板', '创业板', '科创板', '北交所']
 
 // 右侧面板: 选中股票看 K线(铺满); 想问就点"问 AI"或底部输入框 → 弹出式对话(与问问市场样式一致)
-function StockPanel({ stock, watched, onToggleWatch }) {
+// 分组下拉。自选页行内的 ⋯ 与 K线面板的「分组」共用同一份 —— 两处各写一遍必然漂开。
+// groups=已有分组名, current=该票当前分组(''=未分组), onPick(名字) 落库。
+function GroupPicker({ groups, current, onPick, onClose, className = '' }) {
+  return (
+    <div className={`z-30 w-40 bg-surface-2 border border-border rounded-lg shadow-xl py-1 ${className}`}
+      onMouseLeave={onClose}>
+      <div className="px-2.5 py-1 text-[10px] text-text-muted">移到分组</div>
+      {[...new Set([...(groups || []), ''])].map(g => (
+        <button key={g || '_none'}
+          onClick={(e) => { e.stopPropagation(); onClose(); onPick(g) }}
+          className={`w-full text-left px-2.5 py-1 text-[11px] hover:bg-surface-3/80 ${
+            (current || '') === g ? 'text-accent' : 'text-text-dim'}`}>
+          {g || '未分组'}{(current || '') === g ? ' ✓' : ''}
+        </button>
+      ))}
+      <button onClick={(e) => {
+        e.stopPropagation()
+        const g = (window.prompt('新分组名(20字内)') || '').trim().slice(0, 20)
+        onClose()
+        if (g) onPick(g)
+      }} className="w-full text-left px-2.5 py-1 text-[11px] text-accent hover:bg-surface-3/80 border-t border-border-subtle mt-1">
+        + 新建分组…
+      </button>
+    </div>
+  )
+}
+
+
+function StockPanel({ stock, watched, onToggleWatch, groups, group, onPickGroup }) {
   const [askOpen, setAskOpen] = useState(false)
   const [seed, setSeed] = useState('')
   const [draft, setDraft] = useState('')
   const [co, setCo] = useState(null)          // 公司画像(细分行业/一句话主营/简介/主营构成)
   const [coOpen, setCoOpen] = useState(false)
+  const [grpOpen, setGrpOpen] = useState(false)   // 分组下拉
 
   // 切换股票: 关弹窗、清空草稿
   useEffect(() => { setAskOpen(false); setSeed(''); setDraft('') }, [stock])
@@ -93,10 +122,26 @@ function StockPanel({ stock, watched, onToggleWatch }) {
             {co.brief} <span className="text-text-dim">{coOpen ? '⌄' : '›'}</span>
           </button>
         )}
-        <button onClick={() => onToggleWatch(stock)} title={watched ? '移出自选' : '加入自选(记录当前价, 之后看自选以来涨跌)'}
+        <button onClick={() => onToggleWatch(stock)}
+          title={watched ? '移出自选' : '加入自选但不分组(想直接归组用右边的「+ 分组观察」)'}
           className={`ml-auto text-[15px] leading-none px-1.5 py-0.5 rounded cursor-pointer ${watched ? 'text-accent' : 'text-text-dim hover:text-accent'}`}>
           {watched ? '★' : '☆'}
         </button>
+        {onPickGroup && (
+          <div className="relative">
+            <button onClick={() => setGrpOpen(v => !v)}
+              title={watched ? '改分组' : '选个分组直接观察(会一并加入自选 —— 分组就是自选里的标签)'}
+              className={`text-[10.5px] px-1.5 py-0.5 rounded border cursor-pointer whitespace-nowrap ${
+                watched ? 'border-border-subtle text-text-dim hover:text-accent hover:border-accent/40'
+                        : 'border-accent/40 text-accent hover:bg-accent/10'}`}>
+              {watched ? (group || '未分组') : '+ 分组观察'} <span className="text-text-muted">⌄</span>
+            </button>
+            {grpOpen && (
+              <GroupPicker groups={groups} current={group} className="absolute right-0 top-full mt-1"
+                onPick={(g) => onPickGroup(stock.code, g)} onClose={() => setGrpOpen(false)} />
+            )}
+          </div>
+        )}
         <button onClick={() => openAsk('')}
           className="text-[11px] px-2.5 py-1 rounded-lg bg-accent/20 text-accent border border-accent/40 hover:bg-accent/30">
           问 AI 分析
@@ -175,6 +220,7 @@ export default function Rankings() {
   const [lhbDaily, setLhbDaily] = useState(null)         // 最新披露日龙虎榜全榜单
   const [watch, setWatch] = useState(null)               // 自选池(全量视图)
   const [watchSet, setWatchSet] = useState(new Set())    // 自选代码集(☆按钮状态)
+  const [wlMeta, setWlMeta] = useState({ groups: [], byCode: {} })  // 分组标签(轻端点, 各页签通用)
   const [changes, setChanges] = useState(null)           // 盘口异动事件流
   const [chGroup, setChGroup] = useState('全部')          // 异动组: 全部/拉升/跳水/竞价
   const [chKind, setChKind] = useState('全部')            // 异动组内按事件类型细分
@@ -222,8 +268,15 @@ export default function Rankings() {
   useEffect(() => { load() }, [])
   // 自选代码集(☆按钮状态), 轻端点
   useEffect(() => {
-    fetchJSON('/api/market/watchlist?lite=1').then(d => setWatchSet(new Set(d?.codes || []))).catch(() => {})
+    reloadWlMeta()
   }, [])
+  // 分组标签走轻端点: 看 K 线时 watch(全量视图)还没加载, 分组下拉不能依赖它
+  const reloadWlMeta = () => fetchJSON('/api/market/watchlist?lite=1').then(d => {
+    setWatchSet(new Set(d?.codes || []))
+    setWlMeta({ groups: d?.groups || [], byCode: d?.by_code || {} })
+  }).catch(() => {})
+  const groupOf = (code) => wlMeta.byCode[code] || ''
+
   // 自由查股: 防抖搜索 → 候选下拉 → 选中进右侧面板(与榜单行同一套 K线/浮层/问AI)
   const onSearch = (v) => {
     setSq(v)
@@ -308,7 +361,20 @@ export default function Rankings() {
         method: 'PUT', body: JSON.stringify({ group }),
       })
     } catch { /* 失败下面照样重拉 */ }
+    reloadWlMeta()      // 面板上那颗分组胶囊要立刻跟着变
     load()
+  }
+
+  // 选组即入池: 分组是 watchlist 表上的 grp 字段, 没有"不在自选里的分组"。所以在
+  // K线面板上选分组时, 没加自选的先加, 再打标签 —— 用户不必先想"加自选"这一步。
+  const pickGroup = async (code, g) => {
+    if (!watchSet.has(code)) {
+      try {
+        await fetchJSON(`/api/market/watchlist/${code}`, { method: 'POST' })
+        setWatchSet(prev => new Set(prev).add(code))
+      } catch { /* 加失败下面 moveToGroup 也会失败, 统一由 reloadWlMeta 校正 */ }
+    }
+    await moveToGroup(code, g)
   }
 
   const toggleWatch = (stock) => {
@@ -317,6 +383,11 @@ export default function Rankings() {
     fetchJSON(`/api/market/watchlist/${code}`, { method: on ? 'DELETE' : 'POST' })
       .then(() => {
         setWatchSet(prev => { const s = new Set(prev); on ? s.delete(code) : s.add(code); return s })
+        setWlMeta(m => {
+          const byCode = { ...m.byCode }
+          if (on) delete byCode[code]; else byCode[code] = byCode[code] || ''
+          return { ...m, byCode }
+        })
         setWatch(null)                                  // 下次进自选页重拉
         if (tabRef.current === 'watch') load()
       }).catch(() => {})
@@ -506,7 +577,7 @@ export default function Rankings() {
         <div className="flex items-center gap-1 px-3 py-1.5 border-b border-border-subtle flex-wrap">
           {tab === 'watch' && (
             <>
-              {['全部', ...((watch?.groups) || []), '未分组'].map(g => {
+              {['全部', ...(wlMeta.groups || []), '未分组'].map(g => {
                 const n = g === '全部'
                   ? ((watch?.rows) || []).filter(r => r.source !== '持仓').length
                   : ((watch?.rows) || []).filter(r => r.source !== '持仓'
@@ -740,25 +811,9 @@ export default function Rankings() {
                 </span>
               )}
               {grpMenu === r.code && (
-                <div className="absolute right-1.5 top-full -mt-1 z-30 w-40 bg-surface-2 border border-border rounded-lg shadow-xl py-1"
-                  onMouseLeave={() => setGrpMenu('')}>
-                  <div className="px-2.5 py-1 text-[10px] text-text-muted">移到分组</div>
-                  {[...new Set([...((watch?.groups) || []), ''])].map(g => (
-                    <button key={g || '_none'}
-                      onClick={(e) => { e.stopPropagation(); setGrpMenu(''); moveToGroup(r.code, g) }}
-                      className={`w-full text-left px-2.5 py-1 text-[11px] hover:bg-surface-3/80 ${(r['分组'] || '') === g ? 'text-accent' : 'text-text-dim'}`}>
-                      {g || '未分组'}{(r['分组'] || '') === g ? ' ✓' : ''}
-                    </button>
-                  ))}
-                  <button onClick={(e) => {
-                    e.stopPropagation()
-                    const g = (window.prompt('新分组名(20字内)') || '').trim().slice(0, 20)
-                    setGrpMenu('')
-                    if (g) moveToGroup(r.code, g)
-                  }} className="w-full text-left px-2.5 py-1 text-[11px] text-accent hover:bg-surface-3/80 border-t border-border-subtle mt-1">
-                    + 新建分组…
-                  </button>
-                </div>
+                <GroupPicker groups={wlMeta.groups} current={r['分组']}
+                  className="absolute right-1.5 top-full -mt-1"
+                  onPick={(g) => moveToGroup(r.code, g)} onClose={() => setGrpMenu('')} />
               )}
               </div>
             )
@@ -833,7 +888,9 @@ export default function Rankings() {
       </div>
 
       <div className="flex-1 min-h-0 min-w-0">
-        <StockPanel stock={selected} watched={selected ? watchSet.has(selected.code) : false} onToggleWatch={toggleWatch} />
+        <StockPanel stock={selected} watched={selected ? watchSet.has(selected.code) : false}
+          onToggleWatch={toggleWatch} groups={wlMeta.groups} onPickGroup={pickGroup}
+          group={selected ? groupOf(selected.code) : ''} />
       </div>
     </div>
   )
