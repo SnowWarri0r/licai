@@ -394,10 +394,17 @@ async def sector_share():
 
 @router.get("/watchlist")
 async def watchlist_get(lite: bool = False):
-    """自选观察池。lite=1 只回代码表(☆按钮状态用), 默认全量(行情+结构+业绩预告)。"""
+    """自选观察池。lite=1 只回代码表+分组标签(☆按钮与分组下拉用), 默认全量(行情+结构+业绩预告)。
+
+    lite 里带上分组是为了让「看 K 线时直接归组」不必去拉全量视图 —— 全量要给每只票取
+    行情/结构/业绩预告, 只为拿一个分组名不值当。
+    """
     if lite:
         from database import list_watchlist
-        return {"codes": [r["code"] for r in await list_watchlist()]}
+        rows = await list_watchlist()
+        return {"codes": [r["code"] for r in rows],
+                "by_code": {r["code"]: r.get("group") or "" for r in rows},
+                "groups": sorted({r.get("group") or "" for r in rows} - {""})}
     from services.watchlist import watchlist_view
     return await watchlist_view()
 
