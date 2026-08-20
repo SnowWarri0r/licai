@@ -1489,10 +1489,15 @@ async def _tool_company_profile(code: str) -> dict:
 
 
 async def _tool_stock_concepts(code: str) -> dict:
-    """个股所属行业/概念板块 + 核心题材。回答'这只票属于哪个概念、是不是踩在资金主线上'时用。仅 A 股。"""
+    """个股所属行业/概念板块 + 核心题材。回答'这只票属于哪个概念、是不是踩在资金主线上'时用。
+    A 股给概念板块与题材; 美股给 板块/行业(Yahoo 分类) 与曾用名。"""
     from services.market_data import normalize_stock_code, is_a_share
-    if not is_a_share(normalize_stock_code(_norm_code(code))):
-        return {"error": "所属概念仅支持 A 股"}
+    raw = normalize_stock_code(_norm_code(code))
+    if raw.upper().startswith("US.") or (not is_a_share(raw) and _re.fullmatch(r"[A-Za-z.]{1,6}", raw)):
+        from services import us_fundamentals as usf
+        return await asyncio.to_thread(usf.us_profile, raw)
+    if not is_a_share(raw):
+        return {"error": "所属概念支持 A 股与美股(港股暂无源)"}
     return await asyncio.to_thread(_fetch_stock_concepts_sync, code)
 
 
@@ -1749,10 +1754,31 @@ def _fetch_peers_sync(code: str) -> dict:
 
 
 async def _tool_peers(code: str) -> dict:
-    """同行横向对比: 同行业板块成分股的涨跌幅/PE/PB/主力净流入对照, 看目标票在同业里贵不贵、强不强、资金偏好谁。仅 A 股。"""
-    from services.market_data import normalize_stock_code, is_a_share
-    if not is_a_share(normalize_stock_code(_norm_code(code))):
-        return {"error": "同行对比仅支持 A 股"}
+    """同行横向对比: 看目标票在同业里贵不贵、强不强、资金偏好谁。
+    A 股给板块成分股的涨跌幅/PE/PB/主力净流入; 美股给 Yahoo 的相似标的 + 各自涨跌(无资金流源)。"""
+    from services.market_data import normalize_stock_code, is_a_share, get_realtime_quotes
+    raw = normalize_stock_code(_norm_code(code))
+    if raw.upper().startswith("US.") or (not is_a_share(raw) and _re.fullmatch(r"[A-Za-z.]{1,6}", raw)):
+        from services import us_fundamentals as usf
+        peers = await asyncio.to_thread(usf.us_peers, raw)
+        if not peers:
+            return {"error": f"Yahoo 没给出 {raw} 的相似标的"}
+        codes = [p["code"] for p in peers]
+        quotes = await get_realtime_quotes(codes + [raw])
+        for p in peers:
+            q = quotes.get(p["code"]) or {}
+            p["name"] = q.get("stock_name") or ""
+            p["price"] = q.get("price")
+            p["涨跌幅%"] = q.get("change_pct")
+            ext = q.get("ext_hours") or {}
+            if ext:
+                p[f"{ext['label']}%"] = ext.get("change_pct")
+        me = quotes.get(raw) or {}
+        return {"code": raw, "name": me.get("stock_name") or "",
+                "涨跌幅%": me.get("change_pct"), "同行": peers,
+                "note": "同行由 Yahoo 按相似度给出; 美股无资金流/主力净买源, 只给价与涨跌"}
+    if not is_a_share(raw):
+        return {"error": "同行对比支持 A 股与美股(港股暂无源)"}
     return await asyncio.to_thread(_fetch_peers_sync, _norm_code(code))
 
 
@@ -1952,10 +1978,15 @@ def _fetch_announcements_sync(code: str, limit: int = 12) -> dict:
 
 
 async def _tool_announcements(code: str) -> dict:
-    """个股公告(分红/回购/增减持/业绩/重组/股权激励/关联交易等), 比新闻权威。看公司层面有没有实质事件。仅 A 股。"""
+    """个股公告(分红/回购/增减持/业绩/重组/股权激励/关联交易等), 比新闻权威。
+    A 股走交易所公告; 美股走 SEC EDGAR 申报(8-K=重大事件, 4/144=内部人交易, 13D/G=大股东)。"""
     from services.market_data import normalize_stock_code, is_a_share
-    if not is_a_share(normalize_stock_code(_norm_code(code))):
-        return {"error": "公告仅支持 A 股(港美股可用 get_news 看回购等动态)"}
+    raw = normalize_stock_code(_norm_code(code))
+    if raw.upper().startswith("US.") or (not is_a_share(raw) and _re.fullmatch(r"[A-Za-z.]{1,6}", raw)):
+        from services import us_fundamentals as usf
+        return await asyncio.to_thread(usf.us_filings, raw)
+    if not is_a_share(raw):
+        return {"error": "公告支持 A 股与美股(港股可用 get_news 看回购等动态)"}
     return await asyncio.to_thread(_fetch_announcements_sync, _norm_code(code))
 
 
@@ -2740,7 +2771,7 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_news", "description": "查个股最近新闻(标题+摘要+时间), 用来找涨跌的消息面原因。支持 A股/港股/美股(东财)。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
-    {"name": "get_announcements", "description": "查个股公告(分红/回购/增减持/业绩预告/重组/股权激励/关联交易等), 结构化且比新闻权威。看公司层面有没有实质事件驱动。仅 A 股。",
+    {"name": "get_announcements", "description": "查个股公告, 结构化且比新闻权威, 看公司层面有没有实质事件驱动。A 股=交易所公告(分红/回购/增减持/业绩预告/重组/股权激励); 美股=SEC EDGAR 申报, 8-K 是重大事件且带 Item 编号(如 1.01 签署重大协议、3.02 未登记股份发行), 归因盘前异动时比新闻更权威。港股暂无源, 用 get_news。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_fund_flow", "description": "查个股资金流: 主力/超大单/大单/中单/小单净额(亿, 与榜单 f62 同源) + 近几日趋势。按单笔金额分档(超大单+大单=主力)。重要口径提示: 当下普遍拆单 + 多子账户操作, 大单常被拆成中小单分散在多账户, 单笔分档已无法等同真实主力意图, 净流入只是参考线索而非定论。务必与 get_trend 的量价(pct+vol_ratio)和K线位置配合解读, 不单凭净流入下结论。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
@@ -2750,13 +2781,13 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_company_profile", "description": "查公司是做什么的 + 什么背景: 公司简介(主营业务) + 细分行业 + 主营构成(各产品/地区收入占比和毛利率) + 控股/实际控制人/前三大股东(判断国资/央企/地方国企/中科院系/民营/外资性质)。回答'这家公司主营什么、靠什么赚钱、谁控股、什么背景、和同行业务差异'时必用。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
-    {"name": "get_stock_concepts", "description": "查个股所属行业/概念板块 + 核心题材。判断'这只票属于哪个概念、有没有踩在当下资金主线/热门概念上'时用; 可与 get_hot_concepts 交叉印证。仅 A 股。",
+    {"name": "get_stock_concepts", "description": "查个股所属行业/概念 + 核心题材。判断'这只票属于哪个概念、有没有踩在当下资金主线/热门概念上'时用; 可与 get_hot_concepts 交叉印证。A 股给概念板块与题材; 美股给 板块/行业 分类与曾用名(核实公司身份、防止凭记忆答更名)。港股暂无源。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_fundamentals", "description": "查个股基本面+估值: 营收/净利及同比增速、ROE/毛利率/净利率、资产负债率、每股收益, 以及 PE(TTM)/PB/总市值/行业。回答'这票贵不贵、业绩好不好、盈利质地、有没有业绩拐点'时用。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_commodity", "description": "查个股关联的大宗商品期货价(有色金属股: 铜/铝/金/锌/镍/锡 走上期所连续合约)。判断有色股涨跌是不是金属价驱动时用; 钨/锑/稀土/锂等小金属无交易所合约会返回不可得。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
-    {"name": "get_peers", "description": "同行横向对比: 同行业板块成分股的涨跌幅/PE/PB/主力净流入对照表。回答'同业里它贵不贵、谁领涨、资金更偏好谁、龙头是谁'时用; 可配合 get_fundamentals 看相对估值。仅 A 股。",
+    {"name": "get_peers", "description": "同行横向对比, 回答'同业里它贵不贵、谁领涨、资金更偏好谁、龙头是谁'时用; 可配合 get_fundamentals 看相对估值。A 股给板块成分股的涨跌幅/PE/PB/主力净流入; 美股给相似标的及各自涨跌(含盘前/盘后, 无资金流源)。港股暂无源。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_shareholders", "description": "筹码面: 十大流通股东及增减持、北向(香港中央结算)持股变动、未来限售解禁(抛压)。回答'谁在持股、控股股东/国家队/北向在加还是减、有没有解禁压力'时用。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
@@ -3031,7 +3062,10 @@ _SYSTEM = (
     "web_search 用来补事件背景与原因, 检索结果与工具值冲突时以工具当下快照为准并按工具值表述。\n"
     "【异动归因看新闻时点】解释某次涨跌时, 先比对 get_news 的 latest_time 与该次异动发生的时点: "
     "最新一条晚于异动时点时, 从这些新闻里找催化; 最新一条早于异动时点时, 补一次 web_search "
-    "检索该标的当日消息(盘前异动检索'公司名 + 盘前'或'公司名 + 当日日期'), 拿到当日稿件再归因。\n"
+    "检索该标的当日消息(盘前异动检索'公司名 + 盘前'或'公司名 + 当日日期'), 拿到当日稿件再归因。"
+    "涉及公司层面事件(协议/发行/收购/高管变动/业绩)时, get_announcements 是第一手来源: "
+    "美股走 SEC EDGAR, 8-K 的 Item 编号直接说明事件性质(1.01 签署重大协议、3.02 未登记股份发行、"
+    "2.02 业绩、5.02 高管变动), 先取它再用 web_search 补条款细节与市场解读。\n"
     "【美股报价按时段表述】get_quote 返回 price_as_of / session / ext_hours 时, 三者各指一个时点: "
     "price 与 change_pct 属于 price_as_of 标的那个正式交易时段(亚洲白天问美股时它是上一个交易日的收盘), "
     "ext_hours 里的 price/change_pct 才是 as_of 时刻的盘前或盘后价, 其 change_pct 是相对上一时段收盘算的。"
