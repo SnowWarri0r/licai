@@ -266,6 +266,23 @@ CREATE TABLE IF NOT EXISTS ask_message (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_ask_message_session ON ask_message(session_id, id);
+
+-- 工具缺口台账: agent 调工具时取不到数就记一笔, 攒成清单。
+-- 为什么要它: 实测 agent 的错误质量集中在取数层而不是推理层 —— 一次典型的翻车是
+-- get_news 对美股返回了 10 条(所以模型以为消息面已覆盖), 但最新一条比异动早三天;
+-- 另一次是美股行情把 开/高/低 全返 0(源里其实有)。这类"看着成功其实没数"的情况
+-- 不记账就永远只能等用户发现。按 (工具, 缺口类型, 市场) 聚合计数, 不存每次调用。
+CREATE TABLE IF NOT EXISTS tool_gap (
+    tool TEXT NOT NULL,
+    kind TEXT NOT NULL,                        -- error | empty | stale | zero_fields
+    market TEXT NOT NULL DEFAULT '',           -- A | HK | US | '' (与标的无关的工具)
+    hits INTEGER NOT NULL DEFAULT 0,
+    detail TEXT DEFAULT '',                    -- 最近一次的说明 (如 "latest_time 早 3 天")
+    sample TEXT DEFAULT '',                    -- 最近一次的入参样本
+    first_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (tool, kind, market)
+);
 """
 
 

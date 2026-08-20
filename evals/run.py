@@ -79,7 +79,9 @@ async def main():
 
     import config
     if os.path.exists(args.db):
-        config.Config.db_path = args.db
+        # 必须改单例 config, 不是 Config 类属性 —— 类属性只是 dataclass 的默认值,
+        # 单例早已实例化, 改它才生效。改错了会静默跑在真实账本上(真实持仓进 prompt)。
+        config.config.db_path = args.db
     else:
         print(f"! 找不到 {args.db}, 用默认账本(真实持仓会进 prompt)")
 
@@ -94,7 +96,7 @@ async def main():
         print(f"没有匹配 {args.case!r} 的用例")
         return 2
 
-    print(f"账本={config.Config.db_path}  用例={len(picked)}\n")
+    print(f"账本={config.config.db_path}  用例={len(picked)}\n")
     rows = []
     for c in picked:
         try:
