@@ -39,7 +39,8 @@ from services.sector_matrix import sector_matrix_prewarm_loop
 from services.coiled_scanner import coiled_prewarm_loop
 from services.portfolio_curve import curve_prewarm_loop
 from api.broker_routes import router as broker_router
-from api.ws import router as ws_router, price_monitor_loop, backup_loop, briefing_loop, dca_loop, eod_summary_loop
+from api.ws import (router as ws_router, price_monitor_loop, backup_loop, briefing_loop,
+                    dca_loop, eod_summary_loop, rule_mine_loop)
 from services import feishu_notify
 
 
@@ -139,6 +140,7 @@ async def lifespan(app: FastAPI):
     task8 = asyncio.create_task(curve_prewarm_loop())
     task9 = asyncio.create_task(eod_summary_loop())
     task10 = asyncio.create_task(_symbol_dict_prewarm())
+    task11 = asyncio.create_task(rule_mine_loop())
     print(f"理财助手已启动: http://localhost:{config.port}")
     yield
     task1.cancel()
@@ -151,6 +153,7 @@ async def lifespan(app: FastAPI):
     task8.cancel()
     task9.cancel()
     task10.cancel()
+    task11.cancel()
 
 
 app = FastAPI(title="理财助手", lifespan=lifespan)

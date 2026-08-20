@@ -352,3 +352,41 @@ async def test_llm_connection():
     import asyncio
     result = await asyncio.to_thread(llm_client.test_connection)
     return result
+
+
+# ── 沉淀规则的待审队列 ────────────────────────────────────
+# 为什么放在设置页: 这些规则会改 agent 的 system prompt, 是"改配置"而不是看行情。
+# 而且必须有个地方看得见 —— 之前只有 CLI, 待审队列在界面上完全不存在, 挖出来的候选
+# 就一直躺着没人批, 等于这套机制白做。
+
+@router.get("/rules")
+async def rules_list():
+    from services import rule_forge as rf
+    rules = await rf.list_rules()
+    return {
+        "rules": rules,
+        "n_pending": sum(1 for r in rules if r["status"] == "pending"),
+        "n_active": sum(1 for r in rules if r["status"] == "active"),
+    }
+
+
+@router.post("/rules/{rule_id}/{decision}")
+async def rules_decide(rule_id: int, decision: str):
+    """批准 → 进 system prompt(下一次问答立刻生效); 否决 → 永久留在队列里但不生效。
+
+    否决的不删: 留着才知道"这条提过、被否了", 下次挖掘不会原样再提一遍。
+    """
+    if decision not in ("approve", "reject"):
+        raise HTTPException(status_code=400, detail="decision 只能是 approve / reject")
+    from services import rule_forge as rf
+    ok = await rf.decide(rule_id, "active" if decision == "approve" else "rejected")
+    if not ok:
+        raise HTTPException(status_code=404, detail=f"没有 #{rule_id} 这条规则")
+    return {"ok": True, "id": rule_id, "status": "active" if decision == "approve" else "rejected"}
+
+
+@router.post("/rules/mine")
+async def rules_mine():
+    """立刻挖一次(平时是每周一早上自动跑)。每次最多起草 3 条, 要调模型。"""
+    from services import rule_forge as rf
+    return await rf.mine_new(max_drafts=3)
