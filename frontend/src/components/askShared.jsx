@@ -133,11 +133,23 @@ export function colorizeSigned(text, kp) {
 // 这里是纯文本渲染, 认不出的标签会原样显示给用户(见过 <mark>...</mark> 裸奔), 故先归一。
 const HTML_INLINE_TAG = /<\/?(?:mark|b|strong|em|i|u|s|small|span|font|cite|code|p|div)\b[^>]*>/gi
 
+// 白名单之外的标签也得抹掉: 实测答案里冒出过 <augment_code_snippet> 这种谁也不认识的
+// 标签(联网读回来的正文里夹带的), 白名单认不出就原样打在页面上。
+// 只吃"字母开头的标签名"这一形状, 所以 <0.5%、A<B 这类不会被误吃。
+const HTML_ANY_TAG = /<\/?[a-zA-Z][\w:-]*(?:\s[^<>]*)?\/?>/g
+
 // 能对上 markdown 的转成 markdown, 其余留给 renderInlineBase 按标签处理
 function normalizeHtml(text) {
   return (text || '')
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/?(?:b|strong)\b[^>]*>/gi, '**')
+}
+
+// 白名单里的标签留给下游按语义渲染(<mark> 要变高亮块), 白名单外的一律抹掉。
+// 不能无脑全抹 —— 那样 <mark> 会在到达 renderInlineBase 之前就没了, 高亮功能一起废掉。
+const KNOWN_TAG = /^<\/?(?:mark|b|strong|em|i|u|s|small|span|font|cite|code|p|div|br)\b/i
+function stripUnknownTags(text) {
+  return (text || '').replace(HTML_ANY_TAG, m => (KNOWN_TAG.test(m) ? m : ''))
 }
 
 function renderInlineBase(text, kp, sources) {
@@ -150,8 +162,8 @@ function renderInlineBase(text, kp, sources) {
         {colorizeSigned(hl[1].replace(HTML_INLINE_TAG, '').replace(/\*\*/g, ''), `${kp}-${i}`)}</mark>
     const m = p.match(/^⟦(\d+)⟧$/)
     if (m) { const n = parseInt(m[1], 10); return <CiteMark key={`${kp}-${i}`} n={n} src={sources && sources[n - 1]} /> }
-    // 落单的开/闭标签(流式还没吐完、或跨行的 <mark>)也抹掉标签留文字
-    return <span key={`${kp}-${i}`}>{colorizeSigned(p.replace(HTML_INLINE_TAG, ''), `${kp}-${i}`)}</span>
+    // 落单的开/闭标签(流式还没吐完、或跨行的 <mark>)也抹掉标签留文字; 白名单外的一并抹
+    return <span key={`${kp}-${i}`}>{colorizeSigned(p.replace(HTML_INLINE_TAG, '').replace(HTML_ANY_TAG, ''), `${kp}-${i}`)}</span>
   })
 }
 
@@ -162,7 +174,7 @@ const splitCells = (t) => t.replace(/^\||\|$/g, '').split('|').map(c => c.trim()
 // 极简 markdown(## 标题/**粗**/列表/表格/⟦N⟧引用/红涨绿跌), 不引依赖
 export function MiniMarkdown({ text, sources }) {
   const renderInline = (t, kp) => renderInlineBase(t, kp, sources)
-  const lines = normalizeHtml(text).split('\n')
+  const lines = stripUnknownTags(normalizeHtml(text)).split('\n')
   const out = []
   let i = 0
   while (i < lines.length) {

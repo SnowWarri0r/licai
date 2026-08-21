@@ -70,6 +70,21 @@ def test_global_rules():
     assert G.global_checks("**要点**：放量。", []) == []
 
 
+def test_unknown_tag_also_counts():
+    """露出来的那次不是 <mark>, 是 <augment_code_snippet path=... mode=...> —— 联网读回来的
+    正文里夹带的。白名单枚举永远追不上, 所以按"标签形状"判。"""
+    for t in ('<augment_code_snippet path="a.py" mode="EXCERPT">正文',
+              '</augment_code_snippet>', '<think>内心戏</think>', '<Foo-Bar attr=1 />'):
+        assert any("标签" in b for b in G.global_checks(t, [])), t
+
+
+def test_math_comparisons_are_not_tags():
+    """不能把不等号当标签: 这类写法在答案里很常见, 误判会触发一轮无意义的重答。"""
+    for t in ("占比 <0.5% 的小票", "若 A<B 则跑输", "市值 3<2 万亿", "PE <20 倍算便宜",
+              "成交额 1.8 万亿, 涨停 63 家"):
+        assert G.global_checks(t, []) == [], t
+
+
 def test_inspect_combines_both_layers():
     bad = G.inspect("<b>现在大跌</b>", ["get_quote"], {"get_quote": [QUOTE_WITH_EXT]})
     assert len(bad) == 2      # 裸标签 + 缺时点
