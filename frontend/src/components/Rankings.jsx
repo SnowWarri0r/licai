@@ -49,7 +49,27 @@ const WL_LAST_KEY = 'licai.wl.group'
 function GroupPicker({ groups, current, onSet, onClose, className = '' }) {
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
+  const rootRef = useRef(null)
   const mine = current || []
+
+  // 点菜单外面就收起(以前只有 onMouseLeave: 鼠标不划出去就一直挂着, 只能再点一次按钮
+  // 才关 —— 而正在输入新组名时连 mouseleave 都被禁掉了, 更关不上)。
+  // 触发按钮自己带 data-grp-trigger: 点它要让它自己 toggle, 这里不能抢着先关(否则
+  // 关掉又被 toggle 打开, 表现成点了没反应)。
+  useEffect(() => {
+    const onDown = (e) => {
+      if (rootRef.current?.contains(e.target)) return
+      if (e.target.closest?.('[data-grp-trigger]')) return
+      onClose()
+    }
+    const onKey = (e) => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('pointerdown', onDown, true)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('pointerdown', onDown, true)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [onClose])
   const submit = () => {
     const g = name.trim().slice(0, 20)
     if (!g) return
@@ -57,9 +77,8 @@ function GroupPicker({ groups, current, onSet, onClose, className = '' }) {
     if (!mine.includes(g)) onSet([...mine, g])
   }
   return (
-    // 输入中不要用 onMouseLeave 关掉: 打字时鼠标一飘出去就前功尽弃
-    <div className={`z-30 w-44 bg-surface-2 border border-border rounded-lg shadow-xl py-1 ${className}`}
-      onMouseLeave={creating ? undefined : onClose} onClick={(e) => e.stopPropagation()}>
+    <div ref={rootRef} onClick={(e) => e.stopPropagation()}
+      className={`z-30 w-44 bg-surface-2 border border-border rounded-lg shadow-xl py-1 ${className}`}>
       <div className="px-2.5 py-1 text-[10px] text-text-muted">所属分组 · 可多选</div>
       {/* 「自选」也是一个可勾的组, 排在最前(它是默认组)。勾了「金矿」不会把「自选」顶掉,
           两个可以同时勾上 —— 这就是"同时在自选和某个分组里"。 */}
@@ -195,7 +214,7 @@ function StockPanel({ stock, watched, onToggleWatch, groups, myGroups, onSetGrou
         {onSetGroups && (
           <div className="relative shrink-0">
             {/* 胶囊上只写得下一个组名, 多的用 +N 收着(hover 看全) —— 一票可以在好几个组里 */}
-            <button onClick={() => setGrpOpen(v => !v)}
+            <button data-grp-trigger onClick={() => setGrpOpen(v => !v)}
               title={(myGroups || []).length
                 ? `所属分组: ${(myGroups || []).join(' · ')} —— 点开可多选`
                 : '选分组直接观察(可多选) —— 勾了别的组不会把「自选」顶掉, 可以同时在'}
@@ -959,7 +978,8 @@ export default function Rankings() {
                     className="text-[11px] leading-none px-1 text-text-dim hover:text-accent">↑</button>
                   <button title="下移" onClick={(e) => { e.stopPropagation(); nudge(r.code, 1) }}
                     className="text-[11px] leading-none px-1 text-text-dim hover:text-accent">↓</button>
-                  <button title="移到分组" onClick={(e) => { e.stopPropagation(); setGrpMenu(r.code) }}
+                  <button title="归组(可多选)" data-grp-trigger
+                    onClick={(e) => { e.stopPropagation(); setGrpMenu(m => (m === r.code ? '' : r.code)) }}
                     className="text-[11px] leading-none px-1 text-text-dim hover:text-accent">⋯</button>
                 </span>
               )}
