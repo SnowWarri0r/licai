@@ -33,6 +33,18 @@ const fmtAmt = (v) => !v ? '--'
   : Math.round(v).toLocaleString() + '元'
 
 const GAP_UP = 'rgba(207,92,92,0.18)', GAP_DOWN = 'rgba(95,168,108,0.18)'   // 跳空缺口阴影: 红跳空/绿跳空
+
+// 这根是阳线还是阴线。A股惯例按 收 vs 开, 但**收==开时改看昨收** —— 一字跌停那种
+// 开=收=最低的十字星, 按"收>=开"会画成红的, 看着像涨(实测哈药股份 -10.02% 画成红柱)。
+// 蜡烛体、影线、下面的量柱共用这一个判据, 否则三者会各红各绿。
+const isUpBar = (b, prev) => (b.close === b.open
+  ? (prev ? b.close >= prev.close : true)
+  : b.close > b.open)
+const volColor = (b, prev) => (isUpBar(b, prev) ? 'rgba(207,92,92,0.55)' : 'rgba(95,168,108,0.55)')
+
+// 单个价 vs 昨收 的红绿(顶部 OHLC 那行用)。没有昨收(第一根)就不着色, 别瞎猜
+const cmpColor = (v, prev) => (prev == null || v == null ? 'text-text'
+  : v > prev ? 'text-bear' : v < prev ? 'text-bull' : 'text-text')
 const GAP_MIN = 0.015   // 缺口≥1.5%才标, 过滤碎口, 只留"两根离得远"的真跳空
 
 // 跳空缺口: 相邻两根价区不重叠的空白带(上跳=前高<后低 / 下跳=前低>后高),
@@ -132,10 +144,10 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
   useEffect(() => {
     const bars = barsRef.current
     if (!volSeriesRef.current || !bars?.length) return
-    volSeriesRef.current.setData(bars.map(b => ({
+    volSeriesRef.current.setData(bars.map((b, i) => ({
       time: b.time,
       value: volMode === '额' ? (b.amount || 0) : (b.volume || 0),
-      color: b.close >= b.open ? 'rgba(207,92,92,0.55)' : 'rgba(95,168,108,0.55)',
+      color: volColor(b, bars[i - 1]),
     })))
     // 量与额差着好几个量级(80万 vs 500亿): 在轴上拖过一下就退出自动量程, 之后换口径
     // 量程不跟着走, 柱子被压成一条(或顶出画面)。每次换口径把自动量程重新打开。
@@ -195,7 +207,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
       const prev = i > 0 ? arr[i - 1].close : null
       // 距今: 从这根收盘到最新一根收盘的累计涨跌 —— 回看"那天到现在赚/亏多少"
       const last = arr.length ? arr[arr.length - 1].close : null
-      setLegend({ time: key, o: d.open, h: d.high, l: d.low, c: d.close,
+      setLegend({ time: key, o: d.open, h: d.high, l: d.low, c: d.close, prev,
                   pct: prev ? (d.close / prev - 1) * 100 : null,
                   since: (last && d.close && i < arr.length - 1) ? (last / d.close - 1) * 100 : null })
     }
@@ -399,12 +411,17 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
     const paint = (bars) => {
       barsRef.current = bars
       const { candle, mas, gapPrim } = seriesRef.current
-      candle.setData(bars.map(b => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close })))
+      // 逐根显式给色: 图表库内部是 close>=open 判红绿, 一字跌停(收==开)会被判成红
+      candle.setData(bars.map((b, i) => {
+        const col = isUpBar(b, bars[i - 1]) ? UP : DOWN
+        return { time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
+                 color: col, borderColor: col, wickColor: col }
+      }))
       // 量/额画到独立副图(见下方 volChart): 叠在主图里读不出具体数字, 拆开后有独立刻度
-      volSeriesRef.current?.setData(bars.map(b => ({
+      volSeriesRef.current?.setData(bars.map((b, i) => ({
         time: b.time,
         value: volMode === '额' ? (b.amount || 0) : (b.volume || 0),
-        color: b.close >= b.open ? 'rgba(207,92,92,0.55)' : 'rgba(95,168,108,0.55)',
+        color: volColor(b, bars[i - 1]),
       })))
       mas.forEach((s, i) => s.setData(maLine(bars, MA_DEFS[i].n)))
       gapPrim?.setGaps(detectGaps(bars))
@@ -488,10 +505,13 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
         {legend
           ? <span className="font-mono text-text-dim flex gap-2.5 flex-wrap">
               <span className="text-text-muted">{legend.time}</span>
-              <span>开<span className={legend.c >= legend.o ? 'text-bear' : 'text-bull'}>{fmt(legend.o)}</span></span>
-              <span>高<span className="text-bear">{fmt(legend.h)}</span></span>
-              <span>低<span className="text-bull">{fmt(legend.l)}</span></span>
-              <span>收<span className={legend.c >= legend.o ? 'text-bear' : 'text-bull'}>{fmt(legend.c)}</span></span>
+              {/* 四个价都跟**昨收**比着上色(通达信口径), 不是跟开盘价比 —— 跌停那天
+                  开=收=最低, 按"收>=开"整行都是红的, 而它们全都低于昨收。
+                  高/低原来是写死的红/绿, 同样错: 跌停日的最高价也在昨收下面。 */}
+              <span>开<span className={cmpColor(legend.o, legend.prev)}>{fmt(legend.o)}</span></span>
+              <span>高<span className={cmpColor(legend.h, legend.prev)}>{fmt(legend.h)}</span></span>
+              <span>低<span className={cmpColor(legend.l, legend.prev)}>{fmt(legend.l)}</span></span>
+              <span>收<span className={cmpColor(legend.c, legend.prev)}>{fmt(legend.c)}</span></span>
               {legend.pct != null && (
                 <span className={`font-semibold ${legend.pct >= 0 ? 'text-bear' : 'text-bull'}`}>
                   {legend.pct >= 0 ? '+' : ''}{legend.pct.toFixed(2)}%
