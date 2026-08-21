@@ -22,11 +22,35 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
   const follow = useRef(true)
   const started = useRef(false)
   const closeTimer = useRef(null)
+  const sessionId = useRef(null)      // 落库用: 一次抽屉 = 一个会话
 
   // 先播放滑出动画再卸载
   const close = () => { setShown(false); clearTimeout(closeTimer.current); closeTimer.current = setTimeout(onClose, 280) }
 
   const patchLast = (fn) => setHistory(h => h.map((it, i) => i === h.length - 1 ? fn(it) : it))
+
+  // 落库一轮(与「问问市场」同一个端点/同一张表)。
+  // 为什么要落: 这个抽屉原来什么都不存, 于是在这儿发生的每一次纠正, 纠正挖掘都看不见 ——
+  // 那套"答错了不再错第二遍"的机制对抽屉里的对话完全失效。事后想复盘也没有原文。
+  const persistTurn = async (question, item) => {
+    try {
+      const r1 = await fetch('/api/ask/messages', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId.current, role: 'user', content: question,
+                               title: `${stock.name}(${stock.code}) ${question}`.slice(0, 40) }),
+      })
+      const j1 = await r1.json(); sessionId.current = j1.session_id
+      await fetch('/api/ask/messages', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId.current, role: 'assistant',
+          content: item.answer || '',
+          // llm_retry/self_check 是过程提示不是工具, 别存进历史
+          meta: { tools_used: (item.steps || []).map(s => s.tool)
+                    .filter(t => t !== 'llm_retry' && t !== 'self_check'),
+                  sources: item.sources || [], charts: item.charts || [] } }),
+      })
+    } catch { /* 落库失败不影响使用 */ }
+  }
 
   const typewriter = (full) => {
     clearInterval(typer.current)
@@ -66,7 +90,11 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
       onSource: (arr) => patchLast(it => ({ ...it, sources: [...it.sources, ...arr] })),
       onAnswer: (t) => { patchLast(it => ({ ...it, answer: t })); typewriter(t || '') },
       onError: (err) => { patchLast(it => ({ ...it, err: err || '连接中断', done: true })); setLoading(false) },
-      onDone: () => setLoading(false),
+      onDone: () => {
+        setLoading(false)
+        // 用打字机之前的完整答案落库(typed 是逐字追加的中间态)
+        setHistory(h => { const last = h[h.length - 1]; if (last?.answer) persistTurn(text, last); return h })
+      },
     })
   }
 
