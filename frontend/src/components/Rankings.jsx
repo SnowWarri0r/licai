@@ -151,10 +151,13 @@ function StockPanel({ stock, watched, onToggleWatch, groups, myGroups, onSetGrou
       {/* 窄面板下这一行原来是逐个折行的: 股票名折成两行、「问 AI 分析」也折成两行, 整个
           头部撑高两倍还把 K 线挤下去。所以: 一律不折行(flex-nowrap), 按信息优先级逐级隐藏
           —— 简介最先丢, 然后细分行业, 再然后板块; 名字/涨跌/按钮永远留着。
+          横向只用 overflow-x-clip: 用 overflow-hidden 会连纵向一起裁, 把「分组」下拉菜单
+          剪得只剩露在头部里的 7px —— 表现就是"点了没反应"(实测)。clip 不像 hidden 那样
+          强迫另一个轴变成 auto, 所以纵向仍是 visible, 菜单能垂下来。
           用容器查询(@container)而不是屏幕断点: 决定挤不挤的是这块面板的宽度, 不是窗口宽度
           —— 左边榜单栏占掉的宽度是固定的, 但侧边栏能收起, 同一个窗口宽度下面板可宽可窄。 */}
       <div className="@container flex flex-nowrap items-baseline gap-2 px-4 py-2 border-b
-                      border-border-subtle shrink-0 overflow-hidden">
+                      border-border-subtle shrink-0 overflow-x-clip">
         {/* 名字不给 shrink-0: 面板窄到连按钮都放不下时, 与其把右边的按钮挤出可视区(overflow
             被裁掉就等于按钮消失了), 不如让名字自己截断。简介比名字长得多, flex 收缩按基准
             尺寸分摊, 所以有简介时先收简介, 轮不到名字。 */}
