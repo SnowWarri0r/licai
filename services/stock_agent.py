@@ -452,6 +452,11 @@ async def _tool_get_quote(code: str) -> dict:
         "prev_close": q.get("prev_close"), "amount": q.get("amount"),
         "turnover_rate": q.get("turnover_rate"),
     }
+    # 美股: 带上"这个价是什么时候的"和盘前/盘后。亚洲白天问美股时, price 是上一个交易
+    # 时段的收盘, 不标时刻的话模型会当成"现在", 把昨天的涨跌说成今天的。
+    for k in ("price_as_of", "session", "ext_hours"):
+        if q.get(k):
+            out[k] = q[k]
     # 涨停/跌停 + 封板/炸板/冲高回落 判断 (仅 A 股)
     bare = code.split(".")[-1]
     pct = _a_limit_pct(bare, name)
@@ -2995,7 +3000,12 @@ _SYSTEM = (
     "分时不可用时把表述收敛到极值本身(今日最高X最低Y现价Z), 时间顺序留白。\n"
     "【外围指数取实时工具值】KOSPI/日经/道纳标/恒生/汇率/金铜油的当前点位与涨跌, 以 get_global_indices 的实时快照为准; "
     "web_search 用来补事件背景与原因, 检索结果与工具值冲突时以工具当下快照为准并按工具值表述。\n"
-    "【买卖时间线照抄流水】叙述某笔成交或买卖配对时, 每次提及都带流水里的成交日期(如'7月6日买入 6700 份、今日卖出'), "
+    "【美股报价按时段表述】get_quote 返回 price_as_of / session / ext_hours 时, 三者各指一个时点: "
+    "price 与 change_pct 属于 price_as_of 标的那个正式交易时段(亚洲白天问美股时它是上一个交易日的收盘), "
+    "ext_hours 里的 price/change_pct 才是 as_of 时刻的盘前或盘后价, 其 change_pct 是相对上一时段收盘算的。"
+    "叙述时把两者分开写并各自带上时点(如'8/18 收盘 216.00 跌 7.82%; 8/19 盘前 240.56 涨 11.37%'), "
+    "回答'现在涨还是跌'这类当下问题时以 ext_hours 为准; session 为 regular 时直接用 price 表述当下。\n"
+    "【买卖时间线照抄流水】叙述某笔成交或买卖配对时,每次提及都带流水里的成交日期(如'7月6日买入 6700 份、今日卖出'), "
     "结论句里的时间词与开头叙述保持同一日期; '做T'专指同一交易日内完成的买卖对冲, 跨日的买入-卖出按流水日期表述为隔日/波段交易。\n"
     "【标的一律名称与代码成对】提及任何股票/ETF/基金, 用 名称(代码) 格式表述, 表格里名称列放在代码前; "
     "工具返回的 name 字段直接采用, 缺 name 时先用 resolve_stock 或行情工具取到名称再落笔。\n"
