@@ -1153,16 +1153,33 @@ async def _tool_read_url(url: str) -> dict:
 
 
 async def _tool_get_news(code: str) -> dict:
-    """个股最近新闻 (akshare 东财, A 股)。"""
-    from api.news_routes import _fetch_stock_news_em_sync
+    """个股最近新闻。A 股/港股走东财, 美股走 Yahoo。
+
+    只有美股换源: 东财的 stock_news_em 对美股是按关键词搜中文新闻, 实测 MRVL 十条里
+    最新 8-16 且一半跟本股无关。港股反过来 —— 东财又准又是中文当天的, 而 Yahoo 对
+    0700.HK 返回的是整片市场的泛新闻, 换过去是变差。
+    """
+    from api.news_routes import _fetch_stock_news_em_sync, _fetch_overseas_news_yahoo_sync
     from services.market_data import normalize_stock_code
     raw = normalize_stock_code(_norm_code(code))
     bare = raw.split(".")[-1] if "." in raw else raw
-    items = await asyncio.to_thread(_fetch_stock_news_em_sync, bare)
+    if raw.upper().startswith("US."):
+        items = await asyncio.to_thread(_fetch_overseas_news_yahoo_sync, raw)
+        if not items:                      # Yahoo 打不通时退回东财, 有一条算一条
+            items = await asyncio.to_thread(_fetch_stock_news_em_sync, bare)
+    else:
+        items = await asyncio.to_thread(_fetch_stock_news_em_sync, bare)
     if not items:
         return {"news": [], "note": "暂无个股新闻"}
-    return {"news": [{"title": it["title"], "summary": it["content"][:140],
-                      "time": it["time"], "source": it["source"]} for it in items[:10]]}
+    news = [{"title": it["title"], "summary": (it.get("content") or "")[:140],
+             "time": it["time"], "source": it["source"]} for it in items[:10]]
+    # 把"最新一条是什么时候"显式给出来: 模型光看列表分不清 10 条齐全代表消息面已覆盖,
+    # 还是最新那条其实早于它要解释的那次异动。
+    out = {"news": news}
+    latest = max((n["time"] for n in news if n["time"]), default="")
+    if latest:
+        out["latest_time"] = latest
+    return out
 
 
 def _em_secid(code: str) -> str:
@@ -3000,6 +3017,9 @@ _SYSTEM = (
     "分时不可用时把表述收敛到极值本身(今日最高X最低Y现价Z), 时间顺序留白。\n"
     "【外围指数取实时工具值】KOSPI/日经/道纳标/恒生/汇率/金铜油的当前点位与涨跌, 以 get_global_indices 的实时快照为准; "
     "web_search 用来补事件背景与原因, 检索结果与工具值冲突时以工具当下快照为准并按工具值表述。\n"
+    "【异动归因看新闻时点】解释某次涨跌时, 先比对 get_news 的 latest_time 与该次异动发生的时点: "
+    "最新一条晚于异动时点时, 从这些新闻里找催化; 最新一条早于异动时点时, 补一次 web_search "
+    "检索该标的当日消息(盘前异动检索'公司名 + 盘前'或'公司名 + 当日日期'), 拿到当日稿件再归因。\n"
     "【美股报价按时段表述】get_quote 返回 price_as_of / session / ext_hours 时, 三者各指一个时点: "
     "price 与 change_pct 属于 price_as_of 标的那个正式交易时段(亚洲白天问美股时它是上一个交易日的收盘), "
     "ext_hours 里的 price/change_pct 才是 as_of 时刻的盘前或盘后价, 其 change_pct 是相对上一时段收盘算的。"
