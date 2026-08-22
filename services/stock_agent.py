@@ -1426,7 +1426,11 @@ def _fetch_company_profile_sync(bare: str) -> dict:
         out.update({
             "name": jb.get("ORG_NAME") or jb.get("SECURITY_NAME_ABBR"),
             "industry": jb.get("EM2016") or jb.get("INDUSTRYCSRC1"),
-            "profile": prof[:400] or None,
+            # 这里存全文。原来在取数层就截到 400 字, 而这个函数同时喂给 agent 工具和
+            # /api/market/company(K线头部的公司简介) —— 前端点开"完整简介"看到的也是
+            # 切一半的(石药创新 647 字丢 247, 工业富联 688 字丢 288, 且切在句子中间)。
+            # token 预算是 agent 那一侧的事, 由 _tool_company_profile 按句截。
+            "profile": prof or None,
             "h_share": jb.get("STR_CODEH"),
             "employees": jb.get("EMP_NUM"),
         })
@@ -1492,6 +1496,27 @@ def _fetch_company_profile_sync(bare: str) -> dict:
     return out
 
 
+_PROFILE_TOOL_CHARS = 400      # 喂模型的简介长度上限; UI 那侧要全文, 见 clip_profile
+
+
+def clip_profile(text: str, limit: int = _PROFILE_TOOL_CHARS) -> str:
+    """按句截断给模型看的公司简介。
+
+    为什么不直接切字符: 东财的简介动辄 600-700 字, 硬切会停在半句上("公司为百事可乐、
+    可口可" ), 模型读到的是残句。这里在 limit 之前的最后一个句号处断开, 并显式标注
+    "已截断", 让模型知道后面还有内容而不是当成全文。
+    找不到句号(整段没有标点)才退回硬切。
+    """
+    t = (text or "").strip()
+    if len(t) <= limit:
+        return t
+    head = t[:limit]
+    cut = max(head.rfind("。"), head.rfind("；"), head.rfind("!"), head.rfind("?"))
+    if cut >= limit // 2:                      # 句号太靠前就不用它, 否则丢掉大半
+        head = head[:cut + 1]
+    return head.rstrip("，,、 ") + f"…(简介共 {len(t)} 字, 已截断)"
+
+
 async def _tool_company_profile(code: str) -> dict:
     """公司是做什么的: 公司简介 + 细分行业 + 主营构成(收入占比/毛利率)。回答'这家公司主营什么、靠什么赚钱'时用。仅 A 股。"""
     from services.market_data import normalize_stock_code, is_a_share
@@ -1499,7 +1524,11 @@ async def _tool_company_profile(code: str) -> dict:
     if not is_a_share(raw):
         return {"error": "公司简介仅支持 A 股"}
     bare = raw.split(".")[-1] if "." in raw else raw
-    return await asyncio.to_thread(_fetch_company_profile_sync, bare)
+    out = await asyncio.to_thread(_fetch_company_profile_sync, bare)
+    # 取数层存全文(K线头部的"完整简介"要用), 只在喂模型这一侧按句截
+    if isinstance(out, dict) and out.get("profile"):
+        out = {**out, "profile": clip_profile(out["profile"])}
+    return out
 
 
 async def _tool_stock_concepts(code: str) -> dict:
