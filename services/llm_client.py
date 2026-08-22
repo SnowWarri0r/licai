@@ -131,6 +131,15 @@ _RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504, 529}
 # 过载类: 服务端根本没开始干活就把请求弹回来了, 重试是官方推荐做法(与"超时重试"不同 ——
 # 超时说明服务端正在处理, 再发一遍是加倍施压)。
 _OVERLOAD_STATUS = {429, 529}
+# ── prompt 缓存 ────────────────────────────────────────
+# agent 一次问答要跑十几轮, 每轮把 system + 35 个工具定义原样重发一遍。这个固定前缀
+# 实测 25,104 tokens(API 自己报的 cache_creation_input_tokens, 不是估的), 跑满 14 轮
+# 就是 35 万 tokens 的纯重复, 还没算历史里跟着反复重发的 K线图(1648x937 一张约 2000)。
+# 实测 _system() 当天逐字节稳定, 唯一易变的"【今天】<日期>"在末尾 99% 处, 一天失效一次,
+# 形状正好适合缓存。真实一次三轮问答: 8.4 万 prompt tokens 里 7.9 万走缓存, 命中 93.7%。
+_PROMPT_CACHE = os.environ.get("LLM_PROMPT_CACHE", "1").lower() not in ("0", "false", "no")
+_CACHE_CTL = {"type": "ephemeral"}
+
 # 可重试的网络异常
 _RETRYABLE_EXC = (
     requests.exceptions.ConnectionError,
@@ -459,6 +468,98 @@ def _safe_error_body(resp) -> str:
     return text
 
 
+def _cache_enabled() -> bool:
+    """只对 Anthropic 官方端点带 cache_control。
+
+    第三方兼容实现(DeepSeek/硅基流动/OpenRouter/自建代理)见到这个字段可能直接 400,
+    而它对用户表现为"问一句就报错" —— 宁可不缓存也别把兼容性弄坏。
+    """
+    return _PROMPT_CACHE and _is_anthropic_official()
+
+
+def _cached_system(system_blocks):
+    """在 system 的最后一个块上打断点。
+
+    请求里的顺序是 tools → system → messages, 所以断点落在 system 末尾时,
+    缓存覆盖的是 tools + system 整段前缀 —— 一个断点顶两个, 不用再给 tools 单独打。
+    """
+    if not system_blocks:
+        return system_blocks
+    if isinstance(system_blocks, str):
+        return [{"type": "text", "text": system_blocks, "cache_control": _CACHE_CTL}]
+    out = [dict(b) if isinstance(b, dict) else b for b in system_blocks]
+    for i in range(len(out) - 1, -1, -1):
+        if isinstance(out[i], dict):
+            out[i]["cache_control"] = _CACHE_CTL
+            break
+    return out
+
+
+def _cached_messages(messages: list) -> list:
+    """在最后一条消息的最后一个内容块上打滚动断点, 把整段对话前缀也缓存住。
+
+    只改副本: agent loop 会把同一个 messages 列表复用到下一轮并往后 append, 直接改
+    会让断点逐轮累积 —— 超过 4 个 Anthropic 直接报错, 那就成了"越问越容易失败"。
+    """
+    if not messages:
+        return messages
+    out = list(messages)
+    last = dict(out[-1])
+    content = last.get("content")
+    if isinstance(content, str):
+        last["content"] = [{"type": "text", "text": content, "cache_control": _CACHE_CTL}]
+    elif isinstance(content, list) and content:
+        blocks = [dict(b) if isinstance(b, dict) else b for b in content]
+        for i in range(len(blocks) - 1, -1, -1):
+            if isinstance(blocks[i], dict):
+                blocks[i]["cache_control"] = _CACHE_CTL
+                break
+        else:
+            return out
+        last["content"] = blocks
+    else:
+        return out
+    out[-1] = last
+    return out
+
+
+# 累计用量: 让"缓存命中率"可测。原来 resp 里 Anthropic 给的 usage 被整块丢掉,
+# 开了缓存也无从验证。
+_usage_lock = threading.Lock()
+_usage_totals = {"calls": 0, "input": 0, "output": 0, "cache_write": 0, "cache_read": 0}
+
+
+def _record_usage(data: dict, model: str = "") -> None:
+    u = (data or {}).get("usage") or {}
+    inp = int(u.get("input_tokens") or 0)
+    out = int(u.get("output_tokens") or 0)
+    cw = int(u.get("cache_creation_input_tokens") or 0)
+    cr = int(u.get("cache_read_input_tokens") or 0)
+    with _usage_lock:
+        _usage_totals["calls"] += 1
+        _usage_totals["input"] += inp
+        _usage_totals["output"] += out
+        _usage_totals["cache_write"] += cw
+        _usage_totals["cache_read"] += cr
+    prompt = inp + cw + cr
+    logger.info("LLM %s: in=%d out=%d cache_write=%d cache_read=%d 命中=%.0f%%",
+                model or "?", inp, out, cw, cr, (cr / prompt * 100) if prompt else 0)
+
+
+def get_usage_stats() -> dict:
+    """累计用量 + 缓存命中率(进程内, 重启归零)。
+
+    hit_rate = 从缓存读到的 prompt tokens / 全部 prompt tokens。
+    """
+    with _usage_lock:
+        t = dict(_usage_totals)
+    prompt = t["input"] + t["cache_write"] + t["cache_read"]
+    t["prompt_total"] = prompt
+    t["hit_rate"] = round(t["cache_read"] / prompt * 100, 1) if prompt else 0.0
+    t["cache_enabled"] = _cache_enabled()
+    return t
+
+
 def _raise_for_status(resp) -> None:
     """把失败响应翻成异常。过载抛 LLMOverloaded(带 status), 其余抛普通 RuntimeError。
 
@@ -507,6 +608,8 @@ def _retry_on_oauth_401(
 
     new_headers = _build_headers(new_token, new_is_oauth)
     new_system = _build_system(system, new_is_oauth)
+    if _cache_enabled():
+        new_system = _cached_system(new_system)   # 别在重试时把断点丢了
     new_payload = {**payload, "system": new_system}
     return _post_with_retry(new_headers, new_payload)
 
@@ -548,6 +651,9 @@ def call_claude(
         _raise_for_status(resp)
 
     data = resp.json()
+    # 这条路径不打缓存断点: 调用方(资讯解读/板块归因/形态审核)每次的 prompt 都不一样,
+    # 缓存不会命中。但用量照记, 否则命中率的分母是假的。
+    _record_usage(data, model)
     parts = data.get("content", [])
     return "".join(p.get("text", "") for p in parts if p.get("type") == "text")
 
@@ -577,6 +683,12 @@ def call_claude_messages(
     }
     if tools:
         payload["tools"] = tools
+    if _cache_enabled():
+        # 两个断点: system 末尾(覆盖 tools+system 的静态前缀) + 最后一个内容块(滚动,
+        # 覆盖已经攒下来的对话历史, 含里面的 K线图)。低于最低可缓存长度的那几轮不会命中,
+        # 但也不会报错, 无需特判。
+        payload["system"] = _cached_system(system_blocks)
+        payload["messages"] = _cached_messages(messages)
 
     resp = _post_with_retry(headers, payload)
     resp = _retry_on_oauth_401(resp, token, is_oauth, system, headers, payload)
@@ -584,7 +696,9 @@ def call_claude_messages(
     if not resp.ok:
         _raise_for_status(resp)
 
-    return resp.json()
+    data = resp.json()
+    _record_usage(data, model)
+    return data
 
 
 # ── 连接测试 ───────────────────────────────────────────

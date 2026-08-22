@@ -767,3 +767,152 @@ def test_compute_backoff_overload_uses_higher_cap_with_jitter():
 def test_compute_backoff_overload_still_honors_retry_after():
     """服务端明确说了等多久就等多久, 不叠抖动。"""
     assert llm._compute_backoff(3, "7", overload=True) == 7.0
+
+
+# ── prompt 缓存 ─────────────────────────────────────────
+# agent 每轮把 system(1.0万 tokens) + 35 个工具定义(0.6万) 原样重发, 跑满 14 轮光前缀
+# 就重复 21 万 tokens。这一组保证断点打在对的位置、且不会逐轮累积。
+
+def _cache_on():
+    llm._base_url = "https://api.anthropic.com"
+    llm._PROMPT_CACHE = True
+
+
+def test_cache_only_for_official_endpoint():
+    """第三方兼容端点见到 cache_control 可能直接 400, 宁可不缓存也别弄坏兼容性。"""
+    _cache_on()
+    assert llm._cache_enabled() is True
+    llm._base_url = "https://api.deepseek.com"
+    assert llm._cache_enabled() is False
+    llm._base_url = "https://my-proxy.internal/anthropic"
+    assert llm._cache_enabled() is False
+
+
+def test_cache_can_be_disabled_by_env():
+    _cache_on()
+    llm._PROMPT_CACHE = False
+    try:
+        assert llm._cache_enabled() is False
+    finally:
+        llm._PROMPT_CACHE = True
+
+
+def test_breakpoint_goes_on_last_system_block():
+    """顺序是 tools → system → messages, 断点落在 system 末尾才能覆盖 tools+system。"""
+    blocks = [{"type": "text", "text": "身份"}, {"type": "text", "text": "长长的规则"}]
+    out = llm._cached_system(blocks)
+    assert "cache_control" not in out[0]
+    assert out[1]["cache_control"] == {"type": "ephemeral"}
+    assert blocks[1] == {"type": "text", "text": "长长的规则"}     # 原对象没被改
+
+
+def test_cached_system_wraps_plain_string():
+    out = llm._cached_system("一段 system")
+    assert out == [{"type": "text", "text": "一段 system",
+                    "cache_control": {"type": "ephemeral"}}]
+    assert llm._cached_system("") == ""
+    assert llm._cached_system(None) is None
+
+
+def test_rolling_breakpoint_on_last_content_block():
+    msgs = [
+        {"role": "user", "content": "茅台怎么了"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "get_quote"}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "{}"},
+                                     {"type": "tool_result", "tool_use_id": "t2", "content": "{}"}]},
+    ]
+    out = llm._cached_messages(msgs)
+    assert "cache_control" not in out[1]["content"][0]
+    assert out[2]["content"][0].get("cache_control") is None
+    assert out[2]["content"][1]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_rolling_breakpoint_does_not_mutate_caller_list():
+    """agent loop 复用同一个 messages 往后 append —— 就地改会让断点逐轮累积,
+    超过 4 个 Anthropic 直接报错, 表现为"多问几轮就必失败"。"""
+    msgs = [{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t", "content": "{}"}]}]
+    llm._cached_messages(msgs)
+    assert "cache_control" not in msgs[0]["content"][0]
+    assert "cache_control" not in msgs[0]
+
+
+def test_only_two_breakpoints_across_many_rounds():
+    """模拟 agent 连跑 10 轮: 每轮都重新标一次, 发出去的断点数必须恒为 2。"""
+    _cache_on()
+    msgs = [{"role": "user", "content": "问题"}]
+    sysb = [{"type": "text", "text": "规则"}]
+    for rnd in range(10):
+        payload_sys = llm._cached_system(sysb)
+        payload_msgs = llm._cached_messages(msgs)
+        n = sum(1 for b in payload_sys if isinstance(b, dict) and "cache_control" in b)
+        for m in payload_msgs:
+            c = m.get("content")
+            if isinstance(c, list):
+                n += sum(1 for b in c if isinstance(b, dict) and "cache_control" in b)
+        assert n == 2, f"第 {rnd + 1} 轮断点数 {n}, 应恒为 2"
+        # 下一轮: 追加 assistant + tool_result(照 agent loop 的写法)
+        msgs.append({"role": "assistant", "content": [{"type": "tool_use", "id": f"t{rnd}"}]})
+        msgs.append({"role": "user", "content": [{"type": "tool_result",
+                                                  "tool_use_id": f"t{rnd}", "content": "{}"}]})
+
+
+@mock.patch("time.sleep")
+@mock.patch.object(llm._llm_session, "post")
+def test_payload_carries_cache_control_end_to_end(mock_post, mock_sleep):
+    _cache_on()
+    llm._api_key = "sk-test"
+    ok = mock.MagicMock(status_code=200, ok=True)
+    ok.json.return_value = {"content": [{"type": "text", "text": "hi"}],
+                            "usage": {"input_tokens": 5, "output_tokens": 2,
+                                      "cache_creation_input_tokens": 16000,
+                                      "cache_read_input_tokens": 0}}
+    mock_post.return_value = ok
+
+    msgs = [{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t", "content": "{}"}]}]
+    llm.call_claude_messages(msgs, system="很长的规则", tools=[{"name": "get_quote"}])
+
+    sent = mock_post.call_args[1]["json"]
+    assert sent["system"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert sent["messages"][-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in sent["tools"][0]        # 只靠 system 那个断点覆盖
+    assert "cache_control" not in msgs[0]["content"][0]   # 调用方的对象没被污染
+
+
+@mock.patch("time.sleep")
+@mock.patch.object(llm._llm_session, "post")
+def test_third_party_endpoint_gets_no_cache_control(mock_post, mock_sleep):
+    llm._base_url = "https://api.deepseek.com"
+    llm._api_key = "sk-test"
+    ok = mock.MagicMock(status_code=200, ok=True)
+    ok.json.return_value = {"content": [], "usage": {}}
+    mock_post.return_value = ok
+
+    llm.call_claude_messages([{"role": "user", "content": "hi"}], system="规则")
+    sent = mock_post.call_args[1]["json"]
+    assert sent["system"] == "规则"                      # 原样, 没被包成块
+    assert sent["messages"][0]["content"] == "hi"
+
+
+def test_usage_stats_hit_rate():
+    """命中率 = 从缓存读到的 prompt tokens / 全部 prompt tokens。"""
+    with llm._usage_lock:
+        for k in llm._usage_totals:
+            llm._usage_totals[k] = 0
+    llm._record_usage({"usage": {"input_tokens": 1000, "output_tokens": 200,
+                                 "cache_creation_input_tokens": 16000,
+                                 "cache_read_input_tokens": 0}})          # 第一轮: 写缓存
+    llm._record_usage({"usage": {"input_tokens": 500, "output_tokens": 300,
+                                 "cache_creation_input_tokens": 0,
+                                 "cache_read_input_tokens": 16000}})      # 第二轮: 命中
+    s = llm.get_usage_stats()
+    assert s["calls"] == 2
+    assert s["cache_read"] == 16000 and s["cache_write"] == 16000
+    assert s["prompt_total"] == 1000 + 16000 + 500 + 16000
+    assert s["hit_rate"] == round(16000 / 33500 * 100, 1)
+
+
+def test_usage_stats_tolerates_missing_usage():
+    """有的兼容端点不回 usage —— 不能因此抛错把整次问答弄挂。"""
+    llm._record_usage({})
+    llm._record_usage(None)
+    assert isinstance(llm.get_usage_stats()["hit_rate"], float)
