@@ -1218,7 +1218,7 @@ def _parse_macro_line(sym: str, body: str) -> dict | None:
             prev = float(fields[2]) if fields[2] else 0
             price = float(fields[3]) if fields[3] else 0
             extra = {"open": _f(1), "high": _f(4), "low": _f(5),
-                     "volume": _f(8), "amount": _f(9)}
+                     "volume": _f(8), "amount": _f(9), "amount_ccy": "元"}
         # 港股 hk: 代号,名,今开,昨收,最高,最低,当前,涨跌,涨跌%,?,?,成交额(千元),成交量(股)
         # 昨收在 fields[3] 而非 [2](=今开) —— 实测三只恒生指数用 [3] 才与新浪自带的
         # 涨跌幅字段吻合(HSI 1.339% vs 用 [2] 算出的 0.592%)
@@ -1231,7 +1231,8 @@ def _parse_macro_line(sym: str, body: str) -> dict | None:
             price = float(fields[6]) if fields[6] else 0
             amt = _f(11)
             extra = {"open": _f(2), "high": _f(4), "low": _f(5),
-                     "amount": amt * 1000 if amt else None, "volume": _f(12)}
+                     "amount": amt * 1000 if amt else None, "volume": _f(12),
+                     "amount_ccy": "港元"}
         # 美股 gb_: 名,当前,涨跌%,时间,涨跌额,今开,最高,最低,52周高,52周低,成交量
         # fields[5] 是今开不是昨收 —— 昨收由 当前-涨跌额 反推才与新浪自带涨跌幅吻合
         # (实测纳斯达克 -0.28% vs 拿 fields[5] 当昨收算出的 -0.454%)
@@ -1321,6 +1322,16 @@ def _fetch_macro_sina() -> dict:
             parsed[sym] = {"price": round(px, 4), "prev_close": round(prev, 4),
                            "change_pct": round((px - prev) / prev * 100, 3) if prev else 0,
                            **ohl}
+
+    # KOSPI 的成交代金单独补(必须在上面 gi 交叉校验之后 —— 那段可能把整个 dict 换掉)。
+    # 只有它有真额: 见 _kospi_turnover 里的实测说明。
+    if parsed.get("znb_KOSPI"):
+        try:
+            t = _kospi_turnover()
+        except Exception:
+            t = None
+        if t:
+            parsed["znb_KOSPI"] = {**parsed["znb_KOSPI"], **t}
 
     # 美股开盘前(北京时间约 20:00 到 21:30)新浪把当日涨跌额与开高低全清零, 照字段算出来
     # 就是"昨收=现价, +0.00%"——看着像平盘, 其实是还没开盘。这段窗口用日K倒数两根收盘补出
@@ -1589,6 +1600,36 @@ _GI_SESSION_SHAPE = {
     "znb_KOSPI": (390, 0, 0),       # 首尔 9:00-15:30 连续
     "int_ftse": (510, 0, 0),        # 伦敦 8:00-16:30 连续
 }
+
+
+_NAVER_KOSPI = "https://polling.finance.naver.com/api/realtime/domestic/index/KOSPI"
+
+
+def _kospi_turnover() -> dict | None:
+    """KOSPI 当日真实成交代金(韩元) + 成交量(股), 取自 Naver 实时接口。
+
+    为什么单给 KOSPI 开这一路: 指数的"成交额"要交易所自己披露才有。实测三个免费源
+    (新浪/腾讯/东财)对美股三大指数都给不出真额 —— 腾讯那个非零的"额"除以量正好等于
+    指数点位(道指算出来每股 5.3 万美元), 是 量×点位 凑的; 东财 f48 直接给 0。
+    但韩国交易所公布 거래대금, Naver 的 accumulatedTradingValueRaw 就是它, 单位韩元:
+    实测 23,117,061,000,000 ≈ 23.1 万亿韩元, 与页面显示的 "23,117,061백만"(百万韩元) 一致。
+    日经/富时同样查过, 免费源连成交量都是 0, 只能维持"无成交额"标注。
+    """
+    r = _requests.get(_NAVER_KOSPI, headers={"User-Agent": "Mozilla/5.0"}, timeout=6)
+    d = ((r.json() or {}).get("datas") or [{}])[0]
+    amt = d.get("accumulatedTradingValueRaw")
+    vol = d.get("accumulatedTradingVolumeRaw")
+    try:
+        amt = float(amt) if amt else None
+        vol = float(vol) if vol else None
+    except (TypeError, ValueError):
+        return None
+    if not amt or amt <= 0:
+        return None
+    out = {"amount": amt, "amount_ccy": "韩元"}
+    if vol and vol > 0:
+        out["volume"] = vol
+    return out
 
 
 def _minute_sina_global(sym: str) -> dict | None:
