@@ -53,12 +53,14 @@ export default function MacroKlineModal({ item, items, onPick, onClose }) {
   }
   const fmtPct = (v) => v == null ? '--' : (v >= 0 ? '+' : '') + v.toFixed(2) + '%'
   const colorPct = (v) => v == null ? 'text-text-dim' : v >= 0 ? 'text-bear-bright' : 'text-bull-bright'
-  // 成交额: 源给的是元(A股)/港元(港股), 按量级折成 万亿/亿/万
-  const fmtAmt = (v) => {
+  // 成交额: 按量级折成 万亿/亿/万, 并带上币种 —— 恒生是港元、KOSPI 是韩元, 裸数字会被
+  // 当成人民币读(23 万亿韩元 ≈ 1200 亿人民币, 差两个数量级)。A股是元, 省掉不啰嗦。
+  const fmtAmt = (v, ccy) => {
     if (!v) return null
-    if (v >= 1e12) return (v / 1e12).toFixed(2) + '万亿'
-    if (v >= 1e8) return (v / 1e8).toFixed(1) + '亿'
-    return (v / 1e4).toFixed(0) + '万'
+    const unit = (ccy && ccy !== '元') ? ccy : ''
+    if (v >= 1e12) return (v / 1e12).toFixed(2) + '万亿' + unit
+    if (v >= 1e8) return (v / 1e8).toFixed(1) + '亿' + unit
+    return (v / 1e4).toFixed(0) + '万' + unit
   }
 
   const renderStats = (series, periodPct) => {
@@ -86,8 +88,8 @@ export default function MacroKlineModal({ item, items, onPick, onClose }) {
     )
   }
 
-  // 底部口径行(分时/K线两页共用)。成交额只有 A股与港股指数的源给, 美股只给成交量,
-  // 日经/KOSPI/FTSE 两者都没有 —— 有什么显示什么, 缺的不占位。
+  // 底部口径行(分时/K线两页共用)。成交额只有交易所自己披露才有: A股/港股/KOSPI 有真额,
+  // 美股三大指数只给成交量, 日经/富时连量都没有 —— 有什么显示什么, 缺的不占位。
   const fmtCnt = (v) => v >= 1e8 ? (v / 1e8).toFixed(2) + '亿股' : (v / 1e4).toFixed(0) + '万股'
   const statLine = (<>
     <span>昨收 <span className="text-text font-mono">{fmtVal(item.prev_close)}</span></span>
@@ -96,10 +98,10 @@ export default function MacroKlineModal({ item, items, onPick, onClose }) {
     {item.open != null && <span>开盘 <span className="text-text font-mono">{fmtVal(item.open)}</span></span>}
     {item.high != null && <span>日高 <span className="text-text font-mono">{fmtVal(item.high)}</span></span>}
     {item.low != null && <span>日低 <span className="text-text font-mono">{fmtVal(item.low)}</span></span>}
-    {fmtAmt(item.amount)
-      ? <span>成交额 <span className="text-text font-mono">{fmtAmt(item.amount)}</span></span>
+    {fmtAmt(item.amount, item.amount_ccy)
+      ? <span>成交额 <span className="text-text font-mono">{fmtAmt(item.amount, item.amount_ccy)}</span></span>
       : item.volume
-        ? <span title="美股指数只披露成交股数, 没有成交额。腾讯给的那个「额」实测等于 成交量×指数点位(道指算出来每股 5.3 万美元), 不是真金额, 故不用">
+        ? <span title="美股指数只披露成交股数, 没有成交额。三个免费源里腾讯那个非零的「额」实测等于 成交量×指数点位(道指算出来每股 5.3 万美元)、东财直接给 0, 都不是真金额, 故不用">
             成交量 <span className="text-text font-mono">{fmtCnt(item.volume)}</span>
             <span className="text-text-muted">(无成交额)</span>
           </span>
