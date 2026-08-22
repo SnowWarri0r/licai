@@ -613,11 +613,20 @@ async def macro_minute(symbol: str):
         d = await _tdx.minute(sym)
         return {"symbol": sym, "session": "cn", "vol_unit": "手",
                 "date": (d or {}).get("date") or "", "points": (d or {}).get("points") or []}
-    if sym.startswith("hk") or sym in ("gb_dji", "gb_ixic", "gb_inx"):
+    if sym in ("gb_dji", "gb_ixic", "gb_inx"):
+        # 美股指数走 Yahoo(整段 1 分钟线); 它不可达时退回腾讯 —— 腾讯对指数只回一个收盘
+        # 快照点, 画不出线, 但至少不报错
+        from services.market_data import _minute_yahoo, _minute_tencent
+        d = await asyncio.to_thread(_minute_yahoo, sym)
+        if not d or len(d.get("points") or []) < 2:
+            d = await asyncio.to_thread(_minute_tencent, sym)
+        return {"symbol": sym, "session": "us", "vol_unit": "股",
+                "date": (d or {}).get("date") or "", "points": (d or {}).get("points") or []}
+    if sym.startswith("hk"):
         from services.market_data import _minute_tencent
         d = await asyncio.to_thread(_minute_tencent, sym)
-        return {"symbol": sym, "session": "hk" if sym.startswith("hk") else "us",
-                "vol_unit": "股", "date": (d or {}).get("date") or "",
+        return {"symbol": sym, "session": "hk", "vol_unit": "股",
+                "date": (d or {}).get("date") or "",
                 "points": (d or {}).get("points") or []}
     if sym in ("int_nikkei", "znb_KOSPI", "int_ftse"):
         # 新浪 gi.finance: 有分时但没有成交量; session 按当天首点算好一并给前端(跟夏令时)
