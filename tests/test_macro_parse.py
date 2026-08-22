@@ -283,3 +283,72 @@ def test_yahoo_minute_only_us_indices(monkeypatch):
     assert md._minute_yahoo("hkHSI") is None
     assert md._minute_yahoo("sh000001") is None
     assert not called                              # 不是美股指数就别发请求
+
+
+# ── 指数成交额: 哪些是真的, 哪些是凑的 ─────────────────
+# 起因: release note 里写了"海外指数只有成交量没有成交额", 实测发现说过头了 ——
+# 恒生和 KOSPI 都有交易所披露的真额, 只有美股/日经/富时没有。这一组把判据钉死。
+
+def test_a_and_hk_amount_carry_currency():
+    """A股是元、港股是港元。裸数字会被当人民币读, 港股额差 ~0.9 倍、韩元差两个数量级。"""
+    sh = _parse_macro_line("sh000001", LINE_SH)
+    assert sh["amount"] == 1112818620627
+    assert sh["amount_ccy"] == "元"
+
+    hk = _parse_macro_line("hkHSI", LINE_HK)
+    # fields[11] 是成交额且单位千港元 —— ×1000 才是港元
+    assert hk["amount"] == 210770397 * 1000
+    assert hk["amount_ccy"] == "港元"
+
+
+def test_us_index_has_volume_but_no_amount():
+    """美股指数只有成交股数。源里那个看着像额的字段一律不采信。"""
+    us = _parse_macro_line("gb_ixic", LINE_US)
+    assert us["volume"] == 6405507373
+    assert "amount" not in us and "amount_ccy" not in us
+
+
+def test_tencent_style_amount_is_volume_times_index_level():
+    """判据本身: 腾讯给美股指数的"额"除以"量"正好等于指数点位, 所以它是 量×点位 凑的。
+
+    2026-08-19 实盘: 道指 53343.40, 量 427996859, "额" 22844153717788。
+    这条测试是给未来的自己看的 —— 看到非零的额字段先做这个除法, 别直接接上。
+    """
+    px, vol, fake_amt = 53343.40, 427996859, 22844153717788
+    assert abs(fake_amt / vol / px - 1) < 0.001         # 商就是点位, 不是单价
+    # 真实的美股指数成交额若存在, 单价该在个位到几百美元量级, 不可能是 5 万
+    assert fake_amt / vol > 10000
+
+
+def test_kospi_turnover_parsed_from_naver(monkeypatch):
+    """KOSPI 有真成交代金(韩元), 从 Naver 累计字段取。"""
+    from services import market_data as md
+
+    class R:
+        @staticmethod
+        def json():
+            return {"datas": [{
+                "accumulatedTradingVolume": "305,840천주",
+                "accumulatedTradingValue": "23,117,061백만",
+                "accumulatedTradingVolumeRaw": 305840000,
+                "accumulatedTradingValueRaw": 23117061000000,
+            }]}
+
+    monkeypatch.setattr(md._requests, "get", lambda *a, **k: R())
+    t = md._kospi_turnover()
+    assert t == {"amount": 23117061000000.0, "amount_ccy": "韩元", "volume": 305840000.0}
+    # 백만 = 百万韩元, 与 Raw 值自洽(23,117,061 百万 = 23.117e12)
+    assert abs(t["amount"] / 1e6 - 23117061) < 1
+
+
+def test_kospi_turnover_none_when_source_empty(monkeypatch):
+    """源没给值就返回 None, 不能把 0 当成"成交额 0 元"显示出去。"""
+    from services import market_data as md
+
+    class R:
+        @staticmethod
+        def json():
+            return {"datas": [{"accumulatedTradingValueRaw": 0}]}
+
+    monkeypatch.setattr(md._requests, "get", lambda *a, **k: R())
+    assert md._kospi_turnover() is None
