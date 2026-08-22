@@ -247,3 +247,76 @@ def active_rules_sync() -> list[dict]:
         return [{"title": t, "body": b} for t, b in rows]
     except Exception:
         return []
+
+
+async def known_evidence() -> set:
+    """已经起草过的纠正原话(任何状态)。
+
+    每周自动挖时用它跳过老对话: 一是省额度(一条起草要调一次模型), 二是**被否决过的不能
+    再提** —— 去重要对着"见过的", 不是对着"批准的", 否则否掉的规则每周原样回来。
+    """
+    db = await _conn()
+    try:
+        cur = await db.execute("SELECT evidence FROM prompt_rule WHERE evidence <> ''")
+        return {(r[0] or "").strip() for r in await cur.fetchall()}
+    finally:
+        await db.close()
+
+
+async def mine_new(max_drafts: int = 3) -> dict:
+    """挖新纠正 → 起草 → 落进待审队列。返回统计。
+
+    只处理没起草过的纠正, 每次最多 max_drafts 条 —— 这是个后台循环, 不该悄悄烧额度。
+    起草失败/解析不出/判为非规则都只是跳过, 不影响主流程。
+    """
+    import services.llm_client as llm
+    rows = await fetch_messages()
+    seen = await known_evidence()
+    items = [it for it in mine_corrections(rows)
+             if (it.get("correction") or "").strip() not in seen]
+    stat = {"corrections": len(items), "added": 0, "skipped": 0, "dup": 0, "failed": 0}
+    import asyncio as _aio
+    for it in items[:max_drafts]:
+        try:
+            text = await _aio.to_thread(
+                llm.call_claude, draft_prompt(it), draft_system(), "balanced", 3000)
+        except Exception:
+            stat["failed"] += 1
+            continue
+        d = parse_draft(text)
+        if not d:
+            stat["failed"] += 1
+            continue
+        if d.get("verdict") != "rule" or not d.get("title") or not d.get("body"):
+            # 判为"不是规则问题"(数据源/偶发)也要记一条 evidence, 否则下周再挖到它、
+            # 再花一次额度得出同一个结论
+            await add_candidate(f"[非规则] {it['correction'][:24]}", d.get("why", "")[:200],
+                                it["correction"], it.get("session_id"))
+            await decide_by_evidence(it["correction"], "rejected")
+            stat["skipped"] += 1
+            continue
+        if await add_candidate(d["title"], d["body"], it["correction"], it.get("session_id")):
+            stat["added"] += 1
+        else:
+            stat["dup"] += 1
+    return stat
+
+
+async def decide_by_evidence(evidence: str, status: str) -> None:
+    db = await _conn()
+    try:
+        await db.execute(
+            "UPDATE prompt_rule SET status = ?, decided_at = CURRENT_TIMESTAMP "
+            "WHERE evidence = ? AND status = 'pending'", (status, (evidence or "")[:500]))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def pending_count() -> int:
+    db = await _conn()
+    try:
+        cur = await db.execute("SELECT COUNT(*) FROM prompt_rule WHERE status = 'pending'")
+        return (await cur.fetchone())[0]
+    finally:
+        await db.close()
