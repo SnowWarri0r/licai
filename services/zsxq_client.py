@@ -38,6 +38,14 @@ _READ_TOOLS = frozenset({
     "search_topics", "search_groups",
 })
 
+# 附件正文要走通用 API(远端没给专门的下载工具)。call_zsxq_api 本身是能 POST/PUT/DELETE 的
+# 万能口 —— 放进来必须同时钉死方法与路径, 否则白名单就形同虚设:
+#   · 只允许 GET
+#   · path 只允许「取某个文件的临时直链」这一条
+_API_GET_ALLOW = (re.compile(r"^/v2/files/\d+/download_url$"),)
+_MAX_FILE_BYTES = 25 * 1024 * 1024      # 单个附件上限, 超了不下
+_MAX_FILE_CHARS = 20000                 # 交给模型的正文上限
+
 
 def configure(url: str | None = None, groups: list | None = None) -> None:
     """两个参数都用 None 当「本次不改」的哨兵。
@@ -72,7 +80,14 @@ def endpoint_label() -> str:
 
 
 def _call(name: str, args: dict | None = None) -> dict:
-    if name not in _READ_TOOLS:
+    if name == "call_zsxq_api":
+        a = args or {}
+        method = str(a.get("method") or "").upper()
+        path = str(a.get("path") or "")
+        if method != "GET" or not any(p.match(path) for p in _API_GET_ALLOW):
+            return {"ok": False, "error": {"type": "forbidden",
+                                           "message": f"通用 API 只放行 GET + 取文件直链, 拒绝 {method} {path}"}}
+    elif name not in _READ_TOOLS:
         return {"ok": False, "error": {"type": "forbidden", "message": f"{name} 不在只读白名单"}}
     if not _URL:
         return {"ok": False, "error": {"type": "not_configured",
@@ -198,6 +213,10 @@ def _norm_topic(t: dict, group_name: str = "") -> dict | None:
     if (n_img or n_file) and (not body or body in _PLACEHOLDER):
         out["附件"] = f"{n_file}个文件" if n_file else f"{n_img}张图"
         out["正文"] = ""
+    if n_file:      # 带上 file_id, 模型才能点名要某一份的正文(read_zsxq_file)
+        out["附件列表"] = [{"file_id": str(f.get("file_id")), "名称": f.get("name") or "",
+                          "MB": round((f.get("size") or 0) / 1e6, 2)}
+                         for f in (t.get("files") or [])[:10] if f.get("file_id")]
     return out
 
 
@@ -299,3 +318,71 @@ def health() -> dict:
     return {"configured": True, "ok": False, "group_count": len(_GROUPS),
             "endpoint": endpoint_label(),
             "error": err.get("message") or "", "hint": err.get("hint") or ""}
+
+
+def _extract_text(raw: bytes, name: str) -> tuple[str, str]:
+    """按扩展名抽正文, 返回 (正文, 说明)。装不出文字(扫描件/不支持的格式)时如实说, 不硬编。"""
+    low = (name or "").lower()
+    try:
+        if low.endswith(".pdf"):
+            import io
+            from pypdf import PdfReader
+            rd = PdfReader(io.BytesIO(raw))
+            txt = "\n".join((pg.extract_text() or "") for pg in rd.pages)
+            if len(txt.strip()) < 50:
+                return "", f"PDF 共 {len(rd.pages)} 页但取不到文字, 大概是扫描件/图片版"
+            return txt, f"PDF {len(rd.pages)} 页"
+        if low.endswith((".docx", ".doc")):
+            import io
+            import docx
+            d = docx.Document(io.BytesIO(raw))
+            paras = [p.text for p in d.paragraphs if p.text.strip()]
+            for tb in d.tables:      # 研报的关键数字常在表格里
+                for row in tb.rows:
+                    cells = [c.text.strip() for c in row.cells if c.text.strip()]
+                    if cells:
+                        paras.append(" | ".join(cells))
+            return "\n".join(paras), f"DOCX {len(d.paragraphs)} 段"
+        if low.endswith((".txt", ".md", ".csv")):
+            return raw.decode("utf-8", errors="replace"), "纯文本"
+    except Exception as e:
+        return "", f"解析失败: {type(e).__name__} {str(e)[:80]}"
+    return "", f"不支持的格式({low.rsplit('.', 1)[-1] if '.' in low else '未知'})"
+
+
+def fetch_file_text(file_id: str, name: str = "") -> dict:
+    """取某个附件的正文文字。**不落盘**: 字节只在内存里过一遍, 抽完文字就丢。
+
+    注意这是第三方版权物(基本都是券商研报), 拿到的文字只用于提炼要点, 不整篇复述、不转存。
+    另外知识星球对每个文件是**按次计数**的(files[].download_count), 拉一次就 +1, 别做批量遍历。
+    """
+    if not str(file_id).isdigit():
+        return {"error": "file_id 非法"}
+    r = _call("call_zsxq_api", {"method": "GET", "path": f"/v2/files/{file_id}/download_url"})
+    if not r.get("ok"):
+        return {"error": (r.get("error") or {}).get("message") or "取直链失败"}
+    dl = _dig(r["data"], "download_url")
+    if not dl:
+        return {"error": "返回里没有 download_url"}
+    try:
+        import requests
+        s = requests.Session()
+        s.trust_env = False
+        with s.get(dl, timeout=60, stream=True) as resp:
+            if resp.status_code != 200:
+                return {"error": f"下载失败 HTTP {resp.status_code}"}
+            buf = bytearray()
+            for chunk in resp.iter_content(65536):
+                buf.extend(chunk)
+                if len(buf) > _MAX_FILE_BYTES:
+                    return {"error": f"文件超过 {_MAX_FILE_BYTES // 1024 // 1024}MB 上限, 不下载"}
+    except Exception as e:
+        return {"error": f"下载异常: {type(e).__name__} {str(e)[:80]}"}
+    txt, note = _extract_text(bytes(buf), name or _dig(r["data"], "name") or "")
+    if not txt:
+        return {"file_id": str(file_id), "文件名": name, "正文": "", "说明": note,
+                "stance": "opinion"}
+    clipped = txt[:_MAX_FILE_CHARS]
+    return {"file_id": str(file_id), "文件名": name, "字节": len(buf), "说明": note,
+            "字数": len(txt), "截断": len(txt) > _MAX_FILE_CHARS,
+            "正文": clipped, "stance": "opinion"}
