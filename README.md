@@ -402,7 +402,7 @@ A股 / 港股 / 美股个股实时报价全部走 Sina 免费接口，无需 API
 - 历史分时（K线浮层）：通达信协议，可选，见[可选：通达信数据源](#tdx)；昨收基准的除权还原用 东财分红送配明细（akshare）
 - 自由查股搜索：与 agent 同一条 resolve 链路（持仓优先 → A股全表 → 6位代码直查 → 美股 ticker）
 - 网页全文（read_url）：Firecrawl 免 key `/v1/scrape` 主源 + Jina Reader（r.jina.ai）免 key 备用，配额用完自动切换
-- 观点面（可选）：知识星球官方 CLI 只读拉取，见[可选：知识星球](#zsxq)
+- 观点面（可选）：知识星球官方 MCP 端点只读拉取，见[可选：知识星球](#zsxq)
 - LLM：Claude API（OAuth via Claude Code 或 ANTHROPIC_API_KEY），个股问答 agent 走 tool-calling + 服务端联网搜索 + 网页全文抓取
 
 </details>
@@ -475,20 +475,22 @@ export TDX_BASE_URL=http://localhost:8080     # 环境变量
 
 <h3 id="zsxq">可选：知识星球（只读观点面）</h3>
 
-现有情绪面全是指标（涨停/炸板/赚钱效应/连板高度），缺**文本面**——盘该怎么定性、社群在讲什么逻辑。接上之后 agent 多两个只读工具（`get_zsxq_digest` 读最近主题 / `search_zsxq` 按关键词搜），走[官方 CLI](https://github.com/unnoo/zsxq-skill)。
+现有情绪面全是指标（涨停/炸板/赚钱效应/连板高度），缺**文本面**——盘该怎么定性、社群在讲什么逻辑。接上之后 agent 多两个只读工具（`get_zsxq_digest` 读最近主题 / `search_zsxq` 按关键词搜），走知识星球官方 MCP 端点。
 
-```bash
-npm i -g zsxq-cli
-zsxq-cli auth login          # OAuth，token 存系统 Keychain，本项目不碰不存
-# 然后: 设置 → 知识星球 → 读取我的星球 → 勾选 → 保存
 ```
+设置 → 知识星球 → 填入官方 MCP 端点 URL（带 api_key）→ 读取我的星球 → 勾选 → 保存
+```
+
+不用装 npm 包、不依赖系统 Keychain，填个 URL 就能跑；`services/mcp_http.py` 是个一百来行的极简 MCP streamable-HTTP 客户端（只实现 `tools/list` + `tools/call`，不引 SDK）。
 
 四条约束（默认全关，不勾星球等于没这功能）：
 
-- **只读** — 只用 `group +list` / `group +topics` / `topic +search` / `topic +detail`；发帖、评论、加精、删除一律不接（对理财无用，且是账号级写操作）
+- **只读白名单** — 远端 21 个工具里有 `create_topic` / `create_topic_comment` / `set_topic_digested` / `call_zsxq_api` 这些写口，白名单（`_READ_TOOLS`）只放行取数的 10 个，其余直接拒且不发请求（有测试盯着）
+- **默认只看星主** — `scope=by_owner`。复盘类星球里成员闲聊常占九成，要的是博主自己的定性；每个星球可单独关掉这个筛选
 - **原文不落库** — 只在内存里过一遍送进模型，落 SQLite 的只该是提炼后的结论；不做成付费内容的本地镜像
 - **单独一档可信度** — 返回带 `stance=opinion`，回答里按 `[星球观点]` 标注并带作者日期；数字与结论一律以 `[实测]`/`[联网]` 为准，原文里的操作倾向只当「有人这么说」的舆情记录
-- **没接入时不塞给模型** — 工具表按开关动态过滤（35 → 37），免得模型去调然后拿一串 error
+
+api_key 拼在 URL 里，所以：**存本机数据库**（不进 `config.py`）、界面只回显 `host/path`、启动日志也只打脱敏值、只收 `https`。没接入时这两个工具不塞给模型（35 → 37 动态过滤），免得模型去调然后拿一串 error。
 
 > 内容版权与平台条款属于你和知识星球之间的事：请用**自己的账号**、遵守所在星球的规则，本项目只提供只读通道。
 
