@@ -138,6 +138,8 @@ _OVERLOAD_STATUS = {429, 529}
 # 实测 _system() 当天逐字节稳定, 唯一易变的"【今天】<日期>"在末尾 99% 处, 一天失效一次,
 # 形状正好适合缓存。真实一次三轮问答: 8.4 万 prompt tokens 里 7.9 万走缓存, 命中 93.7%。
 _PROMPT_CACHE = os.environ.get("LLM_PROMPT_CACHE", "1").lower() not in ("0", "false", "no")
+# 正文为空时放大预算重试的上限。不设无限: 真的答不出来该报空, 而不是无休止加预算。
+_NO_TEXT_RETRY_CAP = int(os.environ.get("LLM_NO_TEXT_RETRY_CAP", "8192"))
 _CACHE_CTL = {"type": "ephemeral"}
 
 # 可重试的网络异常
@@ -618,6 +620,7 @@ def call_claude(
     system: str | None = None,
     model: str = "claude-sonnet-5",
     max_tokens: int = 2048,
+    _retried: bool = False,
 ) -> str:
     """Call LLM API (Anthropic-协议兼容). Returns text response.
 
@@ -655,7 +658,19 @@ def call_claude(
     # 缓存不会命中。但用量照记, 否则命中率的分母是假的。
     _record_usage(data, model)
     parts = data.get("content", [])
-    return "".join(p.get("text", "") for p in parts if p.get("type") == "text")
+    text = "".join(p.get("text", "") for p in parts if p.get("type") == "text")
+
+    # 思考把预算吃光、正文一个字没留 —— 实测规则起草那类判断题上 max_tokens=700 时
+    # thinking_tokens=698, stop_reason=max_tokens, 文本长度 0。thinking 是按题目难度
+    # 自适应开的(简单 prompt 不思考), 所以光靠调大默认值挡不住, 得能自救。
+    if (not text and data.get("stop_reason") == "max_tokens"
+            and max_tokens < _NO_TEXT_RETRY_CAP and not _retried):
+        bigger = min(max_tokens * 4, _NO_TEXT_RETRY_CAP)
+        thinking = ((data.get("usage") or {}).get("output_tokens_details") or {})
+        logger.warning("LLM 正文为空(思考用了 %s tokens, 预算 %d), 放大到 %d 重试",
+                       thinking.get("thinking_tokens"), max_tokens, bigger)
+        return call_claude(user_prompt, system, model, bigger, _retried=True)
+    return text
 
 
 def call_claude_messages(

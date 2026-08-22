@@ -3156,8 +3156,13 @@ def _system() -> str:
            f"引用这些数据时, 用'周{ltwk}收盘'或具体日期({last_trade.isoformat()})指代, 当前问题里以'今日/今天/盘中'指代的均换算为该交易日, 周末无盘中数据。"
            if weekend else
            "今天是交易日, 行情类工具盘中返回实时滚动值、收盘后返回当日收盘值, 可用'今日'指代。")
-    return _SYSTEM + (f"\n【今天】{d.isoformat()} 周{wk}; 本周一={monday}, 本月1号={d.replace(day=1).isoformat()}。"
-                      f"用户问时间范围时据此换算 start/end。\n【交易日状态】{mkt}")
+    # 已批准的沉淀规则接在固定正文之后、日期之前: 日期天天变, 让它留在最末尾, 前面这
+    # 一大段当天才是逐字节稳定的(prompt 缓存的断点就打在 system 末尾, 见 llm_client)。
+    from services.rule_forge import active_rules_sync, render_rules
+    learned = render_rules(active_rules_sync())
+    return _SYSTEM + learned + (
+        f"\n【今天】{d.isoformat()} 周{wk}; 本周一={monday}, 本月1号={d.replace(day=1).isoformat()}。"
+        f"用户问时间范围时据此换算 start/end。\n【交易日状态】{mkt}")
 
 
 _TOOL_CN = {
