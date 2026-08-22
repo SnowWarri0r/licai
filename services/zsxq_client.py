@@ -24,7 +24,7 @@ URL 里带 api_key, 所以: 不打印、不返回给前端(一律脱敏成 host)
 from __future__ import annotations
 import re
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from services import mcp_http
 
@@ -39,7 +39,12 @@ _READ_TOOLS = frozenset({
 })
 
 
-def configure(url: str = "", groups: list | None = None) -> None:
+def configure(url: str | None = None, groups: list | None = None) -> None:
+    """两个参数都用 None 当「本次不改」的哨兵。
+
+    别把 url 的默认值写成 "" —— configure(groups=[...]) 会把默认空串当成「清空端点」,
+    保存星球选择的那一下就把 api_key 抹了(实测踩过: 存完 groups 后 configured 变 False)。
+    """
     global _URL, _GROUPS
     if url is not None:
         _URL = (url or "").strip()
@@ -130,17 +135,28 @@ def list_groups(limit: int = 50) -> dict:
     return {"ok": True, "groups": out, "me": me.get("name") or ""}
 
 
-# 主题正文散在 talk/question/answer/solution 几个容器里, 逐个试
+# 实测真实返回(get_group_topics / get_topic_info 同一套形态):
+#   列表键是 topics_brief(不是 topics); 每项是**平铺**结构:
+#     content=正文(实测 brief 里就是全文, 与 get_topic_info 的 content 逐条等长, 无需再拉详情)
+#     owner={name,alias,user_id}=作者(不在 talk 里)  counts={likes,comments,readers,...}
+#     digested=是否精华  images[]/files[]=附件  group={group_id,name}
+#   纯文件/图片帖的 content 是「文件」「图片」这种占位串, 没有可读正文。
+# 老式 talk/question/answer 嵌套形态留作兜底(万一端点换形状)。
 _TEXT_KEYS = ("talk", "question", "answer", "solution")
 _TAG_RE = re.compile(r"<[^>]+>")
 _HASHTAG_RE = re.compile(r"<e[^>]*type=\"hashtag\"[^>]*title=\"([^\"]*)\"[^>]*/?>")
+_PLACEHOLDER = ("「文件」", "「图片」", "「视频」", "「语音」")
 
 
 def _clean(text: str) -> str:
-    """去掉 zsxq 正文里的 <e .../> 富文本标记, 话题标签还原成 #名字。"""
+    """去掉 zsxq 正文里的 <e .../> 富文本标记, 话题标签还原成 #名字。
+
+    标签的 title 是**整段 URL 编码**的(实测 title="%23%E3%80%90...%23"), 只把 %23 换成 #
+    会留下一串 %E3%80%90 糊在正文里 —— 要整段 unquote。
+    """
     if not text:
         return ""
-    s = _HASHTAG_RE.sub(lambda m: m.group(1).replace("%23", "#"), text)
+    s = _HASHTAG_RE.sub(lambda m: unquote(m.group(1)), text)
     s = _TAG_RE.sub("", s)
     return re.sub(r"\n{3,}", "\n\n", s).strip()
 
@@ -151,15 +167,20 @@ def _norm_topic(t: dict, group_name: str = "") -> dict | None:
     tid = t.get("topic_id") or t.get("id")
     if tid is None:
         return None
-    body, author = "", ""
-    for k in _TEXT_KEYS:
-        blk = t.get(k)
-        if isinstance(blk, dict):
-            body = _clean(blk.get("text") or "")
-            author = ((blk.get("owner") or {}) or {}).get("name") or ""
-            if body:
-                break
-    return {
+    body = _clean(t.get("content") or "")
+    owner = t.get("owner") if isinstance(t.get("owner"), dict) else {}
+    author = owner.get("name") or owner.get("alias") or ""
+    if not body:                     # 兜底: 老式嵌套形态
+        for k in _TEXT_KEYS:
+            blk = t.get(k)
+            if isinstance(blk, dict):
+                body = _clean(blk.get("text") or "")
+                author = author or ((blk.get("owner") or {}) or {}).get("name") or ""
+                if body:
+                    break
+    counts = t.get("counts") if isinstance(t.get("counts"), dict) else {}
+    n_img, n_file = len(t.get("images") or []), len(t.get("files") or [])
+    out = {
         "topic_id": str(tid),
         "星球": group_name or ((t.get("group") or {}) or {}).get("name") or "",
         "作者": author,
@@ -167,10 +188,17 @@ def _norm_topic(t: dict, group_name: str = "") -> dict | None:
         "标题": t.get("title") or "",
         "正文": body,
         "时间": str(t.get("create_time") or "")[:19].replace("T", " "),
-        "点赞": t.get("likes_count"),
-        "评论": t.get("comments_count"),
+        "点赞": counts.get("likes", t.get("likes_count")),
+        "评论": counts.get("comments", t.get("comments_count")),
         "stance": "opinion",          # 观点, 不是事实 —— agent 靠它打 [星球观点]
     }
+    if t.get("digested"):
+        out["精华"] = True
+    # 纯附件帖: 说清「没有可读正文」, 别让模型把占位串当内容分析
+    if (n_img or n_file) and (not body or body in _PLACEHOLDER):
+        out["附件"] = f"{n_file}个文件" if n_file else f"{n_img}张图"
+        out["正文"] = ""
+    return out
 
 
 def _parse_time(s: str):
@@ -183,11 +211,12 @@ def _parse_time(s: str):
 
 
 def list_topics(group_id: str, group_name: str = "", days: int = 1,
-                max_items: int = 40, owner_only: bool = True) -> list:
+                max_items: int = 40, owner_only: bool = False) -> list:
     """取某星球最近 days 天的主题。
 
-    owner_only=True 走 scope=by_owner(只要星主及合伙人的帖) —— 复盘类星球里成员闲聊常占九成,
-    要的是博主自己的定性, 默认就按这个筛; 想看全部传 False。
+    owner_only=True 走 scope=by_owner(星主及合伙人)。**默认关**: 实测「短评&信息」这个星球
+    by_owner 只回三月份的两条图片帖, 而 scope=all 才是当天真正有价值的研报摘要 —— 发帖人
+    不一定被算成"星主/合伙人"。所以默认全量, 要收窄再逐个星球开。
 
     翻页游标是上一页最后一条的 create_time 且**含等于**(官方文档写明), 下一页会把上一页
     最后一条重复返回为首条 —— 必须按 topic_id 去重, 否则「今天几条」会虚高。
@@ -202,7 +231,7 @@ def list_topics(group_id: str, group_name: str = "", days: int = 1,
         r = _call("get_group_topics", args)
         if not r.get("ok"):
             break
-        page = _dig(r["data"], "topics") or (r["data"] if isinstance(r["data"], list) else [])
+        page = _dig(r["data"], "topics_brief", "topics") or (r["data"] if isinstance(r["data"], list) else [])
         if not isinstance(page, list) or not page:
             break
         stale = False
@@ -234,7 +263,7 @@ def search_topics(query: str, group_id: str = "", group_name: str = "") -> list:
     r = _call("search_topics", {"group_id": str(group_id), "query": query})
     if not r.get("ok"):
         return []
-    arr = _dig(r["data"], "topics") or (r["data"] if isinstance(r["data"], list) else [])
+    arr = _dig(r["data"], "topics_brief", "topics") or (r["data"] if isinstance(r["data"], list) else [])
     return [n for n in (_norm_topic(t, group_name) for t in (arr if isinstance(arr, list) else []))
             if n]
 
@@ -260,13 +289,13 @@ def topic_detail(topic_id: str, group_name: str = "", with_comments: bool = Fals
 def health() -> dict:
     """设置页/启动日志用: 端点通不通、凭证有效否、选了几个星球。不返回任何含 key 的串。"""
     if not _URL:
-        return {"configured": False, "ok": False, "groups": len(_GROUPS),
+        return {"configured": False, "ok": False, "group_count": len(_GROUPS),
                 "error": "未配置 MCP 端点"}
     me = self_info()
     if me.get("ok"):
-        return {"configured": True, "ok": True, "groups": len(_GROUPS),
+        return {"configured": True, "ok": True, "group_count": len(_GROUPS),
                 "endpoint": endpoint_label(), "account": me.get("name") or ""}
     err = me.get("error") or {}
-    return {"configured": True, "ok": False, "groups": len(_GROUPS),
+    return {"configured": True, "ok": False, "group_count": len(_GROUPS),
             "endpoint": endpoint_label(),
             "error": err.get("message") or "", "hint": err.get("hint") or ""}
