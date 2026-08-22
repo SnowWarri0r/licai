@@ -1195,30 +1195,50 @@ MACRO_SYMBOLS = [
 
 def _parse_macro_line(sym: str, body: str) -> dict | None:
     """各 prefix 字段不同: 提取统一的 {price, prev_close, change_pct}.
+    源里带 今开/最高/最低/成交量/成交额 的(A股/港股)一并带出, 放大图里展示。
     返回 None 表示空值或字段异常.
     """
     if not body:
         return None
     fields = body.split(",")
+    extra: dict = {}
+
+    def _f(i):
+        try:
+            v = float(fields[i])
+            return v if v > 0 else None
+        except (ValueError, IndexError):
+            return None
+
     try:
-        # A 股 sh/sz/bj(北交所): 名,昨,开,当前,最高,最低,...
+        # A 股 sh/sz/bj(北交所): 名,今开,昨收,当前,最高,最低,买,卖,成交量(股),成交额(元)
         if sym.startswith("sh") or sym.startswith("sz") or sym.startswith("bj"):
             if len(fields) < 4:
                 return None
             prev = float(fields[2]) if fields[2] else 0
             price = float(fields[3]) if fields[3] else 0
-        # 港股 hk: 代号,名,昨,开,高,低,当前,涨跌,涨跌%,...
+            extra = {"open": _f(1), "high": _f(4), "low": _f(5),
+                     "volume": _f(8), "amount": _f(9)}
+        # 港股 hk: 代号,名,今开,昨收,最高,最低,当前,涨跌,涨跌%,?,?,成交量,成交额
+        # 昨收在 fields[3] 而非 [2](=今开) —— 实测三只恒生指数用 [3] 才与新浪自带的
+        # 涨跌幅字段吻合(HSI 1.339% vs 用 [2] 算出的 0.592%)
         elif sym.startswith("hk"):
             if len(fields) < 9:
                 return None
-            prev = float(fields[2]) if fields[2] else 0
+            prev = float(fields[3]) if fields[3] else 0
             price = float(fields[6]) if fields[6] else 0
-        # 美股 gb_: 名,当前,涨跌%,时间,涨跌,昨收,开,高,...
+            extra = {"open": _f(2), "high": _f(4), "low": _f(5),
+                     "volume": _f(11), "amount": _f(12)}
+        # 美股 gb_: 名,当前,涨跌%,时间,涨跌额,今开,最高,最低,52周高,52周低,成交量
+        # fields[5] 是今开不是昨收 —— 昨收由 当前-涨跌额 反推才与新浪自带涨跌幅吻合
+        # (实测纳斯达克 -0.28% vs 拿 fields[5] 当昨收算出的 -0.454%)
         elif sym.startswith("gb_"):
             if len(fields) < 6:
                 return None
             price = float(fields[1]) if fields[1] else 0
-            prev = float(fields[5]) if fields[5] else 0
+            chg = float(fields[4]) if len(fields) > 4 and fields[4] else 0
+            prev = price - chg
+            extra = {"open": _f(5), "high": _f(6), "low": _f(7), "volume": _f(10)}
         # 海外指数 int_/znb_: 名,当前,涨跌额,涨跌%,... → 昨收 = 当前 - 涨跌额
         elif sym.startswith("int_") or sym.startswith("znb_"):
             if len(fields) < 4:
@@ -1257,6 +1277,7 @@ def _parse_macro_line(sym: str, body: str) -> dict | None:
             "price": round(price, 4),
             "prev_close": round(prev, 4),
             "change_pct": change_pct,
+            **{k: v for k, v in extra.items() if v is not None},
         }
     except (ValueError, IndexError):
         return None
