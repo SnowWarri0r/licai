@@ -89,6 +89,26 @@ def test_listed_check_passes_when_grounded():
     assert C.check_company_listed(ans, ["resolve_stock", "get_quote"], {}) == []
 
 
+def test_listed_check_ignores_unrelated_mentions_of_未上市():
+    """实测误报: 答案开头就写了"已于 2026-07-27 上市", 后面一句"公司在未上市阶段已量产"
+    被当成"断言未上市"。这类修饰用法不能算。"""
+    for tail in ("公司在未上市阶段就已量产。", "对比几家未上市公司的估值。",
+                 "未上市前的股东结构如下。", "同行里还有未上市企业。"):
+        ans = f"长鑫科技(688825)已于 2026-07-27 上市。{tail}"
+        assert C.check_company_listed(ans, ["resolve_stock"], {}) == [], tail
+    # 真的下了结论还是要抓
+    assert any("断言未上市" in b for b in
+               C.check_company_listed("长鑫科技(688825)未上市。", ["resolve_stock"], {}))
+
+
+def test_listed_failure_message_carries_context():
+    """断言消息要带上命中处的原文 —— 否则分不清真答错还是断言误报, 而重跑一条要十万
+    token 且不一定复现(实测同一条一次挂一次过)。"""
+    bad = C.check_company_listed("长鑫科技(688825)尚未上市。", ["resolve_stock"], {})
+    msg = next(b for b in bad if "断言未上市" in b)
+    assert "尚未上市" in msg and "「" in msg
+
+
 # ── 总盈亏口径 ──────────────────────────────────────────
 
 def test_total_pnl_check_catches_float_only():

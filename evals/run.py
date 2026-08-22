@@ -33,6 +33,22 @@ def _fmt(n) -> str:
     return f"{n:,}" if isinstance(n, int) else str(n)
 
 
+def _dump(row: dict) -> str:
+    """把失败用例的完整问答写到 logs/(已 gitignore, 答案里可能带持仓数字)。"""
+    try:
+        d = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+        os.makedirs(d, exist_ok=True)
+        p = os.path.join(d, f"eval-fail-{row['name']}.txt")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(f"# {row['name']}\n问: {row.get('question', '')}\n")
+            f.write(f"工具: {', '.join(row.get('tools') or [])}\n")
+            f.write("断言:\n" + "".join(f"  - {m}\n" for m in row.get("fails") or []))
+            f.write("\n答:\n" + (row.get("answer") or ""))
+        return os.path.relpath(p)
+    except Exception:
+        return ""
+
+
 async def run_one(case, verbose=False):
     import services.stock_agent as sa
     import services.llm_client as llm
@@ -61,6 +77,7 @@ async def run_one(case, verbose=False):
 
     return {
         "name": name, "status": "fail" if fails else "pass", "fails": fails,
+        "answer": ans,
         "question": case["question"], "tools": tools, "rounds": r.get("rounds"),
         "secs": round(time.time() - t0, 1),
         "prompt_tokens": used["prompt_total"] - before["prompt_total"],
@@ -112,6 +129,12 @@ async def main():
         print(f"  [{mark}] {r['name']:34} {extra}")
         for msg in r.get("fails", []):
             print(f"         · {msg}")
+        # 失败的答案落盘。这些用例每跑一条十万 token 且答案不稳定(同一条实测一次挂一次过),
+        # 当场留证比"回头重跑看看"靠谱 —— 不然分不清是真答错还是断言误报。
+        if r["status"] == "fail" and r.get("answer") and not args.verbose:
+            p = _dump(r)
+            if p:
+                print(f"         · 答案已存 {p}")
 
     ok = sum(1 for r in rows if r["status"] == "pass")
     bad = [r for r in rows if r["status"] in ("fail", "error")]
