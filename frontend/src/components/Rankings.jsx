@@ -148,33 +148,49 @@ function StockPanel({ stock, watched, onToggleWatch, groups, myGroups, onSetGrou
 
   return (
     <div className="h-full flex flex-col">
-      <div className="flex items-baseline gap-2 px-4 py-2 border-b border-border-subtle shrink-0">
-        <span className="text-[14px] font-semibold text-text-bright">{stock.name}</span>
-        <span className="text-[11px] font-mono text-text-muted">{stock.code}</span>
+      {/* 窄面板下这一行原来是逐个折行的: 股票名折成两行、「问 AI 分析」也折成两行, 整个
+          头部撑高两倍还把 K 线挤下去。所以: 一律不折行(flex-nowrap), 按信息优先级逐级隐藏
+          —— 简介最先丢, 然后细分行业, 再然后板块; 名字/涨跌/按钮永远留着。
+          用容器查询(@container)而不是屏幕断点: 决定挤不挤的是这块面板的宽度, 不是窗口宽度
+          —— 左边榜单栏占掉的宽度是固定的, 但侧边栏能收起, 同一个窗口宽度下面板可宽可窄。 */}
+      <div className="@container flex flex-nowrap items-baseline gap-2 px-4 py-2 border-b
+                      border-border-subtle shrink-0 overflow-hidden">
+        {/* 名字不给 shrink-0: 面板窄到连按钮都放不下时, 与其把右边的按钮挤出可视区(overflow
+            被裁掉就等于按钮消失了), 不如让名字自己截断。简介比名字长得多, flex 收缩按基准
+            尺寸分摊, 所以有简介时先收简介, 轮不到名字。 */}
+        <span className="text-[14px] font-semibold text-text-bright whitespace-nowrap truncate min-w-0">
+          {stock.name}
+        </span>
+        <span className="text-[11px] font-mono text-text-muted whitespace-nowrap shrink-0">{stock.code}</span>
         {stock.pct != null && (
-          <span className={`text-[13px] font-mono font-semibold ${pctColor(stock.pct)}`}>
+          <span className={`text-[13px] font-mono font-semibold whitespace-nowrap shrink-0 ${pctColor(stock.pct)}`}>
             {stock.pct >= 0 ? '+' : ''}{stock.pct}%
           </span>
         )}
         {/* 板块 + 细分行业: 异动/龙虎榜等榜单行不带「行业」字段, 板块按代码前缀现算总是有;
             细分行业(三级)拉到就替掉粗行业, 拉不到退回榜单给的粗行业 */}
-        <span className="text-[10.5px] text-text-dim ml-1">{boardOf(stock.code)}</span>
+        <span className="hidden @md:inline text-[10.5px] text-text-dim ml-1 whitespace-nowrap shrink-0">
+          {boardOf(stock.code)}
+        </span>
         {(co?.industry || stock['行业']) && (
-          <span className="text-[10.5px] text-text-dim">· {co?.industry || stock['行业']}</span>
+          <span className="hidden @lg:inline text-[10.5px] text-text-dim whitespace-nowrap shrink-0">
+            · {co?.industry || stock['行业']}
+          </span>
         )}
         {co?.brief && (
           <button onClick={() => setCoOpen(v => !v)} title="点开看完整简介与主营构成"
-            className="text-[10.5px] text-text-muted hover:text-text truncate max-w-[22rem] cursor-pointer text-left">
+            className="hidden @2xl:block text-[10.5px] text-text-muted hover:text-text truncate
+                       min-w-0 max-w-[22rem] cursor-pointer text-left">
             {co.brief} <span className="text-text-dim">{coOpen ? '⌄' : '›'}</span>
           </button>
         )}
         <button onClick={() => onToggleWatch(stock)}
           title={watched ? '移出观察池' : '加进观察池的默认组「自选」(想直接归到别的组用右边那个)'}
-          className={`ml-auto text-[15px] leading-none px-1.5 py-0.5 rounded cursor-pointer ${watched ? 'text-accent' : 'text-text-dim hover:text-accent'}`}>
+          className={`ml-auto text-[15px] leading-none px-1.5 py-0.5 rounded cursor-pointer shrink-0 ${watched ? 'text-accent' : 'text-text-dim hover:text-accent'}`}>
           {watched ? '★' : '☆'}
         </button>
         {onSetGroups && (
-          <div className="relative">
+          <div className="relative shrink-0">
             {/* 胶囊上只写得下一个组名, 多的用 +N 收着(hover 看全) —— 一票可以在好几个组里 */}
             <button onClick={() => setGrpOpen(v => !v)}
               title={(myGroups || []).length
@@ -185,7 +201,9 @@ function StockPanel({ stock, watched, onToggleWatch, groups, myGroups, onSetGrou
                         : 'border-accent/40 text-accent hover:bg-accent/10'}`}>
               {(myGroups || []).length
                 ? `${myGroups[0]}${myGroups.length > 1 ? ` +${myGroups.length - 1}` : ''}`
-                : (watched ? WL_DEFAULT : '+ 分组观察')} <span className="text-text-muted">⌄</span>
+                : (watched ? WL_DEFAULT : '+ 分组')}<span className="hidden @2xl:inline">{
+                (myGroups || []).length || watched ? '' : '观察'}</span>
+              <span className="text-text-muted ml-0.5">⌄</span>
             </button>
             {grpOpen && (
               <GroupPicker groups={groups} current={myGroups} className="absolute right-0 top-full mt-1"
@@ -194,8 +212,9 @@ function StockPanel({ stock, watched, onToggleWatch, groups, myGroups, onSetGrou
           </div>
         )}
         <button onClick={() => openAsk('')}
-          className="text-[11px] px-2.5 py-1 rounded-lg bg-accent/20 text-accent border border-accent/40 hover:bg-accent/30">
-          问 AI 分析
+          className="text-[11px] px-2.5 py-1 rounded-lg bg-accent/20 text-accent border
+                     border-accent/40 hover:bg-accent/30 whitespace-nowrap shrink-0">
+          问 AI<span className="hidden @xl:inline"> 分析</span>
         </button>
       </div>
 
