@@ -1366,8 +1366,15 @@ _SSBK_NOISE = {
     "小盘成长", "小盘股", "中盘股", "大盘股", "白马股", "绩优股", "预盈预增", "MSCI中国",
     "上证180", "上证380", "上证50", "沪深300", "中证500", "创业板综", "深证成指",
     "东方财富热股", "央企改革", "国企改革", "央国企改革",
+    # 风格/规模/持股标签: 它们不是"这只票做什么的", 却和真概念混在一条列表里,
+    # 把定义性的那个(风华高科的 MLCC 排在第 16 个, 卡在 20 条上限边上)往后挤。
+    "基金重仓", "深成500", "深证100R", "中小100", "AH股", "转债标的",
+    "周期股", "百元股", "低价股", "证金持股", "汇金持股", "社保重仓", "养老金", "QFII重仓",
+    "创业成份", "中证100", "科创50", "权重股",
 }
-_SSBK_NOISE_KW = ["板块", "新高", "新低", "涨停", "跌停", "首板", "多板", "振幅", "换手", "昨日", "今日", "近期", "连板"]
+# 「成长/价值/风格」这类后缀一律当噪声: 中盘成长 / 大盘价值 / 科技风格 …
+_SSBK_NOISE_KW = ["板块", "新高", "新低", "涨停", "跌停", "首板", "多板", "振幅", "换手",
+                  "昨日", "今日", "近期", "连板", "风格", "成长", "价值", "指数样本"]
 _concepts_cache: dict = {}
 
 
@@ -1389,7 +1396,10 @@ def _fetch_stock_concepts_sync(code: str) -> dict:
     boards = []
     for b in (j.get("ssbk") or []):
         nm = (b.get("BOARD_NAME") or "").strip()
-        if not nm or nm in _SSBK_NOISE or any(k in nm for k in _SSBK_NOISE_KW):
+        # 东财给指数成分的标签一律带下划线后缀(上证180_ / HS300_ / 央视50_), 拿它当判据
+        # 比逐个枚举可靠 —— 指数名年年变, 枚举必漏
+        if not nm or nm.endswith("_") or nm in _SSBK_NOISE \
+                or any(k in nm for k in _SSBK_NOISE_KW):
             continue
         boards.append(nm)
     themes = []
@@ -1397,7 +1407,7 @@ def _fetch_stock_concepts_sync(code: str) -> dict:
         kw = (t.get("KEYWORD") or "").strip()
         if kw and kw != "经营范围" and kw not in themes:
             themes.append(kw)
-    out = {"code": bare, "boards": boards[:20], "core_themes": themes[:8],
+    out = {"code": bare, "boards": boards[:30], "core_themes": themes[:8],
            "note": "boards=所属行业/概念板块(已滤掉指数成分等噪声标签); core_themes=核心题材/主营。可与热门概念榜交叉看是不是踩在资金主线上。"}
     _concepts_cache[ck] = (out, _t.time())
     return out
