@@ -402,9 +402,10 @@ async def watchlist_get(lite: bool = False):
     if lite:
         from database import list_watchlist
         rows = await list_watchlist()
+        # by_code 的值是分组名的列表(一票多组); 空列表 = 还没归组, 即默认组「自选」
         return {"codes": [r["code"] for r in rows],
-                "by_code": {r["code"]: r.get("group") or "" for r in rows},
-                "groups": sorted({r.get("group") or "" for r in rows} - {""})}
+                "by_code": {r["code"]: list(r.get("groups") or []) for r in rows},
+                "groups": sorted({g for r in rows for g in (r.get("groups") or [])})}
     from services.watchlist import watchlist_view
     return await watchlist_view()
 
@@ -426,8 +427,8 @@ async def watchlist_del(stock_code: str):
     return {"ok": True}
 
 
-class WatchGroupReq(BaseModel):
-    group: str = ""
+class WatchGroupsReq(BaseModel):
+    groups: list[str] = []       # 这只票所属的全部分组; 空列表 = 退回默认组「自选」
 
 
 class WatchReorderReq(BaseModel):
@@ -436,12 +437,25 @@ class WatchReorderReq(BaseModel):
     scope: str = "global"        # global=写全局位次 | group=写组内位次(两套独立)
 
 
-@router.put("/watchlist/{stock_code}/group")
-async def watchlist_set_group(stock_code: str, body: WatchGroupReq):
-    """把一只自选票移到某个分组(空字符串 = 未分组)。新组内排到末尾。"""
-    from database import set_watchlist_group
-    await set_watchlist_group(stock_code.split(".")[-1], (body.group or "").strip()[:20])
-    return {"ok": True}
+_MAX_GROUPS_PER_STOCK = 8        # 一只票挂满 8 个组已经没有分类意义了, 挡住误操作/脏输入
+
+
+@router.put("/watchlist/{stock_code}/groups")
+async def watchlist_set_groups(stock_code: str, body: WatchGroupsReq):
+    """覆盖写这只票的分组集合(一票多组)。空列表 = 退回默认组「自选」。
+
+    整套覆盖而不是逐个增删: 前端在下拉里勾完再提交全集, 天然幂等 —— 网络重发/连点
+    两次的结果和一次一样, 不会出现"勾上了但界面显示没勾"这种两边不一致。
+    """
+    from database import set_watchlist_groups
+    names = []
+    for g in (body.groups or []):
+        g = (str(g) or "").strip()[:20]
+        if g and g not in names:
+            names.append(g)
+    saved = await set_watchlist_groups(stock_code.split(".")[-1],
+                                       names[:_MAX_GROUPS_PER_STOCK])
+    return {"ok": True, "groups": saved}
 
 
 @router.put("/watchlist-order")
