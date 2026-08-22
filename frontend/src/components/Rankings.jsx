@@ -38,9 +38,18 @@ const BOARDS = ['全部', '主板', '创业板', '科创板', '北交所']
 // 分组下拉。自选页行内的 ⋯ 与 K线面板的「分组」共用同一份 —— 两处各写一遍必然漂开。
 // groups=已有分组名, current=该票当前分组(''=未分组), onPick(名字) 落库。
 function GroupPicker({ groups, current, onPick, onClose, className = '' }) {
+  const [creating, setCreating] = useState(false)
+  const [name, setName] = useState('')
+  const submit = () => {
+    const g = name.trim().slice(0, 20)
+    if (!g) return
+    setCreating(false); setName('')
+    onClose(); onPick(g)
+  }
   return (
-    <div className={`z-30 w-40 bg-surface-2 border border-border rounded-lg shadow-xl py-1 ${className}`}
-      onMouseLeave={onClose}>
+    // 输入中不要用 onMouseLeave 关掉: 打字时鼠标一飘出去就前功尽弃
+    <div className={`z-30 w-44 bg-surface-2 border border-border rounded-lg shadow-xl py-1 ${className}`}
+      onMouseLeave={creating ? undefined : onClose} onClick={(e) => e.stopPropagation()}>
       <div className="px-2.5 py-1 text-[10px] text-text-muted">移到分组</div>
       {[...new Set([...(groups || []), ''])].map(g => (
         <button key={g || '_none'}
@@ -50,14 +59,32 @@ function GroupPicker({ groups, current, onPick, onClose, className = '' }) {
           {g || '未分组'}{(current || '') === g ? ' ✓' : ''}
         </button>
       ))}
-      <button onClick={(e) => {
-        e.stopPropagation()
-        const g = (window.prompt('新分组名(20字内)') || '').trim().slice(0, 20)
-        onClose()
-        if (g) onPick(g)
-      }} className="w-full text-left px-2.5 py-1 text-[11px] text-accent hover:bg-surface-3/80 border-t border-border-subtle mt-1">
-        + 新建分组…
-      </button>
+      {creating ? (
+        // 不用 window.prompt: Chrome 在用户勾过「阻止此页面创建更多对话框」之后,
+        // prompt() 会直接返回 null 且不弹窗 —— 表现就是"点了没反应"。内联输入没这问题,
+        // 也能进自动化验证。
+        <div className="flex items-center gap-1 px-2 py-1.5 border-t border-border-subtle mt-1">
+          <input autoFocus value={name} maxLength={20} placeholder="新分组名"
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => {
+              e.stopPropagation()
+              if (e.key === 'Enter') submit()
+              if (e.key === 'Escape') { setCreating(false); setName('') }
+            }}
+            className="flex-1 min-w-0 bg-surface-3 border border-border-subtle rounded px-1.5 py-0.5
+                       text-[11px] text-text outline-none focus:border-accent/50" />
+          <button onClick={submit} disabled={!name.trim()}
+            className="text-[11px] px-1.5 py-0.5 rounded text-accent hover:bg-accent/10 disabled:opacity-40">
+            建
+          </button>
+        </div>
+      ) : (
+        <button onClick={(e) => { e.stopPropagation(); setCreating(true) }}
+          className="w-full text-left px-2.5 py-1 text-[11px] text-accent hover:bg-surface-3/80
+                     border-t border-border-subtle mt-1">
+          + 新建分组…
+        </button>
+      )}
     </div>
   )
 }
