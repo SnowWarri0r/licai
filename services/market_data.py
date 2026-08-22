@@ -1219,16 +1219,19 @@ def _parse_macro_line(sym: str, body: str) -> dict | None:
             price = float(fields[3]) if fields[3] else 0
             extra = {"open": _f(1), "high": _f(4), "low": _f(5),
                      "volume": _f(8), "amount": _f(9)}
-        # 港股 hk: 代号,名,今开,昨收,最高,最低,当前,涨跌,涨跌%,?,?,成交量,成交额
+        # 港股 hk: 代号,名,今开,昨收,最高,最低,当前,涨跌,涨跌%,?,?,成交额(千元),成交量(股)
         # 昨收在 fields[3] 而非 [2](=今开) —— 实测三只恒生指数用 [3] 才与新浪自带的
         # 涨跌幅字段吻合(HSI 1.339% vs 用 [2] 算出的 0.592%)
+        # fields[11] 是成交额且单位是千港元(不是成交量): 三只恒生指数的 fields[11]×1000
+        # 与腾讯分时末行的累计成交额逐一相等(HSI 210770397 → 210,770,397,254 HKD)
         elif sym.startswith("hk"):
             if len(fields) < 9:
                 return None
             prev = float(fields[3]) if fields[3] else 0
             price = float(fields[6]) if fields[6] else 0
+            amt = _f(11)
             extra = {"open": _f(2), "high": _f(4), "low": _f(5),
-                     "volume": _f(11), "amount": _f(12)}
+                     "amount": amt * 1000 if amt else None, "volume": _f(12)}
         # 美股 gb_: 名,当前,涨跌%,时间,涨跌额,今开,最高,最低,52周高,52周低,成交量
         # fields[5] 是今开不是昨收 —— 昨收由 当前-涨跌额 反推才与新浪自带涨跌幅吻合
         # (实测纳斯达克 -0.28% vs 拿 fields[5] 当昨收算出的 -0.454%)
@@ -1594,6 +1597,42 @@ def _kline_frankfurter_fx(sym: str, datalen: int = 30) -> list[dict]:
             continue
         out.append({"date": d, "close": round(close, 4)})
     return out[-datalen:]
+
+
+# 腾讯分时(港股/美股指数): 行格式 "0930 25303.410 238534 2385342863.120"
+#   = 时刻 价 累计成交量 累计成交额(美股无第 4 列)。港股时刻为 HK 时间, 美股为美东时间。
+_TENCENT_MINUTE_CODE = {"gb_dji": "usDJI", "gb_ixic": "usIXIC", "gb_inx": "usINX"}
+
+
+def _minute_tencent(sym: str) -> dict | None:
+    """港股/美股指数分时。返回 {date, points:[{time, price, 手, 额}]} —— 量与额都是逐分钟增量
+    (源给的是累计值, 这里差分), 差分才画得出量柱形状。"""
+    code = _TENCENT_MINUTE_CODE.get(sym) or (sym if sym.startswith("hk") else None)
+    if not code:
+        return None
+    r = _requests.get("https://web.ifzq.gtimg.cn/appstock/app/minute/query",
+                      params={"code": code}, timeout=6)
+    blob = ((r.json() or {}).get("data") or {}).get(code) or {}
+    rows = ((blob.get("data") or {}).get("data")) or []
+    pts, pv, pa = [], 0.0, 0.0
+    for row in rows:
+        f = str(row).split()
+        if len(f) < 3 or len(f[0]) != 4 or not f[0].isdigit():
+            continue
+        try:
+            price = float(f[1])
+            cv = float(f[2])
+            ca = float(f[3]) if len(f) > 3 else 0.0
+        except ValueError:
+            continue
+        if price <= 0:
+            continue
+        pts.append({"time": f"{f[0][:2]}:{f[0][2:]}", "price": price,
+                    "手": max(cv - pv, 0.0), "额": max(ca - pa, 0.0)})
+        pv, pa = cv, ca
+    if not pts:
+        return None
+    return {"date": (blob.get("data") or {}).get("date") or "", "points": pts}
 
 
 def _kline_for_symbol(sym: str, datalen: int = 30) -> list[dict]:
