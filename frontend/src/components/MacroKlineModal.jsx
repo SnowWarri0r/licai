@@ -96,7 +96,12 @@ export default function MacroKlineModal({ item, items, onPick, onClose }) {
     {item.low != null && <span>日低 <span className="text-text font-mono">{fmtVal(item.low)}</span></span>}
     {fmtAmt(item.amount)
       ? <span>成交额 <span className="text-text font-mono">{fmtAmt(item.amount)}</span></span>
-      : item.volume ? <span>成交量 <span className="text-text font-mono">{fmtCnt(item.volume)}</span></span> : null}
+      : item.volume
+        ? <span title="美股指数只披露成交股数, 没有成交额。腾讯给的那个「额」实测等于 成交量×指数点位(道指算出来每股 5.3 万美元), 不是真金额, 故不用">
+            成交量 <span className="text-text font-mono">{fmtCnt(item.volume)}</span>
+            <span className="text-text-muted">(无成交额)</span>
+          </span>
+        : null}
   </>)
 
   return createPortal(
