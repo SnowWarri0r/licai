@@ -22,6 +22,19 @@ _HEADERS = {
 }
 
 
+def _body_text(resp) -> str:
+    """按 UTF-8 解响应体。
+
+    不能用 requests 的 r.text: SSE 的 Content-Type 是 text/event-stream 且通常不带 charset,
+    requests 按 HTTP 规范对 text/* 回退 ISO-8859-1 —— 中文星球名会变成「æ°´」这种乱码
+    (「水」的 UTF-8 三字节被逐字节当 latin-1 显示)。这里一律按 UTF-8 解字节。
+    """
+    raw = getattr(resp, "content", None)
+    if isinstance(raw, (bytes, bytearray)):
+        return raw.decode("utf-8", errors="replace")
+    return getattr(resp, "text", "") or ""
+
+
 def _parse_body(text: str) -> dict | None:
     """SSE 帧或裸 JSON → dict。SSE 有多帧时取最后一个带 result/error 的。"""
     text = (text or "").strip()
@@ -78,10 +91,11 @@ def _rpc(url: str, method: str, params: dict | None, timeout: float, rpc_id: int
         return {"ok": False, "error": {"type": "timeout", "message": "MCP 端点超时"}}
     except requests.RequestException as e:
         return {"ok": False, "error": {"type": "network", "message": str(e)[:200]}}
-    d = _parse_body(r.text)
+    text = _body_text(r)          # 注意别用 r.text: 见 _body_text 里的编码说明
+    d = _parse_body(text)
     if d is None:
         return {"ok": False, "error": {"type": "parse",
-                                       "message": f"HTTP {r.status_code}: {(r.text or '')[:160]}"}}
+                                       "message": f"HTTP {r.status_code}: {text[:160]}"}}
     if "error" in d:                           # JSON-RPC 层错误(方法不存在/参数非法)
         err = d["error"] or {}
         return {"ok": False, "error": {"type": "rpc",

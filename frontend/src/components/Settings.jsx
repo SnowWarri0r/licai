@@ -224,7 +224,7 @@ function ZsxqSection() {
   const load = async () => {
     try {
       const d = await fetchJSON('/api/settings/zsxq')
-      setSt(d); setPicked(d.groups || [])
+      setSt(d); setPicked(Array.isArray(d.groups) ? d.groups : [])   // 后端给了非数组也别整页崩
     } catch { /* 后端老版本没这个端点时静默 */ }
   }
   useEffect(() => { load() }, [])
@@ -257,7 +257,7 @@ function ZsxqSection() {
 
   const toggle = (g) => setPicked(p => p.some(x => x.group_id === g.group_id)
     ? p.filter(x => x.group_id !== g.group_id)
-    : [...p, { group_id: g.group_id, name: g.name, owner_only: true }])
+    : [...p, { group_id: g.group_id, name: g.name, owner_only: false }])
 
   const setOwnerOnly = (gid, v) => setPicked(p => p.map(x =>
     x.group_id === gid ? { ...x, owner_only: v } : x))
@@ -281,7 +281,7 @@ function ZsxqSection() {
         <label className="text-[12px] text-text-dim font-semibold">知识星球（可选 · 只读观点面）</label>
         <span className="text-[11px] font-mono text-text-muted">
           {!st ? '' : !st.configured ? '未配置'
-            : st.ok ? (st.groups ? `已接入 ${st.groups} 个星球` : '已连接 · 未选星球')
+            : st.ok ? (st.groups?.length ? `已接入 ${st.groups.length} 个星球` : '已连接 · 未选星球')
             : '连不上'}
         </span>
       </div>
@@ -334,9 +334,9 @@ function ZsxqSection() {
                   <span className="flex-1 truncate">{g.name}</span>
                 </label>
                 {on && (
-                  <label title="只取星主及合伙人的帖 —— 成员闲聊常占九成"
+                  <label title="只取星主及合伙人的帖。实测有的星球发帖人不算星主, 勾上会筛成空 —— 先不勾, 内容太杂再开"
                     className="flex items-center gap-1 text-[10.5px] text-text-muted cursor-pointer whitespace-nowrap">
-                    <input type="checkbox" checked={on.owner_only !== false}
+                    <input type="checkbox" checked={on.owner_only === true}
                       onChange={e => setOwnerOnly(g.group_id, e.target.checked)}
                       className="accent-[var(--color-accent)]" />
                     只看星主
