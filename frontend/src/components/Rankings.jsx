@@ -688,8 +688,12 @@ export default function Rankings() {
         <div className="flex items-center gap-1 px-3 py-1.5 border-b border-border-subtle flex-wrap">
           {tab === 'watch' && (
             <>
-              {[WL_ALL, WL_HELD, ...(wlMeta.groups || []).filter(g => g !== WL_DEFAULT),
-                WL_DEFAULT].map(g => {
+              {/* 「自选」钉在末尾(它是默认组), 所以要从中间那段里去掉; 外面再套一层 Set
+                  兜底。为什么较真: chip 的 key 就是组名, 名字重了 React 报 duplicate key,
+                  而表现不是"多出一个 chip", 是渲染出一批永不刷新的幽灵 chip(计数停在 0、
+                  点了也不动) —— 实测就这么出过一次。 */}
+              {[...new Set([WL_ALL, WL_HELD,
+                ...(wlMeta.groups || []).filter(g => g !== WL_DEFAULT), WL_DEFAULT])].map(g => {
                 const rows = (watch?.rows) || []
                 const manual = rows.filter(r => r.source !== '持仓')
                 // 各组计数不去重: 一票多组时它在几个组里就各计一次, 加起来会超过「全部」
