@@ -136,6 +136,23 @@ def test_amount_check_passes_correct():
     assert C.check_index_amount_currency(ans, NO_TOOLS, {}) == []
 
 
+# ── 美股一手披露 ────────────────────────────────────────
+
+def test_filings_check_catches_websearch_only():
+    """改完源之后模型仍只用 web_search 绕过去 —— 断言要抓住这个。"""
+    g = {"latest": "2026-08-19", "forms": ["8-K", "4"]}
+    ans = "根据外媒报道, 迈威尔与谷歌达成定制芯片协议。"
+    bad = C.check_us_filings_used(ans, ["web_search", "read_url"], g)
+    assert any("get_announcements" in b for b in bad)
+    assert any("SEC" in b for b in bad)
+
+
+def test_filings_check_passes_when_first_hand():
+    g = {"latest": "2026-08-19", "forms": ["8-K"]}
+    ans = "公司自己交了 8-K(Item 1.01 签署重大协议 + 3.02 未登记股份发行)。"
+    assert C.check_us_filings_used(ans, ["get_announcements", "web_search"], g) == []
+
+
 # ── 全局检查 ────────────────────────────────────────────
 
 def test_global_catches_raw_html_tag():
