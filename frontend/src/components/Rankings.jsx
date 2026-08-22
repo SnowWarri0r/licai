@@ -36,37 +36,50 @@ const BOARDS = ['全部', '主板', '创业板', '科创板', '北交所']
 
 // 右侧面板: 选中股票看 K线(铺满); 想问就点"问 AI"或底部输入框 → 弹出式对话(与问问市场样式一致)
 // 观察池的两个"非真实分组": ALL 是跨组汇总视图, HELD 是持仓(现取, 清仓即消失)。
-// 真实分组存在 watchlist.grp 里, 空串那一组对用户显示为「自选」——「自选也是一个
-// 特殊分组」这件事在数据上本来就成立, 这里只是把叫法和主次摆正。
+// 真实分组是 watchlist_group 表里的行, 一票可以多组。在那张表里没有任何行 = 还没归组,
+// 对用户显示为默认组「自选」——「自选也是一个特殊分组」在数据上本来就成立。
 const WL_ALL = '全部'
 const WL_HELD = '持仓'
-const WL_DEFAULT = '自选'          // 对应 grp === ''
+const WL_DEFAULT = '自选'          // 对应"分组表为空"
 const WL_LAST_KEY = 'licai.wl.group'
 
-// 分组下拉。观察池行内的 ⋯ 与 K线面板的「分组」共用同一份 —— 两处各写一遍必然漂开。
-// groups=已有真实分组名, current=该票当前分组(''=默认组「自选」), onPick(名字) 落库。
-function GroupPicker({ groups, current, onPick, onClose, className = '' }) {
+// 分组下拉(多选)。观察池行内的 ⋯ 与 K线面板的「分组」共用同一份 —— 两处各写一遍必然漂开。
+// groups=已有真实分组名, current=该票当前所属分组数组, onSet(下一份数组) 整套落库。
+// 为什么给全集而不是"增删某一个": 和后端一个口径, 连点/重发都是同一个结果。
+function GroupPicker({ groups, current, onSet, onClose, className = '' }) {
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
+  const mine = current || []
   const submit = () => {
     const g = name.trim().slice(0, 20)
     if (!g) return
     setCreating(false); setName('')
-    onClose(); onPick(g)
+    if (!mine.includes(g)) onSet([...mine, g])
   }
   return (
     // 输入中不要用 onMouseLeave 关掉: 打字时鼠标一飘出去就前功尽弃
     <div className={`z-30 w-44 bg-surface-2 border border-border rounded-lg shadow-xl py-1 ${className}`}
       onMouseLeave={creating ? undefined : onClose} onClick={(e) => e.stopPropagation()}>
-      <div className="px-2.5 py-1 text-[10px] text-text-muted">移到分组</div>
-      {[...new Set([...(groups || []), ''])].map(g => (
-        <button key={g || '_none'}
-          onClick={(e) => { e.stopPropagation(); onClose(); onPick(g) }}
-          className={`w-full text-left px-2.5 py-1 text-[11px] hover:bg-surface-3/80 ${
-            (current || '') === g ? 'text-accent' : 'text-text-dim'}`}>
-          {g || WL_DEFAULT}{(current || '') === g ? ' ✓' : ''}
-        </button>
-      ))}
+      <div className="px-2.5 py-1 text-[10px] text-text-muted">所属分组 · 可多选</div>
+      {(groups || []).map(g => {
+        const on = mine.includes(g)
+        return (
+          // 勾完不关菜单: 多选要能连着点几个, 点一下就收起来等于还是单选
+          <button key={g}
+            onClick={(e) => { e.stopPropagation(); onSet(on ? mine.filter(x => x !== g) : [...mine, g]) }}
+            className={`w-full text-left px-2.5 py-1 text-[11px] hover:bg-surface-3/80 ${
+              on ? 'text-accent' : 'text-text-dim'}`}>
+            <span className="inline-block w-3">{on ? '✓' : ''}</span>{g}
+          </button>
+        )
+      })}
+      {/* 「自选」不是可勾的组, 而是"哪个组都不在"。所以这里是一个清空动作 */}
+      <button onClick={(e) => { e.stopPropagation(); onSet([]); onClose() }} disabled={!mine.length}
+        title="从所有分组里移出, 退回默认组「自选」(不会移出观察池)"
+        className="w-full text-left px-2.5 py-1 text-[11px] text-text-dim hover:bg-surface-3/80
+                   disabled:opacity-40 disabled:hover:bg-transparent border-t border-border-subtle mt-1">
+        <span className="inline-block w-3">{mine.length ? '' : '✓'}</span>退回「{WL_DEFAULT}」
+      </button>
       {creating ? (
         // 不用 window.prompt: Chrome 在用户勾过「阻止此页面创建更多对话框」之后,
         // prompt() 会直接返回 null 且不弹窗 —— 表现就是"点了没反应"。内联输入没这问题,
@@ -98,7 +111,7 @@ function GroupPicker({ groups, current, onPick, onClose, className = '' }) {
 }
 
 
-function StockPanel({ stock, watched, onToggleWatch, groups, group, onPickGroup }) {
+function StockPanel({ stock, watched, onToggleWatch, groups, myGroups, onSetGroups }) {
   const [askOpen, setAskOpen] = useState(false)
   const [seed, setSeed] = useState('')
   const [draft, setDraft] = useState('')
@@ -162,18 +175,23 @@ function StockPanel({ stock, watched, onToggleWatch, groups, group, onPickGroup 
           className={`ml-auto text-[15px] leading-none px-1.5 py-0.5 rounded cursor-pointer ${watched ? 'text-accent' : 'text-text-dim hover:text-accent'}`}>
           {watched ? '★' : '☆'}
         </button>
-        {onPickGroup && (
+        {onSetGroups && (
           <div className="relative">
+            {/* 胶囊上只写得下一个组名, 多的用 +N 收着(hover 看全) —— 一票可以在好几个组里 */}
             <button onClick={() => setGrpOpen(v => !v)}
-              title={watched ? '改分组' : '选个分组直接观察 —— 一只票属于一个组, 「自选」是还没归组时的默认组'}
+              title={(myGroups || []).length
+                ? `所属分组: ${(myGroups || []).join(' · ')} —— 点开可多选`
+                : '选分组直接观察(可多选) —— 「自选」是还没归组时的默认组'}
               className={`text-[10.5px] px-1.5 py-0.5 rounded border cursor-pointer whitespace-nowrap ${
                 watched ? 'border-border-subtle text-text-dim hover:text-accent hover:border-accent/40'
                         : 'border-accent/40 text-accent hover:bg-accent/10'}`}>
-              {watched ? (group || WL_DEFAULT) : '+ 分组观察'} <span className="text-text-muted">⌄</span>
+              {(myGroups || []).length
+                ? `${myGroups[0]}${myGroups.length > 1 ? ` +${myGroups.length - 1}` : ''}`
+                : (watched ? WL_DEFAULT : '+ 分组观察')} <span className="text-text-muted">⌄</span>
             </button>
             {grpOpen && (
-              <GroupPicker groups={groups} current={group} className="absolute right-0 top-full mt-1"
-                onPick={(g) => onPickGroup(stock.code, g)} onClose={() => setGrpOpen(false)} />
+              <GroupPicker groups={groups} current={myGroups} className="absolute right-0 top-full mt-1"
+                onSet={(gs) => onSetGroups(stock.code, gs)} onClose={() => setGrpOpen(false)} />
             )}
           </div>
         )}
@@ -314,7 +332,7 @@ export default function Rankings() {
     setWatchSet(new Set(d?.codes || []))
     setWlMeta({ groups: d?.groups || [], byCode: d?.by_code || {} })
   }).catch(() => {})
-  const groupOf = (code) => wlMeta.byCode[code] || ''
+  const groupsOf = (code) => wlMeta.byCode[code] || []      // 一票多组, 没归组时是空数组
 
   // 自由查股: 防抖搜索 → 候选下拉 → 选中进右侧面板(与榜单行同一套 K线/浮层/问AI)
   const onSearch = (v) => {
@@ -339,8 +357,9 @@ export default function Rankings() {
     setSq(''); setSqCands([])
   }
 
-  // 自选重排。scope 随视图: 「全部」写全局位次, 选中分组写组内位次(两套独立)。
-  const wlScope = () => (wlGroup === '全部' ? 'global' : 'group')
+  // 自选重排。scope 随视图: 选中某个真实分组写组内位次, 其余(全部/自选)写全局位次。
+  // 「自选」= 还没归组, 分组成员表里没有它的行, 也就没有一套"组内位次"可写。
+  const wlScope = () => (wlIsRealGroup() ? 'group' : 'global')
   const pickWlGroup = (g) => {
     setWlGroup(g)
     try { localStorage.setItem(WL_LAST_KEY, g) } catch { /* 隐私模式忽略 */ }
@@ -348,41 +367,65 @@ export default function Rankings() {
   // 记住的那个组可能已经被删空(改分组后组里没票了, chip 就不再渲染) —— 此时界面会
   // 一片空白且没有任何 chip 高亮, 退回「全部」。
   useEffect(() => {
-    if ([WL_ALL, WL_HELD, WL_DEFAULT].includes(wlGroup)) return
+    if (!wlIsRealGroup()) return
     if (!wlMeta.groups.length) return                 // 还没拉到分组表, 先别动
     if (!wlMeta.groups.includes(wlGroup)) pickWlGroup(WL_ALL)
   }, [wlMeta.groups])   // eslint-disable-line react-hooks/exhaustive-deps
 
-  // chips 名 → 真实 grp 值。全部/持仓是视图不是组; 自选对应空串。
-  const wlScopeGroup = () => ((wlGroup === WL_ALL || wlGroup === WL_HELD
-    || wlGroup === WL_DEFAULT) ? '' : wlGroup)
+  // 当前 chip 是不是一个真实分组(全部/持仓是视图, 自选是"未归组")
+  const wlIsRealGroup = () => ![WL_ALL, WL_HELD, WL_DEFAULT].includes(wlGroup)
+  const wlScopeGroup = () => (wlIsRealGroup() ? wlGroup : '')
+  // 一只票在本视图里的位次: 选中真实分组时取该组的组内位次(每组各一份), 否则全局位次
+  const wlPosOf = (r) => (wlIsRealGroup()
+    ? ((r.group_orders || {})[wlGroup] || 0)
+    : (r.sort_order || 0))
+  // 这一行属不属于当前 chip
+  const wlInView = (r) => (wlGroup === WL_ALL ? true
+    : wlIsRealGroup() ? (r['分组'] || []).includes(wlGroup)
+    : (r['分组'] || []).length === 0)          // 自选 = 一个组都没归
 
   // 当前"显示顺序"的代码序列 —— 必须与界面一致, 不能用 watch.rows 的数组原始顺序:
   // 乐观更新只改行上的位次字段、不重排数组, 拿原始顺序算会导致第二次 ↑↓ 写回和上次
   // 相同的结果, 表现为"点一次之后就没用了"。
   const wlVisibleCodes = () => {
-    let rs = ((watch?.rows) || []).filter(r => r.source !== '持仓')
-    if (wlGroup !== WL_ALL) rs = rs.filter(r => (r['分组'] || '') === wlScopeGroup())
-    const key = wlGroup === WL_ALL ? 'sort_order' : 'group_order'
-    return [...rs].sort((a, b) => (a[key] || 0) - (b[key] || 0)).map(r => r.code)
+    const rs = ((watch?.rows) || []).filter(r => r.source !== '持仓' && wlInView(r))
+    return [...rs].sort((a, b) => wlPosOf(a) - wlPosOf(b)).map(r => r.code)
+  }
+
+  // 「自选」视图里拖动写的是全局位次, 而这个视图只是「全部」的一个子集。直接把子集写成
+  // 0..n-1 会让这几只票整体顶到「全部」的最前面 —— 在这儿排个序, 那边就乱了。做法是拿
+  // 「全部」的完整顺序, 把子集按新的相对顺序填回它们原来占的那些坑。
+  const spliceIntoGlobal = (subset) => {
+    const all = [...((watch?.rows) || []).filter(r => r.source !== '持仓')]
+      .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0)).map(r => r.code)
+    const slots = all.map((c, i) => (subset.includes(c) ? i : -1)).filter(i => i >= 0)
+    if (slots.length !== subset.length) return subset      // 对不上就按原样写, 别猜
+    const out = [...all]
+    slots.forEach((slot, k) => { out[slot] = subset[k] })
+    return out
   }
 
   const commitOrder = async (codes) => {
     const scope = wlScope()
     const group = wlScopeGroup()
-    const key = scope === 'global' ? 'sort_order' : 'group_order'
-    // 乐观更新: 只改本视图对应的位次字段(另一套不动), 列表随即按它重排
+    const full = scope === 'global' ? spliceIntoGlobal(codes) : codes
+    // 乐观更新: 只改本视图对应的位次(另一套不动), 列表随即按它重排
     setWatch(prev => {
       if (!prev?.rows) return prev
-      const pos = new Map(codes.map((c, i) => [c, i]))
-      const rows = prev.rows.map(r => (pos.has(r.code)
-        ? { ...r, [key]: pos.get(r.code), ...(scope === 'group' ? { 分组: group } : {}) }
-        : r))
+      const pos = new Map(full.map((c, i) => [c, i]))
+      const rows = prev.rows.map(r => {
+        if (!pos.has(r.code)) return r
+        if (scope === 'global') return { ...r, sort_order: pos.get(r.code) }
+        // 拖进组 = 入组(不动它在别的组里的位置)
+        return { ...r,
+          '分组': (r['分组'] || []).includes(group) ? r['分组'] : [...(r['分组'] || []), group],
+          group_orders: { ...(r.group_orders || {}), [group]: pos.get(r.code) } }
+      })
       return { ...prev, rows }
     })
     try {
       await fetchJSON('/api/market/watchlist-order', {
-        method: 'PUT', body: JSON.stringify({ scope, group, codes }),
+        method: 'PUT', body: JSON.stringify({ scope, group, codes: full }),
       })
     } catch { load() }
   }
@@ -408,23 +451,39 @@ export default function Rankings() {
     commitOrder(codes)
   }
 
-  const moveToGroup = async (code, group) => {
-    try {
-      await fetchJSON(`/api/market/watchlist/${code}/group`, {
-        method: 'PUT', body: JSON.stringify({ group }),
-      })
-    } catch { /* 失败也照样刷新一遍状态, 由 reloadWlMeta 校正 */ }
-    reloadWlMeta()      // 面板上那颗分组胶囊要立刻跟着变
-    // 改分组只影响两处: 面板上的胶囊(reloadWlMeta 已覆盖) 与自选页那一行的分组标签。
-    // 一律 load() 会把当前榜单的滚动位置打回顶部(翻到半截去归组, 一归就得重新滚下来);
-    // 一律作废缓存又会让"切到自选页"变成十几秒 —— 全量自选视图要给每只票取行情/结构/
-    // 业绩预告, 实测冷启 18.7s。所以就地改那一行, 只有缓存里确实没有这一行时才作废。
+  // 整套覆盖这只票的分组。乐观更新在前(勾一下要立刻见效), 落库失败由 reloadWlMeta 校正。
+  const setGroups = async (code, groups) => {
+    const next = [...new Set(groups || [])]
+    // 下拉是多选、勾完不关, 菜单里的 ✓ 得马上跟上 —— 所以先改本地 byCode
+    setWlMeta(m => ({ ...m, byCode: { ...m.byCode, [code]: next } }))
+    // 改分组只影响两处: 面板上的胶囊 与 观察池那一行的分组标签。一律 load() 会把当前
+    // 榜单的滚动位置打回顶部(翻到半截去归组, 一归就得重新滚下来); 一律作废缓存又会让
+    // "切到观察池"变成十几秒 —— 全量视图要给每只票取行情/结构/业绩预告, 实测冷启
+    // 18.7s。所以就地改那一行, 只有缓存里确实没有这一行时才作废。
     let hit = false
     setWatch(w => {
       if (!w || !Array.isArray(w.rows)) return w
-      hit = w.rows.some(r => r.code === code)
-      return hit ? { ...w, rows: w.rows.map(r => (r.code === code ? { ...r, 分组: group } : r)) } : w
+      const cur = w.rows.find(r => r.code === code)
+      hit = !!cur
+      if (!hit) return w
+      // 组内位次也得跟着改: 新进的组本地也排到该组末尾(和后端一个口径), 退出的组把它的
+      // 位次删掉。不改的话新组的位次是 undefined → 当 0 → 这只票先跳到组首, 等下次重拉
+      // 才弹回末尾。
+      const orders = { ...(cur.group_orders || {}) }
+      Object.keys(orders).forEach(g => { if (!next.includes(g)) delete orders[g] })
+      next.filter(g => !(g in orders)).forEach(g => {
+        const seen = w.rows.map(r => (r.group_orders || {})[g]).filter(v => v != null)
+        orders[g] = (seen.length ? Math.max(...seen) : -1) + 1
+      })
+      return { ...w,
+        rows: w.rows.map(r => (r.code === code ? { ...r, '分组': next, group_orders: orders } : r)) }
     })
+    try {
+      await fetchJSON(`/api/market/watchlist/${code}/groups`, {
+        method: 'PUT', body: JSON.stringify({ groups: next }),
+      })
+    } catch { /* 失败也照样刷新一遍状态, 由 reloadWlMeta 校正 */ }
+    reloadWlMeta()      // 新建的组要进 chip 条 / 下拉; 落库结果也在这一步对齐
     if (!hit) {
       // 刚加进池子的票, 造不出完整一行(缺行情/结构), 只能让它下次重新拉
       setWatch(null)
@@ -432,16 +491,16 @@ export default function Rankings() {
     }
   }
 
-  // 选组即入池: 分组是 watchlist 表上的 grp 字段, 没有"不在自选里的分组"。所以在
-  // K线面板上选分组时, 没加自选的先加, 再打标签 —— 用户不必先想"加自选"这一步。
-  const pickGroup = async (code, g) => {
+  // 选组即入池: 分组挂在观察池的票上, 没有"不在池子里的分组"。所以在 K线面板上选分组时,
+  // 没加进池子的先加, 再打标签 —— 用户不必先想"加自选"这一步。
+  const pickGroups = async (code, gs) => {
     if (!watchSet.has(code)) {
       try {
         await fetchJSON(`/api/market/watchlist/${code}`, { method: 'POST' })
         setWatchSet(prev => new Set(prev).add(code))
-      } catch { /* 加失败下面 moveToGroup 也会失败, 统一由 reloadWlMeta 校正 */ }
+      } catch { /* 加失败下面 setGroups 也会失败, 统一由 reloadWlMeta 校正 */ }
     }
-    await moveToGroup(code, g)
+    await setGroups(code, gs)
   }
 
   const toggleWatch = (stock) => {
@@ -452,7 +511,7 @@ export default function Rankings() {
         setWatchSet(prev => { const s = new Set(prev); on ? s.delete(code) : s.add(code); return s })
         setWlMeta(m => {
           const byCode = { ...m.byCode }
-          if (on) delete byCode[code]; else byCode[code] = byCode[code] || ''
+          if (on) delete byCode[code]; else byCode[code] = byCode[code] || []
           return { ...m, byCode }
         })
         setWatch(null)                                  // 下次进自选页重拉
@@ -548,17 +607,12 @@ export default function Rankings() {
     : tab === 'watch' ? (() => {
         const rs = (watch?.rows) || []
         const held = rs.filter(r => r.source === '持仓')
-        // 分组按 grp 筛; 持仓是虚拟组(现取, 不参与分组), 选中它时只看持仓
-        let manual = wlGroup === WL_HELD ? [] : rs.filter(r => r.source !== '持仓')
-        if (wlGroup !== WL_ALL && wlGroup !== WL_HELD) {
-          manual = manual.filter(r => (r['分组'] || '') === wlScopeGroup())
-        }
-        // 排序键随视图切换: 「全部」用全局位次, 选中某分组用组内位次 —— 两套独立,
-        // 所以组内调顺序不会打乱「全部」, 改分组标签也不会让票在「全部」里跳位置。
+        // 持仓是虚拟组(现取, 不参与分组), 选中它时只看持仓
+        let manual = wlGroup === WL_HELD ? [] : rs.filter(r => r.source !== '持仓' && wlInView(r))
+        // 排序键随视图切换: 选中某个分组用该组的组内位次, 否则用全局位次 —— 各组一份,
+        // 所以在一个组里调顺序既不打乱「全部」, 也不打乱这只票在别的组里的位置。
         // 必须在本地排: ↑↓/拖动是乐观更新(只改行上的位次字段), 否则要等下次拉取才动。
-        manual = [...manual].sort((a, b) => (wlGroup === WL_ALL
-          ? (a.sort_order || 0) - (b.sort_order || 0)
-          : (a.group_order || 0) - (b.group_order || 0)))
+        manual = [...manual].sort((a, b) => wlPosOf(a) - wlPosOf(b))
         // 显式编号: 行号渲染兜底用的是数组下标 i+1, 而数组里混着分组标题行, 标题占掉
         // index 0 会让第一只票显示成 2。这里按"只数着真实行"自己编。
         let sn = 0
@@ -651,23 +705,26 @@ export default function Rankings() {
               {[WL_ALL, WL_HELD, ...(wlMeta.groups || []), WL_DEFAULT].map(g => {
                 const rows = (watch?.rows) || []
                 const manual = rows.filter(r => r.source !== '持仓')
+                // 各组只数计数不去重: 一票多组时它在几个组里就各计一次, 加起来会超过
+                // 「全部」—— 这是对的, 「全部」才是去重后的池子大小。
                 const n = g === WL_ALL ? rows.length
                   : g === WL_HELD ? rows.filter(r => r.source === '持仓').length
-                  : manual.filter(r => (r['分组'] || '') === (g === WL_DEFAULT ? '' : g)).length
+                  : g === WL_DEFAULT ? manual.filter(r => !(r['分组'] || []).length).length
+                  : manual.filter(r => (r['分组'] || []).includes(g)).length
                 // 持仓是虚拟组, 空了就不占位; 自选是默认组, 始终显示(新加的票落这儿)
                 if (g === WL_HELD && n === 0) return null
                 return (
                   <button key={g} onClick={() => pickWlGroup(g)}
                     title={g === WL_HELD ? '现取, 清仓即消失'
                       : g === WL_DEFAULT ? '还没归组的(默认组)'
-                      : g === WL_ALL ? '持仓 + 全部分组' : ''}
+                      : g === WL_ALL ? '持仓 + 全部分组(一票多组只算一次)' : ''}
                     className={`text-[11px] px-2 py-0.5 rounded ${wlGroup === g ? 'bg-accent/15 text-accent' : 'text-text-dim hover:text-text'}`}>
                     {g}<span className="text-text-muted ml-1">{n}</span>
                   </button>
                 )
               })}
               <span className="text-text-muted mx-0.5">·</span>
-              <span className="text-[10px] text-text-muted">行右侧 ⠿ 拖动排序 · ↑↓ 微调 · ⋯ 移到分组</span>
+              <span className="text-[10px] text-text-muted">行右侧 ⠿ 拖动排序 · ↑↓ 微调 · ⋯ 归组(可多选)</span>
             </>
           )}
           {tab === 'structure' && (
@@ -829,6 +886,14 @@ export default function Rankings() {
                     {tab === 'watch' && r['业绩预告'] && (
                       <span className="ml-1 px-1 rounded bg-accent/15 text-accent text-[9px] whitespace-nowrap">{r['业绩预告']}</span>
                     )}
+                    {/* 所属分组: 一票多组时得看得见它还在哪些组里, 否则在某个组里看到一只票
+                        根本不知道它同时也在别的组。当前正在看的那个组不再重复显示。 */}
+                    {tab === 'watch' && (r['分组'] || []).filter(g => g !== wlGroup).length > 0 && (
+                      <span className="ml-1 text-[9px] text-text-dim whitespace-nowrap"
+                        title={`所属分组: ${(r['分组'] || []).join(' · ')}`}>
+                        {(r['分组'] || []).filter(g => g !== wlGroup).join('·')}
+                      </span>
+                    )}
                     {tab === 'earnings' && r['持仓关联'] && (
                       <span className="ml-1 px-1 rounded bg-accent/15 text-accent text-[9px]">{r['持仓关联']}</span>
                     )}
@@ -887,9 +952,11 @@ export default function Rankings() {
                 </span>
               )}
               {grpMenu === r.code && (
-                <GroupPicker groups={wlMeta.groups} current={r['分组']}
+                // current 取 wlMeta(勾选后就地更新的那份), 不取行上的 r['分组'] ——
+                // 行数据来自全量视图, 刚勾的那一下要等它重排才反映, 菜单里的 ✓ 会滞后
+                <GroupPicker groups={wlMeta.groups} current={groupsOf(r.code)}
                   className="absolute right-1.5 top-full -mt-1"
-                  onPick={(g) => moveToGroup(r.code, g)} onClose={() => setGrpMenu('')} />
+                  onSet={(gs) => setGroups(r.code, gs)} onClose={() => setGrpMenu('')} />
               )}
               </div>
             )
@@ -938,7 +1005,7 @@ export default function Rankings() {
         )}
         {tab === 'watch' && !loading && (watch?.rows || []).length > 0 && (
           <div className="shrink-0 px-3 py-1.5 border-t border-border-subtle text-[9.5px] text-text-muted leading-relaxed">
-            观察池=按分组管理的跟踪清单（在看但未必持有，「自选」是还没归组的默认组），副行是当下K线结构形态与业绩预告 · 选中后点右上 ★ 移出 · 纯客观结构描述，非买卖建议
+            观察池=按分组管理的跟踪清单（在看但未必持有，一只票可同时属于多个组，「自选」是还没归组的默认组），副行是当下K线结构形态与业绩预告 · 选中后点右上 ★ 移出 · 纯客观结构描述，非买卖建议
           </div>
         )}
         {tab === 'lhb' && !loading && (
@@ -965,8 +1032,8 @@ export default function Rankings() {
 
       <div className="flex-1 min-h-0 min-w-0">
         <StockPanel stock={selected} watched={selected ? watchSet.has(selected.code) : false}
-          onToggleWatch={toggleWatch} groups={wlMeta.groups} onPickGroup={pickGroup}
-          group={selected ? groupOf(selected.code) : ''} />
+          onToggleWatch={toggleWatch} groups={wlMeta.groups} onSetGroups={pickGroups}
+          myGroups={selected ? groupsOf(selected.code) : []} />
       </div>
     </div>
   )

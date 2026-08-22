@@ -148,16 +148,27 @@ CREATE TABLE IF NOT EXISTS portfolio_snapshots (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 自选观察池(在跟踪但未必持有的票)
+-- 自选观察池(在跟踪但未必持有的票)。分组不在这张表上, 见 watchlist_group。
 CREATE TABLE IF NOT EXISTS watchlist (
     stock_code TEXT PRIMARY KEY,
     stock_name TEXT,
     added_at TEXT,                       -- YYYY-MM-DD
     added_price REAL,                    -- 加自选时现价(看"自选以来"涨跌)
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    grp TEXT DEFAULT '',                 -- 自定义分组名(空=未分组)
-    sort_order REAL DEFAULT 0,           -- 全局手动位次(「全部」视图用; 与分组无关)
-    group_order REAL DEFAULT 0           -- 组内手动位次(选中某分组时用; 与全局独立)
+    sort_order REAL DEFAULT 0            -- 全局手动位次(「全部」视图用; 与分组无关)
+);
+
+-- 观察池的分组成员表: 一行 = 这只票在这个分组里。一票多组。
+-- 为什么不是 watchlist 上的一列: 单值列只能表达"属于一个组", 而同一只票常常既属于
+-- 「高端内存」又属于「博弈」。组内手动位次同理 —— 每个组各有一份顺序, 挂在 watchlist
+-- 上的话一只票只能有一个位次, 进第二个组就必然跟第一个组抢。
+-- 默认组「自选」在这张表里没有行: 一只票在本表里查不到任何分组 = 还没归组。
+CREATE TABLE IF NOT EXISTS watchlist_group (
+    stock_code TEXT NOT NULL,
+    grp TEXT NOT NULL,                   -- 分组名(非空; 空串是"未归组", 不占行)
+    group_order REAL DEFAULT 0,          -- 该组内的手动位次(各组独立)
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (stock_code, grp)
 );
 
 -- 全市场代码↔名称字典(个股 + 场内基金): 搜股的匹配底表。
@@ -331,22 +342,37 @@ async def init_db():
         kc_cols = {row[1] for row in await cursor.fetchall()}
         if "amount" not in kc_cols:
             await db.execute("ALTER TABLE kline_cache ADD COLUMN amount REAL DEFAULT 0")
-        # Migration: 自选加「分组 + 组内手动排序」(老库建表时没有这两列)
+        # Migration: 自选加「全局手动排序」(老库建表时没有这列)
         cursor = await db.execute("PRAGMA table_info(watchlist)")
         wl_cols = {row[1] for row in await cursor.fetchall()}
-        if "grp" not in wl_cols:
-            await db.execute("ALTER TABLE watchlist ADD COLUMN grp TEXT DEFAULT ''")
         if "sort_order" not in wl_cols:
             await db.execute("ALTER TABLE watchlist ADD COLUMN sort_order REAL DEFAULT 0")
             # 老数据按加入时间倒序给初始位次, 保持用户当前看到的顺序不变
             await db.execute(
                 "UPDATE watchlist SET sort_order = (SELECT COUNT(*) FROM watchlist w2 "
                 "WHERE w2.created_at > watchlist.created_at)")
-        if "group_order" not in wl_cols:
-            # 组内位次与全局位次分开: 只有一列时「全部」视图必须按 (分组, 位次) 排,
-            # 改分组就会把票挪进该组的簇里并排到末尾 —— 看着就是"跳到最下面"。
-            await db.execute("ALTER TABLE watchlist ADD COLUMN group_order REAL DEFAULT 0")
-            await db.execute("UPDATE watchlist SET group_order = COALESCE(sort_order,0)")
+        # Migration: 分组从 watchlist.grp/group_order 两列搬到 watchlist_group 关联表(一票多组)。
+        # 搬完必须把老列去掉: 留着就是第二本账, 以后谁读到的都是搬迁那一刻的快照。而删列
+        # 之前得先把上面的 ADD COLUMN 兜底去掉, 否则下次启动又原样加回来。
+        if "grp" in wl_cols:
+            await db.execute(
+                "INSERT OR IGNORE INTO watchlist_group (stock_code, grp, group_order) "
+                "SELECT stock_code, grp, COALESCE(group_order, 0) FROM watchlist "
+                "WHERE COALESCE(grp, '') <> ''")
+            cursor = await db.execute(
+                "SELECT (SELECT COUNT(*) FROM watchlist WHERE COALESCE(grp,'') <> ''), "
+                "(SELECT COUNT(*) FROM watchlist w JOIN watchlist_group g "
+                " ON g.stock_code = w.stock_code AND g.grp = w.grp "
+                " WHERE COALESCE(w.grp,'') <> '')")
+            expect, moved = await cursor.fetchone()
+            if moved >= expect:                      # 逐行核对搬到位了才动老列
+                try:
+                    await db.execute("ALTER TABLE watchlist DROP COLUMN grp")
+                    await db.execute("ALTER TABLE watchlist DROP COLUMN group_order")
+                except Exception:
+                    # SQLite < 3.35 没有 DROP COLUMN: 列留着但没人读。清空值, 否则下次
+                    # 启动又照着老列搬一遍 —— 会把用户后来移出的分组复活。
+                    await db.execute("UPDATE watchlist SET grp = ''")
         # Migration: add trade_time to external_asset_actions
         cursor = await db.execute("PRAGMA table_info(external_asset_actions)")
         eaa_cols = {row[1] for row in await cursor.fetchall()}
@@ -1584,6 +1610,8 @@ async def remove_watchlist(code: str):
     db = await get_db()
     try:
         await db.execute("DELETE FROM watchlist WHERE stock_code = ?", (code,))
+        # 分组成员一起删: 留着就成了孤儿行, 以后这只票重新加回自选会连着旧分组一起复活
+        await db.execute("DELETE FROM watchlist_group WHERE stock_code = ?", (code,))
         await db.commit()
     finally:
         await db.close()
@@ -1591,33 +1619,59 @@ async def remove_watchlist(code: str):
 
 async def list_watchlist() -> list[dict]:
     """自选列表。按全局位次排(位次相同则退回加入时间倒序, 与改造前一致)。
-    分组只是标签, 不参与全局排序 —— 前端选中某分组时改用 group_order 排。"""
+    分组不参与全局排序 —— 一只票可以在好几个组里, 「全部」视图只有一种顺序。
+    groups=所属分组名(空列表=还没归组, 即默认组「自选」);
+    group_orders={分组名: 组内位次}, 前端选中某个组时按它排。"""
     db = await get_db()
     try:
         cur = await db.execute(
-            "SELECT stock_code, stock_name, added_at, added_price, "
-            "COALESCE(grp,''), COALESCE(sort_order,0), COALESCE(group_order,0) FROM watchlist "
-            "ORDER BY COALESCE(sort_order,0), created_at DESC")
+            "SELECT stock_code, stock_name, added_at, added_price, COALESCE(sort_order,0) "
+            "FROM watchlist ORDER BY COALESCE(sort_order,0), created_at DESC")
         rows = await cur.fetchall()
+        cur = await db.execute(
+            "SELECT stock_code, grp, COALESCE(group_order,0) FROM watchlist_group ORDER BY grp")
+        gm: dict[str, list[str]] = {}
+        om: dict[str, dict[str, float]] = {}
+        for code, grp, order in await cur.fetchall():
+            gm.setdefault(code, []).append(grp)
+            om.setdefault(code, {})[grp] = order or 0
         return [{"code": r[0], "name": r[1], "added_at": r[2], "added_price": r[3],
-                 "group": r[4] or "", "sort_order": r[5] or 0, "group_order": r[6] or 0}
+                 "sort_order": r[4] or 0,
+                 "groups": gm.get(r[0], []), "group_orders": om.get(r[0], {})}
                 for r in rows]
     finally:
         await db.close()
 
 
-async def set_watchlist_group(code: str, group: str) -> None:
-    """改分组。只动 group_order(排到目标组末尾), 全局位次 sort_order 保持不动 ——
-    否则在「全部」视图里改个分组标签会让这只票凭空跳位置。"""
+async def set_watchlist_groups(code: str, groups: list[str]) -> list[str]:
+    """整套覆盖这只票的分组(前端本地勾完提交全集, 幂等)。返回落库后的分组表。
+
+    已经在的组保留原位次 —— 重写位次的话勾一个新组会把这只票在老组里挪到末尾。
+    新进的组排到该组末尾。全局位次 sort_order 一概不动: 在「全部」视图里改分组标签
+    不该让这只票凭空跳位置。
+    """
+    want = []
+    for g in groups or []:
+        g = (str(g) or "").strip()
+        if g and g not in want:
+            want.append(g)
     db = await get_db()
     try:
-        cur = await db.execute(
-            "SELECT COALESCE(MAX(group_order),0)+1 FROM watchlist WHERE COALESCE(grp,'')=?",
-            (group or "",))
-        nxt = (await cur.fetchone())[0] or 0
-        await db.execute("UPDATE watchlist SET grp=?, group_order=? WHERE stock_code=?",
-                         (group or "", nxt, code))
+        cur = await db.execute("SELECT grp FROM watchlist_group WHERE stock_code=?", (code,))
+        have = {r[0] for r in await cur.fetchall()}
+        for g in have - set(want):
+            await db.execute("DELETE FROM watchlist_group WHERE stock_code=? AND grp=?", (code, g))
+        for g in want:
+            if g in have:
+                continue
+            cur = await db.execute(
+                "SELECT COALESCE(MAX(group_order),0)+1 FROM watchlist_group WHERE grp=?", (g,))
+            nxt = (await cur.fetchone())[0] or 0
+            await db.execute(
+                "INSERT OR IGNORE INTO watchlist_group (stock_code, grp, group_order) "
+                "VALUES (?,?,?)", (code, g, nxt))
         await db.commit()
+        return want
     finally:
         await db.close()
 
@@ -1626,15 +1680,20 @@ async def reorder_watchlist(codes: list[str], scope: str = "global", group: str 
     """按给定顺序覆盖写位次。
 
     scope='global': 写 sort_order(「全部」视图拖动), 不碰分组;
-    scope='group' : 写 group_order, 并把这些票归入 group(支持拖进别的组)。
+    scope='group' : 写这些票在 group 里的位次, 顺带把还不在该组的加进去(拖进组=入组)。
+                    只动这一个组的成员关系, 票在别的组里待着不受影响。
     两套位次独立, 所以在组内调顺序不会打乱「全部」视图, 反之亦然。
     """
     db = await get_db()
     try:
         for i, c in enumerate(codes or []):
             if scope == "group":
-                await db.execute("UPDATE watchlist SET grp=?, group_order=? WHERE stock_code=?",
-                                 (group or "", float(i), c))
+                if not (group or ""):
+                    continue               # 默认组「自选」不是真实分组, 没有组内位次可写
+                await db.execute(
+                    "INSERT INTO watchlist_group (stock_code, grp, group_order) VALUES (?,?,?) "
+                    "ON CONFLICT(stock_code, grp) DO UPDATE SET group_order=excluded.group_order",
+                    (c, group, float(i)))
             else:
                 await db.execute("UPDATE watchlist SET sort_order=? WHERE stock_code=?",
                                  (float(i), c))
