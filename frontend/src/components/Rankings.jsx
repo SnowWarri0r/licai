@@ -387,9 +387,23 @@ export default function Rankings() {
       await fetchJSON(`/api/market/watchlist/${code}/group`, {
         method: 'PUT', body: JSON.stringify({ group }),
       })
-    } catch { /* 失败下面照样重拉 */ }
+    } catch { /* 失败也照样刷新一遍状态, 由 reloadWlMeta 校正 */ }
     reloadWlMeta()      // 面板上那颗分组胶囊要立刻跟着变
-    load()
+    // 改分组只影响两处: 面板上的胶囊(reloadWlMeta 已覆盖) 与自选页那一行的分组标签。
+    // 一律 load() 会把当前榜单的滚动位置打回顶部(翻到半截去归组, 一归就得重新滚下来);
+    // 一律作废缓存又会让"切到自选页"变成十几秒 —— 全量自选视图要给每只票取行情/结构/
+    // 业绩预告, 实测冷启 18.7s。所以就地改那一行, 只有缓存里确实没有这一行时才作废。
+    let hit = false
+    setWatch(w => {
+      if (!w || !Array.isArray(w.rows)) return w
+      hit = w.rows.some(r => r.code === code)
+      return hit ? { ...w, rows: w.rows.map(r => (r.code === code ? { ...r, 分组: group } : r)) } : w
+    })
+    if (!hit) {
+      // 刚加进池子的票, 造不出完整一行(缺行情/结构), 只能让它下次重新拉
+      setWatch(null)
+      if (tabRef.current === 'watch') load()
+    }
   }
 
   // 选组即入池: 分组是 watchlist 表上的 grp 字段, 没有"不在自选里的分组"。所以在
