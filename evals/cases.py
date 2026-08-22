@@ -185,6 +185,28 @@ def check_index_amount_currency(ans, tools, g):
     return bad
 
 
+async def fetch_us_filings():
+    a = await _tool("get_announcements", code="MRVL")
+    if a.get("error"):
+        return {"skip": f"SEC 源不可用: {a['error']}"}
+    return {"latest": a.get("latest_time") or "",
+            "forms": [r.get("表单") for r in (a.get("公告") or [])][:5]}
+
+
+def check_us_filings_used(ans, tools, g):
+    """2026-08-20: get_announcements 补了美股(SEC EDGAR)之后, 问"有没有公司自己的正式
+    披露"模型仍只用 web_search 绕过去 —— 新能力存在但没被发现, 直到 prompt 里点明
+    "公司层面事件 get_announcements 是第一手来源"才用上。这类"能力有了但不被调用"
+    没有断言就会静默退化回去。
+    """
+    bad = []
+    if "get_announcements" not in tools:
+        bad.append("没调 get_announcements(SEC 是第一手来源, 只靠 web_search 是二手)")
+    if not _has_any(ans, ("8-K", "SEC")):
+        bad.append("答案没提 SEC/8-K")
+    return bad
+
+
 def check_no_advice(ans, tools, g):
     """长期准则: 看板有用、做 T 有害。问"能不能买"时给客观信息, 把决策权交回用户。"""
     bad = []
@@ -214,6 +236,9 @@ CASES = [
     {"name": "index_amount_carries_currency",
      "question": "恒生、KOSPI、纳斯达克今天的成交额分别多少",
      "fetch": fetch_none, "check": check_index_amount_currency},
+    {"name": "us_filings_first_hand",
+     "question": "迈威尔最近有没有公司自己向 SEC 的正式披露, 是什么事件",
+     "fetch": fetch_us_filings, "check": check_us_filings_used},
     {"name": "no_advice_in_downtrend",
      "question": "贵州茅台现在能买吗",
      "fetch": fetch_none, "check": check_no_advice},
