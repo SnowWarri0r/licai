@@ -315,8 +315,10 @@ const _slotMax = (s) => (s.am[1] - s.am[0]) + (s.pm ? s.pm[1] - s.pm[0] : 0)
 
 function _minuteSlot(t, s = SESSIONS.cn) {
   const parts = String(t || '').split(':')
-  const mins = (Number(parts[0]) || 0) * 60 + (Number(parts[1]) || 0)
+  let mins = (Number(parts[0]) || 0) * 60 + (Number(parts[1]) || 0)
   const [amS, amE] = s.am
+  // 伦敦冬令时收盘落到北京时间次日 0:30, 时钟数会绕回去 —— 比开盘早一小时以上就按跨日算
+  if (mins < amS - 60) mins += 1440
   const amLen = amE - amS
   if (mins <= amS) return 0
   if (mins <= amE) return mins - amS
@@ -327,6 +329,8 @@ function _minuteSlot(t, s = SESSIONS.cn) {
   return amLen + (pmE - pmS)                         // 收盘竞价/盘后快照贴到右端
 }
 
+// session 可传预设名(cn/hk/us), 也可直接传 {am,pm,labels} —— 日经/伦敦的时段随夏令时漂,
+// 由后端按当天首个分时点算好传过来, 前端不硬编码。
 export function MinuteChart({ points, prevClose, actions = [], day, height = 410,
                              session = 'cn', volUnit = '手' }) {
   const [hover, setHover] = useState(null)
@@ -338,12 +342,14 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
   // volH/volGap 按可用高度给, 不能写死。调用方的 viewBox 高是 720*h/w 算出来的,
   // 容器越宽这个值越小 —— 宽屏 + 简介展开时实测 H 掉到 150, 而固定的
   // t30+b28+volH48+volGap24=130 会把价格区压到只剩 20 单位, 5 个刻度全叠成一坨。
-  const volH = Math.round(Math.min(48, innerH * 0.30))
-  const volGap = Math.round(Math.min(24, innerH * 0.12))
+  // 日经/KOSPI/FTSE 的源只给价不给量 → 不留量图的位置, 价格区占满(否则底下是一条空白带)
+  const hasVol = points.some(p => Number(p['手']) > 0)
+  const volH = hasVol ? Math.round(Math.min(48, innerH * 0.30)) : 0
+  const volGap = hasVol ? Math.round(Math.min(24, innerH * 0.12)) : 0
   const priceH = innerH - volH - volGap
   const volTop = P.t + priceH + volGap
 
-  const sess = SESSIONS[session] || SESSIONS.cn
+  const sess = (session && typeof session === 'object' ? session : SESSIONS[session]) || SESSIONS.cn
   const slotMax = _slotMax(sess)
 
   const { rows, rangeMin, range, volMax } = useMemo(() => {
@@ -456,15 +462,17 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
           <text key={i} x={P.l + (i / 2) * innerW} y={H - 8} fontSize="10" fill="var(--color-text-dim)" textAnchor={i === 0 ? 'start' : i === 2 ? 'end' : 'middle'} fontFamily="monospace">{lbl}</text>
         ))}
         {/* 分时成交量图例: 两图间隙条带(volGap=24 专门留的), 右对齐, 与价格区底部轴标隔开 */}
-        <text x={W - 6} y={volTop - 7} fontSize="9" fill="var(--color-text-muted)" textAnchor="end" fontFamily="monospace">
-          量 <tspan fill={UP}>红买</tspan>/<tspan fill={DOWN}>绿卖</tspan>
-        </text>
-        {rows.map(r => {
-          const h = (r.vol / volMax) * volH
-          return <rect key={'mv' + r.i} x={r.x - 1} y={volTop + volH - h} width="1.6" height={Math.max(0.4, h)} fill={r.up ? UP : DOWN} opacity="0.8" />
-        })}
-        <line x1={P.l} y1={volTop + volH} x2={W - P.r} y2={volTop + volH} stroke="var(--color-border-subtle)" strokeWidth="1" />
-        <polyline points={avgLine} fill="none" stroke="#c8a876" strokeWidth="1" opacity="0.85" />
+        {hasVol && <>
+          <text x={W - 6} y={volTop - 7} fontSize="9" fill="var(--color-text-muted)" textAnchor="end" fontFamily="monospace">
+            量 <tspan fill={UP}>红买</tspan>/<tspan fill={DOWN}>绿卖</tspan>
+          </text>
+          {rows.map(r => {
+            const h = (r.vol / volMax) * volH
+            return <rect key={'mv' + r.i} x={r.x - 1} y={volTop + volH - h} width="1.6" height={Math.max(0.4, h)} fill={r.up ? UP : DOWN} opacity="0.8" />
+          })}
+          <line x1={P.l} y1={volTop + volH} x2={W - P.r} y2={volTop + volH} stroke="var(--color-border-subtle)" strokeWidth="1" />
+        </>}
+        {hasVol && <polyline points={avgLine} fill="none" stroke="#c8a876" strokeWidth="1" opacity="0.85" />}
         <polyline points={priceLine} fill="none" stroke={lineColor} strokeWidth="1.4" />
         {/* 当日买卖点: B 在下方, S 在上方, 虚线连到成交价圆点 */}
         {bsMarks.map(m => {
@@ -488,7 +496,7 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
         {!hover && (
           <text x={W - 6} y={17} fontSize="10" textAnchor="end" fontFamily="ui-monospace, monospace">
             <tspan fill={lineColor}>— 价格</tspan>
-            <tspan dx="10" fill="#c8a876">— 均价</tspan>
+            {hasVol && <tspan dx="10" fill="#c8a876">— 均价</tspan>}
           </text>
         )}
       </svg>
@@ -496,7 +504,7 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
         <div className="absolute top-2 right-2 bg-surface-2 border border-border-med rounded-md px-2.5 py-1.5 text-[11px] font-mono pointer-events-none">
           <div className="text-text-dim">{hover.time}</div>
           <div>价 <span className="text-text-bright">{fmtVal(hover.price)}</span> <span className={colorPct(((hover.price / prevClose) - 1) * 100)}>{fmtPct(((hover.price / prevClose) - 1) * 100)}</span></div>
-          <div className="text-text-dim">均 {fmtVal(hover.avg)} · {fmtHand(hover['手'], volUnit)}</div>
+          {hasVol && <div className="text-text-dim">均 {fmtVal(hover.avg)} · {fmtHand(hover['手'], volUnit)}</div>}
         </div>
       )}
     </div>
