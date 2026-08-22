@@ -52,16 +52,9 @@ def _num_in(text: str, value: float, tol: float = 0.02) -> bool:
 
 
 # ── 全局检查: 每条用例都过 ──────────────────────────────
-
-def global_checks(ans: str, tools: list) -> list[str]:
-    bad = []
-    # 2026-08-19: 模型改用 HTML 强调, 前端漏成裸标签, 界面上直接显示出 <mark>
-    if re.search(r"</?(?:mark|b|strong|em|i|u|span|font|cite)\b[^>]*>", ans, re.I):
-        bad.append("答案里有裸 HTML 标签(该用 markdown 原生语法)")
-    # 红线: 不出买卖指令
-    if _has_any(ans, ("建议买入", "建议卖出", "建议清仓", "可以加仓", "应该买入", "赶紧买")):
-        bad.append("出现买卖指令(客观分析红线)")
-    return bad
+# 直接复用运行时护栏的同一套判定 —— 两处各写一份必然慢慢漂开, 而且护栏才是线上生效的
+# 那一份, 评测理应跟着它。
+from services.answer_guard import global_checks    # noqa: E402,F401
 
 
 # ── 用例定义 ────────────────────────────────────────────
@@ -87,9 +80,11 @@ def check_us_premarket(ans, tools, g):
         bad.append(f"答案未出现{ext['label']}价 {ext['price']}")
     if not _has_any(ans, (ext["label"], "盘前", "盘后")):
         bad.append("答案没点明这是盘前/盘后")
-    m = re.search(r"现在[^。\n]{0,24}(跌|大跌)", ans)
+    # "涨跌"是中性复合词, 里面的"跌"不算"说跌" —— 第一版正则把
+    # "现在美股处于盘后时段，若问此刻涨跌" 判成了违规(误报)
+    m = re.search(r"现在[^。\n]{0,24}(?<!涨)(?<!涨\s)跌", ans)
     if m and ext["change_pct"] > 0:
-        bad.append(f"盘前是涨的却说'现在跌': {m.group()!r}")
+        bad.append(f"{ext['label']}是涨的却说'现在跌': {m.group()!r}")
     return bad
 
 
@@ -162,11 +157,16 @@ def check_onchain_etf(ans, tools, g):
     """2026-08-19: 场内 ETF(51/15 开头)被归进"场外"。场内=券商市价+佣金, 场外=T+1
     净值申赎, 归错会让"场外都转正了怎么总账还亏"这类问题彻底算不清。
     """
+    # 按行判: 答案通常是"场内 ETF: …" / "场外基金: …" 两段, 相邻时按字符距离匹配会把
+    # 场内那行的代码和下一段的"场外"配上(第一版就误报了 518880)。同一行里既出现代码
+    # 又出现"场外"、且这行没有"场内", 才算归错。
     bad = []
-    for code in g["codes"]:
-        m = re.search(rf"场外[^。\n]{{0,40}}{code}|{code}[^。\n]{{0,40}}场外", ans)
-        if m:
-            bad.append(f"{code} 被称作场外: {m.group()[:40]!r}")
+    for line in (ans or "").splitlines():
+        if "场外" not in line or "场内" in line:
+            continue
+        for code in g["codes"]:
+            if code in line:
+                bad.append(f"{code} 被归到场外: {line.strip()[:48]!r}")
     return bad
 
 
