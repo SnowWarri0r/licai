@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import re
 import subprocess
 import threading
@@ -38,6 +39,19 @@ from urllib.parse import urlparse
 import requests
 
 logger = logging.getLogger(__name__)
+
+
+class LLMOverloaded(RuntimeError):
+    """上游过载(429/529), 客户端已按退避重试到上限仍未成功。
+
+    单独成一类是为了让 agent loop 能区分对待: 过载是**暂时**的, 值得把这一轮重发一遍
+    (loop 里已经攒了十几轮工具结果, 丢掉代价很大); 而 401/400 那类错误重发多少次都一样。
+    """
+
+    def __init__(self, message: str, status: int = 529):
+        super().__init__(message)
+        self.status = status
+
 
 # ── 默认值 ──────────────────────────────────────────────
 _DEFAULT_BASE_URL = "https://api.anthropic.com"
@@ -102,10 +116,21 @@ if _env_map:
 _MAX_RETRIES = int(os.environ.get("LLM_MAX_RETRIES", "3"))           # 总尝试次数 = 1 + retries
 _RETRY_INITIAL_BACKOFF_S = float(os.environ.get("LLM_RETRY_BACKOFF", "1.0"))  # 首次退避秒
 _RETRY_MAX_BACKOFF_S = float(os.environ.get("LLM_RETRY_MAX_BACKOFF", "8.0"))  # 最大退避秒
+# 过载(429/529)单独一档: 上游排队通常要几十秒才缓过来, 8 秒封顶的退避等于没等。
+# 只等到 ~15s 就把控制权交回调用方 —— agent loop 那边还有一层可见的重试(会推进度事件),
+# 在这儿默默等满一分钟, 前端只看到转圈。
+# 注意这是**下限**: 实际上限取 max(_MAX_RETRIES, 本值), 调它调不出比一般错误更少的重试。
+_OVERLOAD_RETRIES = int(os.environ.get("LLM_OVERLOAD_RETRIES", "4"))
+_OVERLOAD_MAX_BACKOFF_S = float(os.environ.get("LLM_OVERLOAD_MAX_BACKOFF", "30.0"))
 # (连接超时, 读超时): 连接快失败重试; 读放宽, 因 server 端 web_search 多次检索会把单次响应拉长到分钟级
 _HTTP_TIMEOUT = (10, float(os.environ.get("LLM_READ_TIMEOUT", "180")))
 # 可重试的 HTTP 状态码 (server-side transient)
-_RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504}
+# 529 是 Anthropic 私有的 overloaded_error, 不在任何 HTTP 标准表里 —— 漏掉它意味着高峰期
+# 每个过载都零重试直接甩给用户, 而隔壁 500/503 却重试三次。
+_RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504, 529}
+# 过载类: 服务端根本没开始干活就把请求弹回来了, 重试是官方推荐做法(与"超时重试"不同 ——
+# 超时说明服务端正在处理, 再发一遍是加倍施压)。
+_OVERLOAD_STATUS = {429, 529}
 # 可重试的网络异常
 _RETRYABLE_EXC = (
     requests.exceptions.ConnectionError,
@@ -322,14 +347,22 @@ def _post_with_fallback(headers: dict, payload: dict) -> requests.Response:
         return _direct_session.post(api_url, headers=headers, json=payload, timeout=_HTTP_TIMEOUT)
 
 
-def _compute_backoff(attempt: int, retry_after: str | None) -> float:
-    """Compute backoff seconds. Respects Retry-After header if present and valid."""
+def _compute_backoff(attempt: int, retry_after: str | None, overload: bool = False) -> float:
+    """Compute backoff seconds. Respects Retry-After header if present and valid.
+
+    overload=True 时用更高的封顶(过载要等几十秒), 并加 ±25% 抖动 —— 多个并发请求
+    (agent 同一轮里的几个调用) 否则会在同一毫秒一起重发, 把刚缓过来的上游再打回过载。
+    """
     if retry_after:
         try:
             return max(float(retry_after), 0.1)
         except (ValueError, TypeError):
             pass
-    return min(_RETRY_INITIAL_BACKOFF_S * (2 ** attempt), _RETRY_MAX_BACKOFF_S)
+    cap = _OVERLOAD_MAX_BACKOFF_S if overload else _RETRY_MAX_BACKOFF_S
+    base = min(_RETRY_INITIAL_BACKOFF_S * (2 ** attempt), cap)
+    if not overload:
+        return base
+    return round(base * random.uniform(0.75, 1.25), 2)
 
 
 def _post_with_retry(headers: dict, payload: dict) -> requests.Response:
@@ -337,23 +370,26 @@ def _post_with_retry(headers: dict, payload: dict) -> requests.Response:
 
     Retries on:
       - Network errors: ConnectionError, Timeout, ChunkedEncodingError, ContentDecodingError
-      - HTTP status: 408, 425, 429, 500, 502, 503, 504
+      - HTTP status: 408, 425, 429, 500, 502, 503, 504, 529
 
     Does NOT retry on:
       - 401 (handled separately via _retry_on_oauth_401 for OAuth flow)
       - 4xx other than above (client error, won't help)
       - Successful responses
 
-    Backoff: exponential, respects Retry-After header.
+    Backoff: exponential, respects Retry-After header. 撞上过载(429/529)时重试上限
+    抬到 _OVERLOAD_RETRIES、封顶抬到 _OVERLOAD_MAX_BACKOFF_S —— 上游排队几十秒是常态,
+    按 8 秒封顶等三次等于没等。
 
     NOTE: Uses blocking `time.sleep`. Must be called from a worker thread
     (e.g. via `asyncio.to_thread`) — calling from an async event loop will
-    freeze it for up to ~15s (1+2+4+8s worst case with default settings).
+    freeze it for up to ~15s (过载档最坏情况 1+2+4+8s)。
     """
     api_url = _build_api_url()
-    last_exc: Exception | None = None
+    attempt = 0
+    limit = _MAX_RETRIES          # 遇到过载状态码后按 _OVERLOAD_RETRIES 抬高
 
-    for attempt in range(_MAX_RETRIES + 1):
+    while True:
         try:
             resp = _llm_session.post(api_url, headers=headers, json=payload, timeout=_HTTP_TIMEOUT)
         except requests.exceptions.ProxyError:
@@ -361,47 +397,48 @@ def _post_with_retry(headers: dict, payload: dict) -> requests.Response:
             try:
                 resp = _direct_session.post(api_url, headers=headers, json=payload, timeout=_HTTP_TIMEOUT)
             except _RETRYABLE_EXC as e:
-                last_exc = e
-                if attempt >= _MAX_RETRIES:
+                if attempt >= limit:
                     raise
                 backoff = _compute_backoff(attempt, None)
                 logger.warning(
                     "LLM call network error (attempt %d/%d): %s, retrying in %.1fs",
-                    attempt + 1, _MAX_RETRIES + 1, e, backoff,
+                    attempt + 1, limit + 1, e, backoff,
                 )
                 time.sleep(backoff)
+                attempt += 1
                 continue
         except _RETRYABLE_EXC as e:
-            last_exc = e
-            if attempt >= _MAX_RETRIES:
-                logger.error("LLM call network error after %d attempts: %s", _MAX_RETRIES + 1, e)
+            if attempt >= limit:
+                logger.error("LLM call network error after %d attempts: %s", limit + 1, e)
                 raise
             backoff = _compute_backoff(attempt, None)
             logger.warning(
                 "LLM call network error (attempt %d/%d): %s, retrying in %.1fs",
-                attempt + 1, _MAX_RETRIES + 1, e, backoff,
+                attempt + 1, limit + 1, e, backoff,
             )
             time.sleep(backoff)
+            attempt += 1
             continue
 
         # Got a response — check if retryable status
-        if resp.status_code in _RETRYABLE_STATUS and attempt < _MAX_RETRIES:
+        if resp.status_code in _RETRYABLE_STATUS:
+            overload = resp.status_code in _OVERLOAD_STATUS
+            if overload:
+                limit = max(limit, _OVERLOAD_RETRIES)
+            if attempt >= limit:
+                return resp
             retry_after = resp.headers.get("retry-after")
-            backoff = _compute_backoff(attempt, retry_after)
+            backoff = _compute_backoff(attempt, retry_after, overload=overload)
             logger.warning(
                 "LLM call HTTP %d (attempt %d/%d), retrying in %.1fs%s",
-                resp.status_code, attempt + 1, _MAX_RETRIES + 1, backoff,
+                resp.status_code, attempt + 1, limit + 1, backoff,
                 f" (Retry-After: {retry_after})" if retry_after else "",
             )
             time.sleep(backoff)
+            attempt += 1
             continue
 
         return resp
-
-    # Should not reach here
-    if last_exc:
-        raise last_exc
-    raise RuntimeError("LLM call retry exhausted with no exception")
 
 
 def _safe_error_body(resp) -> str:
@@ -420,6 +457,20 @@ def _safe_error_body(resp) -> str:
     text = key_re.sub("***MASKED***", text)
     text = bearer_re.sub(r"\1***MASKED***", text)
     return text
+
+
+def _raise_for_status(resp) -> None:
+    """把失败响应翻成异常。过载抛 LLMOverloaded(带 status), 其余抛普通 RuntimeError。
+
+    走到这里说明 _post_with_retry 已经退避重试到上限了 —— 过载是真的持续过载,
+    不是一次抖动。给上层一个能识别的类型, 让它决定是重发这一轮还是直接报错。
+    """
+    code = resp.status_code
+    if code in _OVERLOAD_STATUS:
+        what = "限流" if code == 429 else "过载"
+        raise LLMOverloaded(
+            f"LLM 上游{what} (HTTP {code}), 已退避重试 {_OVERLOAD_RETRIES} 次仍未成功", code)
+    raise RuntimeError(f"LLM API error {code}: {_safe_error_body(resp)}")
 
 
 # ── 公开 API ───────────────────────────────────────────
@@ -494,7 +545,7 @@ def call_claude(
                 f"LLM API 401 鉴权失败 ({_base_url})。"
                 " 请检查 LLM_API_KEY / api_key_header / api_key_prefix 配置。"
             )
-        raise RuntimeError(f"LLM API error {resp.status_code}: {_safe_error_body(resp)}")
+        _raise_for_status(resp)
 
     data = resp.json()
     parts = data.get("content", [])
@@ -531,7 +582,7 @@ def call_claude_messages(
     resp = _retry_on_oauth_401(resp, token, is_oauth, system, headers, payload)
 
     if not resp.ok:
-        raise RuntimeError(f"LLM API error {resp.status_code}: {_safe_error_body(resp)}")
+        _raise_for_status(resp)
 
     return resp.json()
 
