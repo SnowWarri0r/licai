@@ -3,6 +3,11 @@ from __future__ import annotations
 import aiosqlite
 from config import config
 
+# 观察池的默认分组。它是一个真实分组(watchlist_group 里有行), 不是"没有分组" ——
+# 一只票可以同时在「自选」和「金矿」里。加进观察池时自动落这个组; 取消到一个组都不剩时
+# 也退回它, 保证任何一只票至少能在某个分组视图里被看见。
+DEFAULT_WATCH_GROUP = "自选"
+
 
 def resolve_action_time(action: dict) -> str:
     """成交时刻: trade_time(HH:MM, 用户手填)优先; 否则用 created_at(存的是 UTC)转北京
@@ -373,6 +378,21 @@ async def init_db():
                     # SQLite < 3.35 没有 DROP COLUMN: 列留着但没人读。清空值, 否则下次
                     # 启动又照着老列搬一遍 —— 会把用户后来移出的分组复活。
                     await db.execute("UPDATE watchlist SET grp = ''")
+        # Migration(一次性): 把「还没归组」的票补进默认组「自选」。
+        # 「自选」是一个真实分组, 不是"没有分组" —— 一只票可以同时在「自选」和「金矿」里。
+        # 只能跑一次: 跑第二遍会把用户后来从「自选」里取消勾选的票又塞回去(他明确只想留
+        # 「金矿」)。所以拿 app_config 一个键当一次性闸门, 而不是"看它有没有分组"。
+        cursor = await db.execute(
+            "SELECT value FROM app_config WHERE key = 'watchlist_default_group_filled'")
+        if not await cursor.fetchone():
+            await db.execute(
+                "INSERT OR IGNORE INTO watchlist_group (stock_code, grp, group_order) "
+                "SELECT w.stock_code, ?, COALESCE(w.sort_order, 0) FROM watchlist w "
+                "WHERE NOT EXISTS (SELECT 1 FROM watchlist_group g WHERE g.stock_code = w.stock_code)",
+                (DEFAULT_WATCH_GROUP,))
+            await db.execute(
+                "INSERT OR IGNORE INTO app_config (key, value) VALUES "
+                "('watchlist_default_group_filled', '1')")
         # Migration: add trade_time to external_asset_actions
         cursor = await db.execute("PRAGMA table_info(external_asset_actions)")
         eaa_cols = {row[1] for row in await cursor.fetchall()}
@@ -1601,6 +1621,15 @@ async def add_watchlist(code: str, name: str, price: float | None):
         await db.execute(
             "INSERT OR REPLACE INTO watchlist (stock_code, stock_name, added_at, added_price) VALUES (?, ?, ?, ?)",
             (code, name, datetime.date.today().isoformat(), price))
+        # 默认落进「自选」组。它是真实分组, 所以这一步会真写一行 —— 不写的话新加的票
+        # 一个组都不在, 只能在「全部」里看到。
+        cur = await db.execute(
+            "SELECT COALESCE(MAX(group_order),0)+1 FROM watchlist_group WHERE grp=?",
+            (DEFAULT_WATCH_GROUP,))
+        nxt = (await cur.fetchone())[0] or 0
+        await db.execute(
+            "INSERT OR IGNORE INTO watchlist_group (stock_code, grp, group_order) VALUES (?,?,?)",
+            (code, DEFAULT_WATCH_GROUP, nxt))
         await db.commit()
     finally:
         await db.close()
@@ -1649,12 +1678,15 @@ async def set_watchlist_groups(code: str, groups: list[str]) -> list[str]:
     已经在的组保留原位次 —— 重写位次的话勾一个新组会把这只票在老组里挪到末尾。
     新进的组排到该组末尾。全局位次 sort_order 一概不动: 在「全部」视图里改分组标签
     不该让这只票凭空跳位置。
+    传空列表 = 退回默认组「自选」(而不是一个组都不在: 那样这只票只能在「全部」里看到)。
     """
     want = []
     for g in groups or []:
         g = (str(g) or "").strip()
         if g and g not in want:
             want.append(g)
+    if not want:
+        want = [DEFAULT_WATCH_GROUP]
     db = await get_db()
     try:
         cur = await db.execute("SELECT grp FROM watchlist_group WHERE stock_code=?", (code,))
@@ -1689,7 +1721,7 @@ async def reorder_watchlist(codes: list[str], scope: str = "global", group: str 
         for i, c in enumerate(codes or []):
             if scope == "group":
                 if not (group or ""):
-                    continue               # 默认组「自选」不是真实分组, 没有组内位次可写
+                    continue               # 组名为空是脏入参, 不建这种行(默认组叫「自选」)
                 await db.execute(
                     "INSERT INTO watchlist_group (stock_code, grp, group_order) VALUES (?,?,?) "
                     "ON CONFLICT(stock_code, grp) DO UPDATE SET group_order=excluded.group_order",
