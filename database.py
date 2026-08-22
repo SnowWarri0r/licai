@@ -283,6 +283,22 @@ CREATE TABLE IF NOT EXISTS tool_gap (
     last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (tool, kind, market)
 );
+
+-- 从"用户纠正"沉淀出来的候选规则, 人批准后才进 system prompt。
+-- 为什么要闸门: prompt 里已有 56 条规则, 自动往里加最容易造成规则互撞, 而且 prompt
+-- 对单个词都敏感(曾因词表缺"主题/标题"两个词让模型吞掉首句)。所以只自动"提案", 不自动
+-- 生效; status=pending 的一律不进 prompt。
+CREATE TABLE IF NOT EXISTS prompt_rule (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,                       -- 【】里的标题
+    body TEXT NOT NULL,                        -- 规则正文(正向陈述)
+    status TEXT NOT NULL DEFAULT 'pending',    -- pending | active | rejected
+    evidence TEXT DEFAULT '',                  -- 触发它的那次纠正原文(截断)
+    session_id INTEGER,                        -- 来自哪个会话
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    decided_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_prompt_rule_status ON prompt_rule(status, id);
 """
 
 
