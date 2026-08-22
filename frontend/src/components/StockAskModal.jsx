@@ -9,12 +9,27 @@ function pctColor(v) {
   return 'text-text-dim'
 }
 
+// 抽屉一关就卸载, 对话跟着没了 —— 关一下再打开是空的, 追问的上下文也断了。所以按代码
+// 把对话留在模块级(组件外, 不随卸载消失), 关开不丢; 同一只票接着问还是同一个会话(落库
+// 也接着落在那条会话里)。只留最近几只, 免得把长对话无限攒在内存里。
+// 注: 刷新整页会清掉这份内存缓存 —— 原文已经落库, 在「问问市场」的历史里能翻到。
+const DRAWER_CACHE = new Map()      // code -> { history, sessionId }
+const DRAWER_CACHE_MAX = 8
+
+function remember(code, history, sessionId) {
+  if (!code) return
+  DRAWER_CACHE.delete(code)                       // 删了再插: Map 按插入序, 这样它排到最后
+  DRAWER_CACHE.set(code, { history, sessionId })
+  while (DRAWER_CACHE.size > DRAWER_CACHE_MAX) DRAWER_CACHE.delete(DRAWER_CACHE.keys().next().value)
+}
+
 // 个股 AI 分析弹窗: 多轮对话, 工具调用胶囊/正文/来源全部复用 askShared, 与"问问市场"样式一致。
 // stock: {code, name, pct, 行业}; initialQuestion: 打开即自动问的第一句(可空)。
 export default function StockAskModal({ stock, onClose, initialQuestion = '' }) {
   const [q, setQ] = useState('')
   const [loading, setLoading] = useState(false)
-  const [history, setHistory] = useState([])   // [{q, steps, answer, typed, done, sources, charts, err}]
+  // [{q, steps, answer, typed, done, sources, charts, err}]
+  const [history, setHistory] = useState(() => DRAWER_CACHE.get(stock?.code)?.history || [])
   const [shown, setShown] = useState(false)     // 滑入动画: 挂载后置 true → 从右侧划出
   const abortRef = useRef(null)
   const typer = useRef(null)
@@ -22,7 +37,7 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
   const follow = useRef(true)
   const started = useRef(false)
   const closeTimer = useRef(null)
-  const sessionId = useRef(null)      // 落库用: 一次抽屉 = 一个会话
+  const sessionId = useRef(DRAWER_CACHE.get(stock?.code)?.sessionId ?? null)   // 落库用: 同一只票接着同一条会话
 
   // 先播放滑出动画再卸载
   const close = () => { setShown(false); clearTimeout(closeTimer.current); closeTimer.current = setTimeout(onClose, 280) }
@@ -67,9 +82,13 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
     if (!el) return
     follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48
   }
+  const historyRef = useRef(history)
   useEffect(() => {
     const el = scrollBox.current
     if (el && follow.current) el.scrollTop = el.scrollHeight
+    historyRef.current = history
+    remember(stock?.code, history, sessionId.current)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [history])
 
   const ask = (question) => {
@@ -109,7 +128,22 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') close() }
     window.addEventListener('keydown', onKey)
-    return () => { window.removeEventListener('keydown', onKey); abortRef.current?.abort(); clearInterval(typer.current); clearTimeout(closeTimer.current) }
+    return () => {
+      window.removeEventListener('keydown', onKey); abortRef.current?.abort()
+      clearInterval(typer.current); clearTimeout(closeTimer.current)
+      // 正在流式的那一轮会被 abort 掉。不定格的话重开进来是一行永远转不完的"正在取数据",
+      // 而且打字机停在半句上 —— 有答案的按已收到的部分收尾, 没答案的标成已中断。
+      // 这里不能用 setHistory: 组件正在卸载, React 18 会把更新丢掉, updater 根本不跑。
+      // 所以读 ref 里那份镜像, 直接写缓存。
+      const h = historyRef.current
+      if (h?.length && !h[h.length - 1].done) {
+        const last = h[h.length - 1]
+        const fixed = last.answer
+          ? { ...last, typed: last.answer, done: true }
+          : { ...last, done: true, err: last.err || '已中断(关抽屉时这一问还没答完)' }
+        remember(stock?.code, [...h.slice(0, -1), fixed], sessionId.current)
+      }
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
