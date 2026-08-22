@@ -11,7 +11,10 @@ const BUY_COLOR = '#3fae6a', SELL_COLOR = '#d04a4a'
 const fmtVal = (v) => v == null ? '--' : v < 10 ? v.toFixed(3) : v < 100 ? v.toFixed(2) : v.toFixed(1)
 const fmtPct = (v) => v == null ? '--' : (v >= 0 ? '+' : '') + v.toFixed(2) + '%'
 const colorPct = (v) => v == null ? 'text-text-dim' : v >= 0 ? 'text-bear-bright' : 'text-bull-bright'
-const fmtHand = (h) => h == null ? '--' : h >= 1e4 ? (h / 1e4).toFixed(1) + '万手' : h + '手'
+const fmtHand = (h, unit = '手') => h == null ? '--'
+  : h >= 1e8 ? (h / 1e8).toFixed(2) + '亿' + unit
+  : h >= 1e4 ? (h / 1e4).toFixed(1) + '万' + unit
+  : Math.round(h) + unit
 
 // ---------------------------------------------------------------------------
 // 蜡烛图 (日/周/月) — 真蜡烛 + 成本线 + 自己历史 BS 标记
@@ -300,18 +303,32 @@ export function CandleChart({ series, cost, actions, warmup = [] }) {
 // ---------------------------------------------------------------------------
 // 分时时刻 → 固定 240 分钟交易网格的槽位 [0,240]。9:30-11:30=0~120, 13:00-15:00=120~240。
 // 让点按真实时刻落位(没出满则右侧留白), 而非按索引铺满整宽导致时间轴错位。
-function _minuteSlot(t) {
+// 交易时段(按各市场本地时间, 源给的时刻就是本地时刻, 不做时区换算):
+//   cn 9:30-11:30 + 13:00-15:00 = 240 分; hk 9:30-12:00 + 13:00-16:00 = 330 分;
+//   us 9:30-16:00 美东连续 = 390 分。x 轴按时段总长铺, 午休不占宽度。
+export const SESSIONS = {
+  cn: { am: [570, 690], pm: [780, 900], labels: ['09:30', '11:30/13:00', '15:00'] },
+  hk: { am: [570, 720], pm: [780, 960], labels: ['09:30', '12:00/13:00', '16:00'] },
+  us: { am: [570, 960], pm: null, labels: ['09:30', '12:45', '16:00'] },
+}
+const _slotMax = (s) => (s.am[1] - s.am[0]) + (s.pm ? s.pm[1] - s.pm[0] : 0)
+
+function _minuteSlot(t, s = SESSIONS.cn) {
   const parts = String(t || '').split(':')
   const mins = (Number(parts[0]) || 0) * 60 + (Number(parts[1]) || 0)
-  const amS = 570, amE = 690, pmS = 780, pmE = 900   // 9:30 / 11:30 / 13:00 / 15:00
+  const [amS, amE] = s.am
+  const amLen = amE - amS
   if (mins <= amS) return 0
   if (mins <= amE) return mins - amS
-  if (mins < pmS) return 120
-  if (mins <= pmE) return 120 + (mins - pmS)
-  return 240
+  if (!s.pm) return amLen
+  const [pmS, pmE] = s.pm
+  if (mins < pmS) return amLen                       // 午休并到上午收盘位置
+  if (mins <= pmE) return amLen + (mins - pmS)
+  return amLen + (pmE - pmS)                         // 收盘竞价/盘后快照贴到右端
 }
 
-export function MinuteChart({ points, prevClose, actions = [], day, height = 410 }) {
+export function MinuteChart({ points, prevClose, actions = [], day, height = 410,
+                             session = 'cn', volUnit = '手' }) {
   const [hover, setHover] = useState(null)
   const svgRef = useRef(null)
   // t=30: 顶部预留图例专属条带(y≈17), 图从其下开始; volGap=24: 两图间隙容纳量图例行;
@@ -325,6 +342,9 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
   const volGap = Math.round(Math.min(24, innerH * 0.12))
   const priceH = innerH - volH - volGap
   const volTop = P.t + priceH + volGap
+
+  const sess = SESSIONS[session] || SESSIONS.cn
+  const slotMax = _slotMax(sess)
 
   const { rows, rangeMin, range, volMax } = useMemo(() => {
     const prices = points.map(p => p.price).filter(v => v > 0)
@@ -341,7 +361,7 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
       const v = Number(p['手']) || 0
       cumPV += p.price * v; cumV += v
       const avg = cumV > 0 ? cumPV / cumV : p.price
-      const x = P.l + (_minuteSlot(p.time) / 240) * innerW   // 按真实时刻落位, 非按索引铺满
+      const x = P.l + (_minuteSlot(p.time, sess) / slotMax) * innerW   // 按真实时刻落位, 非按索引铺满
       const yOf = (val) => P.t + priceH - ((val - rMin) / rng) * priceH
       // 量柱买卖方向: tick 规则 — 比上一分钟涨=主动买(红), 跌=主动卖(绿), 平=延续
       const up = p.price > prevPx ? true : p.price < prevPx ? false : lastUp
@@ -349,7 +369,7 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
       return { ...p, avg, vol: v, x, y: yOf(p.price), yAvg: yOf(avg), i, up }
     })
     return { rows: rs, rangeMin: rMin, range: rng, volMax: vMax }
-  }, [points, prevClose, priceH, innerW])
+  }, [points, prevClose, priceH, innerW, sess, slotMax])
 
   const yTicks = useMemo(() => {
     // 刻度条数按价格区高度给: 标签字号约 11 个 viewBox 单位, 至少留 22 单位间距,
@@ -376,7 +396,7 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
     for (const a of actions) {
       if (norm(a.trade_date) !== matchDay) continue
       if (!a.at_time) continue
-      const slot = _minuteSlot(a.at_time)
+      const slot = _minuteSlot(a.at_time, sess)
       const isBuy = ACQUIRE.has(a.action_type)
       const price = Number(a.price) || 0
       const sh = Number(a.shares) || 0
@@ -387,7 +407,7 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
     }
     const out = [...byOrder.values()].map(g => {
       const price = g.shares > 0 ? g.amt / g.shares : g.price   // 分价成交取成交额加权均价
-      return { ...g, price, x: P.l + (g.slot / 240) * innerW,
+      return { ...g, price, x: P.l + (g.slot / slotMax) * innerW,
                y: price > 0 ? yOf(price) : (g.isBuy ? P.t + priceH : P.t) }
     })
     // 合并后相邻分钟的标记仍可能横向压字(标签约 18 单位宽), 同向且挨得近的逐个错开一行
@@ -400,7 +420,7 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
       placed.push(m)
     }
     return out
-  }, [rows, actions, day, rangeMin, range, priceH, innerW])
+  }, [rows, actions, day, rangeMin, range, priceH, innerW, sess, slotMax])
 
   const priceLine = rows.map(r => `${r.x},${r.y}`).join(' ')
   const avgLine = rows.map(r => `${r.x},${r.yAvg}`).join(' ')
@@ -418,7 +438,7 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
     setHover(best)
   }
 
-  if (rows.length < 2) return <div className="h-[360px] flex items-center justify-center text-text-dim text-[12px]">暂无分时(非交易时段或 TDX 无数据)</div>
+  if (rows.length < 2) return <div className="h-[360px] flex items-center justify-center text-text-dim text-[12px]">暂无分时(非交易时段, 或该标的的源不提供分时)</div>
 
   return (
     <div className="relative">
@@ -432,7 +452,7 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
           </g>
         ))}
         <line x1={P.l} y1={baseY} x2={W - P.r} y2={baseY} stroke="var(--color-text-muted)" strokeWidth="1" strokeDasharray="3 3" opacity="0.6" />
-        {['09:30', '11:30/13:00', '15:00'].map((lbl, i) => (
+        {sess.labels.map((lbl, i) => (
           <text key={i} x={P.l + (i / 2) * innerW} y={H - 8} fontSize="10" fill="var(--color-text-dim)" textAnchor={i === 0 ? 'start' : i === 2 ? 'end' : 'middle'} fontFamily="monospace">{lbl}</text>
         ))}
         {/* 分时成交量图例: 两图间隙条带(volGap=24 专门留的), 右对齐, 与价格区底部轴标隔开 */}
@@ -476,7 +496,7 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
         <div className="absolute top-2 right-2 bg-surface-2 border border-border-med rounded-md px-2.5 py-1.5 text-[11px] font-mono pointer-events-none">
           <div className="text-text-dim">{hover.time}</div>
           <div>价 <span className="text-text-bright">{fmtVal(hover.price)}</span> <span className={colorPct(((hover.price / prevClose) - 1) * 100)}>{fmtPct(((hover.price / prevClose) - 1) * 100)}</span></div>
-          <div className="text-text-dim">均 {fmtVal(hover.avg)} · {fmtHand(hover['手'])}</div>
+          <div className="text-text-dim">均 {fmtVal(hover.avg)} · {fmtHand(hover['手'], volUnit)}</div>
         </div>
       )}
     </div>

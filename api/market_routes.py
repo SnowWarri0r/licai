@@ -598,6 +598,30 @@ async def get_macro(with_kline: bool = False):
     return out
 
 
+@router.get("/macro/minute/{symbol}")
+async def macro_minute(symbol: str):
+    """指数分时。A股指数走 TDX(带市场前缀直传, 裸 6 位会被当成同号个股),
+    港股/美股指数走腾讯; 日经/KOSPI/FTSE 两个源都没有分时, 返回空让前端不显示该页。
+
+    session 告诉前端按哪套交易时段铺 x 轴: cn 上午120+下午120 / hk 150+180 / us 连续390。
+    """
+    sym = (symbol or "").strip()
+    if sym.startswith(("sh", "sz", "bj")):
+        import services.tdx_client as _tdx
+        if not _tdx.is_enabled():
+            return {"symbol": sym, "session": "cn", "points": [], "note": "TDX 未接入"}
+        d = await _tdx.minute(sym)
+        return {"symbol": sym, "session": "cn", "vol_unit": "手",
+                "date": (d or {}).get("date") or "", "points": (d or {}).get("points") or []}
+    if sym.startswith("hk") or sym in ("gb_dji", "gb_ixic", "gb_inx"):
+        from services.market_data import _minute_tencent
+        d = await asyncio.to_thread(_minute_tencent, sym)
+        return {"symbol": sym, "session": "hk" if sym.startswith("hk") else "us",
+                "vol_unit": "股", "date": (d or {}).get("date") or "",
+                "points": (d or {}).get("points") or []}
+    return {"symbol": sym, "points": [], "note": "该指数的源里没有分时数据"}
+
+
 @router.get("/macro/kline/{symbol}")
 async def get_macro_kline(symbol: str, days: int = 60):
     """单个 symbol 的 K 线 (展开详情图用, 默认 60 日)."""
