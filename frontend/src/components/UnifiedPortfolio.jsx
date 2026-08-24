@@ -1096,6 +1096,17 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
     return { warnings, overlapRowIds, overlapByRow }
   }, [rows])
 
+  // 穿透敞口(同源风险)走后端: 基金拆到季报前十大, 同一标的/同一行业合起来算。
+  // 前端这份 riskFamiliesOf 关键词只认名字里带金属字样的票 —— 「兴业银锡」这种认不出,
+  // 基金那侧更是只看基金名, 不看它到底拿了什么。所以结论以后端为准, 关键词只留作
+  // 行内 ↔同源 角标的兜底(后端还没返回时先有个东西显示)。
+  const [expo, setExpo] = useState(null)
+  useEffect(() => {
+    let alive = true
+    fetchJSON('/api/portfolio/exposure').then(d => { if (alive && !d?.error) setExpo(d) }).catch(() => {})
+    return () => { alive = false }
+  }, [])
+
   const removeAsset = async (row) => {
     if (!confirm(`删除 ${row.name}？`)) return
     await fetchJSON(`/api/assets/${row._raw.id}`, { method: 'DELETE' })
@@ -1175,9 +1186,12 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
       })()}
 
       {/* Risk insights strip */}
-      {!isEmpty && insights.warnings.length > 0 && (
+      {!isEmpty && (insights.warnings.length > 0 || (expo?.warnings || []).length > 0) && (
         <div className="px-3 md:px-6 py-2.5 border-b border-border bg-surface-2/60 flex flex-col gap-1.5">
-          {insights.warnings.map((w, i) => {
+          {/* low 级的不进这条提示带: 穿透会挖出一堆"某只票占 0.8%、来自 5 只基金"的细项,
+              全铺出来会把真正该看的两三条(行业过半、两只基金同一注)压下去。细项在
+              「问问市场」问一句就有(get_exposure 工具), 或直接看 /api/portfolio/exposure */}
+          {[...insights.warnings, ...(expo?.warnings || []).filter(w => w.level !== 'low')].map((w, i) => {
             const color = w.level === 'high' ? '#e58a8a' : '#d4a05c'
             return (
               <div key={i} className="flex items-center gap-2 text-[11.5px]">
@@ -1187,6 +1201,14 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
               </div>
             )
           })}
+          {expo?.coverage && (
+            <div className="text-[10px] text-text-muted leading-snug pl-6">
+              穿透口径: 基金只拆到季报前十大(合计约占净值 25%~50%), 所以上面的敞口是<b>下限</b>；
+              已穿透 {expo.coverage.penetrated_funds}/{expo.n_funds} 只基金
+              {(expo.coverage.uncovered || []).length > 0 &&
+                `，拉不到明细的 ${expo.coverage.uncovered.length} 只(${expo.coverage.uncovered.map(u => u.name).join('、')})未计入，那不等于敞口为 0`}
+            </div>
+          )}
         </div>
       )}
 
