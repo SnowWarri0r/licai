@@ -610,10 +610,12 @@ async def get_macro(with_kline: bool = False):
         return quotes
     syms = [it["symbol"] for items in quotes.values() for it in items]
     klines = await get_macro_klines(syms)
+    from services.market_data import with_live_bar
     out = {}
     for grp, items in quotes.items():
+        # sparkline 同样补今天那根: 不补的话小图停在上一交易日, 与旁边的实时涨跌对不上
         out[grp] = [
-            {**it, "kline": klines.get(it["symbol"], [])}
+            {**it, "kline": with_live_bar(klines.get(it["symbol"], []), it)}
             for it in items
         ]
     return out
@@ -661,11 +663,14 @@ async def macro_minute(symbol: str):
 
 @router.get("/macro/kline/{symbol}")
 async def get_macro_kline(symbol: str, days: int = 60):
-    """单个 symbol 的 K 线 (展开详情图用, 默认 60 日)."""
-    from services.market_data import _kline_for_symbol
+    """单个 symbol 的 K 线 (展开详情图用, 默认 60 日)。末尾补一根盘中实时蜡烛。"""
+    from services.market_data import _kline_for_symbol, with_live_bar
     import asyncio as _asyncio
     data = await _asyncio.to_thread(_kline_for_symbol, symbol, days)
-    return {"symbol": symbol, "kline": data}
+    # 日 K 接口收盘后才发当天那根 —— 不补的话盘中"报价实时、K线停在昨天", 图和数字打架
+    q = (await get_macro_quotes()) or {}
+    quote = next((it for rows in q.values() for it in rows if it.get("symbol") == symbol), None)
+    return {"symbol": symbol, "kline": with_live_bar(data, quote)}
 
 
 # ============================================================
