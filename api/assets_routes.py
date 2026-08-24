@@ -1362,6 +1362,72 @@ async def remove_okx_credentials():
     return {"message": "cleared" if ok else "nothing to clear"}
 
 
+@router.get("/okx/spot")
+async def okx_spot():
+    """OKX 策略之外的现货余额, 并与看板里已跟踪的加密资产对账。
+
+    为什么不做成"读到就自动建仓": 余额只给数量, 给不出成本 —— 凭空建一笔成本会让盈亏
+    从第一天就是错的。所以这里只给差异和建议动作, 建/更新由用户点一下确认。
+    """
+    if not okx_client.has_credentials():
+        raise HTTPException(400, "OKX 凭证未配置")
+    spot = await okx_client.spot_balances()
+    if not spot.get("ok"):
+        raise HTTPException(502, "; ".join(spot.get("errors") or ["读取失败"]))
+
+    rows = await list_external_assets()
+    tracked = {}
+    for a in rows:
+        if a.get("asset_type") != "CRYPTO":
+            continue
+        ccy = str(a.get("code") or "").split("-")[0].upper()
+        tracked[ccy] = {"id": a["id"], "name": a.get("name"), "shares": float(a.get("shares") or 0)}
+
+    q = await get_crypto_quote("BTC-USDT")
+    usdcny = (q or {}).get("usdcny", 7.2)
+
+    plan = []
+    for c in spot["currencies"]:
+        if c.get("dust"):
+            continue
+        t = tracked.get(c["ccy"])
+        qty_diff = round(c["qty"] - (t["shares"] if t else 0), 10)
+        plan.append({
+            **c,
+            "cny": round(c["usd"] * usdcny, 2),
+            "tracked_id": (t or {}).get("id"),
+            "tracked_shares": (t or {}).get("shares"),
+            "qty_diff": qty_diff,
+            "action": "create" if not t else ("update" if abs(qty_diff) > 1e-8 else "ok"),
+        })
+    # 冻结额 vs 看板里策略市值的差 —— 这块钱看板目前谁都没算:
+    # 实测冻结 431.14 USD, 而两个策略的 current_value 合计只有 251.22 USD, 差 180 USD
+    # (¥1295)。差额是策略预留但还没投进去的现金(马丁的 available_usdt 就是这个意思),
+    # 它是你的钱, 只是闲在策略里。不并进策略市值 —— 那会把策略的成本/盈亏口径搅乱。
+    frozen_usd = round(sum(f["usd"] for f in spot["frozen"]), 2)
+    bot_usd = 0.0
+    for a in rows:
+        if a.get("asset_type") == "BOT" and a.get("okx_algo_id"):
+            try:
+                det = await okx_client.get_bot_details(a["okx_algo_id"], a.get("okx_bot_type") or "grid")
+                bot_usd += float((det or {}).get("current_value_usdt") or 0)
+            except Exception:
+                pass
+    idle = round(frozen_usd - bot_usd, 2)
+    return {
+        "usdcny": usdcny,
+        "spot": plan,
+        "dust": {"n": spot["n_dust"], "usd": spot["dust_usd"]},
+        "frozen": [{**f, "cny": round(f["usd"] * usdcny, 2)} for f in spot["frozen"]],
+        "frozen_usd": frozen_usd,
+        "bot_value_usd": round(bot_usd, 2),
+        "strategy_idle": {"usd": idle, "cny": round(idle * usdcny, 2)} if idle > 1 else None,
+        "note": ("交易账户余额里 frozenBal 是被网格/马丁占用的钱, 已作为 BOT 资产在跟踪 —— "
+                 "所以这里只取 可用余额 + 资金账户, 不含冻结, 免得同一笔钱数两遍。"
+                 "余额只有数量没有成本, 建仓/更新要你确认。"),
+    }
+
+
 @router.get("/okx/debug/dca-raw")
 async def okx_debug_dca_raw():
     """Debug: 返回 OKX DCA 多个 endpoint 的 raw 字段, 用来找"总预算"键名."""
