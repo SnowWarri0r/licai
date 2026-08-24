@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { fetchJSON } from '../hooks/useApi'
-import { MiniMarkdown, SourcesBlock, ToolCallStrip } from './askShared'
+import { MiniMarkdown, SourcesBlock, ToolCallStrip, startRun, followRun, liveRuns, cancelRun } from './askShared'
 import ImageZoom from './ImageZoom'
 
 // 能力展示型推荐问题 (page 模式空态用), 覆盖 市场风格/资金主线/政策/基本面/同行/筹码
@@ -11,20 +11,26 @@ const MARKET_SUGGESTIONS = [
   '资金人气榜上抱团方向是什么',
 ]
 
+// 对话留在组件外: 这一页是条件渲染的(view === 'ask'), 切到别的页就卸载 —— 回来不该是空白。
+// 那一轮本身也不再挂在这根 fetch 上: 执行权在服务端(services/ask_runs.py), 走开只是停止跟看。
+// run 记 {id, cursor}, 回来照游标续看; 整页刷新把这份内存清了, 也还能问服务端要回来。
+const PAGE = { history: [], sessionId: null, run: null }
+
 export default function StockAsk({ page = false }) {
   const [q, setQ] = useState('')
   const [loading, setLoading] = useState(false)
-  const [history, setHistory] = useState([])   // [{q, steps, thought, answer, typed, done, err}]
+  const [history, setHistory] = useState(PAGE.history)   // [{q, steps, thought, answer, typed, done, err}]
   const [holdings, setHoldings] = useState([])
   const [sessions, setSessions] = useState([])      // 历史会话列表
   const [showHist, setShowHist] = useState(false)   // 历史抽屉开关
   const [copied, setCopied] = useState(false)
   const [pendImgs, setPendImgs] = useState([])      // 待发送图片(data URL), 随下条问题一起发
   const fileRef = useRef(null)
-  const sessionId = useRef(null)                    // 当前会话 id(首次保存时由后端分配)
-  const abortRef = useRef(null)
+  const sessionId = useRef(PAGE.sessionId)          // 当前会话 id(开跑时由后端分配)
+  const abortRef = useRef(null)                     // 只是"跟看"那根连接, abort 它不影响 run
   const typer = useRef(null)
   const scrollBox = useRef(null)
+  const historyRef = useRef(history)                // 卸载时 setState 会被丢, 得靠这份镜像
   const follow = useRef(true)   // 是否跟随滚到底; 用户往上拖就关掉, 拖回底部再开
 
   useEffect(() => {
@@ -33,7 +39,16 @@ export default function StockAsk({ page = false }) {
       // 只留当前在持(shares>0); 已清仓的票不该出现在"我的持仓"快捷入口
       setHoldings(hs.filter(h => (h.stock_name || h.stock_code) && Number(h.shares) > 0).slice(0, 8))
     }).catch(() => {})
-    return () => { abortRef.current?.abort(); clearInterval(typer.current) }
+    if (PAGE.run) attach(PAGE.run.id, PAGE.run.cursor)          // 切回来: 接着跟看
+    else if (!PAGE.history.length) reattachOrphan()             // 刷新过: 去服务端把还在跑的捞回来
+    return () => {
+      abortRef.current?.abort(); clearInterval(typer.current)   // 只停止跟看, 不取消 run
+      // 打字机可能停在半句上, 定格成完整答案(此刻不能 setState, 直接写组件外那份)
+      const h = historyRef.current
+      const last = h?.[h.length - 1]
+      if (last?.answer && !last.done) PAGE.history = [...h.slice(0, -1), { ...last, typed: last.answer, done: true }]
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const patchLast = (fn) => setHistory(h => h.map((it, i) => i === h.length - 1 ? fn(it) : it))
@@ -75,9 +90,47 @@ export default function StockAsk({ page = false }) {
 
   const openHist = () => { loadSessions(); setShowHist(true) }
 
+  // 开新对话只是"我不看这条了": 在跑的那一轮不杀, 它会自己跑完落库, 之后在历史里能翻到。
+  // 真要停用输入框旁边那个「停」。
   const newChat = () => {
     abortRef.current?.abort(); clearInterval(typer.current)
+    PAGE.run = null; PAGE.history = []; PAGE.sessionId = null
     sessionId.current = null; setHistory([]); setShowHist(false); setLoading(false)
+  }
+
+  const stopRun = () => {
+    if (PAGE.run) cancelRun(PAGE.run.id)
+    abortRef.current?.abort(); clearInterval(typer.current); PAGE.run = null
+    patchLast(it => (it.answer == null ? { ...it, err: '已停止', done: true } : { ...it, typed: it.answer, done: true }))
+    setLoading(false)
+  }
+
+  // 跟看一条已经在跑(或刚跑完)的 run。断开只是不看了 —— 所以这里不做任何"中断"标记。
+  const attach = (runId, cursor = 0) => {
+    abortRef.current?.abort()
+    const ctrl = new AbortController(); abortRef.current = ctrl
+    PAGE.run = { id: runId, cursor }
+    setLoading(true)
+    followRun(runId, {
+      cursor, signal: ctrl.signal,
+      onEvent: (ev) => { if (ev.cursor != null && PAGE.run) PAGE.run.cursor = ev.cursor; handleEv(ev) },
+      onEnd: ({ finished, gone }) => {
+        if (finished || gone) { PAGE.run = null; setLoading(false) }
+        // 服务端已经不记得它了(跑完太久被清 / 重启过): 原文在库里, 回去取, 别报错
+        if (gone && sessionId.current) loadSession(sessionId.current)
+      },
+      onError: (err) => { patchLast(it => ({ ...it, err, done: true })); PAGE.run = null; setLoading(false) },
+    })
+  }
+
+  // 整页刷新/关过页面: 组件外那份内存也没了, 但 run 还在服务端跑着(或刚跑完还在内存里)。
+  // 从游标 0 拉一遍, 缺席期间的工具步骤一条不少地补回来。
+  const reattachOrphan = async () => {
+    const r = (await liveRuns('market')).filter(x => !x.done).pop()
+    if (!r) return
+    sessionId.current = r.session_id
+    setHistory([{ q: r.question, images: [], steps: [], thought: '', answer: null, typed: '', done: false, sources: [], charts: [] }])
+    attach(r.run_id, 0)
   }
 
   // 载入历史会话 → 还原成对话(user/assistant 配对成一轮)
@@ -92,7 +145,14 @@ export default function StockAsk({ page = false }) {
           t.answer = m.content; t.typed = m.content; t.sources = (m.meta && m.meta.sources) || []; t.charts = (m.meta && m.meta.charts) || []
         }
       }
+      // 末尾这一问没答案: 问题是开跑时就落库的, 所以要么它还在跑(接着跟看), 要么当时没跑完
+      const tail = turns[turns.length - 1]
+      const running = tail && tail.answer == null
+        ? (await liveRuns()).find(r => r.session_id === id && !r.done) : null
+      if (tail && tail.answer == null && !running) { tail.err = '这一问没答完(当时中断了)' }
+      if (tail && running) { tail.done = false }
       sessionId.current = id; setHistory(turns); setShowHist(false)
+      if (running) attach(running.run_id, 0)
     } catch { /* ignore */ }
   }
 
@@ -103,27 +163,8 @@ export default function StockAsk({ page = false }) {
     loadSessions()
   }
 
-  // 持久化一轮(user + assistant)。user 带发送的图、assistant 带 tools_used/sources 进 meta。
-  const persistTurn = async (question, item) => {
-    try {
-      const r1 = await fetch('/api/ask/messages', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId.current, role: 'user', content: question, title: question,
-                               meta: (item.images || []).length ? { images: item.images } : null }),
-      })
-      const j1 = await r1.json(); sessionId.current = j1.session_id
-      await fetch('/api/ask/messages', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          session_id: sessionId.current, role: 'assistant', content: item.answer || '',
-          // llm_retry/self_check 是过程提示不是工具, 别存进历史(否则重开会话会多出假工具)
-          meta: { tools_used: (item.steps || []).map(s => s.tool)
-                    .filter(t => t !== 'llm_retry' && t !== 'self_check'),
-                  sources: item.sources || [], charts: item.charts || [] },
-        }),
-      })
-    } catch { /* 持久化失败不影响使用 */ }
-  }
+  // 落库不在这边做了: 问题在开跑那一刻由服务端写进会话, 答案由服务端在跑完时写 ——
+  // 前端在不在都一样。原来放在这里, 于是"没看到结尾"等于"这一轮从没发生过"。
 
   // 复制整段对话为纯文本(贴给开发者优化用)
   const copyConversation = () => {
@@ -138,10 +179,12 @@ export default function StockAsk({ page = false }) {
     if (!el) return
     follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48
   }
-  // 每次内容变化(打字机每跳一下也会触发)后, 若处于跟随态就贴到底
+  // 每次内容变化(打字机每跳一下也会触发)后, 若处于跟随态就贴到底; 顺手把对话镜像到组件外
   useEffect(() => {
     const el = scrollBox.current
     if (el && follow.current) el.scrollTop = el.scrollHeight
+    historyRef.current = history
+    PAGE.history = history; PAGE.sessionId = sessionId.current
   }, [history])
 
   const typewriter = (full) => {
@@ -170,39 +213,19 @@ export default function StockAsk({ page = false }) {
     // 把已完成的历史轮次(最近4轮)作为上下文带给后端, 支持追问("它/明天呢")
     const hist = history.filter(it => it.answer && !it.err).slice(-4)
       .flatMap(it => [{ role: 'user', content: it.q }, { role: 'assistant', content: it.answer }])
+    const shown = text || '(看图)'
     setQ(''); setPendImgs([]); setLoading(true)
     follow.current = true
-    setHistory(h => [...h, { q: text || '(看图)', images: imgs, steps: [], thought: '', answer: null, typed: '', done: false, sources: [], charts: [] }])
-    abortRef.current?.abort()
-    const ctrl = new AbortController(); abortRef.current = ctrl
+    setHistory(h => [...h, { q: shown, images: imgs, steps: [], thought: '', answer: null, typed: '', done: false, sources: [], charts: [] }])
     try {
-      const resp = await fetch('/api/ask/stock/stream', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ question: text, history: hist, images: imgs }), signal: ctrl.signal,
-      })
-      const reader = resp.body.getReader(); const dec = new TextDecoder()
-      let buf = ''
-      let fAnswer = null; const fSources = []; const fSteps = []; const fCharts = []   // 本地累计, 供持久化
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buf += dec.decode(value, { stream: true })
-        const parts = buf.split('\n\n'); buf = parts.pop()   // 留下不完整的最后一段
-        for (const p of parts) {
-          const line = p.split('\n').find(l => l.startsWith('data: '))
-          if (!line) continue
-          let ev; try { ev = JSON.parse(line.slice(6)) } catch { continue }
-          if (ev.type === 'answer') fAnswer = ev.text
-          else if (ev.type === 'sources') fSources.push(...(ev.sources || []))
-          else if (ev.type === 'step') fSteps.push({ tool: ev.tool })
-          else if (ev.type === 'chart') fCharts.push(ev.url)
-          handleEv(ev)
-        }
-      }
-      if (fAnswer != null) persistTurn(text || '(看图)', { answer: fAnswer, steps: fSteps, sources: fSources, charts: fCharts, images: imgs })
+      const r = await startRun({ question: shown, history: hist, images: imgs,
+                                 session_id: sessionId.current, title: shown, scope: 'market' })
+      sessionId.current = r.session_id
+      // 图换成落盘后的 URL: 跟历史里看到的同一份, 也不用在内存里扛着 base64
+      if (r.images?.length) patchLast(it => ({ ...it, images: r.images }))
+      attach(r.run_id, 0)
     } catch (e) {
-      if (e.name !== 'AbortError') patchLast(it => it.answer == null ? { ...it, err: '连接中断', done: true } : it)
-    } finally {
+      patchLast(it => ({ ...it, err: `没跑起来: ${e.message}`, done: true }))
       setLoading(false)
     }
   }
@@ -347,9 +370,16 @@ export default function StockAsk({ page = false }) {
           className="text-[12px] px-3.5 py-2 rounded-lg bg-accent/20 text-accent border border-accent/40 hover:bg-accent/30 disabled:opacity-40 disabled:cursor-not-allowed">
           {loading ? '分析中' : '问'}
         </button>
+        {loading && (
+          <button onClick={stopRun} title="真停掉这一轮(切到别的页不用停, 它会自己跑完)"
+            className="text-[12px] px-3 py-2 rounded-lg bg-surface-3 border border-border text-text-dim hover:text-bear-bright hover:border-bear/40 shrink-0">
+            停
+          </button>
+        )}
       </div>
       <div className="text-[10px] text-text-muted pt-2.5 mt-2 border-t border-border-subtle">
         Agent 自取行情/走势/新闻/大盘情绪后客观解读 · 可发图(截图/K线/持仓)让它看 · 纯解读不构成任何买卖建议
+        {loading && ' · 这一轮跑在后台, 切页/关页都不打断, 答完自动进历史'}
       </div>
     </div>
   )
