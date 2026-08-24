@@ -1900,6 +1900,44 @@ def _kline_for_symbol(sym: str, datalen: int = 30) -> list[dict]:
         return []
 
 
+def with_live_bar(rows: list[dict], quote: dict | None) -> list[dict]:
+    """日 K 序列末尾补一根"今天(进行中)"的蜡烛。
+
+    为什么要补: 日 K 接口是**收盘后**才发当天那根的。所以盘中打开宏观面板, 上面的报价
+    是实时的(上证 3861.63 −1.12%), 下面的 K 线却停在上一个交易日 —— 图与数字对不上,
+    今天这根根本看不见。实测新浪 getKLineData 在 08-24 13:37(盘中)最新一根还是 08-21。
+
+    怎么判断"该补": 不查各市场交易日历(A股/港股/美股/日经各自不同, 还有时区), 而是用
+    **报价自带的昨收**对齐 —— 昨收等于序列最后一根的收盘, 说明那根就是上一交易日、
+    实时报价属于新的一根, 补; 若源里已经有今天那根(昨收对应的是倒数第二根), 就不补。
+    这个判据与市场、时区无关, 对不上时一律不补(宁缺勿造)。
+    """
+    if not rows or not quote:
+        return rows
+    try:
+        prev = float(quote.get("prev_close") or 0)
+        px = float(quote.get("price") or 0)
+        o = float(quote.get("open") or 0)
+        hi = float(quote.get("high") or 0)
+        lo = float(quote.get("low") or 0)
+    except (TypeError, ValueError):
+        return rows
+    if px <= 0 or prev <= 0:
+        return rows
+    last = rows[-1]
+    lc = float(last.get("close") or 0)
+    if lc <= 0 or abs(lc - prev) / prev > 1e-4:
+        return rows                      # 昨收对不上最后一根 → 源里可能已含今天, 或数据错位
+    # 开高低缺一个就只画收盘点(前端会退回折线), 不硬造蜡烛
+    bar = {"date": _cst_now().strftime("%Y-%m-%d"), "close": round(px, 4), "live": True}
+    if o > 0 and hi > 0 and lo > 0:
+        bar.update({"open": round(o, 4), "high": round(max(hi, px), 4),
+                    "low": round(min(lo, px), 4)})
+    if bar["date"] == str(last.get("date")):
+        return rows                      # 同一天(源刚发出来)不重复加
+    return rows + [bar]
+
+
 async def get_macro_klines(symbols: list[str]) -> dict[str, list[dict]]:
     """批量拉 K 线, 5 分钟缓存. 返回 {symbol: [{date, close}, ...]}"""
     cache_key = "macro_klines_" + ",".join(sorted(symbols))
