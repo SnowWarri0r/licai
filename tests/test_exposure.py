@@ -98,3 +98,75 @@ def test_warnings_sorted_high_first():
     hi = {"a": "甲", "b": "乙", "overlap_pct": 45.0, "n_same": 9, "same": ["x"], "mv": 5700}
     ws = _warnings([], [hi], [_ind("贵金属", 30.0, direct=39000)], 130000)
     assert [w["level"] for w in ws] == sorted([w["level"] for w in ws], key=lambda l: {"high": 0, "med": 1, "low": 2}[l])
+
+
+# ── 同源要归到"账本里的哪几行" ─────────────────────────
+
+# 8-24 的真实账本: 山东黄金 2.56万 + 兴业银锡 2.54万, 东财行业都是「贵金属」。
+# 名字里只有前者带"黄金"二字 —— 所以关键词那套只给山东黄金挂了 ↔同源, 银锡干干净净,
+# 看着像两注不相干的仓, 实际是同一块。
+_SDHJ = {"name": "山东黄金", "code": "600547", "market": "CN", "direct_mv": 25600.0,
+         "indirect_mv": 0.0, "total_mv": 25600.0, "pct": 19.6, "via": []}
+_XYYX = {"name": "兴业银锡", "code": "000426", "market": "CN", "direct_mv": 25400.0,
+         "indirect_mv": 0.0, "total_mv": 25400.0, "pct": 19.5, "via": []}
+_IMAP = {"600547": ("山东黄金", "贵金属", 1590.0), "000426": ("兴业银锡", "贵金属", 694.0)}
+
+
+def _ind_of(industries, name):
+    return next((g for g in industries if g["industry"] == name), None)
+
+
+def test_two_metal_stocks_land_in_one_family_by_industry():
+    """靠东财行业归并, 名字里有没有金属字样都不影响。"""
+    from services.exposure import _by_industry
+    g = _ind_of(_by_industry([_SDHJ, _XYYX], [], _IMAP, 130000.0, []), "贵金属")
+    assert {h["code"] for h in g["holders"]} == {"600547", "000426"}
+    assert [h["kind"] for h in g["holders"]] == ["A", "A"]
+    assert g["n_holders"] == 2
+
+
+def test_holder_is_the_fund_row_not_the_underlying_stock():
+    """间接敞口对应的持仓行是那只基金 —— 界面要把角标打在基金那行上。"""
+    from services.exposure import _by_industry
+    it = {"name": "中际旭创", "code": "300308", "market": "CN", "direct_mv": 0.0,
+          "indirect_mv": 1300.0, "total_mv": 1300.0, "pct": 1.0,
+          "via": [{"fund": "易方达信息产业混合", "fund_code": "019018", "weight_pct": 5.5, "mv": 1300.0}]}
+    g = _ind_of(_by_industry([it], [{"code": "019018", "codes": ["019018", "019019"]}],
+                             {"300308": ("中际旭创", "通信设备", 900.0)}, 130000.0, []), "通信设备")
+    assert [(h["kind"], h["code"]) for h in g["holders"]] == [("F", "019018")]
+    # A/C 两个份额的代码都带上, 界面上不管展示的是哪一行都能对上
+    assert g["holders"][0]["codes"] == ["019018", "019019"]
+
+
+def test_unpenetrated_gold_fund_joins_the_family_without_faking_the_number():
+    """华夏黄金ETF联接 拉不到明细(实测 0 条)。它偏偏就是纯黄金 —— 不挂进来, 这块的同源
+    就少了最该在里面的那一行。但它的钱不能并进"穿透后合计", 那是量出来的数。"""
+    from services.exposure import _by_industry
+    un = [{"code": "008701", "name": "华夏黄金ETF联接C", "mv": 5000.0, "why": "拉不到季报股票明细"}]
+    g = _ind_of(_by_industry([_SDHJ, _XYYX], [], _IMAP, 130000.0, un), "贵金属")
+    assert [h["name"] for h in g["holders"] if h.get("guessed")] == ["华夏黄金ETF联接C"]
+    assert g["mv"] == 51000.0                      # 只有量出来的两只股票
+    assert g["unpenetrated"][0]["mv"] == 5000.0    # 猜出来的单独放
+
+
+def test_guess_only_covers_names_that_pin_the_asset_down():
+    from services.exposure import _guess_industry
+    assert _guess_industry("华夏黄金ETF联接C") == "贵金属"
+    assert _guess_industry("国投白银期货LOF") == "贵金属"
+    # 「银行」里有个银字, 猜错比不猜更糟; 「有色/商品」太泛, 一样不猜
+    assert _guess_industry("天弘中证银行ETF联接C") == ""
+    assert _guess_industry("华宝标普油气") == ""
+
+
+def test_industry_warning_carries_the_industry_name_for_dedupe():
+    """前端要靠这个字段避免把同一个行业再报一遍(它自己那条是按行来讲的)。"""
+    ws = _warnings([], [], [_ind("贵金属", 38.6, direct=50300, members=["山东黄金", "兴业银锡"])], 130000)
+    assert [w.get("industry") for w in ws if w["kind"] == "industry"] == ["贵金属"]
+
+
+def test_unpenetrated_is_spelled_out_in_the_warning():
+    """"另有 X 万拉不到明细, 未计入" —— 不说的话这条结论看着就是全量。"""
+    g = _ind("贵金属", 38.6, direct=50300, members=["山东黄金", "兴业银锡"])
+    g["unpenetrated"] = [{"code": "008701", "name": "华夏黄金ETF联接C", "mv": 5000.0}]
+    text = [w["text"] for w in _warnings([], [], [g], 130000) if w["kind"] == "industry"][0]
+    assert "另有 0.50万" in text and "华夏黄金ETF联接C" in text and "未计入" in text
