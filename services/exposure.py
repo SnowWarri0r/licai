@@ -45,6 +45,19 @@ def _fund_family(name: str) -> str:
     return _CLASS_SUFFIX.sub("", (name or "").strip()).strip() or (name or "")
 
 
+# 名字已经把标的说死的几类, 用来给"穿不动的基金"兜底归行业。只留高置信的:
+# 「黄金」「白银」对应东财的 贵金属(实测 山东黄金/兴业银锡 都在这一档)。
+# 不收「银」(银行会中招)、不收「有色/商品」(太泛, 猜错比不猜更糟)。
+_GUESS_IND = ((re.compile(r"黄金"), "贵金属"), (re.compile(r"白银"), "贵金属"))
+
+
+def _guess_industry(name: str) -> str:
+    for pat, ind in _GUESS_IND:
+        if pat.search(name or ""):
+            return ind
+    return ""
+
+
 def _is_cn(market: str) -> bool:
     return str(market or "").upper().startswith("CN")
 
@@ -190,26 +203,7 @@ async def look_through(min_pct: float = 0.5) -> dict:
         imap = await asyncio.to_thread(industry_map)
     except Exception:
         imap = {}
-    inds: dict[str, dict] = {}
-    for it in items:
-        code = str(it.get("code") or "")
-        if _is_cn(it.get("market")) or (code.isdigit() and len(code) == 6):
-            ind = (imap.get(code) or ("", "", 0))[1] or "未知行业"
-        else:
-            ind = f"海外({it.get('market') or '?'}·未归行业)"
-        g = inds.setdefault(ind, {"industry": ind, "mv": 0.0, "direct_mv": 0.0,
-                                  "indirect_mv": 0.0, "members": []})
-        g["mv"] += it["total_mv"]
-        g["direct_mv"] += it["direct_mv"]
-        g["indirect_mv"] += it["indirect_mv"]
-        g["members"].append(it["name"])
-    industries = []
-    for g in inds.values():
-        industries.append({**g, "mv": round(g["mv"], 2), "direct_mv": round(g["direct_mv"], 2),
-                           "indirect_mv": round(g["indirect_mv"], 2),
-                           "pct": round(g["mv"] / total * 100, 2),
-                           "members": g["members"][:8], "n": len(g["members"])})
-    industries.sort(key=lambda x: -x["mv"])
+    industries = _by_industry(items, funds, imap, total, uncovered)
 
     # ── 5) 基金两两重叠度(十大以内): Σ min(w_i, w_j) ──
     pairs = []
@@ -252,6 +246,73 @@ async def look_through(min_pct: float = 0.5) -> dict:
     }
 
 
+def _by_industry(items: list[dict], funds: list[dict], imap: dict,
+                 total: float, uncovered: list[dict]) -> list[dict]:
+    """按东财行业把穿透后的敞口归堆, 并记下每堆是账本里的**哪几行**扛着。
+
+    holders 是这里的重点: 界面要把「↔同源」打在持仓行上, 而间接敞口对应的行是那只基金,
+    不是底层股票。直持记股票自己, 间接记基金(A/C 份额的代码都带上, 哪一行都能对上)。
+    """
+    fund_codes = {f["code"]: (f.get("codes") or [f["code"]]) for f in funds}
+    inds: dict[str, dict] = {}
+    for it in items:
+        code = str(it.get("code") or "")
+        if _is_cn(it.get("market")) or (code.isdigit() and len(code) == 6):
+            ind = (imap.get(code) or ("", "", 0))[1] or "未知行业"
+        else:
+            ind = f"海外({it.get('market') or '?'}·未归行业)"
+        g = inds.setdefault(ind, {"industry": ind, "mv": 0.0, "direct_mv": 0.0,
+                                  "indirect_mv": 0.0, "members": [], "holders": {}})
+        g["mv"] += it["total_mv"]
+        g["direct_mv"] += it["direct_mv"]
+        g["indirect_mv"] += it["indirect_mv"]
+        g["members"].append(it["name"])
+        if it["direct_mv"] > 0:
+            h = g["holders"].setdefault(("A", it["code"]),
+                                        {"kind": "A", "code": it["code"], "name": it["name"],
+                                         "codes": [it["code"]], "mv": 0.0})
+            h["mv"] += it["direct_mv"]
+        for v in it.get("via") or []:
+            h = g["holders"].setdefault(("F", v["fund_code"]),
+                                        {"kind": "F", "code": v["fund_code"], "name": v["fund"],
+                                         "codes": fund_codes.get(v["fund_code"], [v["fund_code"]]),
+                                         "mv": 0.0})
+            h["mv"] += v["mv"]
+    industries = []
+    for g in inds.values():
+        holders = sorted(g["holders"].values(), key=lambda h: -h["mv"])
+        industries.append({**g, "mv": round(g["mv"], 2), "direct_mv": round(g["direct_mv"], 2),
+                           "indirect_mv": round(g["indirect_mv"], 2),
+                           "pct": round(g["mv"] / total * 100, 2) if total > 0 else 0.0,
+                           "members": g["members"][:8], "n": len(g["members"]),
+                           "holders": [{**h, "mv": round(h["mv"], 2)} for h in holders],
+                           "n_holders": len(holders)})
+    industries.sort(key=lambda x: -x["mv"])
+
+    # 穿不动的基金(联接/债/货币, 实测 华夏黄金ETF联接C 返回 0 条)按名字兜底挂到行业上 ——
+    # 不然"黄金"这块的同源里, 偏偏少了那只纯粹就是黄金的基金。只挂名字已经把标的说死的
+    # 那几类; 而且**不并进已穿透的 mv**: 一个是量出来的, 一个是猜出来的, 混在一起那个数
+    # 就再也说不清了。单列 unpenetrated, 界面照样能把这行标成同源。
+    ind_by_name = {g["industry"]: g for g in industries}
+    for u in uncovered:
+        ind = _guess_industry(u.get("name") or "")
+        if not ind:
+            continue
+        g = ind_by_name.get(ind)
+        if not g:
+            g = {"industry": ind, "mv": 0.0, "direct_mv": 0.0, "indirect_mv": 0.0,
+                 "members": [], "n": 0, "pct": 0.0, "holders": [], "n_holders": 0}
+            industries.append(g)
+            ind_by_name[ind] = g
+        g.setdefault("unpenetrated", []).append(
+            {"code": u["code"], "name": u["name"], "mv": u["mv"], "why": u.get("why", "")})
+        g["holders"] = g["holders"] + [{"kind": "F", "code": u["code"], "name": u["name"],
+                                        "codes": fund_codes.get(u["code"], [u["code"]]),
+                                        "mv": u["mv"], "guessed": True}]
+        g["n_holders"] = len(g["holders"])
+    return industries
+
+
 _IND_WARN_PCT = 25.0
 _IND_HIGH_PCT = 40.0
 
@@ -264,10 +325,17 @@ def _warnings(items: list[dict], pairs: list[dict], industries: list[dict], tota
             continue
         via = f", 其中间接 {g['indirect_mv'] / 10000:.2f}万" if g["indirect_mv"] > 0 else ""
         more = f" 等{g['n']}只" if g["n"] > 4 else ""
+        # 穿不动但名字对得上的(黄金ETF联接这种): 说清是"另有", 不并进上面那个量出来的数
+        un = g.get("unpenetrated") or []
+        tail = ""
+        if un:
+            tail = (f"; 另有 {sum(u['mv'] for u in un) / 10000:.2f}万 在 "
+                    + "、".join(u["name"] for u in un[:2]) + " 里拉不到明细, 未计入")
         out.append({"level": "high" if g["pct"] >= _IND_HIGH_PCT else "med", "kind": "industry",
+                    "industry": g["industry"],
                     "text": f"「{g['industry']}」穿透后合计 {g['mv'] / 10000:.2f}万"
                             f"(占总资产 {g['pct']:.1f}%){via} —— "
-                            + "、".join(g["members"][:4]) + more})
+                            + "、".join(g["members"][:4]) + more + tail})
     for it in items:
         if it["n_sources"] < 2:
             continue
