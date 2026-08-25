@@ -323,8 +323,21 @@ async def trade_review():
             continue
         c_rate, c_min = await _broker_stock_fee((holdings_map.get(code) or {}).get("broker"))
         state = compute_position_state(actions, stock_code=code, commission_rate=c_rate, commission_min=c_min)
-        n_buy = sum(1 for a in actions if (a.get("action_type") or "").upper() in ACQUIRE)
-        n_sell = sum(1 for a in actions if (a.get("action_type") or "").upper() in RELEASE)
+        # 买卖次数按"决策"数而不是成交笔数: 一次委托分两笔成交(实测紫光股份 200@34.93 +
+        # 100@34.94, 同一分钟)会把做T频率凭空翻倍, 复盘就据此说人家"反复操作"
+        from services.trade_fills import merge_fills
+        _acts = []
+        for a in actions:
+            at = (a.get("action_type") or "").upper()
+            k = "buy" if at in ACQUIRE else ("sell" if at in RELEASE else None)
+            if not k or float(a.get("price") or 0) <= 0:
+                continue
+            _acts.append({"date": (a.get("trade_date") or "")[:10], "code": code, "kind": k,
+                          "price": float(a["price"]), "shares": float(a.get("shares") or 0),
+                          "time": a.get("trade_time"), "asset_class": "stock"})
+        _decisions = merge_fills(_acts)
+        n_buy = sum(1 for t in _decisions if t["kind"] == "buy")
+        n_sell = sum(1 for t in _decisions if t["kind"] == "sell")
         name = (holdings_map.get(code) or {}).get("stock_name") or ""
         if not name:
             try:
@@ -473,6 +486,7 @@ async def trade_journal(limit: int = 80):
                 "date": (a.get("trade_date") or "")[:10], "code": code, "name": name,
                 "kind": kind, "price": round(price, 3), "shares": float(a.get("shares") or 0),
                 "current": round(cur, 3), "pct": pct, "hit": hit, "asset_class": "stock",
+                "time": (a.get("trade_time") or None),   # 合并分笔成交要用它判"是不是连着的"
             })
 
     # ---- 基金/ETF 交易 (external_asset_actions): 场内ETF 当个股看, 场外基金当定投看 ----
@@ -523,6 +537,10 @@ async def trade_journal(limit: int = 80):
                 "asset_class": cls, "amount": round(float(act.get("amount") or 0), 2),
             })
 
+    # 同一次决策的分笔成交合成一笔(均价×总量)。不合的话, 一次委托成交两笔在复盘里就是
+    # 两次决策 —— 实测被点评成"一次决策被拆成两下手", 而且会把"反复补仓"的计数顶上去。
+    from services.trade_fills import merge_fills
+    trades = merge_fills(trades)
     trades.sort(key=lambda x: x["date"], reverse=True)
     # 命中率统计保持 A 股口径 (基金定投不适用"买在低位"这套), 只统计个股
     stock_trades = [t for t in trades if t.get("asset_class") == "stock"]
@@ -623,7 +641,11 @@ async def trade_review_ai(period: str = "all", force: int = 0):
             else:
                 tail = ""
             amt = f" 约¥{t['amount']:.0f}" if t.get("amount") else ""
-            lines.append(f"  [{tag}] {t['date']} {kd} {t['name']} @{t['price']}×{sh_s}{amt}{tail}")
+            # 分笔成交已合成一笔: 明说它是一次决策, 否则模型看见两行就点评"拆单/两次下手"
+            from services.trade_fills import fills_note
+            fn = fills_note(t)
+            fn = f" [{fn}, 已按一次决策合并]" if fn else ""
+            lines.append(f"  [{tag}] {t['date']} {kd} {t['name']} @{t['price']}×{sh_s}{amt}{fn}{tail}")
         # 补每只标的的"真实盈亏"(已实现+浮盈, 来自综合成本法账本), 让 LLM 报收益时有准数, 而不是误用'至今%'
         try:
             _rv = await trade_review()
@@ -666,6 +688,9 @@ async def trade_review_ai(period: str = "all", force: int = 0):
             "  · [个股]/[场内ETF]: 可做T, 看有没有追高(越买越高)、同一标的反复买卖(频繁做T)、追涨杀跌、情绪化。\n"
             "  · [场外基金]: T+1 净值成交, 不能做T。小额规律买入是【定投】=策略, 不是追高/情绪化, 别拿做T那套骂它; "
             "    它该看的是: 定投有没有乱中断、是否在高位还大额追加、有没有恐慌赎回/追涨赎回。净值滞后, 别用单日表现判对错。\n"
+            "【口径·分笔成交】同一天同向、价格几乎一样又挨着的成交, 已经按一次决策合并成一行(标了'分N笔成交'的就是), "
+            "价格是成交均价。那是一次委托拆出来的多笔成交(或分两次录入), 属于记录方式不是交易行为 —— "
+            "评纪律时当**一笔**看, 不要说成'拆单/分两次下手/反复操作'。\n"
             "【关键·'至今X%'不是你的收益】'至今X%'是该标的从你成交价涨/跌到现价的幅度(只反映择时, 不反映你赚没赚)。"
             "你卖出后它再涨多少跟你无关——可能你早已亏着卖出, 它后来才大涨。报某只'给你赚了多少/收益X%'时, 一律用下方【真实盈亏】块的 realized(已落袋)+浮盈, "
             "严禁把'至今+X%'说成'这只给你赚了X%'。基金净值滞后, 更别用至今%下结论。\n"
