@@ -192,6 +192,13 @@ async def eod_summary_loop():
                         print(f"[eod] 板块份额入档 {n} 行")
                     except Exception as e:
                         print(f"[eod] 板块份额入档失败: {e}")
+                    try:
+                        # 榜单里没日线的票补一批: 概念线的资金曲线要靠它, 涨幅榜天天换新面孔
+                        from services.concept_trend import warm_cache
+                        w = await warm_cache()
+                        print(f"[eod] 榜单日线补齐 {w.get('fetched')}/{w.get('missing')} 只")
+                    except Exception as e:
+                        print(f"[eod] 榜单日线补齐失败: {e}")
                 _eod_done_date = today
             await asyncio.sleep(120)
         except Exception as e:
