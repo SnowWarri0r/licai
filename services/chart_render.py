@@ -98,9 +98,14 @@ def flat_bar_colors(opens, closes, start: int) -> list:
 
 
 def render_trend_chart(bars: list, *, code: str = "", name: str = "",
-                       structure: dict | None = None, display: int = 50) -> bytes | None:
+                       structure: dict | None = None, display: int = 50,
+                       vol_label: str = "成交量(手)") -> bytes | None:
     """bars: [(date, close, high, low, vol, open), ...] 升序。传入比展示窗口更长的序列(含前置数据),
-    均线在完整序列上算好再裁切, 避免 MA 在窗口前段断开。只显示最后 display 根。返回 PNG bytes 或 None。"""
+    均线在完整序列上算好再裁切, 避免 MA 在窗口前段断开。只显示最后 display 根。返回 PNG bytes 或 None。
+
+    vol_label: 下方柱子的口径, 会写在轴上。这张图要喂给模型看 —— 原来下面那栏一个字都没有,
+    看图的人和模型都只能猜是成交量还是成交额, 而两者差着"手×股价"的量级(茅台一天 2.2万手 /
+    28亿元)。调用方传进来的是哪个就写哪个, 别让它自己猜。"""
     structure = structure or {}
     idx, rows = [], []
     for d, c, h, l, v, o in bars:
@@ -141,7 +146,7 @@ def render_trend_chart(bars: list, *, code: str = "", name: str = "",
            mpf.make_addplot(ma20.iloc[start:], color="#cf6bcf", width=0.9)]
     kwargs = dict(type="candle", volume=True, addplot=aps, style=style,
                   figsize=(10, 6.2), returnfig=True, tight_layout=True,
-                  ylabel="", ylabel_lower="", datetime_format="%m-%d", xrotation=0,
+                  ylabel="", ylabel_lower=vol_label, datetime_format="%m-%d", xrotation=0,
                   update_width_config=dict(candle_linewidth=0.7, candle_width=0.62))
     # 一字板/十字星按昨收定色(见 flat_bar_colors); 量柱不吃 overrides, 画完再逐根补
     flat_cols = flat_bar_colors([r[0] for r in rows], [r[3] for r in rows], start)

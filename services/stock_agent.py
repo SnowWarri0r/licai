@@ -882,6 +882,7 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
     market, symbol = split_stock_code(raw)
     _ff = _pos_float
     allbars: list = []  # [(date_str, close, high|None, low|None, vol|None, open|None)] 升序
+    vol_kind = "成交量(手)"     # 图下方那栏画的到底是什么(A股默认手; 源退到成交额时改写)
     if is_a_share(raw):
         df = await get_historical_data(raw, need + 5)
         if df is None or df.empty:
@@ -891,8 +892,14 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
         hcol = df["最高"].tolist() if "最高" in df.columns else [None] * n
         lcol = df["最低"].tolist() if "最低" in df.columns else [None] * n
         ocol = df["开盘"].tolist() if "开盘" in df.columns else [None] * n
-        vcol = df["成交量"].tolist() if "成交量" in df.columns else (
-               df["成交额"].tolist() if "成交额" in df.columns else [None] * n)
+        # 量这一列可能退到成交额(源缺成交量时), 两者差着"手×股价"的量级 —— 记下到底是哪个,
+        # 图上要照实标, 不然看图的人和模型只能猜(实测茅台一天 2.2万手 / 28亿元, 差 5 个数量级)
+        if "成交量" in df.columns:
+            vcol, vol_kind = df["成交量"].tolist(), "成交量(手)"
+        elif "成交额" in df.columns:
+            vcol, vol_kind = df["成交额"].tolist(), "成交额(元)"
+        else:
+            vcol, vol_kind = [None] * n, ""
         allbars = [(str(d)[:10], float(c), _ff(h), _ff(l), _ff(v), _ff(o))
                    for d, c, h, l, v, o in zip(dcol, df["收盘"].tolist(), hcol, lcol, vcol, ocol)]
     elif market == "HK":
@@ -1031,11 +1038,15 @@ async def _tool_get_trend(code: str, days: int = 20) -> dict:
             from services import chart_render
             png = await asyncio.to_thread(
                 chart_render.render_trend_chart, allbars[-78:],
-                code=bare6, name=out.get("name") or "", structure=structure)
+                code=bare6, name=out.get("name") or "", structure=structure,
+                vol_label=vol_kind)
             if png:
                 out["chart_url"] = chart_render.save_png(png)
                 out["_chart_png_b64"] = _b64.b64encode(png).decode()
                 out["_chart_media"] = "image/png"
+                # 图轴上写了口径, 这里再用文字说一遍: 模型读文字比读轴标签稳
+                out["图说明"] = (f"附图下方柱子是{vol_kind}, 不是另一个口径; "
+                                "图只用来看形态(量的相对高低/背离), 具体数值一律引用上面的结构化字段")
         except Exception as e:
             print(f"[chart] render failed for {code}: {e}")
     return out
@@ -2856,7 +2867,7 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"query": {"type": "string", "description": "股票名字或代码"}}, "required": ["query"]}},
     {"name": "get_quote", "description": "查个股实时行情: 现价/当日涨跌幅/开高低/成交额/换手。code 直接用 resolve_stock 返回的 code 原样传(A股是裸6位如 600667 / 000657; 港美股 HK.00700 / US.AAPL), 保持原样、A股无需 sh/sz 前缀。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
-    {"name": "get_trend", "description": "查个股近 N 个交易日走势(裸K + 量): 累计涨跌/逐日涨跌/上涨天数。支持 A 股/港股/美股。daily_pct 每条是 {date, open_pct, pct, high_pct, low_pct, vol_ratio, shape}: date 是该日真实交易日(YYYY-MM-DD), open_pct/pct 是开盘/收盘相对昨收, high_pct/low_pct 是当日最高/最低相对昨收, vol_ratio 是当日量比(成交量/前5日均量, >1.5 放量、<0.7 缩量), shape 是这根K线的裸K形态(如 光头光脚阳线/长上影阴线/十字星)。最后一条即 last_date(最新交易日)。limit_pct=该股涨跌停幅度%(科创板688/创业板30开头=20, 北交所8/4开头=30, 沪深主板含ST=10), 别按10%默认。daily_pct 每条已带 板 字段(收在涨停封板/盘中触及涨停后回落/跌停, 已按该股真实涨停幅度判好, 直接用别自己算)。引用某天涨跌时日期以 date 字段为准。读裸K量价: 用 open_pct/pct/high_pct/low_pct 还原每根K线的开收高低位置 + shape 形态 + vol_ratio 量, 描述放量光头大阳=量价齐升、放量长上影=冲高回落分歧、缩量十字=观望、高位放量长上影=兑现等。无需分时即可还原历史每天盘中量价形态。structure 字段给阶梯式上行结构识别(进二退三框架, A股): 阶梯式上行(抬高高点+抬高低点)/抬高低点、台阶支撑(最近确认的上行低点价位)+距支撑%、回调量能(缩量=抛压衰竭洗盘特征/放量=分歧)、结构破位(收盘跌破上一抬高低点, 上行结构被破坏); 另含顶部/派发结构(进二退三镜像): 双顶(两个相近高点=M头, 附颈线价位)/二次冲高未创新高(右峰明显低于左峰=冲高动能衰减)、跌破颈线(顶部结构确认=高位资金共识破裂); 以及更多确定性形态: 头肩顶(肩头肩三高, 头部见顶)/头肩底(倒头肩三低, 底部企稳, 附底颈线)/突破底颈线、顶背离(价创新高但量能萎缩=上涨共识透支)/底背离(价创新低但量能萎缩=抛压衰竭)、2B假突破(斯波朗迪2B法则: 冲过前一swing高点但收盘已跌回该前高之下=突破失败, 上行趋势反转警讯, 附前高与冲高价)/2B假破位(击穿前低后收回其上=下行假破位, 空头动能衰竭信号, 附前低与下探价; 配合量能讲: 假突破放量滞涨更典型、假破位缩量下探更典型)、收敛三角(高点降+低点抬=变盘临近)、向上跳空缺口/向下跳空缺口([下沿,上沿]价位, 前复权后多为真实跳空)。用这些字段客观描述该股所处的趋势结构与所在台阶, 把方向性决策留给用户。本工具(A股)还会附一张我方数据渲染的K线图(蜡烛+量能+均线, 已标注台阶支撑/颈线), 你能直接看到它: 据图识别上面字段未编码的形态(头肩顶/旗形/收敛三角/量价背离/缺口等)作为补充, 凡引用具体价位/涨跌幅/量比仍以结构化字段为准(图负责形、数字负责数)。盘中(未收盘)时返回带 盘中=true + 盘中提示, 末根 daily_pct 标 量_盘中预估=true: 今天的量比是按已走交易时间折算的全天预估(粗估), 缩量/放量按'当前节奏预计'表述, 收盘前不下定论。",
+    {"name": "get_trend", "description": "查个股近 N 个交易日走势(裸K + 量): 累计涨跌/逐日涨跌/上涨天数。支持 A 股/港股/美股。daily_pct 每条是 {date, open_pct, pct, high_pct, low_pct, vol_ratio, shape}: date 是该日真实交易日(YYYY-MM-DD), open_pct/pct 是开盘/收盘相对昨收, high_pct/low_pct 是当日最高/最低相对昨收, vol_ratio 是当日量比(成交量/前5日均量, >1.5 放量、<0.7 缩量), shape 是这根K线的裸K形态(如 光头光脚阳线/长上影阴线/十字星)。最后一条即 last_date(最新交易日)。limit_pct=该股涨跌停幅度%(科创板688/创业板30开头=20, 北交所8/4开头=30, 沪深主板含ST=10), 别按10%默认。daily_pct 每条已带 板 字段(收在涨停封板/盘中触及涨停后回落/跌停, 已按该股真实涨停幅度判好, 直接用别自己算)。引用某天涨跌时日期以 date 字段为准。读裸K量价: 用 open_pct/pct/high_pct/low_pct 还原每根K线的开收高低位置 + shape 形态 + vol_ratio 量, 描述放量光头大阳=量价齐升、放量长上影=冲高回落分歧、缩量十字=观望、高位放量长上影=兑现等。无需分时即可还原历史每天盘中量价形态。structure 字段给阶梯式上行结构识别(进二退三框架, A股): 阶梯式上行(抬高高点+抬高低点)/抬高低点、台阶支撑(最近确认的上行低点价位)+距支撑%、回调量能(缩量=抛压衰竭洗盘特征/放量=分歧)、结构破位(收盘跌破上一抬高低点, 上行结构被破坏); 另含顶部/派发结构(进二退三镜像): 双顶(两个相近高点=M头, 附颈线价位)/二次冲高未创新高(右峰明显低于左峰=冲高动能衰减)、跌破颈线(顶部结构确认=高位资金共识破裂); 以及更多确定性形态: 头肩顶(肩头肩三高, 头部见顶)/头肩底(倒头肩三低, 底部企稳, 附底颈线)/突破底颈线、顶背离(价创新高但量能萎缩=上涨共识透支)/底背离(价创新低但量能萎缩=抛压衰竭)、2B假突破(斯波朗迪2B法则: 冲过前一swing高点但收盘已跌回该前高之下=突破失败, 上行趋势反转警讯, 附前高与冲高价)/2B假破位(击穿前低后收回其上=下行假破位, 空头动能衰竭信号, 附前低与下探价; 配合量能讲: 假突破放量滞涨更典型、假破位缩量下探更典型)、收敛三角(高点降+低点抬=变盘临近)、向上跳空缺口/向下跳空缺口([下沿,上沿]价位, 前复权后多为真实跳空)。用这些字段客观描述该股所处的趋势结构与所在台阶, 把方向性决策留给用户。本工具(A股)还会附一张我方数据渲染的K线图(蜡烛+量能+均线, 已标注台阶支撑/颈线), 你能直接看到它: 图下方那栏是**成交量(手)**不是成交额(轴上已标, 结果里的 图说明 字段也写了口径), 别把柱子的高度说成金额; 据图识别上面字段未编码的形态(头肩顶/旗形/收敛三角/量价背离/缺口等)作为补充, 凡引用具体价位/涨跌幅/量比仍以结构化字段为准(图负责形、数字负责数)。盘中(未收盘)时返回带 盘中=true + 盘中提示, 末根 daily_pct 标 量_盘中预估=true: 今天的量比是按已走交易时间折算的全天预估(粗估), 缩量/放量按'当前节奏预计'表述, 收盘前不下定论。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}, "days": {"type": "integer", "description": "默认20"}}, "required": ["code"]}},
     {"name": "get_intraday", "description": "当日分时走势(开盘/最高及时间/最低及时间/现价 + 冲高回落幅度 + 路径采样): 判断盘中是不是冲高回落/炸板/尾盘拉升时用, 比日K细。需启用 TDX 数据源, 仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
