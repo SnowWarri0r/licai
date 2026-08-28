@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { fetchJSON, prefetchJSON } from '../hooks/useApi'
 import ProKline from './ProKline'
 import StockAskModal from './StockAskModal'
+import RotationBoard from './RotationBoard'
 
 const TABS = [
   { key: 'watch', label: '观察池' },
@@ -848,11 +849,19 @@ export default function Rankings() {
                   {k}
                 </button>
               ))}
-              {hotTag && (
-                <button onClick={() => setHotTag('')} className="ml-auto text-[9.5px] text-text-muted hover:text-text">
-                  只看「{hotTag}」· 清除
-                </button>
-              )}
+              <span className="ml-auto flex items-center gap-2">
+                {hotTag && (
+                  <button onClick={() => setHotTag('')} className="text-[9.5px] text-text-muted hover:text-text">
+                    只看「{hotTag}」· 清除
+                  </button>
+                )}
+                {/* 选了股票右栏就换成 K 线了, 给条路回轮动板 */}
+                {selected && (
+                  <button onClick={() => setSelected(null)} className="text-[9.5px] text-accent/80 hover:text-accent">
+                    看轮动 →
+                  </button>
+                )}
+              </span>
             </div>
             {/* 换行铺开而不是横向滚动: 一眼看到今天有几条线在跑, 才叫"看轮动" */}
             <div className="flex flex-wrap gap-1">
@@ -870,32 +879,22 @@ export default function Rankings() {
                         + `\n(成分取今天这批票的 ${tr.basket_n}/${tr.total_n} 只, 只算全程有本地日线的)`
                         + (trend?.today_partial ? '\n今天还没收盘, 最后一格是半天的量' : '') : '')}
                   className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 border ${hotTag === g.name ? 'bg-accent/20 text-accent border-accent/40' : 'bg-surface-3 text-text-dim border-transparent hover:text-text'}`}>
+                  {/* 这排只当筛选器: 名字 + 一个方向。数字和走势在右边的轮动板上铺开,
+                      挤在 420px 里堆四五个数字, 结果是哪个都看不清 */}
                   {g.name}
-                  {/* 成交额榜看钱(亿), 涨幅榜看家数 —— 各自那张榜在问的问题不一样 */}
-                  <span className="text-text-muted">
-                    {tab === 'by_amount' ? ` ${g.amt_yi >= 100 ? Math.round(g.amt_yi) : g.amt_yi}亿` : ` ${g.n}只`}
-                  </span>
-                  <span className={g.avg_pct >= 0 ? 'text-bear' : 'text-bull'}> {g.avg_pct >= 0 ? '+' : ''}{g.avg_pct}%</span>
-                  {g.limit_n > 0 && <span className="text-accent"> 停{g.limit_n}</span>}
-                  {/* 占榜比重较上日的变化: 全市场放量时绝对值一起涨, 份额才看得出钱在往哪挪 */}
                   {tr && tr.d1_share_pp != null && Math.abs(tr.d1_share_pp) >= 1 && (
                     <span className={tr.d1_share_pp > 0 ? 'text-bear-bright' : 'text-bull-bright'}>
-                      {' '}{tr.d1_share_pp > 0 ? '↑' : '↓'}{Math.abs(tr.d1_share_pp)}
+                      {' '}{tr.d1_share_pp > 0 ? '↑' : '↓'}
                     </span>
                   )}
                 </button>
                 )
               })}
             </div>
-            {trend?.rows?.length > 0 ? (
-              <div className="text-[9px] text-text-muted mt-1">
-                ↑↓ = 这条线占榜单成交额的比重较上一日的变化(百分点), 近 {trend.dates.length} 日
-                {trend.today_partial ? ' · 今天还没收盘, 是半天的量' : ''}
-              </div>
-            ) : trend?.note ? (
+            {!trend?.rows?.length && trend?.note && (
               // 算不出来就说为什么, 别默默不显示(涨幅榜天天换新面孔, 本地日线还没攒到)
               <div className="text-[9px] text-text-muted mt-1">{trend.note}</div>
-            ) : null}
+            )}
           </div>
         )}
 
@@ -1159,9 +1158,17 @@ export default function Rankings() {
       </div>
 
       <div className="flex-1 min-h-0 min-w-0">
-        <StockPanel stock={selected} watched={selected ? watchSet.has(selected.code) : false}
-          onToggleWatch={toggleWatch} groups={wlMeta.groups} onSetGroups={pickGroups}
-          myGroups={selected ? groupsOf(selected.code) : []} />
+        {/* 没选股票时右栏原本整片空着("点左侧任意一只股票看 K 线")。轮动铺在这儿, 一条线一行,
+            比左栏挤成一团的小胶囊看得清得多; 选了股票就还给 K 线。 */}
+        {!selected && (tab === 'gainers' || tab === 'by_amount') && groups.length > 0 ? (
+          <RotationBoard scope={tab} kind={tagKind} groups={groups} trend={trend} hotTag={hotTag}
+            onPickTag={setHotTag} onKindChange={(k) => { setTagKind(k); setHotTag('') }}
+            onPickStock={(s) => setSelected(s)} />
+        ) : (
+          <StockPanel stock={selected} watched={selected ? watchSet.has(selected.code) : false}
+            onToggleWatch={toggleWatch} groups={wlMeta.groups} onSetGroups={pickGroups}
+            myGroups={selected ? groupsOf(selected.code) : []} />
+        )}
       </div>
     </div>
   )
