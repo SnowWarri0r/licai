@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { fetchJSON } from '../hooks/useApi'
 import Tooltip from './Tooltip'
 import SectorKlineModal from './SectorKlineModal'
+import SkeletonCard from './Skeleton'
 
 function Sparkline({ data, width = 60, height = 20 }) {
   if (!data || data.length < 2) return <span className="text-text-dim text-[10px]">--</span>
@@ -127,8 +128,9 @@ export default function SectorOpportunities() {
     return rows
   }, [data, filter, sortKey, SORT_KEYS, cfg.hasHeld])
 
+  // 同板块雷达: 加载完是一张表, 用骨架占住高度, 别让下面的内容先上来再被顶下去
   if (loading && !data) {
-    return <div className="text-center py-3 text-text-dim text-[12px]">扫描{cfg.label}板块动量...</div>
+    return <SkeletonCard rows={6} label={`扫描${cfg.label}板块动量…`} />
   }
   if (!data || !data.sectors || data.sectors.length === 0) {
     return (

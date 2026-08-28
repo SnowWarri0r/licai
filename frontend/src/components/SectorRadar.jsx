@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { fetchJSON } from '../hooks/useApi'
 import Tooltip from './Tooltip'
 import SectorKlineModal from './SectorKlineModal'
+import SkeletonCard from './Skeleton'
 
 function Sparkline({ data, width = 64, height = 22, stroke = '#85a0b4' }) {
   if (!data || data.length < 2) return null
@@ -44,8 +45,10 @@ export default function SectorRadar() {
 
   useEffect(() => { load() }, [load])
 
+  // 骨架而不是一行"加载板块对比…": 这块加载完是好几行表格, 塌成一行字会把下面的内容顶上来
+  // 再推下去, 页面跳一下。跟宏观/相关性那几块统一。
   if (loading && !data) {
-    return <div className="text-center py-3 text-text-dim text-[12px]">加载板块对比...</div>
+    return <SkeletonCard rows={4} label="板块雷达对比中(你 vs 行业 ETF)" />
   }
   if (!data || !data.holdings || data.holdings.length === 0) {
     return null
