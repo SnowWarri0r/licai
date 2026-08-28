@@ -217,6 +217,16 @@ async def market_rankings(limit: int = 100):
     return await _aio.to_thread(market_review.top_rankings, limit)
 
 
+@router.get("/concept-trend")
+async def concept_trend(scope: str = "by_amount", kind: str = "概念", days: int = 5, top: int = 10):
+    """榜单前几堆概念/行业的近几日资金曲线: 哪条线在接力, 哪条在退潮。
+
+    口径写在 services/concept_trend 的文档里(成分取今天的、只算全程有缓存的票), 结果里
+    也带 note —— 这几条不跟着数字走, 曲线就会骗人。"""
+    from services.concept_trend import concept_trend as _ct
+    return await _ct(scope, kind, days, top)
+
+
 @router.get("/lhb-detail/{stock_code}")
 async def lhb_detail(stock_code: str, date: str):
     """龙虎榜席位明细: 某股某上榜日的买卖前五营业部+金额+席位画像。"""

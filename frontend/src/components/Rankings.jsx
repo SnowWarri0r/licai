@@ -319,6 +319,7 @@ export default function Rankings() {
   // 榜单是 100 只票的清单, 看不出轮动。按概念/行业聚成堆, 点一下只看那条线。
   const [tagKind, setTagKind] = useState('概念')
   const [hotTag, setHotTag] = useState('')
+  const [trend, setTrend] = useState(null)      // 各条线近几日的资金曲线(接力/退潮)
   const [sq, setSq] = useState('')                       // 自由查股输入
   const [sqCands, setSqCands] = useState([])             // 搜索候选
   const sqTimer = useRef(null)
@@ -365,6 +366,14 @@ export default function Rankings() {
     req.catch(() => setErr(true)).finally(() => setLoading(false))
   }
   useEffect(() => { load() }, [])
+  // 各条线近几日的资金曲线: 一天的快照答不了"谁在接力谁在退潮"。跟榜单分开取, 慢一点不挡榜。
+  useEffect(() => {
+    if (tab !== 'gainers' && tab !== 'by_amount') return
+    let alive = true
+    fetchJSON(`/api/market/concept-trend?scope=${tab}&kind=${encodeURIComponent(tagKind)}&days=5`)
+      .then(d => { if (alive && !d?.error) setTrend(d) }).catch(() => {})
+    return () => { alive = false }
+  }, [tab, tagKind])
   // 自选代码集(☆按钮状态), 轻端点
   useEffect(() => {
     reloadWlMeta()
@@ -689,6 +698,7 @@ export default function Rankings() {
   const hotNames = new Set(((data?.groups?.[tab] || {}).concepts || [])
     .slice(0, 10).flatMap(g => [g.name, ...(g.aliases || [])]))
   const hotOf = (r) => (r['概念'] || []).filter(c => hotNames.has(c)).slice(0, 3)
+  const trendOf = (name) => (trend?.rows || []).find(t => t.name === name)
   const list = tab === 'structure' ? structList
     : (() => {
         let rs = board === '全部' ? rawList : rawList.filter(r => boardOf(r.code) === board)
@@ -846,12 +856,19 @@ export default function Rankings() {
             </div>
             {/* 换行铺开而不是横向滚动: 一眼看到今天有几条线在跑, 才叫"看轮动" */}
             <div className="flex flex-wrap gap-1">
-              {groups.slice(0, 9).map(g => (
+              {groups.slice(0, 9).map(g => {
+                const tr = trendOf(g.name)
+                return (
                 <button key={g.name} onClick={() => setHotTag(hotTag === g.name ? '' : g.name)}
                   title={`${g.n} 家上榜 · 合计成交 ${g.amt_yi}亿 · 均${g.avg_pct >= 0 ? '+' : ''}${g.avg_pct}%`
                     + `${g.limit_n ? ` · ${g.limit_n} 只涨停` : ''}`
                     + `${(g.aliases || []).length ? `\n同义并入: ${g.aliases.join('、')}` : ''}`
-                    + `\n领头: ${(g.tops || []).map(t => `${t.name} ${t.pct >= 0 ? '+' : ''}${t.pct}%`).join(' / ')}`}
+                    + `\n领头: ${(g.tops || []).map(t => `${t.name} ${t.pct >= 0 ? '+' : ''}${t.pct}%`).join(' / ')}`
+                    + (tr ? `\n\n近${tr.series.length}日这条线的成交额(亿):\n`
+                        + tr.series.map(s => `  ${s.date.slice(5)} ${Math.round(s.amt_yi)}亿 · 占榜${s.share_pct}%`).join('\n')
+                        + `\n占榜比重较上日 ${tr.d1_share_pp >= 0 ? '+' : ''}${tr.d1_share_pp}pp → ${tr.label}`
+                        + `\n(成分取今天这批票的 ${tr.basket_n}/${tr.total_n} 只, 只算全程有本地日线的)`
+                        + (trend?.today_partial ? '\n今天还没收盘, 最后一格是半天的量' : '') : '')}
                   className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 border ${hotTag === g.name ? 'bg-accent/20 text-accent border-accent/40' : 'bg-surface-3 text-text-dim border-transparent hover:text-text'}`}>
                   {g.name}
                   {/* 成交额榜看钱(亿), 涨幅榜看家数 —— 各自那张榜在问的问题不一样 */}
@@ -860,9 +877,25 @@ export default function Rankings() {
                   </span>
                   <span className={g.avg_pct >= 0 ? 'text-bear' : 'text-bull'}> {g.avg_pct >= 0 ? '+' : ''}{g.avg_pct}%</span>
                   {g.limit_n > 0 && <span className="text-accent"> 停{g.limit_n}</span>}
+                  {/* 占榜比重较上日的变化: 全市场放量时绝对值一起涨, 份额才看得出钱在往哪挪 */}
+                  {tr && tr.d1_share_pp != null && Math.abs(tr.d1_share_pp) >= 1 && (
+                    <span className={tr.d1_share_pp > 0 ? 'text-bear-bright' : 'text-bull-bright'}>
+                      {' '}{tr.d1_share_pp > 0 ? '↑' : '↓'}{Math.abs(tr.d1_share_pp)}
+                    </span>
+                  )}
                 </button>
-              ))}
+                )
+              })}
             </div>
+            {trend?.rows?.length > 0 ? (
+              <div className="text-[9px] text-text-muted mt-1">
+                ↑↓ = 这条线占榜单成交额的比重较上一日的变化(百分点), 近 {trend.dates.length} 日
+                {trend.today_partial ? ' · 今天还没收盘, 是半天的量' : ''}
+              </div>
+            ) : trend?.note ? (
+              // 算不出来就说为什么, 别默默不显示(涨幅榜天天换新面孔, 本地日线还没攒到)
+              <div className="text-[9px] text-text-muted mt-1">{trend.note}</div>
+            ) : null}
           </div>
         )}
 
