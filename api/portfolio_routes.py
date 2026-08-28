@@ -663,6 +663,25 @@ async def trade_review_ai(period: str = "all", force: int = 0):
                 lines += ["", "【这些标的你的真实盈亏——报收益只看这里, 不是上面的'至今%'】"] + _traded
         except Exception:
             pass
+        # 当天的同源结构(穿透后按行业归): 复盘"我这两笔其实是在动同一块风险吗"要靠它。
+        # 必须按 as_of 回看 —— 当下的敞口里已经没有那天清掉的票了(实测 8-25 清掉黄金+银锡后,
+        # 现在的穿透里那块 39% 的贵金属一点痕迹都没有)。
+        if period == "day":
+            try:
+                from services.exposure import look_through
+                _ex = await look_through(as_of=anchor)
+                _inds = [g for g in (_ex.get("industries") or [])
+                         if g.get("pct", 0) >= 10 and not str(g["industry"]).startswith("海外")
+                         and g["industry"] != "未知行业"][:4] if not _ex.get("error") else []
+                if _inds:
+                    lines += ["", f"【{anchor} 当天的同源结构(基金拆到季报前十大, 再按行业归并)】"]
+                    for g in _inds:
+                        who = "、".join(h.get("name", "") for h in (g.get("holders") or [])[:5])
+                        lines.append(f"  {g['industry']}: 占总资产 {g['pct']:.1f}% —— {who}")
+                    lines.append("  (口径: 只穿透到季报前十大, 占基金净值约 25%~50%, 所以是下限; "
+                                 "季报与行业表用的是现在这一份)")
+            except Exception:
+                pass
         # 当日复盘 + 复盘的就是今天的交易 → 注入今日市场画像, 对照"操作 vs 今天市场奖励的风格/主线"
         market_ctx = ""
         if period == "day" and anchor == today.isoformat():
@@ -688,6 +707,7 @@ async def trade_review_ai(period: str = "all", force: int = 0):
             "  · [个股]/[场内ETF]: 可做T, 看有没有追高(越买越高)、同一标的反复买卖(频繁做T)、追涨杀跌、情绪化。\n"
             "  · [场外基金]: T+1 净值成交, 不能做T。小额规律买入是【定投】=策略, 不是追高/情绪化, 别拿做T那套骂它; "
             "    它该看的是: 定投有没有乱中断、是否在高位还大额追加、有没有恐慌赎回/追涨赎回。净值滞后, 别用单日表现判对错。\n"
+            "【同源结构】给了【当天的同源结构】时: 它是把基金拆到季报前十大再按行业归并算出来的真实敞口, 不是按名字猜的板块。如果当天的买卖动作正好落在同一块结构里(比如同时清掉的两只票其实同属一块四成的敞口, 或者卖一只买一只但两边穿透后是同一条线), 客观点出来 —— 这是'分散了没有'的事实陈述, 不是让他怎么做。没给这一块时不要凭名字自己编。\n"
             "【口径·分笔成交】同一天同向、价格几乎一样又挨着的成交, 已经按一次决策合并成一行(标了'分N笔成交'的就是), "
             "价格是成交均价。那是一次委托拆出来的多笔成交(或分两次录入), 属于记录方式不是交易行为 —— "
             "评纪律时当**一笔**看, 不要说成'拆单/分两次下手/反复操作'。\n"
@@ -1638,15 +1658,17 @@ async def portfolio_correlation(days: int = 60):
 
 
 @router.get("/exposure")
-async def portfolio_exposure(min_pct: float = 0.5):
+async def portfolio_exposure(min_pct: float = 0.5, as_of: str = ""):
     """穿透敞口: 把基金拆到季报前十大, 算同一标的/同一行业的真实合计敞口。
+
+    as_of=YYYY-MM-DD 回看那天的结构(复盘用): 当下的敞口里已经没有那天清掉的票了。
 
     与 /correlation 的分工: 这个是**结构**上的同源(底层就是同一批票), correlation 是
     **统计**上的同源(走势一起动)。两个都看才完整 —— 结构不重叠但高相关(同受美债利率
     影响)、结构重叠但低相关(权重太小)都真实存在。
     """
     from services.exposure import look_through
-    return await look_through(min_pct=min_pct)
+    return await look_through(min_pct=min_pct, as_of=(as_of or None))
 
 
 @router.get("/eod-summary")

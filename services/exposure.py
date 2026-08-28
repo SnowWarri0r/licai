@@ -79,12 +79,11 @@ async def _fund_underlyings(code: str) -> list[dict]:
         return []
 
 
-async def look_through(min_pct: float = 0.5) -> dict:
-    """穿透一遍全账本。min_pct: 结果里只留穿透后占总资产 ≥ 这个百分比的标的。"""
+async def _positions_now() -> tuple[list, list, float, dict]:
+    """当下的持股与基金(实时价)。"""
     from database import get_all_holdings
     from services.market_data import get_realtime_quotes
 
-    # ── 1) A股/港美股直持 ──
     stocks: list[dict] = []
     try:
         hs = [h for h in await get_all_holdings() if (h.get("shares") or 0) > 0]
@@ -102,7 +101,6 @@ async def look_through(min_pct: float = 0.5) -> dict:
                                "market": "CN" if (h.get("market") or "A") in ("A", "CN") else h.get("market"),
                                "mv": mv})
 
-    # ── 2) 基金(场内ETF + 场外)直持 ──
     funds: list[dict] = []
     total_other = 0.0
     try:
@@ -115,6 +113,88 @@ async def look_through(min_pct: float = 0.5) -> dict:
                 funds.append({"code": str(a["code"]).strip(), "name": a.get("name") or a["code"], "mv": v})
     except Exception:
         pass
+    return stocks, funds, total_other, {"as_of": None}
+
+
+async def _positions_as_of(day: str) -> tuple[list, list, float, dict]:
+    """还原 day 那天的持股与基金市值。
+
+    两部分来路不同, 所以口径分开说:
+      · A股回放账本(position_actions 截到当天)算持股 × 当天收盘 —— 账本是权威的, 而且事后
+        补录的成交也会被算进去(补录很常见, 所以不能用当天的快照当持股清单)
+      · 基金/理财/现金没有可回溯的价格历史, 只有每日组合快照记了当时的真实市值 —— 取 day
+        当天或之前最近一条; 那条快照写于当时, 之后补录的成交它不知道, 这一点写进 basis
+    """
+    from database import (get_position_actions_until, get_cached_closes, get_snapshot_on_or_before,
+                          list_external_assets, get_holding)
+    from services.position_ledger import compute_position_state
+
+    acts = await get_position_actions_until(day)
+    codes = list(acts)
+    closes = await get_cached_closes(codes, day) if codes else {}
+    stocks, missing_px = [], []
+    for code, rows in acts.items():
+        try:
+            st = compute_position_state(rows, stock_code=code)
+        except Exception:
+            continue
+        sh = float(st.get("shares") or 0)
+        if sh <= 0:
+            continue
+        px = closes.get(code)
+        if not px:
+            missing_px.append(code)
+            continue
+        try:                       # 名字优先取本地持仓表(回看时不为了个名字去打网络)
+            nm = ((await get_holding(code)) or {}).get("stock_name") or code
+        except Exception:
+            nm = code
+        stocks.append({"code": code, "name": nm, "market": "CN", "mv": sh * px})
+
+    snap = await get_snapshot_on_or_before(day)
+    funds, total_other, snap_date = [], 0.0, None
+    if snap:
+        import json as _json
+        snap_date = snap["snap_date"]
+        try:
+            by = _json.loads(snap["by_asset"] or "{}")
+        except Exception:
+            by = {}
+        meta = {}
+        try:
+            for a in await list_external_assets():
+                meta[int(a["id"])] = a
+        except Exception:
+            pass
+        for k, v in by.items():
+            if not str(k).startswith("EXT:"):
+                continue            # A:xxx 那部分不用快照, 上面回放账本更准
+            try:
+                aid, val = int(str(k).split(":", 1)[1]), float(v or 0)
+            except (ValueError, TypeError):
+                continue
+            total_other += val
+            a = meta.get(aid)
+            if a and a.get("asset_type") == "FUND" and val > 0 and (a.get("code") or ""):
+                funds.append({"code": str(a["code"]).strip(), "name": a.get("name") or a["code"], "mv": val})
+    basis = {
+        "as_of": day,
+        "stocks": f"A股回放账本(截至{day})× 当天收盘",
+        "others": (f"外部资产取 {snap_date} 的组合快照" if snap_date else "没有那天的组合快照, 外部资产未计入"),
+        "snapshot_date": snap_date,
+        "missing_price": missing_px,
+    }
+    return stocks, funds, total_other, basis
+
+
+async def look_through(min_pct: float = 0.5, as_of: str | None = None) -> dict:
+    """穿透一遍账本。min_pct: 只留穿透后占总资产 ≥ 这个百分比的标的。
+
+    as_of=YYYY-MM-DD: 回到那天的持仓再穿透 —— 复盘时想看"当时这几注其实是同一块风险",
+    而当下的敞口里早就没有那些已清仓的票了。基金的季报前十大和行业表用的都是**现在**这一份
+    (季报按季更新, 回看几周内没差; 更早的日期这一点会失真), 一并写在 basis 里。
+    """
+    stocks, funds, total_other, basis = (await _positions_as_of(as_of)) if as_of else (await _positions_now())
 
     # 同一只基金的不同份额(A/C)合成一行: 组合相同, 分开算等于把同一注数两遍
     merged: dict[str, dict] = {}
@@ -230,6 +310,7 @@ async def look_through(min_pct: float = 0.5) -> dict:
 
     return {
         "total": round(total, 2),
+        "as_of": as_of, "basis": basis,
         "n_stocks": len(stocks), "n_funds": len(funds),
         "items": items,
         "industries": industries,
@@ -242,7 +323,7 @@ async def look_through(min_pct: float = 0.5) -> dict:
                      "所以下面的敞口是**下限**, 不是全量; 季报还有滞后。"
                      "拉不到明细的基金列在 uncovered, 那不等于敞口为 0。"),
         },
-        "warnings": _warnings(items, pairs, industries, total),
+        "warnings": _warnings(items, pairs, industries, total, basis),
     }
 
 
@@ -317,9 +398,17 @@ _IND_WARN_PCT = 25.0
 _IND_HIGH_PCT = 40.0
 
 
-def _warnings(items: list[dict], pairs: list[dict], industries: list[dict], total: float) -> list[dict]:
+def _warnings(items: list[dict], pairs: list[dict], industries: list[dict], total: float,
+              basis: dict | None = None) -> list[dict]:
     """给人看的结论。三类都是关键词那套发现不了的: 行业穿透合计 / 同一标的多来源 / 基金撞车。"""
     out = []
+    # 回溯的结果先把口径摆在最前面: 这不是"当时算出来的", 是拿现在的季报/行业表倒推的
+    if basis and basis.get("as_of"):
+        miss = basis.get("missing_price") or []
+        out.append({"level": "low", "kind": "as_of",
+                    "text": f"这是回看 {basis['as_of']} 那天的结构: {basis.get('stocks', '')}; "
+                            f"{basis.get('others', '')}。基金的季报前十大与行业表用的是现在这一份"
+                            + (f"; 有 {len(miss)} 只票那天没有本地收盘价, 未计入" if miss else "")})
     for g in industries:
         if g["pct"] < _IND_WARN_PCT or g["industry"].startswith("海外") or g["industry"] == "未知行业":
             continue
