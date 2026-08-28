@@ -283,6 +283,24 @@ CREATE TABLE IF NOT EXISTS ask_message (
 );
 CREATE INDEX IF NOT EXISTS idx_ask_message_session ON ask_message(session_id, id);
 
+-- 一轮 agent 执行的过程流水。答案本身进 ask_message, 这张表存的是"跑的过程":
+-- 调了哪些工具、画了什么图、中途报了什么错。
+-- 为什么要落盘: run 本来只活在内存里, 服务一重启(改代码/掉电)在跑的那轮就地消失 ——
+-- 界面上是一行永远转不完的"分析中", 而且连它已经查过什么都看不到。落了盘之后, 重启后
+-- 那一轮会被标成 interrupted, 已经跑出来的步骤还在, 至少知道它走到哪一步。
+CREATE TABLE IF NOT EXISTS ask_run (
+    run_id TEXT PRIMARY KEY,
+    session_id INTEGER,
+    scope TEXT DEFAULT '',                     -- market | stock:<code>
+    question TEXT DEFAULT '',
+    status TEXT DEFAULT 'running',             -- running | done | interrupted
+    answered INTEGER DEFAULT 0,
+    events TEXT DEFAULT '[]',                  -- JSON 数组, 下标即游标
+    started_at REAL,
+    updated_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_ask_run_started ON ask_run(started_at DESC);
+
 -- 工具缺口台账: agent 调工具时取不到数就记一笔, 攒成清单。
 -- 为什么要它: 实测 agent 的错误质量集中在取数层而不是推理层 —— 一次典型的翻车是
 -- get_news 对美股返回了 10 条(所以模型以为消息面已覆盖), 但最新一条比异动早三天;
@@ -645,6 +663,79 @@ async def get_cached_amounts(codes: list[str], since: str) -> dict[str, dict[str
             for r in await cur.fetchall():
                 out.setdefault(r["date"], {})[r["stock_code"]] = float(r["amount"])
         return out
+    finally:
+        await db.close()
+
+
+# ---- agent 执行流水(ask_run) ----
+
+async def save_ask_run(run_id: str, session_id: int, scope: str, question: str, started_at: float):
+    db = await get_db()
+    try:
+        await db.execute(
+            "INSERT OR REPLACE INTO ask_run (run_id, session_id, scope, question, status, events, "
+            "started_at, updated_at) VALUES (?, ?, ?, ?, 'running', '[]', ?, ?)",
+            (run_id, session_id, scope, question, started_at, started_at))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def update_ask_run(run_id: str, events_json: str, status: str, answered: bool, now: float):
+    db = await get_db()
+    try:
+        await db.execute(
+            "UPDATE ask_run SET events = ?, status = ?, answered = ?, updated_at = ? WHERE run_id = ?",
+            (events_json, status, 1 if answered else 0, now, run_id))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def get_ask_run(run_id: str) -> dict | None:
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT * FROM ask_run WHERE run_id = ?", (run_id,))
+        r = await cur.fetchone()
+        return dict(r) if r else None
+    finally:
+        await db.close()
+
+
+async def list_ask_runs(limit: int = 20) -> list[dict]:
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT run_id, session_id, scope, question, status, answered, started_at, updated_at "
+            "FROM ask_run ORDER BY started_at DESC LIMIT ?", (limit,))
+        return [dict(r) for r in await cur.fetchall()]
+    finally:
+        await db.close()
+
+
+async def interrupt_running_ask_runs() -> int:
+    """启动时把上一进程留下的 running 全部标成 interrupted。
+
+    进程一没, 那些 asyncio task 就不存在了 —— 留着 running 会让界面一直转, 而它永远不会有
+    结果。这里不做"自动重跑": 重跑要再烧一遍 token, 该不该跑由人决定。
+    """
+    db = await get_db()
+    try:
+        cur = await db.execute("UPDATE ask_run SET status = 'interrupted' WHERE status = 'running'")
+        await db.commit()
+        return cur.rowcount or 0
+    finally:
+        await db.close()
+
+
+async def prune_ask_runs(keep: int = 200) -> None:
+    """只留最近 keep 条流水(答案在 ask_message 里, 这张表是过程)。"""
+    db = await get_db()
+    try:
+        await db.execute(
+            "DELETE FROM ask_run WHERE run_id NOT IN "
+            "(SELECT run_id FROM ask_run ORDER BY started_at DESC LIMIT ?)", (keep,))
+        await db.commit()
     finally:
         await db.close()
 
