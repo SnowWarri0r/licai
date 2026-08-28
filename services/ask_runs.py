@@ -23,12 +23,16 @@ import time
 import uuid
 from typing import Optional
 
-from database import create_ask_session, add_ask_message
+from database import (create_ask_session, add_ask_message, save_ask_run, update_ask_run,
+                      get_ask_run, list_ask_runs, prune_ask_runs)
 from services.stock_agent import ask_stock_stream
 
 _KEEP_DONE_SEC = 30 * 60      # 跑完的 run 在内存留半小时: 够切回来把过程重看一遍
 _MAX_RUNS = 30
 _HARD_WALL_SEC = 20 * 60      # 单条 SSE 连接的兜底上限, 不让它无限挂着
+# 事件落盘的合并窗口: 每条都写一次盘, 一轮下来是几十次开关连接; 攒一下再写。
+# 收尾必定 flush, 所以最坏也就丢掉最后这半秒的中间步骤(答案在 ask_message 里, 不受影响)。
+_FLUSH_SEC = 0.5
 # 过程提示不是工具, 不进历史 meta(否则重开会话会多出假工具胶囊)
 _NOT_TOOLS = ("llm_retry", "self_check")
 
@@ -50,11 +54,24 @@ class Run:
         self.started_at = time.time()
         self.finished_at: Optional[float] = None
         self.task: Optional[asyncio.Task] = None
+        self._flushed_at = 0.0             # 上次落盘时间(合并窗口用)
 
     def brief(self) -> dict:
         return {"run_id": self.id, "session_id": self.session_id, "question": self.question,
                 "scope": self.scope, "done": self.done, "answered": self.answered,
                 "n_events": len(self.events), "started_at": self.started_at}
+
+    async def flush(self, force: bool = False) -> None:
+        """把事件流写盘。进程没了内存就没了 —— 落盘的这份是重启后唯一还认得这一轮的东西。"""
+        if not force and time.time() - self._flushed_at < _FLUSH_SEC:
+            return
+        self._flushed_at = time.time()
+        status = ("done" if self.done else "running")
+        try:
+            await update_ask_run(self.id, _json.dumps(self.events, ensure_ascii=False),
+                                 status, self.answered, self._flushed_at)
+        except Exception:
+            pass                            # 落盘失败不该影响正在跑的这一轮
 
 
 def _gc() -> None:
@@ -78,6 +95,7 @@ async def _drive(run: Run, agent_question: str, history: list, images: Optional[
     try:
         async for ev in ask_stock_stream(agent_question, history, images):
             run.events.append(ev)
+            await run.flush()               # 合并窗口内不重复写
             t = ev.get("type")
             if t == "answer":
                 answer = ev.get("text")
@@ -105,6 +123,7 @@ async def _drive(run: Run, agent_question: str, history: list, images: Optional[
     run.done = True
     run.finished_at = time.time()
     run.events.append({"type": "done"})
+    await run.flush(force=True)             # 收尾这次必写: 内存里的会被 GC, 盘上的留着
 
 
 async def start(question: str, *, agent_question: Optional[str] = None,
@@ -122,16 +141,25 @@ async def start(question: str, *, agent_question: Optional[str] = None,
                           _json.dumps(user_meta, ensure_ascii=False) if user_meta else "")
     run = Run(question, session_id, scope, title or question)
     _RUNS[run.id] = run
+    try:                                    # 先建流水行: 之后每次 flush 都是 UPDATE
+        await save_ask_run(run.id, session_id, scope, question, run.started_at)
+        await prune_ask_runs()
+    except Exception:
+        pass
     run.task = asyncio.create_task(_drive(run, agent_question or question, history or [], images))
     return run
 
 
 async def follow(run_id: str, cursor: int = 0):
-    """从 cursor 起把事件吐出去, 追平了就等新的。每条带回 cursor, 断线后照它续拉。"""
+    """从 cursor 起把事件吐出去, 追平了就等新的。每条带回 cursor, 断线后照它续拉。
+
+    内存里没有就回盘上找: 重启之后那一轮的过程还在(状态已标 interrupted), 至少能看到它
+    走到哪一步, 而不是一句"不在内存里了"。
+    """
     run = _RUNS.get(run_id)
     if not run:
-        yield {"type": "error", "error": "这一轮不在内存里了(服务可能重启过), 原文去历史里翻",
-               "gone": True}
+        async for ev in _follow_from_db(run_id, cursor):
+            yield ev
         return
     if cursor < 0:
         cursor = 0
@@ -151,14 +179,51 @@ async def follow(run_id: str, cursor: int = 0):
         await asyncio.sleep(0.12)
 
 
+async def _follow_from_db(run_id: str, cursor: int):
+    """重放盘上那一轮(它一定已经结束了 —— 进程都换了, 原来的 task 不可能还在)。"""
+    try:
+        row = await get_ask_run(run_id)
+    except Exception:
+        row = None
+    if not row:
+        yield {"type": "error", "error": "这一轮找不着了(流水已清理), 原文去历史里翻", "gone": True}
+        return
+    try:
+        evs = _json.loads(row.get("events") or "[]")
+    except Exception:
+        evs = []
+    for i, ev in enumerate(evs):
+        if i >= max(0, cursor):
+            yield {**ev, "cursor": i + 1}
+    if row.get("status") == "interrupted":
+        yield {"type": "error", "error": "这一轮跑到一半服务重启了, 没跑完", "cursor": len(evs) + 1}
+    if not evs or evs[-1].get("type") != "done":
+        yield {"type": "done", "cursor": len(evs) + 2}
+
+
 def get(run_id: str) -> Optional[Run]:
     return _RUNS.get(run_id)
 
 
-def live(scope: Optional[str] = None) -> list[dict]:
-    """内存里还认得的 run(含刚跑完的), 供前端重挂 —— 切回来 / 刷新后接着看。"""
+async def live(scope: Optional[str] = None) -> list[dict]:
+    """能重挂的 run: 内存里在跑/刚跑完的, 再补上盘里最近几条(重启前的, 都已收尾)。
+
+    盘上那些一律 done=true —— 它们不可能再产出新事件了, 前端不该去"接着等"。
+    """
     _gc()
     out = [r.brief() for r in _RUNS.values() if not scope or r.scope == scope]
+    seen = {x["run_id"] for x in out}
+    try:
+        for row in await list_ask_runs(limit=20):
+            if row["run_id"] in seen or (scope and row.get("scope") != scope):
+                continue
+            out.append({"run_id": row["run_id"], "session_id": row.get("session_id"),
+                        "question": row.get("question") or "", "scope": row.get("scope") or "",
+                        "done": True, "answered": bool(row.get("answered")),
+                        "interrupted": row.get("status") == "interrupted",
+                        "n_events": 0, "started_at": row.get("started_at") or 0})
+    except Exception:
+        pass
     out.sort(key=lambda x: x["started_at"])
     return out
 
