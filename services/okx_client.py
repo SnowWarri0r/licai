@@ -507,3 +507,84 @@ def _patched_getaddrinfo(host, *args, **kwargs):
 
 if _socket.getaddrinfo is not _patched_getaddrinfo:
     _socket.getaddrinfo = _patched_getaddrinfo
+
+
+# ── 策略之外的现货余额 ────────────────────────────────────
+# 只读两个余额端点, 与只读 key 权限相符; 服务端始终没有下单路径。
+#
+# 为什么不能直接把"账户余额"当现货同步(这是本功能唯一的正确性陷阱):
+#   交易账户余额里的 frozenBal 就是被网格/马丁占用的钱。实测本账户
+#   BTC eq=0.0031765 而 frozen=0.0031765(99.97%)、USDT eq=188.19 而 frozen=186.61(99.2%)
+#   —— 这些资金已经作为 BOT 资产在跟踪了。把 eq 当现货加进看板 = 同一笔钱数两遍。
+# 所以"策略之外的现货" = 交易账户 availBal + 资金账户 bal, 一律不含 frozen。
+_DUST_USD = 1.0          # 小于 1 美元的算尘埃(交易所退币/空投残渣), 默认不进看板
+
+
+def _spot_sync() -> dict:
+    """返回 {ok, currencies: [...], frozen: [...], total_usd, dust_usd, errors}。"""
+    out = {"ok": False, "currencies": [], "frozen": [], "total_usd": 0.0,
+           "dust_usd": 0.0, "n_dust": 0, "errors": []}
+    avail: dict[str, float] = {}
+    px: dict[str, float] = {}
+
+    r = _authed_get("/api/v5/account/balance")
+    if r and not r.get("error"):
+        out["ok"] = True
+        for acc in (r.get("data") or []):
+            for d in (acc.get("details") or []):
+                ccy = d.get("ccy") or ""
+                if not ccy:
+                    continue
+                try:
+                    eq = float(d.get("eq") or 0)
+                    av = float(d.get("availBal") or 0)
+                    fz = float(d.get("frozenBal") or 0)
+                    usd = float(d.get("eqUsd") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if eq > 0 and usd > 0:
+                    px[ccy] = usd / eq                    # 该币单价(USD), 端点自带, 不必再查行情
+                if av > 0:
+                    avail[ccy] = avail.get(ccy, 0.0) + av
+                if fz > 0:
+                    out["frozen"].append({"ccy": ccy, "qty": fz,
+                                          "usd": round(fz * px.get(ccy, 0.0), 2)})
+    elif r and r.get("error"):
+        out["errors"].append(f"account/balance: {r['error']}")
+
+    r2 = _authed_get("/api/v5/asset/balances")
+    if r2 and not r2.get("error"):
+        out["ok"] = True
+        for d in (r2.get("data") or []):
+            ccy = d.get("ccy") or ""
+            try:
+                bal = float(d.get("bal") or 0)
+            except (TypeError, ValueError):
+                continue
+            if ccy and bal > 0:
+                avail[ccy] = avail.get(ccy, 0.0) + bal
+    elif r2 and r2.get("error"):
+        out["errors"].append(f"asset/balances: {r2['error']}")
+
+    for ccy, qty in sorted(avail.items(), key=lambda kv: -kv[1] * px.get(kv[0], 0.0)):
+        usd = qty * px.get(ccy, 1.0 if ccy in ("USDT", "USDC", "USD") else 0.0)
+        row = {"ccy": ccy, "qty": qty, "usd": round(usd, 2),
+               "price_usd": round(px.get(ccy, 0.0), 6) or None,
+               "inst": f"{ccy}-USDT" if ccy not in ("USDT",) else None}
+        if usd < _DUST_USD:
+            out["dust_usd"] += usd
+            out["n_dust"] += 1
+            row["dust"] = True
+        out["currencies"].append(row)
+        out["total_usd"] += usd
+    out["total_usd"] = round(out["total_usd"], 2)
+    out["dust_usd"] = round(out["dust_usd"], 4)
+    out["frozen"].sort(key=lambda x: -x["usd"])
+    return out
+
+
+async def spot_balances() -> dict:
+    """策略之外的现货(交易账户可用 + 资金账户), 不含被策略冻结的部分。"""
+    if not has_credentials():
+        return {"ok": False, "errors": ["OKX 凭证未配置"], "currencies": [], "frozen": []}
+    return await asyncio.to_thread(_spot_sync)
