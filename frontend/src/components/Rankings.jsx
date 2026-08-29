@@ -316,6 +316,9 @@ export default function Rankings() {
   const [changes, setChanges] = useState(null)           // 盘口异动事件流
   const [chGroup, setChGroup] = useState('全部')          // 异动组: 全部/拉升/跳水/竞价
   const [chKind, setChKind] = useState('全部')            // 异动组内按事件类型细分
+  // 榜单是 100 只票的清单, 看不出轮动。按概念/行业聚成堆, 点一下只看那条线。
+  const [tagKind, setTagKind] = useState('概念')
+  const [hotTag, setHotTag] = useState('')
   const [sq, setSq] = useState('')                       // 自由查股输入
   const [sqCands, setSqCands] = useState([])             // 搜索候选
   const sqTimer = useRef(null)
@@ -677,8 +680,21 @@ export default function Rankings() {
     return [{ _gheader: true, 行业: g.行业, n: rs.length, n_强势: nQ, n_蓄势: rs.length - nQ },
             ...rs.map(r => ({ ...r, _idx: ++_sn }))]
   })
+  // 今日热堆: 同一张榜按概念/行业聚起来(后端算, 已并同义名), 点一下把榜筛到那条线上
+  const groups = (data?.groups?.[tab] || {})[tagKind === '概念' ? 'concepts' : 'industries'] || []
+  const hotGroup = groups.find(g => g.name === hotTag)
+  const hotCodes = hotGroup ? new Set(hotGroup.codes || []) : null
+  // 行内只标"进了今日前几堆"的概念 —— 一只票挂三四十个概念(实测中天科技 47 个), 全列等于没列。
+  // 固定取概念堆(不跟着上面的概念/行业开关变): 切到行业视图时行内提示不该跟着消失
+  const hotNames = new Set(((data?.groups?.[tab] || {}).concepts || [])
+    .slice(0, 10).flatMap(g => [g.name, ...(g.aliases || [])]))
+  const hotOf = (r) => (r['概念'] || []).filter(c => hotNames.has(c)).slice(0, 3)
   const list = tab === 'structure' ? structList
-    : board === '全部' ? rawList : rawList.filter(r => boardOf(r.code) === board)
+    : (() => {
+        let rs = board === '全部' ? rawList : rawList.filter(r => boardOf(r.code) === board)
+        if (hotCodes) rs = rs.filter(r => hotCodes.has(r.code))
+        return rs
+      })()
   listRef.current = list.filter(r => !r._gheader && !r._wh)
   indsRef.current = ['全部', ...(structure?.groups || []).map(g => g.行业)]
   chKindsRef.current = ['全部', ...(changes?.kinds || []).map(k => k.kind)]
@@ -810,6 +826,46 @@ export default function Rankings() {
           ))}
         </div>
 
+        {/* 今日热堆(涨幅/成交额页): 榜单本身看不出轮动 —— 钱堆在哪条线上、哪条线在涨。
+            点一个只看那条线的票; 同义标签后端已并(通信技术含5G概念), 别名进 tooltip。 */}
+        {(tab === 'gainers' || tab === 'by_amount') && groups.length > 0 && (
+          <div className="px-3 py-1.5 border-b border-border-subtle shrink-0">
+            <div className="flex items-center gap-1.5 mb-1">
+              <span className="text-[9.5px] text-text-muted">{tab === 'by_amount' ? '钱堆在哪' : '涨在哪'}</span>
+              {['概念', '行业'].map(k => (
+                <button key={k} onClick={() => { setTagKind(k); setHotTag('') }}
+                  className={`text-[9.5px] px-1 rounded ${tagKind === k ? 'text-accent' : 'text-text-dim hover:text-text'}`}>
+                  {k}
+                </button>
+              ))}
+              {hotTag && (
+                <button onClick={() => setHotTag('')} className="ml-auto text-[9.5px] text-text-muted hover:text-text">
+                  只看「{hotTag}」· 清除
+                </button>
+              )}
+            </div>
+            {/* 换行铺开而不是横向滚动: 一眼看到今天有几条线在跑, 才叫"看轮动" */}
+            <div className="flex flex-wrap gap-1">
+              {groups.slice(0, 9).map(g => (
+                <button key={g.name} onClick={() => setHotTag(hotTag === g.name ? '' : g.name)}
+                  title={`${g.n} 家上榜 · 合计成交 ${g.amt_yi}亿 · 均${g.avg_pct >= 0 ? '+' : ''}${g.avg_pct}%`
+                    + `${g.limit_n ? ` · ${g.limit_n} 只涨停` : ''}`
+                    + `${(g.aliases || []).length ? `\n同义并入: ${g.aliases.join('、')}` : ''}`
+                    + `\n领头: ${(g.tops || []).map(t => `${t.name} ${t.pct >= 0 ? '+' : ''}${t.pct}%`).join(' / ')}`}
+                  className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 border ${hotTag === g.name ? 'bg-accent/20 text-accent border-accent/40' : 'bg-surface-3 text-text-dim border-transparent hover:text-text'}`}>
+                  {g.name}
+                  {/* 成交额榜看钱(亿), 涨幅榜看家数 —— 各自那张榜在问的问题不一样 */}
+                  <span className="text-text-muted">
+                    {tab === 'by_amount' ? ` ${g.amt_yi >= 100 ? Math.round(g.amt_yi) : g.amt_yi}亿` : ` ${g.n}只`}
+                  </span>
+                  <span className={g.avg_pct >= 0 ? 'text-bear' : 'text-bull'}> {g.avg_pct >= 0 ? '+' : ''}{g.avg_pct}%</span>
+                  {g.limit_n > 0 && <span className="text-accent"> 停{g.limit_n}</span>}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* 事件类型快捷条(异动页): 组内再按具体事件细分, 带当前流内计数 */}
         {tab === 'changes' && (changes?.kinds || []).length > 0 && (
           <div className="no-scrollbar flex gap-1 px-3 py-1.5 border-b border-border-subtle overflow-x-auto whitespace-nowrap shrink-0">
@@ -927,6 +983,13 @@ export default function Rankings() {
                     )}
                     {tab === 'earnings' && r['持仓关联'] && (
                       <span className="ml-1 px-1 rounded bg-accent/15 text-accent text-[9px]">{r['持仓关联']}</span>
+                    )}
+                    {/* 它在今天哪条线上 —— 只标进了前几堆的概念, 这才是"为什么它在榜上" */}
+                    {(tab === 'gainers' || tab === 'by_amount') && hotOf(r).length > 0 && (
+                      <span className="ml-1 text-[9px] text-accent/85 whitespace-nowrap"
+                        title={`所属概念: ${(r['概念'] || []).join(' · ')}`}>
+                        {hotOf(r).join('·')}
+                      </span>
                     )}
                   </span>
                   {tab === 'structure' && (
