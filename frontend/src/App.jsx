@@ -139,7 +139,10 @@ export default function App() {
           )}
 
           {view === 'rankings' && (
-            <div className={PAD}>
+            // 榜单是"占满一屏"的视图: 外壳撑满滚动区, 面板自己吃掉剩余高度。
+            // 原来面板写死 h-[calc(100vh-11rem)] —— 那 11rem 是照着某个窗口估的顶栏高度,
+            // 窗口一变高、顶栏一换行就对不上, 底下留出一条谁也用不上的空带。
+            <div className={`${PAD} h-full flex flex-col`}>
               <Rankings />
             </div>
           )}

@@ -712,7 +712,8 @@ export default function Rankings() {
   tabRef.current = tab
 
   return (
-    <div className="bg-surface-2 border border-border rounded-xl overflow-hidden flex flex-col lg:flex-row h-[calc(100vh-11rem)] min-h-[480px]">
+    // 高度由外层给(flex-1 吃掉滚动区剩下的), 不再自己算 100vh 减多少 —— 那个减数是估的
+    <div className="bg-surface-2 border border-border rounded-xl overflow-hidden flex flex-col lg:flex-row flex-1 min-h-[480px]">
       <div className="lg:w-[420px] shrink-0 flex flex-col border-b lg:border-b-0 lg:border-r border-border min-h-0">
         <div className="flex items-center gap-1.5 px-3 py-2 border-b border-border-subtle">
           <div className="no-scrollbar flex items-center gap-1 overflow-x-auto min-w-0 flex-1">
