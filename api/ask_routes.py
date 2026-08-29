@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from config import config
 from services.stock_agent import ask_stock, ask_stock_stream
+from services import ask_runs
 from database import (create_ask_session, add_ask_message, list_ask_sessions,
                       get_ask_session, delete_ask_session)
 
@@ -70,6 +71,16 @@ class AskIn(BaseModel):
     images: Optional[List[str]] = None    # data URL 或裸 base64, 最多 4 张, 走多模态
 
 
+class RunIn(BaseModel):
+    question: str                          # 给人看的原话(落库/历史标题用这个)
+    agent_question: Optional[str] = None   # 真正喂 agent 的(抽屉会带上"名称(代码): "前缀)
+    history: Optional[List[Turn]] = None
+    images: Optional[List[str]] = None
+    session_id: Optional[int] = None        # 空=新建会话
+    title: Optional[str] = None
+    scope: str = "market"                   # market | stock:<code>, 前端按它认领自己那条
+
+
 class SessionMsg(BaseModel):
     session_id: Optional[int] = None     # 空=新建会话
     role: str                            # user | assistant
@@ -87,7 +98,10 @@ async def ask(data: AskIn):
 
 @router.post("/stock/stream")
 async def ask_stream(data: AskIn):
-    """SSE 流式版(POST, 带多轮历史): 工具步骤实时推送, 末尾推完整答案。前端做步骤展示 + 打字机。"""
+    """SSE 流式版(POST, 带多轮历史): 工具步骤实时推送, 末尾推完整答案。
+
+    注: 这一条的执行权在调用方 —— 断开连接这一轮就没了, 也不落库。界面已经改走
+    /runs(服务端后台跑 + 自动落库); 这里留给脚本/一次性调用。"""
     hist = [t.model_dump() for t in (data.history or [])]
 
     async def gen():
@@ -99,6 +113,51 @@ async def ask_stream(data: AskIn):
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
                                       "Connection": "keep-alive"})
+
+
+# --- 后台运行的一轮(run): 界面走这条 ---
+
+@router.post("/runs")
+async def start_run(data: RunIn):
+    """开跑一轮并立刻返回 {run_id, session_id, cursor}。
+
+    跟 /stock/stream 的区别就是"谁拿着执行权": 这条一开跑就归服务端, 前端切页/刷新/关页
+    都不影响它跑完并落库; 问题在开跑那一刻就已经写进会话, 所以历史里马上能看到。"""
+    hist = [t.model_dump() for t in (data.history or [])]
+    imgs = data.images or []
+    # 图片: 喂 agent 用原始 data URL, 落库用落盘后的 URL(DB 不存 base64)
+    user_meta = _persist_images({"images": imgs}) if imgs else None
+    run = await ask_runs.start(
+        data.question, agent_question=data.agent_question, history=hist, images=imgs,
+        session_id=data.session_id, title=data.title, scope=data.scope, user_meta=user_meta)
+    return {"run_id": run.id, "session_id": run.session_id, "cursor": 0,
+            "images": (user_meta or {}).get("images", [])}
+
+
+@router.get("/runs")
+async def list_runs(scope: Optional[str] = None):
+    """内存里还认得的 run(在跑的 + 刚跑完的), 前端用来重挂: 切回来接着看那半截。"""
+    return {"runs": ask_runs.live(scope)}
+
+
+@router.get("/runs/{run_id}/events")
+async def run_events(run_id: str, cursor: int = 0):
+    """从 cursor 起续拉事件流。每条带 cursor, 断开后照它接着拉; 断开不会影响 run 本身。"""
+    async def gen():
+        try:
+            async for ev in ask_runs.follow(run_id, cursor):
+                yield f"data: {_json.dumps(ev, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            yield f"data: {_json.dumps({'type': 'error', 'error': str(e)}, ensure_ascii=False)}\n\n"
+    return StreamingResponse(gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
+                                      "Connection": "keep-alive"})
+
+
+@router.post("/runs/{run_id}/cancel")
+async def cancel_run(run_id: str):
+    """明确停掉(点"新对话"这类)。跟"前端走开"区分: 走开不取消。"""
+    return {"cancelled": ask_runs.cancel(run_id)}
 
 
 # --- 会话历史 ---
