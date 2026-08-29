@@ -159,11 +159,14 @@ def _rank_row(x: dict) -> dict | None:
         return None
     new = _is_new_stock(name)
     lim = None if new else _limit_pct(code, name)
+    from services.concept_tags import parse as _parse_concepts
     return {"code": code, "name": name, "pct": round(pct, 2),
             "成交额亿": round((_f("f6") or 0) / 1e8, 2),
             "换手": x.get("f8"), "量比": x.get("f10"),
             "市值亿": round((_f("f20") or 0) / 1e8, 0),
             "行业": x.get("f100") or "",
+            # 概念带上: 光有「元件」「通信设备」这种一级行业, 看不出今天是 CPO 在涨还是 PCB 在涨
+            "概念": _parse_concepts(x.get("f103")),
             "limit": lim,
             "涨停占比%": round(pct / lim * 100, 1) if lim else None,   # 涨幅占该板块涨停幅度的比例(100=涨停), 跨板块可比; 新股无涨跌停→None
             "is_new": new,
@@ -191,8 +194,16 @@ def top_rankings(limit: int = 100) -> dict:
     amt = [r for r in (_rank_row(x) for x in _clist("f6", pz)) if r][:pz]
     if not up and not amt:
         return {"error": "榜单源暂不可达(东财抖动)"}
+    # 榜单本身是 100 只票的清单, 看不出轮动。按概念/行业聚一遍: 钱堆在哪条线上、哪条线在涨。
+    from services.concept_tags import group_rows
+    groups = {
+        "by_amount": {"concepts": group_rows(amt, "概念"), "industries": group_rows(amt, "行业")},
+        "gainers": {"concepts": group_rows(up, "概念"), "industries": group_rows(up, "行业")},
+    }
     out = {"as_of": _t.strftime("%Y-%m-%d %H:%M", _t.localtime()),
-           "gainers": up, "by_amount": amt,
-           "note": "涨幅榜按涨停占比(涨幅/该板块涨停幅度)排, 跨板块可比; 成交额榜按成交额。东财 clist 实时。is_st=ST/退市。"}
+           "gainers": up, "by_amount": amt, "groups": groups,
+           "note": "涨幅榜按涨停占比(涨幅/该板块涨停幅度)排, 跨板块可比; 成交额榜按成交额。"
+                   "groups 是同一张榜按概念/行业聚的堆(n=上榜家数, amt_yi=合计成交额, avg_pct=均涨幅), "
+                   "≥2 家才成堆。东财 clist 实时。is_st=ST/退市。"}
     _cache["rankings"] = (out, _t.time(), pz)
     return out
