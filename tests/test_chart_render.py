@@ -34,3 +34,34 @@ def test_flat_bar_colors_length_matches_display_window():
     opens = [10.0] * 8
     closes = [10.0] * 8
     assert len(flat_bar_colors(opens, closes, start=3)) == 5
+
+
+# ── 量柱那一栏画的是什么, 得写在图上 ──────────────────────
+
+def _bars(n=30, vol=50000.0):
+    """升序日线: (date, close, high, low, vol, open)。"""
+    out = []
+    for i in range(n):
+        c = 100.0 + i
+        out.append((f"2026-08-{(i % 28) + 1:02d}", c, c + 1, c - 1, vol + i, c - 0.5))
+    return out
+
+
+def test_volume_panel_is_labeled():
+    """下面那栏原来一个字都没有 —— 看图的人和模型只能猜是成交量还是成交额, 而两者差着
+    "手×股价"的量级(实测茅台一天 2.2万手 / 28亿元)。图要喂给模型看, 所以口径必须画在轴上。
+
+    判据: 换个标签, 出来的 PNG 就得不一样(说明标签真画进去了, 不是被忽略)。
+    """
+    from services.chart_render import render_trend_chart
+    a = render_trend_chart(_bars(), code="600519", name="贵州茅台")
+    b = render_trend_chart(_bars(), code="600519", name="贵州茅台", vol_label="成交额(元)")
+    assert a and b
+    assert a != b
+
+
+def test_default_label_is_shares_not_turnover():
+    """A股各源的成交量都已归一到「手」(新浪那条除以过 100), 所以默认标手。"""
+    import inspect
+    from services.chart_render import render_trend_chart
+    assert inspect.signature(render_trend_chart).parameters["vol_label"].default == "成交量(手)"
