@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { MiniMarkdown, SourcesBlock, ToolCallStrip, streamAnalysis } from './askShared'
+import { MiniMarkdown, SourcesBlock, ToolCallStrip, startRun, followRun, liveRuns, cancelRun } from './askShared'
 import ImageZoom from './ImageZoom'
 
 function pctColor(v) {
@@ -12,14 +12,15 @@ function pctColor(v) {
 // 抽屉一关就卸载, 对话跟着没了 —— 关一下再打开是空的, 追问的上下文也断了。所以按代码
 // 把对话留在模块级(组件外, 不随卸载消失), 关开不丢; 同一只票接着问还是同一个会话(落库
 // 也接着落在那条会话里)。只留最近几只, 免得把长对话无限攒在内存里。
-// 注: 刷新整页会清掉这份内存缓存 —— 原文已经落库, 在「问问市场」的历史里能翻到。
-const DRAWER_CACHE = new Map()      // code -> { history, sessionId }
+// run 也记在这儿: 关抽屉时那一轮还在服务端跑(执行权不在浏览器), 重开照游标接着看。
+// 注: 刷新整页会清掉这份内存缓存 —— 但 run 还活着, 重新打开抽屉会去服务端把它捞回来。
+const DRAWER_CACHE = new Map()      // code -> { history, sessionId, run }
 const DRAWER_CACHE_MAX = 8
 
-function remember(code, history, sessionId) {
+function remember(code, history, sessionId, run) {
   if (!code) return
   DRAWER_CACHE.delete(code)                       // 删了再插: Map 按插入序, 这样它排到最后
-  DRAWER_CACHE.set(code, { history, sessionId })
+  DRAWER_CACHE.set(code, { history, sessionId, run })
   while (DRAWER_CACHE.size > DRAWER_CACHE_MAX) DRAWER_CACHE.delete(DRAWER_CACHE.keys().next().value)
 }
 
@@ -38,34 +39,18 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
   const started = useRef(false)
   const closeTimer = useRef(null)
   const sessionId = useRef(DRAWER_CACHE.get(stock?.code)?.sessionId ?? null)   // 落库用: 同一只票接着同一条会话
+  const runRef = useRef(DRAWER_CACHE.get(stock?.code)?.run ?? null)            // {id, cursor}: 关了再开接着看
+  const scope = `stock:${stock?.code || ''}`
 
   // 先播放滑出动画再卸载
   const close = () => { setShown(false); clearTimeout(closeTimer.current); closeTimer.current = setTimeout(onClose, 280) }
 
   const patchLast = (fn) => setHistory(h => h.map((it, i) => i === h.length - 1 ? fn(it) : it))
 
-  // 落库一轮(与「问问市场」同一个端点/同一张表)。
-  // 为什么要落: 这个抽屉原来什么都不存, 于是在这儿发生的每一次纠正, 纠正挖掘都看不见 ——
+  // 落库(与「问问市场」同一张表)现在归服务端: 问题在开跑那刻就写进会话, 答案跑完写。
+  // 为什么非得落: 这个抽屉原来什么都不存, 于是在这儿发生的每一次纠正, 纠正挖掘都看不见 ——
   // 那套"答错了不再错第二遍"的机制对抽屉里的对话完全失效。事后想复盘也没有原文。
-  const persistTurn = async (question, item) => {
-    try {
-      const r1 = await fetch('/api/ask/messages', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId.current, role: 'user', content: question,
-                               title: `${stock.name}(${stock.code}) ${question}`.slice(0, 40) }),
-      })
-      const j1 = await r1.json(); sessionId.current = j1.session_id
-      await fetch('/api/ask/messages', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ session_id: sessionId.current, role: 'assistant',
-          content: item.answer || '',
-          // llm_retry/self_check 是过程提示不是工具, 别存进历史
-          meta: { tools_used: (item.steps || []).map(s => s.tool)
-                    .filter(t => t !== 'llm_retry' && t !== 'self_check'),
-                  sources: item.sources || [], charts: item.charts || [] } }),
-      })
-    } catch { /* 落库失败不影响使用 */ }
-  }
+  // 而只要落库还挂在前端, "关抽屉"就等于"这一轮从没发生过"。
 
   const typewriter = (full) => {
     clearInterval(typer.current)
@@ -87,11 +72,63 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
     const el = scrollBox.current
     if (el && follow.current) el.scrollTop = el.scrollHeight
     historyRef.current = history
-    remember(stock?.code, history, sessionId.current)
+    remember(stock?.code, history, sessionId.current, runRef.current)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [history])
 
-  const ask = (question) => {
+  const handleEv = (ev) => {
+    if (ev.type === 'step') patchLast(it => ({ ...it, steps: [...it.steps, { tool: ev.tool, label: ev.label, arg: ev.arg }] }))
+    else if (ev.type === 'chart') patchLast(it => ({ ...it, charts: [...it.charts, ev.url] }))
+    else if (ev.type === 'sources') patchLast(it => ({ ...it, sources: [...it.sources, ...(ev.sources || [])] }))
+    else if (ev.type === 'answer') { patchLast(it => ({ ...it, answer: ev.text })); typewriter(ev.text || '') }
+    else if (ev.type === 'error') patchLast(it => ({ ...it, err: ev.error, done: true }))
+  }
+
+  // 最后一问的答案从库里补回来(服务端内存里已经没这条 run 了, 但落库是它跑完时就做的)。
+  // 库里也没有 → 那一轮真没跑完(比如服务重启过), 标出来; 不能让它一直转"分析中"。
+  const recoverTail = async () => {
+    let last = null
+    try {
+      if (sessionId.current) {
+        const s = await (await fetch(`/api/ask/sessions/${sessionId.current}`)).json()
+        const msgs = s.messages || []
+        if (msgs[msgs.length - 1]?.role === 'assistant') last = msgs[msgs.length - 1]
+      }
+    } catch { /* 取不到当没有 */ }
+    patchLast(it => {
+      if (it.answer) return { ...it, typed: it.answer, done: true }
+      if (last) return { ...it, answer: last.content, typed: last.content, done: true,
+                         sources: (last.meta && last.meta.sources) || it.sources,
+                         charts: (last.meta && last.meta.charts) || it.charts }
+      return { ...it, done: true, err: '这一轮没跑完(服务重启过)' }
+    })
+  }
+
+  // 跟看一条 run。关抽屉只 abort 这根连接, run 在服务端照跑照落库。
+  const attach = (runId, cursor = 0) => {
+    abortRef.current?.abort()
+    const ctrl = new AbortController(); abortRef.current = ctrl
+    runRef.current = { id: runId, cursor }
+    setLoading(true)
+    followRun(runId, {
+      cursor, signal: ctrl.signal,
+      onEvent: (ev) => { if (ev.cursor != null && runRef.current) runRef.current.cursor = ev.cursor; handleEv(ev) },
+      onEnd: ({ finished, gone }) => {
+        if (finished || gone) { runRef.current = null; setLoading(false) }
+        if (gone) recoverTail()      // 服务端不记得它了 → 答案在库里, 回去取
+      },
+      onError: (err) => { patchLast(it => ({ ...it, err, done: true })); runRef.current = null; setLoading(false) },
+    })
+  }
+
+  const stopRun = () => {
+    if (runRef.current) cancelRun(runRef.current.id)
+    abortRef.current?.abort(); clearInterval(typer.current); runRef.current = null
+    patchLast(it => (it.answer == null ? { ...it, err: '已停止', done: true } : { ...it, typed: it.answer, done: true }))
+    setLoading(false)
+  }
+
+  const ask = async (question) => {
     const text = (question ?? q).trim()
     if (!text || loading || !stock) return
     // 已完成轮次作为上下文(最近4轮), 支持追问
@@ -99,28 +136,39 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
       .flatMap(it => [{ role: 'user', content: it.q }, { role: 'assistant', content: it.answer }])
     setQ(''); setLoading(true); follow.current = true
     setHistory(h => [...h, { q: text, steps: [], answer: null, typed: '', done: false, sources: [], charts: [] }])
-    abortRef.current?.abort()
-    const ctrl = new AbortController(); abortRef.current = ctrl
-    streamAnalysis(`${stock.name}(${stock.code}): ${text}`, {
-      signal: ctrl.signal,
-      history: hist,
-      onStep: (e) => patchLast(it => ({ ...it, steps: [...it.steps, { tool: e.tool, label: e.label, arg: e.arg }] })),
-      onChart: (e) => patchLast(it => ({ ...it, charts: [...it.charts, e.url] })),
-      onSource: (arr) => patchLast(it => ({ ...it, sources: [...it.sources, ...arr] })),
-      onAnswer: (t) => { patchLast(it => ({ ...it, answer: t })); typewriter(t || '') },
-      onError: (err) => { patchLast(it => ({ ...it, err: err || '连接中断', done: true })); setLoading(false) },
-      onDone: () => {
-        setLoading(false)
-        // 用打字机之前的完整答案落库(typed 是逐字追加的中间态)
-        setHistory(h => { const last = h[h.length - 1]; if (last?.answer) persistTurn(text, last); return h })
-      },
-    })
+    try {
+      const r = await startRun({
+        question: text, agent_question: `${stock.name}(${stock.code}): ${text}`, history: hist,
+        session_id: sessionId.current, title: `${stock.name}(${stock.code}) ${text}`.slice(0, 40), scope,
+      })
+      sessionId.current = r.session_id
+      attach(r.run_id, 0)
+    } catch (e) {
+      patchLast(it => ({ ...it, err: `没跑起来: ${e.message}`, done: true })); setLoading(false)
+    }
+  }
+
+  // 重开抽屉: 上次那一轮如果还在跑(关抽屉不会杀它), 接着跟看
+  const resume = async () => {
+    if (runRef.current) { attach(runRef.current.id, runRef.current.cursor); return true }
+    // 内存缓存被整页刷新清了, 但 run 可能还在服务端: 按这只票的 scope 找回来, 从 0 补齐过程
+    const r = (await liveRuns(scope)).filter(x => !x.done).pop()
+    if (!r) return false
+    sessionId.current = r.session_id
+    setHistory(h => (h.length ? h : [{ q: r.question, steps: [], answer: null, typed: '', done: false, sources: [], charts: [] }]))
+    attach(r.run_id, 0)
+    return true
   }
 
   // 挂载后触发滑入; 打开即自动问第一句
   useEffect(() => {
     const t = setTimeout(() => setShown(true), 10)
-    if (!started.current && initialQuestion && stock) { started.current = true; ask(initialQuestion) }
+    resume().then(resumed => {
+      // 有缓存对话就别重问一遍(重开抽屉时 Rankings 还是会把 initialQuestion 传进来)
+      if (!resumed && !started.current && initialQuestion && stock && !historyRef.current.length) {
+        started.current = true; ask(initialQuestion)
+      }
+    })
     return () => clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -129,19 +177,20 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
     const onKey = (e) => { if (e.key === 'Escape') close() }
     window.addEventListener('keydown', onKey)
     return () => {
-      window.removeEventListener('keydown', onKey); abortRef.current?.abort()
+      window.removeEventListener('keydown', onKey)
+      abortRef.current?.abort()          // 只断开跟看; run 在服务端接着跑, 重开抽屉再续上
       clearInterval(typer.current); clearTimeout(closeTimer.current)
-      // 正在流式的那一轮会被 abort 掉。不定格的话重开进来是一行永远转不完的"正在取数据",
-      // 而且打字机停在半句上 —— 有答案的按已收到的部分收尾, 没答案的标成已中断。
+      // 打字机可能停在半句上: 有完整答案的定格成完整答案(不然重开看到的是半句)。
+      // 没答完的**不再**标"已中断" —— 它真的还在跑, 标了就是撒谎; 重开会接着往下填。
       // 这里不能用 setHistory: 组件正在卸载, React 18 会把更新丢掉, updater 根本不跑。
       // 所以读 ref 里那份镜像, 直接写缓存。
       const h = historyRef.current
-      if (h?.length && !h[h.length - 1].done) {
-        const last = h[h.length - 1]
-        const fixed = last.answer
-          ? { ...last, typed: last.answer, done: true }
-          : { ...last, done: true, err: last.err || '已中断(关抽屉时这一问还没答完)' }
-        remember(stock?.code, [...h.slice(0, -1), fixed], sessionId.current)
+      const last = h?.[h.length - 1]
+      if (last?.answer && !last.done) {
+        remember(stock?.code, [...h.slice(0, -1), { ...last, typed: last.answer, done: true }],
+                 sessionId.current, runRef.current)
+      } else {
+        remember(stock?.code, h || [], sessionId.current, runRef.current)
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -218,8 +267,17 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
               className="text-[12px] px-3.5 py-2 rounded-lg bg-accent/20 text-accent border border-accent/40 hover:bg-accent/30 disabled:opacity-40 disabled:cursor-not-allowed">
               {loading ? '分析中' : '问'}
             </button>
+            {loading && (
+              <button onClick={stopRun} title="真停掉这一轮(关抽屉不用停, 它会自己跑完)"
+                className="text-[12px] px-3 py-2 rounded-lg bg-surface-3 border border-border text-text-dim hover:text-bear-bright hover:border-bear/40 shrink-0">
+                停
+              </button>
+            )}
           </div>
-          <div className="text-[10px] text-text-muted pt-2 mt-2 border-t border-border-subtle">纯客观解读，不构成任何买卖建议</div>
+          <div className="text-[10px] text-text-muted pt-2 mt-2 border-t border-border-subtle">
+            纯客观解读，不构成任何买卖建议
+            {loading && ' · 关掉抽屉它也会在后台跑完并进历史'}
+          </div>
         </div>
       </div>
     </div>,

@@ -251,14 +251,26 @@ export function SourcesBlock({ sources }) {
   )
 }
 
-// 跑一次单轮分析(SSE): 给定 question(可带 history 支持追问), 回调 onStep/onChart/onSource/onAnswer。
-export function streamAnalysis(question, { onStep, onChart, onSource, onAnswer, onDone, onError, signal, history } = {}) {
-  fetch('/api/ask/stock/stream', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question, history: history || [] }), signal,
-  }).then(async (resp) => {
+// 一轮分析的执行权在服务端(services/ask_runs.py), 这边只管"开跑"和"按游标跟看"。
+// 关键区别: 停止跟看 ≠ 取消。切页/关抽屉只 abort 下面这根 follow 连接, run 自己跑完并落库,
+// 所以回来能接着看, 没回来也能在历史里翻到。
+export async function startRun(body) {
+  const r = await fetch('/api/ask/runs', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  })
+  if (!r.ok) throw new Error(`${r.status}`)
+  return r.json()          // {run_id, session_id, cursor, images}
+}
+
+// 跟看一条 run: 从 cursor 起把事件喂给 onEvent(每条带 ev.cursor, 记着它就能断点续看)。
+// onEnd({finished, gone}) —— finished=这一轮真跑完了; gone=服务端已经不认得这个 run 了
+// (跑完超过保留期被清掉, 或服务重启过), 这时该回 DB 取原文, 别把界面标成出错。
+export function followRun(runId, { cursor = 0, onEvent, onEnd, onError, signal } = {}) {
+  fetch(`/api/ask/runs/${runId}/events?cursor=${cursor}`, { signal }).then(async (resp) => {
     const reader = resp.body.getReader(); const dec = new TextDecoder()
     let buf = ''
+    let finished = false
+    let gone = false
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
@@ -268,13 +280,23 @@ export function streamAnalysis(question, { onStep, onChart, onSource, onAnswer, 
         const line = p.split('\n').find(l => l.startsWith('data: '))
         if (!line) continue
         let ev; try { ev = JSON.parse(line.slice(6)) } catch { continue }
-        if (ev.type === 'step') onStep?.(ev)
-        else if (ev.type === 'chart') onChart?.(ev)
-        else if (ev.type === 'sources') onSource?.(ev.sources || [])
-        else if (ev.type === 'answer') onAnswer?.(ev.text || '')
-        else if (ev.type === 'error') onError?.(ev.error)
+        if (ev.type === 'done') { finished = true; continue }
+        if (ev.gone) { gone = true; continue }
+        onEvent?.(ev)
       }
     }
-    onDone?.()
+    onEnd?.({ finished, gone })
   }).catch(e => { if (e.name !== 'AbortError') onError?.(String(e)) })
+}
+
+// 服务端内存里还认得的 run(在跑的 + 刚跑完的)。整页刷新后靠它把那一轮捞回来。
+export async function liveRuns(scope) {
+  try {
+    const r = await fetch(`/api/ask/runs${scope ? `?scope=${encodeURIComponent(scope)}` : ''}`)
+    return (await r.json()).runs || []
+  } catch { return [] }
+}
+
+export function cancelRun(runId) {
+  return fetch(`/api/ask/runs/${runId}/cancel`, { method: 'POST' }).catch(() => {})
 }
