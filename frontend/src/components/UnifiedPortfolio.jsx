@@ -147,7 +147,38 @@ function stockCategoryOf(h) {
   return aShareCategoryOf(h.stock_name, h.sector)
 }
 
-// Cross-type risk family: identifies same underlying exposure across A股 / 基金.
+// 同源家族索引: 以后端穿透出来的**行业**为准。
+// 为什么不能再靠名字: 「兴业银锡」是银锡矿(东财行业 贵金属), 跟「山东黄金」本来就是同一块
+// 风险, 但名字里一个金属字都没有 —— 下面那套关键词认不出它, 于是行内只有山东黄金挂了
+// ↔同源, 银锡干干净净, 看着像是两注不相干的仓。穿不动明细的基金(黄金ETF联接这种)后端
+// 已按名字兜底挂了行业, 这里一并算进来。
+// 只有 ≥2 行一起扛着才算"同源"; 一行独占那是集中度, 另有规则管。
+const MIN_HOLDER_PCT = 0.5     // 一行在这个家族里不到总资产 0.5% 就不标了: 债基前十大里
+                               // 混进一只光模块(实测 392 元)也算"同源"的话, 角标就成噪音了
+function buildFamilyIndex(expo) {
+  if (!expo || !Array.isArray(expo.industries)) return null
+  const total = expo.total || 0
+  const floor = total * MIN_HOLDER_PCT / 100
+  const byRow = new Map()      // "A:600547" -> [行业名]
+  const fams = new Map()       // 行业名 -> {holders, mv}
+  for (const g of expo.industries) {
+    const ind = g.industry || ''
+    if (!ind || ind === '未知行业' || ind.startsWith('海外')) continue
+    const holders = (g.holders || []).filter(h => (h.mv || 0) >= floor)
+    if (holders.length < 2) continue
+    // 家族的钱按**穿透后**算: 那几只基金并不是整只都在这个行业里
+    fams.set(ind, { holders, mv: holders.reduce((s, h) => s + (h.mv || 0), 0) })
+    for (const h of holders) {
+      for (const c of (h.codes && h.codes.length ? h.codes : [h.code])) {
+        const k = `${h.kind}:${c}`
+        byRow.set(k, [...(byRow.get(k) || []), ind])
+      }
+    }
+  }
+  return { byRow, fams }
+}
+
+// 后端还没返回时的兜底(只认名字, 认不出的多了去了 —— 见上)。
 // Returns array of family ids (a row can belong to multiple, e.g. 白银 is both silver + metals).
 function riskFamiliesOf(row) {
   if (row.type === 'A') {
@@ -1008,6 +1039,15 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
   // visibleTypes: from filtered rows — drives content section rendering
   const visibleTypes = TYPE_ORDER.filter(t => agg.groups[t])
 
+  // 穿透敞口(同源风险)走后端: 基金拆到季报前十大, 同一标的/同一行业合起来算。
+  const [expo, setExpo] = useState(null)
+  useEffect(() => {
+    let alive = true
+    fetchJSON('/api/portfolio/exposure').then(d => { if (alive && !d?.error) setExpo(d) }).catch(() => {})
+    return () => { alive = false }
+  }, [])
+  const famIdx = useMemo(() => buildFamilyIndex(expo), [expo])
+
   // Risk insights: concentration warnings + cross-type overlap families.
   // Always computed from ALL rows (not filtered) so toggling filter doesn't change advice.
   const insights = useMemo(() => {
@@ -1066,46 +1106,47 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
         }
       }
     }
-    // 3. Cross-type overlap (A股 vs 基金 共享同源风险)
+    // 3. 同源: 哪几行其实是同一块风险。以后端穿透的行业为准, 后端没回来才退回关键词。
     const familyRows = {}
-    for (const r of rows) {
-      const fams = riskFamiliesOf(r)
-      for (const f of fams) {
-        if (!familyRows[f]) familyRows[f] = { types: new Set(), rows: [], mv: 0 }
-        familyRows[f].types.add(r.type)
-        familyRows[f].rows.push(r)
-        familyRows[f].mv += r.mv || 0
-      }
+    const add = (fam, r) => {
+      if (!familyRows[fam]) familyRows[fam] = { types: new Set(), rows: [], mv: 0 }
+      familyRows[fam].types.add(r.type)
+      familyRows[fam].rows.push(r)
+      familyRows[fam].mv += r.mv || 0
     }
+    for (const r of rows) {
+      const fams = famIdx
+        ? (famIdx.byRow.get(`${r.type}:${r.code}`) || [])
+        : riskFamiliesOf(r).map(f => FAMILY_LABEL[f] || f)
+      for (const f of fams) add(f, r)
+    }
+    // 后端已经报过的行业别再报一遍(它那条带穿透金额, 更准)
+    const saidByBackend = new Set((expo?.warnings || [])
+      .filter(w => w.kind === 'industry' && w.industry).map(w => w.industry))
     const overlapRowIds = new Set()
     const overlapByRow = {}
     for (const [fam, info] of Object.entries(familyRows)) {
-      if (info.types.size >= 2) {
-        const pct = total > 0 ? (info.mv / total * 100) : 0
+      if (info.rows.length < 2) continue
+      // 家族占比要用穿透后的钱。拿整行市值加起来会得出"通信设备 57%"这种数(实测) ——
+      // 那 6 只基金只有 0.25万 在通信设备里, 不是整只 7 万都是。
+      const famMv = famIdx?.fams.get(fam)?.mv ?? info.mv
+      const famPct = total > 0 ? (famMv / total * 100) : 0
+      for (const r of info.rows) {
+        overlapRowIds.add(r.id)
+        if (!overlapByRow[r.id]) overlapByRow[r.id] = []
+        // 带上"还有谁跟你同一块": 光说家族名等于让人自己去表里找
+        overlapByRow[r.id].push({ fam, pct: famPct, others: info.rows.filter(x => x.id !== r.id).map(x => x.name) })
+      }
+      // 横跨 A股 和 基金 才提示: 同类型内部的集中度上面第 2 条已经在管了
+      if (info.types.size >= 2 && !saidByBackend.has(fam)) {
         warnings.push({
           level: 'med',
-          text: `「${FAMILY_LABEL[fam] || fam}」横跨 A股 + 基金，合计 ${pct.toFixed(1)}% — 实际敞口被低估`,
+          text: `「${fam}」横跨 A股 + 基金，穿透后合计 ${famPct.toFixed(1)}% — ${info.rows.map(r => r.name).slice(0, 4).join(' + ')} 其实是同一块风险`,
         })
-        for (const r of info.rows) {
-          overlapRowIds.add(r.id)
-          if (!overlapByRow[r.id]) overlapByRow[r.id] = []
-          overlapByRow[r.id].push(FAMILY_LABEL[fam] || fam)
-        }
       }
     }
     return { warnings, overlapRowIds, overlapByRow }
-  }, [rows])
-
-  // 穿透敞口(同源风险)走后端: 基金拆到季报前十大, 同一标的/同一行业合起来算。
-  // 前端这份 riskFamiliesOf 关键词只认名字里带金属字样的票 —— 「兴业银锡」这种认不出,
-  // 基金那侧更是只看基金名, 不看它到底拿了什么。所以结论以后端为准, 关键词只留作
-  // 行内 ↔同源 角标的兜底(后端还没返回时先有个东西显示)。
-  const [expo, setExpo] = useState(null)
-  useEffect(() => {
-    let alive = true
-    fetchJSON('/api/portfolio/exposure').then(d => { if (alive && !d?.error) setExpo(d) }).catch(() => {})
-    return () => { alive = false }
-  }, [])
+  }, [rows, famIdx, expo])
 
   const removeAsset = async (row) => {
     if (!confirm(`删除 ${row.name}？`)) return
@@ -1426,11 +1467,19 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
                             <div className="text-text-bright font-semibold mb-1">同源风险家族</div>
                             <div className="flex flex-col gap-0.5">
                               {(insights.overlapByRow[row.id] || []).map(f => (
-                                <div key={f} className="text-text">· {f}</div>
+                                <div key={f.fam} className="text-text">
+                                  · {f.fam} 合计 {f.pct.toFixed(1)}%
+                                  {f.others.length > 0 && (
+                                    <span className="text-text-dim">
+                                      {' '}—— 还有 {f.others.slice(0, 3).join('、')}
+                                      {f.others.length > 3 ? ` 等${f.others.length}项` : ''}
+                                    </span>
+                                  )}
+                                </div>
                               ))}
                             </div>
                             <div className="text-text-dim mt-1.5 text-[10.5px] leading-snug">
-                              你在 A股 + 基金里都重仓同一类资产，实际敞口被低估
+                              这几行是同一块风险(按穿透后的行业归的，不看名字)：分开看像分散，合起来才是真实敞口
                             </div>
                           </div>
                         }>
