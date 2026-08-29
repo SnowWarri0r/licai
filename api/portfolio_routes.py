@@ -1612,6 +1612,18 @@ async def portfolio_correlation(days: int = 60):
     return await correlation_matrix(days)
 
 
+@router.get("/exposure")
+async def portfolio_exposure(min_pct: float = 0.5):
+    """穿透敞口: 把基金拆到季报前十大, 算同一标的/同一行业的真实合计敞口。
+
+    与 /correlation 的分工: 这个是**结构**上的同源(底层就是同一批票), correlation 是
+    **统计**上的同源(走势一起动)。两个都看才完整 —— 结构不重叠但高相关(同受美债利率
+    影响)、结构重叠但低相关(权重太小)都真实存在。
+    """
+    from services.exposure import look_through
+    return await look_through(min_pct=min_pct)
+
+
 @router.get("/eod-summary")
 async def eod_summary(push: bool = False):
     """收盘持仓小结(交易日15:10自动推飞书的那份)。push=1 手动补推一次。"""

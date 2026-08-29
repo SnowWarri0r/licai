@@ -2445,6 +2445,44 @@ async def _tool_etf_xray(query: str = "") -> dict:
     return await etf_xray.theme_scan(q, 5)
 
 
+async def _tool_exposure(min_pct: float = 0.5) -> dict:
+    """穿透敞口(同源风险): 基金拆到季报前十大, 算同一标的/同一行业的真实合计。
+
+    回答"我实际押了多少在X上/持仓是不是重复下注/买了好几只基金是不是同一注"这类问题。
+    只按名字看板块会漏 —— 「兴业银锡」名字里没有金属字样, 基金名也不说它拿了什么票。
+    """
+    from services.exposure import look_through
+    try:
+        d = await look_through(min_pct=min_pct)
+    except Exception as e:
+        return {"error": f"穿透失败: {type(e).__name__}: {e}"}
+    if d.get("error"):
+        return d
+    cov = d.get("coverage") or {}
+    return {
+        "总资产": d["total"],
+        "直持个股数": d["n_stocks"], "基金数(已合并A/C份额)": d["n_funds"],
+        "行业穿透": [{"行业": g["industry"], "合计": g["mv"], "占总资产%": g["pct"],
+                     "其中直持": g["direct_mv"], "其中经基金间接": g["indirect_mv"],
+                     "成分": g["members"]} for g in (d.get("industries") or [])[:8]],
+        "标的穿透": [{"标的": it["name"], "代码": it["code"], "合计": it["total_mv"],
+                     "占总资产%": it["pct"], "直持": it["direct_mv"], "间接": it["indirect_mv"],
+                     "来源数": it["n_sources"],
+                     "经由": [f"{v['fund']} {v['weight_pct']}%" for v in it["via"][:4]],
+                     "两地上市已合并": it.get("multi_line", False)}
+                    for it in (d.get("items") or [])[:12]],
+        "基金撞车": [{"A": p["a"], "B": p["b"], "前十大重叠%": p["overlap_pct"],
+                     "重合只数": p["n_same"], "重合": p["same"]}
+                    for p in (d.get("fund_pairs") or [])[:5]],
+        "结论": [w["text"] for w in (d.get("warnings") or [])[:8]],
+        "覆盖": {"穿透到的基金数": cov.get("penetrated_funds"),
+                 "拉不到明细": [u["name"] for u in (cov.get("uncovered") or [])],
+                 "覆盖偏薄": [t["name"] for t in (cov.get("thin") or [])]},
+        "note": (cov.get("note") or "") + " 表述时务必带上这条口径: 敞口是下限而非全量。"
+                "结构同源(底层同一批票)与统计同源(走势一起动)是两件事, 后者看相关性矩阵。",
+    }
+
+
 async def _tool_asset_allocation() -> dict:
     """全量资产配置快照: 各大类(股票/现金/理财/基金/加密/机器人)市值+占比 + 现金/理财逐笔明细(金额/年化/持有天数)。
     供'现金理财怎么分/应急金够不够/结构合不合理'这类资产配置讨论, 不涉及个股买卖。单位元(CNY)。"""
@@ -2856,6 +2894,8 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选, 留空看全部"}}}},
     {"name": "get_asset_allocation", "description": "查用户全量资产配置与总盈亏: 总资产 + 各大类(股票/现金/理财/基金/加密/机器人)市值占比 + **全口径盈亏**(总盈亏/浮动/已实现, 与看板顶栏同一算法) + 现金理财逐笔明细(金额/年化/持有天数)。回答'我总共赚了/亏了多少、我的总盈亏、回本了吗、浮亏多少、已经亏掉多少'以及'现金理财怎么分配、应急金够不够、资产结构合不合理'时用——总盈亏只有这个工具有, get_holdings 只给成本与份额、不含盈亏。不涉及个股买卖。",
      "input_schema": {"type": "object", "properties": {}}},
+    {"name": "get_exposure", "description": "查**穿透后的真实敞口**(同源风险): 把持有的基金/ETF 拆到季报前十大, 把直持个股与基金间接持有的同一标的合起来算, 再按行业归并。回答'我实际押了多少在X上/持仓是不是重复下注/买的这几只基金是不是同一注/哪个方向敞口过大/分散得够不够'时用。只按名字或板块看会漏——「兴业银锡」名字里没有金属字样, 基金名也不说它拿了什么票。口径: 只到前十大(占基金净值约 25%~50%), 所以给出的是**下限**; 拉不到明细的基金单列, 不等于敞口为 0。结构同源看这个, 走势同源(相关性)是另一回事。",
+     "input_schema": {"type": "object", "properties": {"min_pct": {"type": "number", "description": "可选, 只看占总资产 ≥ 这个百分比的标的, 默认 0.5"}}}},
     {"name": "get_trades", "description": "查用户成交记录(含个股/场内ETF/场外基金): 传 code→该标的买卖/加减仓/分红或申赎流水(A股另给综合成本/已实现盈亏/持有天数, 同日有买有卖=做T); 不传→最近全部成交(三类合并)。可用 start/end(YYYY-MM-DD)按成交日期筛区间('这周/6月/上个月'自己换算成日期传)。回答'我什么时候买的、成本多少、做过几次T、这票赚没赚、持有多久、最近/某段时间交易了啥、哪些买入是定投'时用(定投计划自动买入的行带 来源=定投)。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选; 留空看全部"}, "start": {"type": "string", "description": "可选, 起始日 YYYY-MM-DD"}, "end": {"type": "string", "description": "可选, 截止日 YYYY-MM-DD"}}}},
     {"name": "get_market_sentiment", "description": "查大盘打板情绪(涨停数/连板高度/炸板率/赚钱效应/热点板块)、全市场涨跌家数(几家上涨几家下跌, 含沪/深/北分市场)和涨跌分布直方图(每1%一档的家数, 看下跌集中在哪个深度), 回答'今天普跌吗/多少家在跌/跌得有多深/赚钱效应', 判断是个股原因还是大盘普涨普跌; 也用于判断市场风格(打板赚钱效应高=追涨/动量有效; 炸板率高+亏钱效应=高位分歧/反转)。",
@@ -2915,6 +2955,7 @@ _EXECUTORS = {
     "read_zsxq_file": lambda a: _tool_zsxq_file(a.get("file_id", ""), a.get("name", "")),
     "get_thesis": lambda a: _tool_get_thesis(a.get("code", "")),
     "get_asset_allocation": lambda a: _tool_asset_allocation(),
+    "get_exposure": lambda a: _tool_exposure(float(a.get("min_pct") or 0.5)),
     "get_trades": lambda a: _tool_trades(a.get("code", ""), a.get("start", ""), a.get("end", "")),
     "get_market_sentiment": lambda a: _tool_market_sentiment(),
     "get_etf_xray": lambda a: _tool_etf_xray(a.get("query", "")),
