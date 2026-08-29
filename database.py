@@ -625,6 +625,30 @@ async def get_cached_klines(stock_code: str, limit: int = 250) -> list[dict]:
         await db.close()
 
 
+async def get_cached_amounts(codes: list[str], since: str) -> dict[str, dict[str, float]]:
+    """一次取多只票的逐日成交额 → {日期: {代码: 成交额}}。给"这条概念线前几天多少钱"用。
+
+    逐只查会打出上百次往返(榜单 100 只 × 一周), 这里一条 IN 查询取回。
+    """
+    if not codes:
+        return {}
+    db = await get_db()
+    try:
+        out: dict[str, dict[str, float]] = {}
+        for i in range(0, len(codes), 400):          # SQLite 变量上限 999, 分批
+            chunk = codes[i:i + 400]
+            q = ",".join("?" * len(chunk))
+            cur = await db.execute(
+                f"SELECT date, stock_code, COALESCE(amount,0) AS amount FROM kline_cache "
+                f"WHERE stock_code IN ({q}) AND date >= ? AND COALESCE(amount,0) > 0",
+                (*chunk, since))
+            for r in await cur.fetchall():
+                out.setdefault(r["date"], {})[r["stock_code"]] = float(r["amount"])
+        return out
+    finally:
+        await db.close()
+
+
 async def get_cached_latest_date(stock_code: str) -> str | None:
     db = await get_db()
     try:
