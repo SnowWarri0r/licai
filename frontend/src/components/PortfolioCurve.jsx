@@ -35,10 +35,10 @@ function Chart({ dates, twr, bench }) {
       <polyline points={line(bench)} fill="none" stroke="var(--color-text-muted)"
         strokeWidth="1.4" opacity="0.7" />
       {/* 组合 TWR */}
-      <polyline points={line(twr)} fill="none" stroke="#c8a876" strokeWidth="2" />
+      <polyline points={line(twr)} fill="none" stroke="var(--color-accent)" strokeWidth="2" />
       {/* 端点值 */}
       <text x={W - MR + 4} y={py(twr[twr.length - 1]) + 3.5} fontSize="10.5" fontWeight="600"
-        fill="#c8a876">{twr[twr.length - 1].toFixed(1)}</text>
+        fill="var(--color-accent)">{twr[twr.length - 1].toFixed(1)}</text>
       {(() => { const b = bench[bench.length - 1]; return b == null ? null : (
         <text x={W - MR + 4} y={py(b) + (Math.abs(py(b) - py(twr[twr.length - 1])) < 11 ? 14 : 3.5)}
           fontSize="10" fill="var(--color-text-muted)">{b.toFixed(1)}</text>) })()}
@@ -95,7 +95,7 @@ export default function PortfolioCurve() {
           </div>
           <Chart dates={data.dates} twr={data.twr} bench={data.bench.series} />
           <div className="flex items-center gap-3 mt-0.5">
-            <span className="text-[9.5px] text-text-dim"><span className="inline-block w-3 h-[2px] align-middle mr-1" style={{ background: '#c8a876' }} />我的组合</span>
+            <span className="text-[9.5px] text-text-dim"><span className="inline-block w-3 h-[2px] align-middle mr-1" style={{ background: 'var(--color-accent)' }} />我的组合</span>
             <span className="text-[9.5px] text-text-dim"><span className="inline-block w-3 h-[2px] align-middle mr-1 bg-text-muted opacity-70" />沪深300</span>
             <span className="text-[9px] text-text-dim ml-auto">现金/理财/机器人按成本基线近似 · 不构成买卖建议</span>
           </div>

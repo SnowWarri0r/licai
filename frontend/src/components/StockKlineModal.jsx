@@ -136,7 +136,7 @@ export function CandleChart({ series, cost, actions, warmup = [] }) {
   }, [series])
 
   // 均线 MA5/10/20
-  const MA_DEFS = [{ n: 5, c: '#e8e0cf' }, { n: 10, c: '#c8a876' }, { n: 20, c: '#7aa2d6' }, { n: 30, c: '#6fc0b2' }, { n: 60, c: '#9a8cf0' }]
+  const MA_DEFS = [{ n: 5, c: '#e8e0cf' }, { n: 10, c: 'var(--color-accent)' }, { n: 20, c: '#7aa2d6' }, { n: 30, c: '#6fc0b2' }, { n: 60, c: '#9a8cf0' }]
   const maLines = useMemo(() => {
     if (points.length < 2) return []
     const w = warmup.length
@@ -216,8 +216,8 @@ export function CandleChart({ series, cost, actions, warmup = [] }) {
               <line x1={P.l} y1={zeroY} x2={W - P.r} y2={zeroY} stroke="var(--color-border-subtle)" strokeWidth="0.5" strokeDasharray="2 3" />
               {points.map(p => { const v = indic.hist[p.i]; return <rect key={'m' + p.i} x={p.x - candleW / 2} y={v >= 0 ? zeroY - v * sc : zeroY} width={candleW} height={Math.max(0.4, Math.abs(v * sc))} fill={v >= 0 ? UP : DOWN} opacity="0.85" /> })}
               <polyline points={line(indic.dif)} fill="none" stroke="#e8e0cf" strokeWidth="1" />
-              <polyline points={line(indic.dea)} fill="none" stroke="#c8a876" strokeWidth="1" />
-              {subLegend([{ c: '#e8e0cf', t: `DIF ${fmtVal(indic.dif[lastI])}` }, { c: '#c8a876', t: `DEA ${fmtVal(indic.dea[lastI])}` }, { c: indic.hist[lastI] >= 0 ? UP : DOWN, t: `MACD ${fmtVal(indic.hist[lastI])}` }])}
+              <polyline points={line(indic.dea)} fill="none" stroke="var(--color-accent)" strokeWidth="1" />
+              {subLegend([{ c: '#e8e0cf', t: `DIF ${fmtVal(indic.dif[lastI])}` }, { c: 'var(--color-accent)', t: `DEA ${fmtVal(indic.dea[lastI])}` }, { c: indic.hist[lastI] >= 0 ? UP : DOWN, t: `MACD ${fmtVal(indic.hist[lastI])}` }])}
             </g>
           )
         })()}
@@ -227,9 +227,9 @@ export function CandleChart({ series, cost, actions, warmup = [] }) {
           return (
             <g>
               <polyline points={line(indic.k)} fill="none" stroke="#e8e0cf" strokeWidth="1" />
-              <polyline points={line(indic.d)} fill="none" stroke="#c8a876" strokeWidth="1" />
+              <polyline points={line(indic.d)} fill="none" stroke="var(--color-accent)" strokeWidth="1" />
               <polyline points={line(indic.j)} fill="none" stroke="#7aa2d6" strokeWidth="1" />
-              {subLegend([{ c: '#e8e0cf', t: `K ${fmtVal(indic.k[lastI])}` }, { c: '#c8a876', t: `D ${fmtVal(indic.d[lastI])}` }, { c: '#7aa2d6', t: `J ${fmtVal(indic.j[lastI])}` }])}
+              {subLegend([{ c: '#e8e0cf', t: `K ${fmtVal(indic.k[lastI])}` }, { c: 'var(--color-accent)', t: `D ${fmtVal(indic.d[lastI])}` }, { c: '#7aa2d6', t: `J ${fmtVal(indic.j[lastI])}` }])}
             </g>
           )
         })()}
@@ -472,7 +472,7 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
           })}
           <line x1={P.l} y1={volTop + volH} x2={W - P.r} y2={volTop + volH} stroke="var(--color-border-subtle)" strokeWidth="1" />
         </>}
-        {hasVol && <polyline points={avgLine} fill="none" stroke="#c8a876" strokeWidth="1" opacity="0.85" />}
+        {hasVol && <polyline points={avgLine} fill="none" stroke="var(--color-accent)" strokeWidth="1" opacity="0.85" />}
         <polyline points={priceLine} fill="none" stroke={lineColor} strokeWidth="1.4" />
         {/* 当日买卖点: B 在下方, S 在上方, 虚线连到成交价圆点 */}
         {bsMarks.map(m => {
@@ -496,7 +496,7 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
         {!hover && (
           <text x={W - 6} y={17} fontSize="10" textAnchor="end" fontFamily="ui-monospace, monospace">
             <tspan fill={lineColor}>— 价格</tspan>
-            {hasVol && <tspan dx="10" fill="#c8a876">— 均价</tspan>}
+            {hasVol && <tspan dx="10" fill="var(--color-accent)">— 均价</tspan>}
           </text>
         )}
       </svg>

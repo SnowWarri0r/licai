@@ -102,7 +102,7 @@ function IntradayLine({ intra, metric, unit }) {
             <polyline points={line} fill="none" stroke="#e8913a" strokeWidth="1.6" />
             {hp && (
               <>
-                <line x1={x(hi)} y1={padT} x2={x(hi)} y2={H - padB} stroke="#c8a876" strokeWidth="0.8" strokeDasharray="3 2" opacity="0.6" />
+                <line x1={x(hi)} y1={padT} x2={x(hi)} y2={H - padB} stroke="var(--color-accent)" strokeWidth="0.8" strokeDasharray="3 2" opacity="0.6" />
                 <circle cx={x(hi)} cy={y(pcts[hi])} r="2.8" fill="#e8913a" stroke="#1a1a1a" strokeWidth="0.8" />
               </>
             )}

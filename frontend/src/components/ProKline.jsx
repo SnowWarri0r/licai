@@ -3,12 +3,19 @@ import { createChart, CandlestickSeries, HistogramSeries, LineSeries, CrosshairM
 import { fetchJSON, prefetchJSON } from '../hooks/useApi'
 import { MinuteChart } from './StockKlineModal'
 import SeatHistoryModal from './SeatHistoryModal'
+import { useTheme } from '../hooks/useTheme'
 
 const UP = '#cf5c5c', DOWN = '#5fa86c'   // A股 红涨绿跌
 const MA_DEFS = [
   { n: 5, c: '#e8b04a' }, { n: 10, c: '#4aa6e0' }, { n: 20, c: '#cf6bcf' },
   { n: 30, c: '#6fc0b2' }, { n: 60, c: '#9a8cf0' },
 ]
+// lightweight-charts 画在 canvas 上拿不到 CSS 变量, 深浅两套照抄 index.css 里
+// --color-text-dim / --color-border(浅色是暖纸感, 白线网格在浅底会隐形, 换深色系)。
+const CHROME = {
+  dark: { text: '#9aa0a6', grid: 'rgba(255,255,255,0.04)', border: 'rgba(255,255,255,0.08)', cross: 'rgba(200,168,118,0.5)', accent: '#c8a876' },
+  light: { text: '#7a7263', grid: 'rgba(0,0,0,0.05)', border: 'rgba(0,0,0,0.12)', cross: 'rgba(150,105,47,0.55)', accent: '#8f6530' },
+}
 
 function maLine(bars, n) {
   const out = []
@@ -106,6 +113,7 @@ class GapPrimitive {
 
 // 券商式可拖动/缩放 K线(TradingView lightweight-charts): 蜡烛 + 量能 + MA5/10/20, 滚轮缩放/拖动平移/十字光标。
 export default function ProKline({ code, days = 250, height = 460, fill = false, lhbDate = '' }) {
+  const { theme } = useTheme()
   const wrapRef = useRef(null)
   const volWrapRef = useRef(null)                  // 独立量/额副图容器
   const volChartRef = useRef(null)
@@ -158,21 +166,22 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
   // 建图(一次)
   useEffect(() => {
     if (!wrapRef.current) return
+    const c0 = CHROME[theme] || CHROME.dark
     const chart = createChart(wrapRef.current, {
       autoSize: true,
       // attributionLogo: 关掉图上那枚 TradingView 角标。许可要求的是「用户可见页面上有
       // 署名 + tradingview.com 链接」, 图上角标只是满足它的一种方式 —— 我们改成放在
       // 设置页的开源许可区(见 Settings.jsx), 所以这里可以关。别直接删了不补。
-      layout: { background: { color: 'transparent' }, textColor: '#9aa0a6', fontSize: 11,
+      layout: { background: { color: 'transparent' }, textColor: c0.text, fontSize: 11,
         attributionLogo: false,
         fontFamily: 'ui-sans-serif, system-ui, -apple-system, sans-serif' },
-      grid: { vertLines: { color: 'rgba(255,255,255,0.04)' }, horzLines: { color: 'rgba(255,255,255,0.04)' } },
+      grid: { vertLines: { color: c0.grid }, horzLines: { color: c0.grid } },
       crosshair: { mode: CrosshairMode.Normal,
-        vertLine: { color: 'rgba(200,168,118,0.5)', width: 1, style: 2 },
-        horzLine: { color: 'rgba(200,168,118,0.5)', width: 1, style: 2 } },
-      rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.08, bottom: 0.06 } },
+        vertLine: { color: c0.cross, width: 1, style: 2 },
+        horzLine: { color: c0.cross, width: 1, style: 2 } },
+      rightPriceScale: { borderColor: c0.border, scaleMargins: { top: 0.08, bottom: 0.06 } },
       // 日期轴交给下方量/额副图统一显示, 主图隐掉避免上下两条重复
-      timeScale: { borderColor: 'rgba(255,255,255,0.08)', rightOffset: 4, minBarSpacing: 1.5, visible: false },
+      timeScale: { borderColor: c0.border, rightOffset: 4, minBarSpacing: 1.5, visible: false },
     })
     chartRef.current = chart
     const candle = chart.addSeries(CandlestickSeries, {
@@ -219,16 +228,16 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
     if (volWrapRef.current) {
       volChart = createChart(volWrapRef.current, {
         autoSize: true,
-        layout: { background: { color: 'transparent' }, textColor: '#9aa0a6', fontSize: 11,
+        layout: { background: { color: 'transparent' }, textColor: c0.text, fontSize: 11,
           attributionLogo: false,
           fontFamily: 'ui-sans-serif, system-ui, -apple-system, sans-serif' },
-        grid: { vertLines: { color: 'rgba(255,255,255,0.04)' }, horzLines: { color: 'rgba(255,255,255,0.04)' } },
+        grid: { vertLines: { color: c0.grid }, horzLines: { color: c0.grid } },
         crosshair: { mode: CrosshairMode.Normal,
-          vertLine: { color: 'rgba(200,168,118,0.5)', width: 1, style: 2 },
-          horzLine: { color: 'rgba(200,168,118,0.5)', width: 1, style: 2 } },
+          vertLine: { color: c0.cross, width: 1, style: 2 },
+          horzLine: { color: c0.cross, width: 1, style: 2 } },
         // bottom 留一点: 0 刻度紧贴容器下沿会被裁掉半截(副图还要分一截高度给日期轴)
-        rightPriceScale: { borderColor: 'rgba(255,255,255,0.08)', scaleMargins: { top: 0.12, bottom: 0.10 } },
-        timeScale: { borderColor: 'rgba(255,255,255,0.08)', rightOffset: 4, minBarSpacing: 1.5,
+        rightPriceScale: { borderColor: c0.border, scaleMargins: { top: 0.12, bottom: 0.10 } },
+        timeScale: { borderColor: c0.border, rightOffset: 4, minBarSpacing: 1.5,
           visible: true, timeVisible: false },
         // 副图纵轴不给拖: 量柱看的是相对高低, 手工量程没有用处, 却一拖就退出自动量程
         // (再切「量↔额」量级差 5 个数量级, 柱子被压平)。时间轴照旧可拖可缩, 与主图同步。
@@ -327,6 +336,21 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
       chart.remove(); chartRef.current = null
     }
   }, [])
+
+  // 主题切换: 只重刷两张图的"外装"(轴文字/网格/边框/十字线), 不重建 —— 重建会连带
+  // 丢已加载的 K线/MA/量额数据, 蜡烛红绿这些语义色本来就够看, 不用跟着换。
+  useEffect(() => {
+    const c = CHROME[theme] || CHROME.dark
+    const chrome = {
+      layout: { textColor: c.text },
+      grid: { vertLines: { color: c.grid }, horzLines: { color: c.grid } },
+      crosshair: { vertLine: { color: c.cross }, horzLine: { color: c.cross } },
+      rightPriceScale: { borderColor: c.border },
+      timeScale: { borderColor: c.border },
+    }
+    chartRef.current?.applyOptions(chrome)
+    volChartRef.current?.applyOptions(chrome)
+  }, [theme])
 
   // 浮层: 拉该日分钟数据; ESC 关闭; 龙虎榜页签懒加载
   useEffect(() => {
@@ -436,7 +460,8 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
       const prevClose = bars.length >= 2 ? bars[bars.length - 2].close : null
       if (prevClose != null) {
         prevCloseLineRef.current = candle.createPriceLine({
-          price: prevClose, color: '#c8a876', lineWidth: 1, lineStyle: LineStyle.Dashed,
+          // 画在 canvas 上的价格线拿不到 CSS 变量, 这里必须给解析好的颜色字符串
+          price: prevClose, color: (CHROME[theme] || CHROME.dark).accent, lineWidth: 1, lineStyle: LineStyle.Dashed,
           axisLabelVisible: true, title: '昨收',
         })
       }
@@ -527,7 +552,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
             </span>
           : <span className="text-text-muted flex gap-2 flex-wrap items-baseline">
               {MA_DEFS.map(m => <span key={m.n} style={{ color: m.c }}>— MA{m.n}</span>)}
-              <span style={{ color: '#c8a876' }}>┄ 昨收</span>
+              <span style={{ color: 'var(--color-accent)' }}>┄ 昨收</span>
               <span>滚轮缩放 · 点蜡烛看当日分时</span>
             </span>}
       </div>
@@ -541,7 +566,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
             className="absolute z-20 text-[10.5px] font-semibold px-2 py-1 rounded-lg cursor-pointer whitespace-nowrap"
             style={{ left: Math.min(Math.max(hint.x + 8, 4), (wrapRef.current?.clientWidth || 400) - 120),
                      top: Math.max(hint.y - 34, 4),
-                     background: '#c8a876', color: '#1a1b1f',
+                     background: 'var(--color-accent)', color: '#1a1b1f',
                      boxShadow: '0 4px 14px rgba(0,0,0,0.6)' }}>
             {hint.date.slice(5)} 分时 ›
           </button>

@@ -1,8 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
 import { createChart, ColorType, CandlestickSeries } from 'lightweight-charts'
 import { fetchJSON } from '../hooks/useApi'
+import { useTheme } from '../hooks/useTheme'
+
+// lightweight-charts 画在 canvas 上, 拿不到 CSS 变量, 只能给解析好的颜色字符串;
+// 深浅两套照抄 index.css 里 --color-text-dim / --color-border 对应主题的值。
+const CHROME = {
+  dark: { text: '#958f82', border: '#2d2c38', grid: '#2d2c3820' },
+  light: { text: '#7a7263', border: '#cdbb92', grid: '#8f65301a' },
+}
 
 export default function PriceChart({ stockCode, buyZoneLow, buyZoneHigh, sellZoneLow, sellZoneHigh, recommendedBuy, recommendedSell }) {
+  const { theme } = useTheme()
   const containerRef = useRef(null)
   const chartRef = useRef(null)
   const tooltipRef = useRef(null)
@@ -12,27 +21,28 @@ export default function PriceChart({ stockCode, buyZoneLow, buyZoneHigh, sellZon
     if (!containerRef.current || !stockCode) return
 
     const container = containerRef.current
+    const c0 = CHROME[theme] || CHROME.dark
     const chart = createChart(container, {
       layout: {
         background: { type: ColorType.Solid, color: 'transparent' },
-        textColor: '#958f82',
+        textColor: c0.text,
         fontSize: 11,
         // 图上 TradingView 角标关掉, 署名改放设置页的开源许可区(见 Settings.jsx)
         attributionLogo: false,
         fontFamily: "'JetBrains Mono', monospace",
       },
       grid: {
-        vertLines: { color: '#2d2c3820' },
-        horzLines: { color: '#2d2c3820' },
+        vertLines: { color: c0.grid },
+        horzLines: { color: c0.grid },
       },
       width: container.clientWidth,
       height: 260,
       rightPriceScale: {
-        borderColor: '#2d2c38',
+        borderColor: c0.border,
         scaleMargins: { top: 0.08, bottom: 0.08 },
       },
       timeScale: {
-        borderColor: '#2d2c38',
+        borderColor: c0.border,
         timeVisible: false,
       },
       crosshair: {
@@ -132,6 +142,18 @@ export default function PriceChart({ stockCode, buyZoneLow, buyZoneHigh, sellZon
       chartRef.current = null
     }
   }, [stockCode, buyZoneLow, buyZoneHigh, sellZoneLow, sellZoneHigh, recommendedBuy, recommendedSell])
+
+  // 主题切换: 只重刷图表"外装"(轴文字/网格/边框), 不重建图表 —— 避免已加载的
+  // K线数据跟着丢; 蜡烛/买卖点这些语义色本来就红绿分明, 两套主题下都够看, 不用跟着换。
+  useEffect(() => {
+    const c = CHROME[theme] || CHROME.dark
+    chartRef.current?.applyOptions({
+      layout: { textColor: c.text },
+      grid: { vertLines: { color: c.grid }, horzLines: { color: c.grid } },
+      rightPriceScale: { borderColor: c.border },
+      timeScale: { borderColor: c.border },
+    })
+  }, [theme])
 
   return (
     <div className="relative mt-2 rounded-lg overflow-hidden border border-border-subtle bg-surface/50">

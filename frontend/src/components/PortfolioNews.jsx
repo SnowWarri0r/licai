@@ -23,7 +23,7 @@ const SOURCE_API = {
 
 // 事件类型配色(客观事件, 无方向暗示)
 const EVENT_TYPE_META = {
-  '财报披露': { color: '#c8a876' },
+  '财报披露': { color: 'var(--color-accent)' },
   '除权除息': { color: '#85a0b4' },
   '股权登记': { color: '#85a0b4' },
   '解禁':    { color: '#d4a05c' },
