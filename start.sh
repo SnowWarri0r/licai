@@ -3,10 +3,11 @@
 # 首次运行自动: 建 venv + 装 Python 依赖 / 复制 config.py / npm install + 前端构建。
 # 之后再跑, 只在依赖或前端源码变化时重做对应步骤, 否则直接起服务。
 #
-#   licai                    启动 (http://localhost:8888)  [全局命令, 见下方安装]
+#   licai                    启动 (http://localhost:8888), 端口通了自动打开浏览器  [全局命令, 见下方安装]
 #   ./start.sh               同上, 项目目录内直接跑也一样
 #   licai --rebuild-frontend 强制重新构建前端 (忽略缓存判断)
 #   licai --skip-frontend    跳过前端检查/构建 (只起后端, 用现有 static/)
+#   licai --no-open          启动后不自动打开浏览器
 #
 # 装全局命令 (一次性): ln -sf "$(pwd)/start.sh" ~/.local/bin/licai
 set -e
@@ -23,16 +24,18 @@ cd "$DIR"
 
 REBUILD_FRONTEND=0
 SKIP_FRONTEND=0
+OPEN_BROWSER=1
 for arg in "$@"; do
     case "$arg" in
         --rebuild-frontend) REBUILD_FRONTEND=1 ;;
         --skip-frontend) SKIP_FRONTEND=1 ;;
+        --no-open) OPEN_BROWSER=0 ;;
         -h|--help)
-            sed -n '2,11p' "$SRC" | sed 's/^# \{0,1\}//'
+            sed -n '2,12p' "$SRC" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
-            echo "未知参数: $arg (--rebuild-frontend / --skip-frontend / --help)" >&2
+            echo "未知参数: $arg (--rebuild-frontend / --skip-frontend / --no-open / --help)" >&2
             exit 1
             ;;
     esac
@@ -88,5 +91,15 @@ else
 fi
 
 # ── 4. 启动 ────────────────────────────────────────────
+# exec 换掉当前 shell 进程好让 Ctrl+C/信号直达 python, 之后这个脚本就不会再往下走了;
+# 所以浏览器要在 exec 之前、以后台子 shell 的形式挂上 —— 轮询端口通了(而不是傻等几秒)
+# 才 open, 不跟 python 的启动抢前台, server 没起来也不会打开一个打不开的页面。
+if [ "$OPEN_BROWSER" = "1" ] && command -v open >/dev/null 2>&1; then
+    ( for _ in $(seq 1 60); do
+        curl -sf -o /dev/null http://localhost:8888/ 2>/dev/null && { open "http://localhost:8888"; break; }
+        sleep 0.5
+      done ) &
+fi
+
 echo "[start] 启动服务 → http://localhost:8888"
 exec python run.py
