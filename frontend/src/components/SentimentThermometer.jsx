@@ -38,7 +38,7 @@ function CycleStrip() {
       <div className="flex items-baseline gap-2 mb-1">
         <span className="text-[10.5px] text-text-muted">情绪周期 · 近{n}个交易日</span>
         <span className="text-[9.5px] text-text-dim">
-          <span className="text-bear">■</span>涨停(上) <span className="text-bull">■</span>跌停(下) <span style={{ color: '#c8a876' }}>—</span>赚钱效应
+          <span className="text-bear">■</span>涨停(上) <span className="text-bull">■</span>跌停(下) <span style={{ color: 'var(--color-accent)' }}>—</span>赚钱效应
         </span>
       </div>
       <svg viewBox={`0 0 ${W} ${H}`} className="w-full block" style={{ height: 'auto' }}>
@@ -53,7 +53,7 @@ function CycleStrip() {
               <rect x={x(i) - bw / 2} y={midY - hu} width={bw} height={Math.max(hu, 0.5)} fill="#cf5c5c" opacity={op} />
               <rect x={x(i) - bw / 2} y={midY} width={bw} height={Math.max(hd, 0.5)} fill="#5fa86c" opacity={op} />
               {r.max_lb >= 4 && (
-                <text x={x(i)} y={midY - hu - 3} textAnchor="middle" fontSize="8.5" fill="#c8a876">{r.max_lb}板</text>
+                <text x={x(i)} y={midY - hu - 3} textAnchor="middle" fontSize="8.5" fill="var(--color-accent)">{r.max_lb}板</text>
               )}
               {(i === 0 || i === n - 1 || i === Math.floor(n / 2)) && (
                 <text x={x(i)} y={H - 4} textAnchor="middle" fontSize="8.5" fill="#6b7280">{r.date.slice(5)}</text>
@@ -61,7 +61,7 @@ function CycleStrip() {
             </g>
           )
         })}
-        {mePts && <polyline points={mePts} fill="none" stroke="#c8a876" strokeWidth="1.6" opacity="0.9" />}
+        {mePts && <polyline points={mePts} fill="none" stroke="var(--color-accent)" strokeWidth="1.6" opacity="0.9" />}
       </svg>
     </div>
   )

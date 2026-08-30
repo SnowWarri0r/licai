@@ -2,6 +2,15 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
+    <script>
+      // 主题偏好先同步读一遍, 赶在样式表解析/首帧渲染前挂上 data-theme, 免得
+      // 亮色用户每次刷新都先闪一下默认暗色。真正的状态管理见 src/hooks/useTheme.js。
+      try {
+        if (localStorage.getItem('licai-theme') === 'light') {
+          document.documentElement.setAttribute('data-theme', 'light')
+        }
+      } catch (e) {}
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#06080f" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
