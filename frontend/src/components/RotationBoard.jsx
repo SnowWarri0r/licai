@@ -1,8 +1,8 @@
-// 轮动板: 榜单左栏只有 420px, 九条线挤成五排小胶囊, 每个胶囊里塞名字+亿数+涨幅+涨停+箭头 ——
-// 密是密全了, 但看不出哪条粗哪条细, 更看不出走势。而右栏在没选股票时整片是空的。
-// 所以把"钱堆在哪 / 谁在接力"搬到右栏铺开: 一条线一行, 成交额给条形(粗细一眼可比),
-// 份额给迷你走势(五天的形状), 底下挂领头三只(点了直接看它的 K 线)。
-// 左栏那排胶囊留着当筛选器, 只保留名字和箭头。
+// 轮动板: 常驻榜单顶部, 可收起。
+// 走过两版: 先是挤在左栏 420px 里的一排小胶囊(密是密全了, 但哪条粗哪条细、走势如何都看不出),
+// 然后铺到右栏(看清楚了, 可一点股票就被 K 线顶掉, 想边看某只票边盯轮动只能来回切)。
+// 现在摆到顶上: 一条线一行 —— 成交额给条形(粗细一眼可比)、份额给五日迷你走势、领头三只可点,
+// 收起后留一行摘要 chip(仍然可点筛榜), 开合记在 localStorage。
 
 const pctColor = (v) => (v == null || v === 0 ? 'text-text-dim' : v > 0 ? 'text-bear-bright' : 'text-bull-bright')
 
@@ -28,7 +28,7 @@ function Spark({ series, w = 62, h = 18 }) {
   )
 }
 
-export default function RotationBoard({ scope, kind, groups, trend, hotTag,
+export default function RotationBoard({ scope, kind, groups, trend, hotTag, collapsed, onToggle,
                                         onPickTag, onKindChange, onPickStock }) {
   const rows = (groups || []).slice(0, 12)
   const maxAmt = Math.max(1, ...rows.map(g => g.amt_yi || 0))
@@ -36,15 +36,22 @@ export default function RotationBoard({ scope, kind, groups, trend, hotTag,
   const isAmt = scope === 'by_amount'
 
   return (
-    <div className="h-full flex flex-col min-h-0">
-      <div className="flex items-baseline gap-2 px-4 py-2.5 border-b border-border-subtle shrink-0">
-        <span className="text-[13px] font-semibold text-text-bright">
+    <div className="shrink-0 border-b border-border flex flex-col min-h-0">
+      <div className="flex items-baseline gap-2 px-4 py-2 shrink-0">
+        <button onClick={onToggle} title={collapsed ? '展开轮动板' : '收起, 只留一行摘要'}
+          className="text-[13px] font-semibold text-text-bright hover:text-accent flex items-baseline gap-1">
+          <span className="text-[10px] text-text-muted">{collapsed ? '▸' : '▾'}</span>
           {isAmt ? '今天的钱堆在哪条线上' : '今天涨的是哪条线'}
-        </span>
-        <span className="text-[10.5px] text-text-muted">
+        </button>
+        <span className="text-[10.5px] text-text-muted hidden md:inline">
           {isAmt ? '按成交额榜前 100 只聚' : '按涨幅榜前 100 只聚'}
           {trend?.dates?.length ? ` · 走势近 ${trend.dates.length} 日` : ''}
         </span>
+        {hotTag && (
+          <button onClick={() => onPickTag?.('')} className="text-[10px] text-accent hover:underline">
+            只看「{hotTag}」· 清除
+          </button>
+        )}
         <div className="ml-auto flex items-center gap-1">
           {['概念', '行业'].map(k => (
             <button key={k} onClick={() => onKindChange?.(k)}
@@ -52,16 +59,43 @@ export default function RotationBoard({ scope, kind, groups, trend, hotTag,
               {k}
             </button>
           ))}
+          <button onClick={onToggle}
+            className="text-[11px] px-2 py-0.5 rounded border border-transparent text-text-dim hover:text-text">
+            {collapsed ? '展开' : '收起'}
+          </button>
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto">
+      {/* 收起态: 一行摘要, 仍然可点(筛榜) —— 收起是为了省地方, 不是把功能也收走 */}
+      {collapsed && (
+        <div className="no-scrollbar flex gap-1 px-4 pb-2 overflow-x-auto whitespace-nowrap">
+          {rows.slice(0, 8).map(g => {
+            const tr = trendOf(g.name)
+            const on = hotTag === g.name
+            return (
+              <button key={g.name} onClick={() => onPickTag?.(on ? '' : g.name)}
+                title={`${g.n} 只上榜 · 合计成交 ${g.amt_yi}亿 · 均${g.avg_pct >= 0 ? '+' : ''}${g.avg_pct}%`}
+                className={`text-[10.5px] px-1.5 py-0.5 rounded shrink-0 border ${on ? 'bg-accent/20 text-accent border-accent/40' : 'bg-surface-3 text-text-dim border-transparent hover:text-text'}`}>
+                {g.name}
+                <span className="text-text-muted">{isAmt ? ` ${Math.round(g.amt_yi)}亿` : ` ${g.n}只`}</span>
+                {tr && tr.d1_share_pp != null && Math.abs(tr.d1_share_pp) >= 1 && (
+                  <span className={tr.d1_share_pp > 0 ? 'text-bear-bright' : 'text-bull-bright'}>
+                    {' '}{tr.d1_share_pp > 0 ? '↑' : '↓'}{Math.abs(tr.d1_share_pp)}
+                  </span>
+                )}
+              </button>
+            )
+          })}
+        </div>
+      )}
+
+      <div className={`min-h-0 overflow-y-auto ${collapsed ? 'hidden' : 'max-h-[30vh]'}`}>
         {rows.map(g => {
           const tr = trendOf(g.name)
           const on = hotTag === g.name
           return (
             <div key={g.name}
-              className={`px-4 py-2 border-b border-border-subtle/60 ${on ? 'bg-accent/10' : 'hover:bg-surface-3/40'}`}>
+              className={`px-4 py-1.5 border-b border-border-subtle/60 ${on ? 'bg-accent/10' : 'hover:bg-surface-3/40'}`}>
               {/* 限宽: 铺满 950px 的话名字在最左、数字在最右, 眼睛得横扫一整行才对得上 */}
               <div className="flex items-center gap-3 max-w-[720px]">
                 {/* 名字: 点一下把左边的榜筛到这条线 */}
@@ -119,7 +153,7 @@ export default function RotationBoard({ scope, kind, groups, trend, hotTag,
         })}
       </div>
 
-      <div className="shrink-0 px-4 py-1.5 border-t border-border-subtle text-[9.5px] text-text-muted leading-relaxed">
+      <div className={`shrink-0 px-4 py-1.5 border-t border-border-subtle text-[9.5px] text-text-muted leading-relaxed ${collapsed ? 'hidden' : ''}`}>
         <div>
           条形=这条线在榜上的成交额 · 曲线=它占榜单成交额的比重近几日的形状 · ↑↓=比重较上一日的变化(百分点)
           {trend?.today_partial ? ' · 今天还没收盘, 最后一格是半天的量' : ''}
