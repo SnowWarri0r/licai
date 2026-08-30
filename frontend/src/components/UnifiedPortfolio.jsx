@@ -21,7 +21,7 @@ const TYPE_META = {
 }
 // Fallback color hex for donut strokes (Tailwind arbitrary values can't use var() easily)
 const TYPE_COLOR = {
-  A: '#c8a876', // accent (sand)
+  A: 'var(--color-accent)', // accent (sand)
   F: '#85a0b4', // info (slate blue)
   W: '#5fa86c', // bull (理财稳定收益绿)
   M: '#7a9b8e', // sage teal (现金/T+0 流动性)
@@ -537,7 +537,7 @@ function ProxyPulse({ change, label, fallbackToday, details, width = 44 }) {
   const marketColor = (m) => {
     if (m === 'US') return '#85a0b4'
     if (m === 'HK') return '#5fa86c'
-    if (m === 'CN_SH' || m === 'CN_SZ') return '#c8a876'
+    if (m === 'CN_SH' || m === 'CN_SZ') return 'var(--color-accent)'
     return '#8a8378'
   }
   const tip = details && details.length > 0 ? (
@@ -1259,7 +1259,7 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
         <div className="flex gap-1.5 flex-wrap">
           {[['ALL', '全部'], ...tabTypes.map(t => [t, TYPE_META[t].label])].map(([k, l]) => {
             const active = filter === k
-            const c = k === 'ALL' ? '#c8a876' : TYPE_COLOR[k]
+            const c = k === 'ALL' ? 'var(--color-accent)' : TYPE_COLOR[k]
             return (
               <button key={k} onClick={() => setFilter(k)}
                 className="px-2.5 py-[3px] rounded-md text-[11px] border transition-colors cursor-pointer"

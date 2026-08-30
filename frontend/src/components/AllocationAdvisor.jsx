@@ -84,7 +84,7 @@ const TYPE_COLOR = {
   M:   '#7a9b8e', // sage 现金
   W:   '#5fa86c', // green 理财
   BND: '#7fb085', // 浅 green 债基
-  A:   '#c8a876', // gold A股
+  A:   'var(--color-accent)', // gold A股
   H:   '#b87a8a', // rose 港股
   U:   '#6b8eb3', // steel blue 美股
   OS:  '#8aa0b8', // 浅 steel 其它海外

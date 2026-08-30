@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useWebSocket } from './hooks/useWebSocket'
+import { useTheme } from './hooks/useTheme'
 import { api } from './hooks/useApi'
 import Header from './components/Header'
 import Sidebar from './components/Sidebar'
@@ -33,6 +34,7 @@ import AllocationAdvisor from './components/AllocationAdvisor'
 import AShareSectorGap from './components/AShareSectorGap'
 
 export default function App() {
+  const { theme, toggleTheme } = useTheme()
   const [holdings, setHoldings] = useState([])
   const [marketOpen, setMarketOpen] = useState(false)
   const [editTarget, setEditTarget] = useState(null)
@@ -98,6 +100,8 @@ export default function App() {
         lastUpdate={lastUpdate}
         onRefresh={loadPortfolio}
         onSettings={() => setView('settings')}
+        theme={theme}
+        onToggleTheme={toggleTheme}
       />
 
       <div className="flex flex-1 min-h-0">
