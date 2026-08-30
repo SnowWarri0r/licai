@@ -42,8 +42,60 @@
   --color-info: #85a0b4;
   --color-warn: #d4a05c;
 
+  --color-grid-line: #3d302610;
+  --color-top-wash: #c8a87610;
+
   --font-sans: 'Noto Sans SC', system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', 'Menlo', monospace;
+}
+
+/* === 浅色模式: 暖调米白纸感, 呼应暗色的 terracotta 基调 ===
+ * 不用 @layer/@theme 声明 (那两层的值会被 Tailwind 的层叠层压着), 这里就是
+ * 普通 CSS 规则, 优先级天然盖过 @theme 生成的那一份, 不用纠结书写顺序。
+ * 只覆盖变量值, 每个语义 token 的"角色"不变, 组件里 100+ 处 bg-surface/text-dim
+ * 这类写法不用改一行就跟着换肤。*/
+:root[data-theme='light'] {
+  --color-bg: #f6f1e8;
+  --color-bg-deeper: #ece4d3;
+  --color-surface: #fffdf9;
+  --color-surface-2: #f7f1e6;
+  --color-surface-3: #efe6d4;
+  --color-surface-raise: #e5d9c0;
+  --color-border: #e2d5b8;
+  --color-border-med: #cdbb92;
+  --color-border-strong: #b0996d;
+  --color-border-subtle: #ede3ce;
+
+  --color-text: #3a3428;
+  --color-text-bright: #1c1810;
+  --color-text-dim: #7a7263;
+  --color-text-muted: #a89d89;
+
+  --color-accent: #96692f;
+  --color-accent-2: #7d5527;
+  --color-accent-dim: #96692f22;
+  --color-accent-warm: #7d5527;
+
+  --color-bull: #2f7a3d;
+  --color-bull-bright: #1f5c2b;
+  --color-bull-bg: #2f7a3d14;
+  --color-bull-border: #2f7a3d40;
+
+  --color-bear: #b23a2c;
+  --color-bear-bright: #8c2c20;
+  --color-bear-bg: #b23a2c14;
+  --color-bear-border: #b23a2c40;
+
+  --color-signal-strong: #b23a2c;
+  --color-signal-moderate: #a06a2b;
+  --color-signal-weak: #a89d89;
+  --color-signal-closed: #cdbb92;
+
+  --color-info: #3d6478;
+  --color-warn: #a06a2b;
+
+  --color-grid-line: #6b4a2012;
+  --color-top-wash: #96692f10;
 }
 
 /* 关闭横向 overscroll 导航: K线左右拖动/双指横扫不再触发浏览器前进后退 */
@@ -65,8 +117,8 @@ body::before {
   position: fixed;
   inset: 0;
   background-image:
-    linear-gradient(#3d302610 1px, transparent 1px),
-    linear-gradient(90deg, #3d302610 1px, transparent 1px);
+    linear-gradient(var(--color-grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--color-grid-line) 1px, transparent 1px);
   background-size: 40px 40px;
   pointer-events: none;
   z-index: 0;
@@ -78,7 +130,7 @@ body::after {
   position: fixed;
   top: 0; left: 0; right: 0;
   height: 380px;
-  background: radial-gradient(ellipse 80% 50% at 50% -20%, #c8a87610, transparent);
+  background: radial-gradient(ellipse 80% 50% at 50% -20%, var(--color-top-wash), transparent);
   pointer-events: none;
   z-index: 0;
 }
