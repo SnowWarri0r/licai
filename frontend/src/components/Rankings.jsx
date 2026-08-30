@@ -320,6 +320,9 @@ export default function Rankings() {
   // 榜单是 100 只票的清单, 看不出轮动。按概念/行业聚成堆, 点一下只看那条线。
   const [tagKind, setTagKind] = useState('概念')
   const [hotTag, setHotTag] = useState('')
+  // 顶部轮动条的开合记在本地: 有人一直要看, 有人只想要那一行摘要, 别每次进来都重置
+  const [rotOpen, setRotOpen] = useState(() => localStorage.getItem('licai:rot-open') !== '0')
+  useEffect(() => { localStorage.setItem('licai:rot-open', rotOpen ? '1' : '0') }, [rotOpen])
   const [trend, setTrend] = useState(null)      // 各条线近几日的资金曲线(接力/退潮)
   const [sq, setSq] = useState('')                       // 自由查股输入
   const [sqCands, setSqCands] = useState([])             // 搜索候选
@@ -713,7 +716,16 @@ export default function Rankings() {
 
   return (
     // 高度由外层给(flex-1 吃掉滚动区剩下的), 不再自己算 100vh 减多少 —— 那个减数是估的
-    <div className="bg-surface-2 border border-border rounded-xl overflow-hidden flex flex-col lg:flex-row flex-1 min-h-[480px]">
+    <div className="bg-surface-2 border border-border rounded-xl overflow-hidden flex flex-col flex-1 min-h-[480px]">
+      {/* 轮动条: 常驻顶部, 可收起。原来它占着右栏"没选股票"那片空白, 一点股票就被 K 线顶掉,
+          想边看某只票边盯轮动只能来回切。摆到顶上之后两件事同时看得见。 */}
+      {(tab === 'gainers' || tab === 'by_amount') && groups.length > 0 && (
+        <RotationBoard scope={tab} kind={tagKind} groups={groups} trend={trend} hotTag={hotTag}
+          collapsed={!rotOpen} onToggle={() => setRotOpen(v => !v)}
+          onPickTag={setHotTag} onKindChange={(k) => { setTagKind(k); setHotTag('') }}
+          onPickStock={(s) => setSelected(s)} />
+      )}
+      <div className="flex flex-col lg:flex-row flex-1 min-h-0">
       <div className="lg:w-[420px] shrink-0 flex flex-col border-b lg:border-b-0 lg:border-r border-border min-h-0">
         <div className="flex items-center gap-1.5 px-3 py-2 border-b border-border-subtle">
           <div className="no-scrollbar flex items-center gap-1 overflow-x-auto min-w-0 flex-1">
@@ -837,67 +849,6 @@ export default function Rankings() {
             </button>
           ))}
         </div>
-
-        {/* 今日热堆(涨幅/成交额页): 榜单本身看不出轮动 —— 钱堆在哪条线上、哪条线在涨。
-            点一个只看那条线的票; 同义标签后端已并(通信技术含5G概念), 别名进 tooltip。 */}
-        {(tab === 'gainers' || tab === 'by_amount') && groups.length > 0 && (
-          <div className="px-3 py-1.5 border-b border-border-subtle shrink-0">
-            <div className="flex items-center gap-1.5 mb-1">
-              <span className="text-[9.5px] text-text-muted">{tab === 'by_amount' ? '钱堆在哪' : '涨在哪'}</span>
-              {['概念', '行业'].map(k => (
-                <button key={k} onClick={() => { setTagKind(k); setHotTag('') }}
-                  className={`text-[9.5px] px-1 rounded ${tagKind === k ? 'text-accent' : 'text-text-dim hover:text-text'}`}>
-                  {k}
-                </button>
-              ))}
-              <span className="ml-auto flex items-center gap-2">
-                {hotTag && (
-                  <button onClick={() => setHotTag('')} className="text-[9.5px] text-text-muted hover:text-text">
-                    只看「{hotTag}」· 清除
-                  </button>
-                )}
-                {/* 选了股票右栏就换成 K 线了, 给条路回轮动板 */}
-                {selected && (
-                  <button onClick={() => setSelected(null)} className="text-[9.5px] text-accent/80 hover:text-accent">
-                    看轮动 →
-                  </button>
-                )}
-              </span>
-            </div>
-            {/* 换行铺开而不是横向滚动: 一眼看到今天有几条线在跑, 才叫"看轮动" */}
-            <div className="flex flex-wrap gap-1">
-              {groups.slice(0, 9).map(g => {
-                const tr = trendOf(g.name)
-                return (
-                <button key={g.name} onClick={() => setHotTag(hotTag === g.name ? '' : g.name)}
-                  title={`${g.n} 家上榜 · 合计成交 ${g.amt_yi}亿 · 均${g.avg_pct >= 0 ? '+' : ''}${g.avg_pct}%`
-                    + `${g.limit_n ? ` · ${g.limit_n} 只涨停` : ''}`
-                    + `${(g.aliases || []).length ? `\n同义并入: ${g.aliases.join('、')}` : ''}`
-                    + `\n领头: ${(g.tops || []).map(t => `${t.name} ${t.pct >= 0 ? '+' : ''}${t.pct}%`).join(' / ')}`
-                    + (tr ? `\n\n近${tr.series.length}日这条线的成交额(亿):\n`
-                        + tr.series.map(s => `  ${s.date.slice(5)} ${Math.round(s.amt_yi)}亿 · 占榜${s.share_pct}%`).join('\n')
-                        + `\n占榜比重较上日 ${tr.d1_share_pp >= 0 ? '+' : ''}${tr.d1_share_pp}pp → ${tr.label}`
-                        + `\n(成分取今天这批票的 ${tr.basket_n}/${tr.total_n} 只, 只算全程有本地日线的)`
-                        + (trend?.today_partial ? '\n今天还没收盘, 最后一格是半天的量' : '') : '')}
-                  className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 border ${hotTag === g.name ? 'bg-accent/20 text-accent border-accent/40' : 'bg-surface-3 text-text-dim border-transparent hover:text-text'}`}>
-                  {/* 这排只当筛选器: 名字 + 一个方向。数字和走势在右边的轮动板上铺开,
-                      挤在 420px 里堆四五个数字, 结果是哪个都看不清 */}
-                  {g.name}
-                  {tr && tr.d1_share_pp != null && Math.abs(tr.d1_share_pp) >= 1 && (
-                    <span className={tr.d1_share_pp > 0 ? 'text-bear-bright' : 'text-bull-bright'}>
-                      {' '}{tr.d1_share_pp > 0 ? '↑' : '↓'}
-                    </span>
-                  )}
-                </button>
-                )
-              })}
-            </div>
-            {!trend?.rows?.length && trend?.note && (
-              // 算不出来就说为什么, 别默默不显示(涨幅榜天天换新面孔, 本地日线还没攒到)
-              <div className="text-[9px] text-text-muted mt-1">{trend.note}</div>
-            )}
-          </div>
-        )}
 
         {/* 事件类型快捷条(异动页): 组内再按具体事件细分, 带当前流内计数 */}
         {tab === 'changes' && (changes?.kinds || []).length > 0 && (
@@ -1159,17 +1110,10 @@ export default function Rankings() {
       </div>
 
       <div className="flex-1 min-h-0 min-w-0">
-        {/* 没选股票时右栏原本整片空着("点左侧任意一只股票看 K 线")。轮动铺在这儿, 一条线一行,
-            比左栏挤成一团的小胶囊看得清得多; 选了股票就还给 K 线。 */}
-        {!selected && (tab === 'gainers' || tab === 'by_amount') && groups.length > 0 ? (
-          <RotationBoard scope={tab} kind={tagKind} groups={groups} trend={trend} hotTag={hotTag}
-            onPickTag={setHotTag} onKindChange={(k) => { setTagKind(k); setHotTag('') }}
-            onPickStock={(s) => setSelected(s)} />
-        ) : (
-          <StockPanel stock={selected} watched={selected ? watchSet.has(selected.code) : false}
-            onToggleWatch={toggleWatch} groups={wlMeta.groups} onSetGroups={pickGroups}
-            myGroups={selected ? groupsOf(selected.code) : []} />
-        )}
+        <StockPanel stock={selected} watched={selected ? watchSet.has(selected.code) : false}
+          onToggleWatch={toggleWatch} groups={wlMeta.groups} onSetGroups={pickGroups}
+          myGroups={selected ? groupsOf(selected.code) : []} />
+      </div>
       </div>
     </div>
   )
