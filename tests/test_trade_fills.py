@@ -121,32 +121,34 @@ def test_fund_uses_a_finer_tick():
 
 # ── 与佣金那套的包含关系 ────────────────────────────────
 
-def test_merged_cluster_is_always_one_order_for_commission():
-    """凡被当成"一次决策"的, 必定也是佣金那套眼里的"同一张委托"(反之不然)。
+def test_review_and_commission_agree_on_what_one_order_is():
+    """复盘与佣金对"同一张委托"必须给出**同一个**答案。
 
-    两处判据各自演化就会互相打脸: 复盘说一次决策、佣金说两张委托, 同一件事两个答案。
-    这条包含关系把方向钉死 —— 收窄只能发生在本模块这一侧。
+    这两处判据各自演化过一次, 结果对同一件事给出过两个答案(8-13 沪电 09:43+09:45: 复盘算
+    一次决策、佣金算两张委托)。现在两边共用 one_order_clusters, 这条测试拿真实的两个 case
+    正反各验一遍 —— 紫光那次该合、生益那次该分, 两侧结论一致。
+
+    早先这里写的是"复盘 ⊆ 佣金"的包含关系, 靠比较 position_ledger._order_key。那个键后来
+    退化成粗键(代码+日期+方向), 于是断言变成永真 —— 换成直接比两侧的分组数。
     """
-    from services.position_ledger import _order_key
-    acts = [{"stock_code": "000938", "action_type": "BUY", "price": 34.94, "shares": 100,
-             "trade_date": "2026-08-25", "trade_time": "10:06"},
-            {"stock_code": "000938", "action_type": "ADD", "price": 34.93, "shares": 200,
-             "trade_date": "2026-08-25", "trade_time": "10:06"},
-            {"stock_code": "600183", "action_type": "ADD", "price": 148.62, "shares": 100,
-             "trade_date": "2026-09-01", "trade_time": "09:32"},
-            {"stock_code": "600183", "action_type": "BUY", "price": 148.95, "shares": 100,
-             "trade_date": "2026-09-01", "trade_time": "09:32"}]
-    trades = [{"date": a["trade_date"], "code": a["stock_code"], "kind": "buy",
-               "price": a["price"], "shares": a["shares"], "time": a["trade_time"],
-               "asset_class": "stock", "_act": a} for a in acts]
-    for m in merge_fills(trades):
-        if int(m.get("fills") or 1) < 2:
-            continue
-        members = [t for t in trades if t["code"] == m["code"] and t["date"] == m["date"]
-                   and any(abs(t["price"] - float(f["price"])) < 1e-9
-                           for f in m["fill_detail"])]
-        keys = {_order_key(t["_act"]) for t in members}
-        assert len(keys) == 1, f"{m['code']} 被合成一次决策, 但佣金那边算作 {len(keys)} 张委托"
+    from services.position_ledger import allocate_trade_fees
+    cases = [
+        # 紫光 8-25: 1 跳板同分钟 → 一张委托 / 一次决策
+        ("000938", "2026-08-25", [(34.94, 100), (34.93, 200)], 1),
+        # 生益 9-01: 33 跳板同分钟 → 两张委托 / 两次决策
+        ("600183", "2026-09-01", [(148.62, 100), (148.95, 100)], 2),
+    ]
+    for code, day, fills, want in cases:
+        trades = [{"date": day, "code": code, "kind": "buy", "price": p, "shares": s,
+                   "time": "10:06", "asset_class": "stock"} for p, s in fills]
+        assert len(merge_fills(trades)) == want, f"{code} 复盘侧分组数不符"
+        acts = [{"stock_code": code, "action_type": "BUY", "price": p, "shares": s,
+                 "trade_date": day, "trade_time": "10:06"} for p, s in fills]
+        fees = allocate_trade_fees(acts, 0.000086, 5.0)
+        # 最低佣金被收几次 = 佣金侧认为有几张委托
+        n_orders = round(sum(fees) - sum(a["price"] * a["shares"] for a in acts)
+                         * (0.00001 + 0.0000341 + 0.00002)) / 5
+        assert round(n_orders) == want, f"{code} 佣金侧算作 {n_orders} 张委托, 复盘侧 {want}"
 
 
 def test_other_stocks_untouched():
