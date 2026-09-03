@@ -212,6 +212,31 @@ CREATE TABLE IF NOT EXISTS sentiment_history (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 逐日逐只涨停档案。sentiment_history 只记「几个涨停」, 这里记「涨停的质量」:
+-- 封单额(买一挂单额, 真实盘口量) + 首次封板时刻 + 炸板次数。52 个涨停配 57 亿封单
+-- 和 52 个涨停配 20 亿封单是两个完全不同的盘, 只数一样看不出来。
+-- seal_amount 已用新浪盘口买一逐只验过(东财 49 只零偏离; 开盘啦历史 79 只与东财全等)。
+CREATE TABLE IF NOT EXISTS limit_up_pool (
+    snap_date TEXT NOT NULL,             -- YYYY-MM-DD
+    stock_code TEXT NOT NULL,
+    name TEXT,
+    seal_amount REAL,                    -- 封单额(元) = 买一量 × 买一价
+    first_seal TEXT,                     -- 首次封板 HH:MM:SS ('09:25:00'=集合竞价一字板)
+    last_seal TEXT,                      -- 最后封板 HH:MM:SS (与首封不同 = 中间开过板)
+    lb_count INTEGER,                    -- 连板数
+    broken_times INTEGER,                -- 炸板次数(仅东财有, 开盘啦那份留空)
+    zt_days INTEGER, zt_ct INTEGER,      -- N 天 M 板(仅东财)
+    industry TEXT, theme TEXT,
+    amount REAL,                         -- 成交额(元)
+    float_mv REAL,                       -- 流通市值(元, 仅东财)
+    turnover REAL,                       -- 换手%(仅东财)
+    pct REAL,                            -- 当日涨跌幅%
+    source TEXT,                         -- em(日常, 字段全) | kpl(一次性历史回填)
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (snap_date, stock_code)
+);
+CREATE INDEX IF NOT EXISTS idx_lup_date ON limit_up_pool(snap_date);
+
 CREATE TABLE IF NOT EXISTS cashflow_monthly (
     month TEXT PRIMARY KEY,             -- YYYY-MM
     income REAL DEFAULT 0,              -- 月收入(税后)
@@ -1960,5 +1985,114 @@ async def list_sentiment_history(limit: int = 60) -> list[dict]:
         rows = await cur.fetchall()
         return [{"date": r[0], "n_zt": r[1], "n_dt": r[2], "n_zb": r[3],
                  "zbl_rate": r[4], "max_lb": r[5], "money_effect": r[6]} for r in rows]
+    finally:
+        await db.close()
+
+
+_LUP_COLS = ("snap_date", "stock_code", "name", "seal_amount", "first_seal", "last_seal",
+             "lb_count", "broken_times", "zt_days", "zt_ct", "industry", "theme",
+             "amount", "float_mv", "turnover", "pct", "source")
+
+
+async def save_limit_up_pool(rows: list[dict]) -> int:
+    """写入逐只涨停档案。
+
+    **东财可以盖开盘啦, 开盘啦不许盖东财** —— 东财那份多了炸板次数/换手/流通市值/N天M板,
+    历史回填要是后跑就会把这些列刷成空。所以冲突时只在「同源」或「来源是 em」时才更新。
+    """
+    if not rows:
+        return 0
+    db = await get_db()
+    try:
+        n = 0
+        for r in rows:
+            cur = await db.execute(
+                f"INSERT INTO limit_up_pool ({','.join(_LUP_COLS)})"
+                f" VALUES ({','.join('?' * len(_LUP_COLS))})"
+                " ON CONFLICT(snap_date, stock_code) DO UPDATE SET"
+                "   name=excluded.name, seal_amount=excluded.seal_amount,"
+                "   first_seal=excluded.first_seal, last_seal=excluded.last_seal,"
+                "   lb_count=excluded.lb_count, broken_times=excluded.broken_times,"
+                "   zt_days=excluded.zt_days, zt_ct=excluded.zt_ct,"
+                "   industry=excluded.industry, theme=excluded.theme, amount=excluded.amount,"
+                "   float_mv=excluded.float_mv, turnover=excluded.turnover, pct=excluded.pct,"
+                "   source=excluded.source"
+                " WHERE excluded.source = 'em' OR limit_up_pool.source = excluded.source",
+                tuple(r.get(c) for c in _LUP_COLS))
+            n += cur.rowcount or 0
+        await db.commit()
+        return n
+    finally:
+        await db.close()
+
+
+async def get_limit_up_pool(day: str) -> list[dict]:
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            f"SELECT {','.join(_LUP_COLS)} FROM limit_up_pool WHERE snap_date = ?"
+            " ORDER BY seal_amount DESC", (day,))
+        return [dict(zip(_LUP_COLS, r)) for r in await cur.fetchall()]
+    finally:
+        await db.close()
+
+
+async def list_limit_up_days(limit: int = 60, end: str | None = None) -> list[dict]:
+    """逐日汇总: 只数 / 封单合计 / 最高连板。序列用, 不拉明细。"""
+    db = await get_db()
+    try:
+        sql = ("SELECT snap_date, COUNT(*), SUM(seal_amount), MAX(lb_count)"
+               " FROM limit_up_pool")
+        args: tuple = ()
+        if end:
+            sql += " WHERE snap_date <= ?"
+            args = (end,)
+        sql += " GROUP BY snap_date ORDER BY snap_date DESC LIMIT ?"
+        cur = await db.execute(sql, args + (limit,))
+        rows = await cur.fetchall()
+        return [{"date": r[0], "n": r[1], "seal_sum": r[2] or 0, "max_lb": r[3]}
+                for r in reversed(rows)]
+    finally:
+        await db.close()
+
+
+async def get_next_bars(codes: list[str], day: str) -> dict[str, dict]:
+    """每只票在 day **之后**第一根日线 → {代码: {date, open, close}}。
+
+    封单额兑现度回测用: 涨停发生在 day, 要看的是次日开盘接不接、收盘守不守得住。
+    严格大于 day, 所以停牌一天就顺延到复牌那根 —— 调用方按返回的 date 自己决定要不要采信。
+    """
+    if not codes:
+        return {}
+    db = await get_db()
+    try:
+        out: dict[str, dict] = {}
+        for i in range(0, len(codes), 400):
+            chunk = codes[i:i + 400]
+            q = ",".join("?" * len(chunk))
+            cur = await db.execute(
+                f"SELECT stock_code, date, open, close FROM kline_cache WHERE stock_code IN ({q})"
+                " AND date > ? ORDER BY stock_code, date", (*chunk, day))
+            for code, d, o, c in await cur.fetchall():
+                if code not in out:          # 已按 date 升序, 第一条即次日
+                    out[code] = {"date": d, "open": o, "close": c}
+        return out
+    finally:
+        await db.close()
+
+
+async def limit_up_pool_coverage() -> dict:
+    """回填进度/来源构成。凭空说"有历史"没用, 要能报出到底攒了多少天。"""
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT COUNT(DISTINCT snap_date), COUNT(*), MIN(snap_date), MAX(snap_date)"
+            " FROM limit_up_pool")
+        days, rows, lo, hi = await cur.fetchone()
+        cur = await db.execute(
+            "SELECT source, COUNT(DISTINCT snap_date) FROM limit_up_pool GROUP BY source")
+        by_src = {r[0]: r[1] for r in await cur.fetchall()}
+        return {"days": days or 0, "rows": rows or 0, "first": lo, "last": hi,
+                "days_by_source": by_src}
     finally:
         await db.close()
