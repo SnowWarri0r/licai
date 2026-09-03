@@ -193,6 +193,14 @@ async def eod_summary_loop():
                     except Exception as e:
                         print(f"[eod] 板块份额入档失败: {e}")
                     try:
+                        # 逐只涨停档案(封单额/首封时刻)。封单额是盘口快照, 盘中取到的会变,
+                        # 只有收盘后这一份才是定格值 —— 所以必须挂在收盘窗口里, 不能盘中攒。
+                        from services.limit_up_pool import sync_today
+                        lu = await sync_today()
+                        print(f"[eod] 涨停档案 {lu.get('date')} {lu.get('n')} 只 (源={lu.get('source')})")
+                    except Exception as e:
+                        print(f"[eod] 涨停档案落库失败: {e}")
+                    try:
                         # 榜单里没日线的票补一批: 概念线的资金曲线要靠它, 涨幅榜天天换新面孔
                         from services.concept_trend import warm_cache
                         w = await warm_cache()
