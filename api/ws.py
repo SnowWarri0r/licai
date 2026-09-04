@@ -201,6 +201,15 @@ async def eod_summary_loop():
                     except Exception as e:
                         print(f"[eod] 涨停档案落库失败: {e}")
                     try:
+                        # 归类层。必须排在涨停档案之后 —— 板/进/题 三个轴都是从那份档案回放的。
+                        # 钱轴(全市场成交额榜)只有"现在"能取到, 所以也只能在这儿攒。
+                        from services.stock_tags import sync_today
+                        tg = await sync_today()
+                        print(f"[eod] 归类层 {tg.get('date')} {tg.get('rows')} 行 "
+                              f"(涨停 {tg.get('涨停')} / 钱轴 {tg.get('钱轴')})")
+                    except Exception as e:
+                        print(f"[eod] 归类层失败: {e}")
+                    try:
                         # 榜单里没日线的票补一批: 概念线的资金曲线要靠它, 涨幅榜天天换新面孔
                         from services.concept_trend import warm_cache
                         w = await warm_cache()

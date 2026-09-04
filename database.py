@@ -237,6 +237,41 @@ CREATE TABLE IF NOT EXISTS limit_up_pool (
 );
 CREATE INDEX IF NOT EXISTS idx_lup_date ON limit_up_pool(snap_date);
 
+-- 归类层: 日期 × 代码 × 各轴的格子。归类跑一次落这儿, 所有面板与 agent 读同一份。
+--
+-- 为什么要单独一层: 项目里原来有**五套各自为政**的归类(concept_tags 概念 / market_review
+-- 行业+概念 / limit_up_pool 行业+题材 / sector_share 行业 / concept_trend 概念), 维度不统一
+-- 且一处都没落库 —— 同一只票在五个面板里可能落进五个不同名字, 也没法问"它昨天在哪个格子里"。
+-- 有了这一层才能问格子之间的**迁移**(首板→二连板转化率、钱从哪个题材挪到哪个)。
+--
+-- 为什么不并进 limit_up_pool: 「资金归类」是全市场成交额前 N, **不看是否涨停** —— 一只票
+-- 可以在钱轴上有格子而当天没涨停, 涨停档案装不下它。
+--
+-- 各轴的覆盖不一样, 别当成一样齐: 板/进/题 覆盖 244 天涨停股全量(从涨停档案回放);
+-- 钱轴只有当日榜单能给, 历史那 244 天拉不到全市场成交额排名(kline_cache 只有 31% 代码,
+-- 拿它排会排出一个假榜), 所以历史留空、从落这层之后每天收盘攒。
+CREATE TABLE IF NOT EXISTS stock_tag (
+    snap_date TEXT NOT NULL,
+    stock_code TEXT NOT NULL,
+    name TEXT,
+    -- 板: 当日连板数(1=首板)。NULL = 当日没涨停(它可能只是钱轴上榜)
+    lb_count INTEGER,
+    -- 进: 我方口径的「N天M板」= 断 ≤2 个交易日 + 回溯 20 日。
+    -- 与东财 zttj 在 1065 行标注上完全命中 95.3%, 「是不是新面孔」这一项 97.8%
+    -- (只看 lb_count 是 90.8%)。失败方向单一: 我们**少算**, 会把少数高位老票读成新面孔。
+    jj_days INTEGER, jj_boards INTEGER,
+    -- 1 = 回溯窗口撞到档案起点, 这一格的 进 不可信(档案最早 20 个交易日会这样)
+    jj_partial INTEGER DEFAULT 0,
+    -- 钱: 全市场成交额位次(1=最高)与成交额(元)。不看是否涨停
+    amt_rank INTEGER, amt REAL,
+    -- 题: 统一后的题材/行业, 一套口径
+    theme TEXT, industry TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (snap_date, stock_code)
+);
+CREATE INDEX IF NOT EXISTS idx_tag_date ON stock_tag(snap_date);
+CREATE INDEX IF NOT EXISTS idx_tag_code ON stock_tag(stock_code);
+
 CREATE TABLE IF NOT EXISTS cashflow_monthly (
     month TEXT PRIMARY KEY,             -- YYYY-MM
     income REAL DEFAULT 0,              -- 月收入(税后)
@@ -2077,6 +2112,70 @@ async def get_next_bars(codes: list[str], day: str) -> dict[str, dict]:
                 if code not in out:          # 已按 date 升序, 第一条即次日
                     out[code] = {"date": d, "open": o, "close": c}
         return out
+    finally:
+        await db.close()
+
+
+_TAG_COLS = ("snap_date", "stock_code", "name", "lb_count", "jj_days", "jj_boards",
+             "jj_partial", "amt_rank", "amt", "theme", "industry")
+
+
+async def save_stock_tags(rows: list[dict]) -> int:
+    """写归类层。整行覆盖(归类是纯派生的, 重跑就该得到同一结果)。"""
+    if not rows:
+        return 0
+    db = await get_db()
+    try:
+        await db.executemany(
+            f"INSERT OR REPLACE INTO stock_tag ({','.join(_TAG_COLS)})"
+            f" VALUES ({','.join('?' * len(_TAG_COLS))})",
+            [tuple(r.get(c) for c in _TAG_COLS) for r in rows])
+        await db.commit()
+        return len(rows)
+    finally:
+        await db.close()
+
+
+async def get_stock_tags(day: str) -> list[dict]:
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            f"SELECT {','.join(_TAG_COLS)} FROM stock_tag WHERE snap_date = ?"
+            " ORDER BY lb_count DESC, amt_rank IS NULL, amt_rank", (day,))
+        return [dict(zip(_TAG_COLS, r)) for r in await cur.fetchall()]
+    finally:
+        await db.close()
+
+
+async def get_tag_dates(limit: int = 400) -> list[str]:
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT DISTINCT snap_date FROM stock_tag ORDER BY snap_date DESC LIMIT ?", (limit,))
+        return [r[0] for r in reversed(await cur.fetchall())]
+    finally:
+        await db.close()
+
+
+async def stock_tag_coverage() -> dict:
+    """各轴各自覆盖多少天 —— 钱轴天生比板轴少, 报出来别让人以为一样齐。"""
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT COUNT(DISTINCT snap_date), COUNT(*),"
+            " SUM(CASE WHEN lb_count IS NOT NULL THEN 1 ELSE 0 END),"
+            " SUM(CASE WHEN jj_boards IS NOT NULL THEN 1 ELSE 0 END),"
+            " SUM(CASE WHEN jj_partial = 1 THEN 1 ELSE 0 END),"
+            " SUM(CASE WHEN amt_rank IS NOT NULL THEN 1 ELSE 0 END),"
+            " SUM(CASE WHEN theme IS NOT NULL OR industry IS NOT NULL THEN 1 ELSE 0 END),"
+            " MIN(snap_date), MAX(snap_date) FROM stock_tag")
+        d, n, lb, jj, part, amt, th, lo, hi = await cur.fetchone()
+        cur = await db.execute(
+            "SELECT COUNT(DISTINCT snap_date) FROM stock_tag WHERE amt_rank IS NOT NULL")
+        amt_days = (await cur.fetchone())[0]
+        return {"days": d or 0, "rows": n or 0, "first": lo, "last": hi,
+                "板": lb or 0, "进": jj or 0, "进_窗口不全": part or 0,
+                "钱": amt or 0, "钱_天数": amt_days or 0, "题": th or 0}
     finally:
         await db.close()
 
