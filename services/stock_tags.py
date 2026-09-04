@@ -312,5 +312,140 @@ async def pools(day: str | None = None, *, with_quotes: bool = True) -> dict:
                      "纯客观数据, 不构成买卖建议。")}
 
 
+# 分池兑现率的池子定义。判据只用板轴与进轴, 不含价格 —— 分池本身不能被结果污染。
+_POOL_DEFS = (
+    ("首板", lambda r: (r["jj_boards"] or 0) == 1),
+    ("反复板", lambda r: (r["lb_count"] or 0) == 1 and (r["jj_boards"] or 0) > 1),
+    ("2连板", lambda r: (r["lb_count"] or 0) == 2),
+    ("3板及以上", lambda r: (r["lb_count"] or 0) >= 3),
+)
+_MIN_SAMPLE = 60          # 每池最少样本; 不够就不给数
+_MIN_COVERAGE = 0.5       # 次日行情覆盖率闸门
+
+
+async def pool_backtest(days: int = 300, *, min_sample: int = _MIN_SAMPLE) -> dict:
+    """逐日回放全部归类日, 算各池的**次日兑现度**。
+
+    这是股池那三栏的历史版: 单日那点样本(28/9/7 只)说明不了任何事, 只有把 245 天摊开
+    才知道"首板接力亏钱、高位反复板更亏"是规律还是那天的偶然。
+
+    兑现怎么量: 以涨停日收盘为基准(打板买进去成本就在那儿), 看次日**开盘溢价**与
+    **收盘涨跌**。开盘高、收盘还守得住才叫接住了; 高开低走是把排队的人抬出去。
+
+    **两条自我约束**(上一轮 seal_backtest 的教训: 单调关系可能只是别的东西的影子):
+      1. 覆盖率闸门 —— 次日行情来自本地 kline_cache, 缺的整只剔除。覆盖率低于 50% 时
+         整张表标 可用=false; 涨停股大多不是我们持仓的票, 覆盖率天生要盯着。
+      2. **同期基准对照** —— 首板池次日平均 +2% 听着不错, 可要是那天全市场都涨 2%,
+         这个数什么也没说明。所以每一天都算"当天所有涨停股次日收益的均值"作基准,
+         各池报的是**超出基准多少**(excess)。没有这一列, 池子之间的差异会被市场
+         整体的涨跌淹没。
+    """
+    dates = await get_tag_dates(limit=days)
+    if not dates:
+        # warning 键要一直在: 调用方拿它判断"这张表能不能信", 少一条路径就会 KeyError
+        return {"可用": False, "覆盖率%": 0, "分池": [],
+                "note": "还没有归类数据", "warning": "还没有归类数据"}
+    from database import get_next_bars, get_cached_closes
+    from services.market_review import _limit_pct
+
+    def _blank():
+        return {name: {"n": 0, "open": 0.0, "close": 0.0, "win": 0, "excess": 0.0}
+                for name, _ in _POOL_DEFS}
+
+    acc, acc10 = _blank(), _blank()          # 全样本 / 只主板(±10%)
+    comp = {name: {} for name, _ in _POOL_DEFS}
+    total = covered = 0
+    day_used = 0
+    for day in dates:
+        rows = [r for r in await get_stock_tags(day) if r["lb_count"]]
+        if not rows:
+            continue
+        codes = [r["stock_code"] for r in rows]
+        base = await get_cached_closes(codes, day)
+        nxt = await get_next_bars(codes, day)
+        got = []
+        for r in rows:
+            total += 1
+            b, nb = base.get(r["stock_code"]), nxt.get(r["stock_code"])
+            if not b or not nb or not nb.get("open") or not nb.get("close"):
+                continue
+            covered += 1
+            got.append((r, (nb["open"] - b) / b * 100, (nb["close"] - b) / b * 100,
+                        _limit_pct(r["stock_code"], r["name"] or "")))
+        if not got:
+            continue
+        day_used += 1
+        bench = sum(c for _, _, c, _ in got) / len(got)   # 当天全部涨停股的次日收益均值
+        main = [(r, op, cl) for r, op, cl, lp in got if lp == 10.0]
+        bench10 = (sum(c for _, _, c in main) / len(main)) if main else None
+        for name, pred in _POOL_DEFS:
+            for r, op, cl, lp in got:
+                if not pred(r):
+                    continue
+                a = acc[name]
+                a["n"] += 1; a["open"] += op; a["close"] += cl
+                a["excess"] += cl - bench
+                a["win"] += 1 if cl > 0 else 0
+                k = f"{lp:.0f}%"
+                comp[name][k] = comp[name].get(k, 0) + 1
+            if bench10 is None:
+                continue
+            for r, op, cl in main:
+                if not pred(r):
+                    continue
+                a = acc10[name]
+                a["n"] += 1; a["open"] += op; a["close"] += cl
+                a["excess"] += cl - bench10
+                a["win"] += 1 if cl > 0 else 0
+
+    def _table(store):
+        rows_ = []
+        for name, _ in _POOL_DEFS:
+            a = store[name]
+            if a["n"] < min_sample:
+                rows_.append({"池": name, "样本": a["n"], "结论": "样本不足, 不给数"})
+                continue
+            n = a["n"]
+            rows_.append({"池": name, "样本": n,
+                          "次日开盘溢价%": round(a["open"] / n, 2),
+                          "次日收盘涨跌%": round(a["close"] / n, 2),
+                          "超出同日涨停均值pp": round(a["excess"] / n, 2),
+                          "次日收红率%": round(a["win"] / n * 100, 1)})
+        return rows_
+
+    out, out10 = _table(acc), _table(acc10)
+
+    def _rank(tbl):
+        ok = [x for x in tbl if "超出同日涨停均值pp" in x]
+        return [x["池"] for x in sorted(ok, key=lambda x: -x["超出同日涨停均值pp"])]
+
+    # 幅度对照: 创业/科创±20%、北交±30% 的票天生能走更远, 若高板池里塞了更多这类票,
+    # "板越高次日越强"就只是幅度上限不同的机械结果。所以只取主板(±10%)重算一遍,
+    # 排序一致才算不是幅度红利。实测构成恰好反着来 —— 首板池 20%/30% 占 14.3%、
+    # 3板及以上只占 2.5%, 所以受益的本该是首板; 限主板后排序不变。
+    width_ok = bool(_rank(out)) and _rank(out) == _rank(out10)
+    cov = round(covered / total * 100, 1) if total else 0
+    return {"可用": cov >= _MIN_COVERAGE * 100, "归类日": len(dates), "参与统计的天数": day_used,
+            "涨停样本": total, "有次日行情的": covered, "覆盖率%": cov, "分池": out,
+            "幅度构成": {k: {kk: round(100 * vv / max(sum(v.values()), 1), 1)
+                             for kk, vv in sorted(v.items())} for k, v in comp.items()},
+            "只看主板": out10, "幅度对照通过": width_ok,
+            "口径": ("基准=涨停日收盘, 次日行情取本地 kline_cache(前复权), 缺的整只剔除。"
+                     "分池只用板轴与进轴(不含价格), 池子本身不会被结果污染。"
+                     "『超出同日涨停均值pp』是关键列: 各池当日收益减去当天所有涨停股的次日收益"
+                     "均值 —— 没有它, 池子间差异会被市场整体涨跌淹没(首板 +2% 在全市场涨 2% 的"
+                     "日子里等于零信息)。『只看主板』是幅度对照: 创业/科创±20%、北交±30% 天生能"
+                     "走更远, 只取±10%的主板票重算一遍, 排序一致(幅度对照通过=true)才说明不是"
+                     "幅度上限造成的机械结果; false 时『板越高次日越强』这句不成立。"
+                     "⚠ 高板池天生带**生存者偏差**: 3板的票是已经通过两次接力筛选剩下的, 所以这"
+                     "不是『买高板更好』, 只是『已经连上去的那批次日更强』——事前挑不出来。"
+                     "另: 四个池次日开盘溢价一律高于收盘涨跌(如 3板 +3.87 vs +3.36), 说明高开"
+                     "低走是常态。首板/反复板按自算的 进 轴分, 该口径命中率 97.8%, "
+                     f"会把少数高位老票读成新面孔。覆盖率<{int(_MIN_COVERAGE*100)}% 时 可用=false。"
+                     "客观统计, 不构成买卖建议。"),
+            "warning": (None if cov >= _MIN_COVERAGE * 100
+                        else f"覆盖率仅 {cov}%, 样本不足以代表全市场")}
+
+
 async def coverage() -> dict:
     return await stock_tag_coverage()
