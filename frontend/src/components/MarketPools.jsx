@@ -78,9 +78,12 @@ export default function MarketPools({ onPick }) {
     current_price: x.现价, price_change_pct: x.今日涨幅,
   }))
 
+  const [bt, setBt] = useState(null)
+
   useEffect(() => {
     fetchJSON('/api/market/pools').then(setD).catch(e => setErr(String(e)))
     fetchJSON('/api/market/ladder-migration').then(setMig).catch(() => {})
+    fetchJSON('/api/market/pool-backtest').then(setBt).catch(() => {})
   }, [])
 
   if (err) return null
@@ -136,6 +139,50 @@ export default function MarketPools({ onPick }) {
                 <div className="text-right font-mono text-text-muted py-[3px]">{r.掉出后两日内反包}</div>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* 历史均值: 单日那 28/9/7 只说明不了任何事, 这栏是判断今天算大还是算小的标尺。
+          「超额」列减掉了当天全市场涨停股的平均次日收益 —— 大盘涨的日子每个池都好看。 */}
+      {bt?.可用 && (
+        <div className="mt-4 pt-3 border-t border-border-subtle">
+          <div className="text-[11.5px] text-text-bright mb-1.5">
+            历史分池 · 次日兑现
+            <span className="text-[10px] text-text-muted ml-2">
+              回放 {bt.参与统计的天数} 个交易日 · 覆盖率 {bt['覆盖率%']}%
+              {bt.幅度对照通过 ? ' · 幅度对照已过' : ' · 幅度对照未过, 别当结论'}
+            </span>
+          </div>
+          <div className="grid grid-cols-[auto_auto_auto_auto_auto] gap-x-4 text-[11px] items-center">
+            <div className="text-[10px] text-text-muted pb-1">池</div>
+            <div className="text-[10px] text-text-muted pb-1 text-right">样本</div>
+            <div className="text-[10px] text-text-muted pb-1 text-right" title="次日开盘相对涨停日收盘">次日开盘</div>
+            <div className="text-[10px] text-text-muted pb-1 text-right" title="次日收盘相对涨停日收盘">次日收盘</div>
+            <div className="text-[10px] text-text-muted pb-1 text-right"
+              title="减去当天全市场涨停股的平均次日收益。没有这一列, 池子间差异会被大盘涨跌淹没">超额pp</div>
+            {bt.分池.map(x => (
+              <div key={x.池} className="contents">
+                <div className="text-text py-[3px]">{x.池}</div>
+                <div className="text-right font-mono text-text-muted py-[3px]">{x.样本}</div>
+                {x.结论 ? (
+                  <div className="col-span-3 text-right text-[10px] text-text-dim py-[3px]">{x.结论}</div>
+                ) : (
+                  <>
+                    <div className={`text-right font-mono py-[3px] ${pctCls(x['次日开盘溢价%'])}`}>{fmt(x['次日开盘溢价%'])}</div>
+                    <div className={`text-right font-mono py-[3px] ${pctCls(x['次日收盘涨跌%'])}`}>{fmt(x['次日收盘涨跌%'])}</div>
+                    <div className={`text-right font-mono py-[3px] ${pctCls(x['超出同日涨停均值pp'])}`}>
+                      {x['超出同日涨停均值pp'] > 0 ? '+' : ''}{x['超出同日涨停均值pp']}
+                    </div>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+          <div className="mt-1.5 text-[9.5px] text-text-muted leading-relaxed">
+            「超额pp」才是能比的那一列: 减掉了当天全市场涨停股的平均次日收益 —— 首板 +1.46% 在大盘也涨的日子里等于零信息。
+            四个池的次日开盘一律高于收盘, 说明高开低走是常态。
+            ⚠ 高板池带生存者偏差: 3板的票是已经通过两次接力筛选剩下的, 只能说"已经连上去的那批次日更强", 事前挑不出来。
           </div>
         </div>
       )}

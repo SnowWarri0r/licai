@@ -1258,3 +1258,10 @@ async def market_ladder_migration(date: str = ""):
             return {"可用": False, "note": "还没有归类数据"}
         date = ds[-1]
     return await migration(date)
+
+
+@router.get("/pool-backtest")
+async def market_pool_backtest(days: int = 300):
+    """各股池的次日兑现度(245 个归类日回放): 含同日基准超额与幅度对照。"""
+    from services.stock_tags import pool_backtest
+    return await pool_backtest(days)
