@@ -2796,6 +2796,18 @@ async def _tool_market_sentiment() -> dict:
     try:
         from api.market_routes import market_sentiment
         s = await market_sentiment()
+        # 涨停的"质量": 原来只有 n_zt 这个只数, 52 个涨停配 57 亿封单和配 20 亿封单看不出区别。
+        # 封单额=买一挂单额(真实盘口的量), 收盘定格。取不到就整块省掉, 不给半截数字。
+        quality = None
+        try:
+            from services.limit_up_pool import quality as _lup_quality
+            d = str(s.get("date") or "")          # market_sentiment 给的是 20260902, 档案按 YYYY-MM-DD 存
+            iso = f"{d[:4]}-{d[4:6]}-{d[6:8]}" if len(d) == 8 and d.isdigit() else d
+            q = await _lup_quality(iso)
+            if q.get("有档案"):
+                quality = q
+        except Exception:
+            quality = None
         return {"统计交易日": s.get("date_cn") or s.get("date"),
                 "mood": s.get("mood"), "mood_desc": s.get("mood_desc"),
                 "n_zt": s.get("n_zt"), "n_dt": s.get("n_dt"), "zbl_rate": s.get("zbl_rate"),
@@ -2805,11 +2817,14 @@ async def _tool_market_sentiment() -> dict:
                 "涨跌分布": ({"统计日": s["zdfb"].get("qdate"),
                           "分布": {b["档"]: b["家数"] for b in s["zdfb"].get("bins") or []}}
                          if s.get("zdfb") else None),
+                "涨停质量": quality,
                 "note": "涨停/连板/炸板等指标属于 统计交易日 这一天; money_effect=上一交易日涨停的票在统计交易日的平均涨幅。"
                         "落笔时间一律用统计交易日的具体日期(带星期), 相对词(今天/昨天)按它换算。"
                         "涨跌家数(全市场+沪/深/北分市场)是调用时点的最新快照: 交易时段=此刻盘中实况, 收盘后或休市日=最近收盘的定格, 按此措辞引用。"
                         "涨跌分布=沪深两市每1%一档的家数直方图(不含北交所), 同为实时快照; ±档覆盖各自区间, 涨跌停的票按实际涨跌幅落档"
-                        "(主板±10%在±10档, 创业/科创±20%在 涨>10%/跌>10% 档), 可用来说'跌是集中在-3%~-5%还是大面积深跌'这类结构。"}
+                        "(主板±10%在±10档, 创业/科创±20%在 涨>10%/跌>10% 档), 可用来说'跌是集中在-3%~-5%还是大面积深跌'这类结构。"
+                        "涨停质量=逐只涨停的封单额(买一挂单额, 真实盘口量)聚合: 只数一样但封单合计差一倍就是两个盘, "
+                        "描述打板情绪强弱时以它为主、只数为辅; 一字板多=共识硬, 尾盘才封多+开过板多=分歧大。为 null 表示那天还没落档, 此时别就封单下结论。"}
     except Exception as e:
         return {"error": str(e)}
 
@@ -2909,7 +2924,7 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"min_pct": {"type": "number", "description": "可选, 只看占总资产 ≥ 这个百分比的标的, 默认 0.5"}, "as_of": {"type": "string", "description": "可选, YYYY-MM-DD; 回看那天的持仓结构, 留空=当下"}}}},
     {"name": "get_trades", "description": "查用户成交记录(含个股/场内ETF/场外基金): 传 code→该标的买卖/加减仓/分红或申赎流水(A股另给综合成本/已实现盈亏/持有天数, 同日有买有卖=做T); 不传→最近全部成交(三类合并)。可用 start/end(YYYY-MM-DD)按成交日期筛区间('这周/6月/上个月'自己换算成日期传)。回答'我什么时候买的、成本多少、做过几次T、这票赚没赚、持有多久、最近/某段时间交易了啥、哪些买入是定投'时用(定投计划自动买入的行带 来源=定投)。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选; 留空看全部"}, "start": {"type": "string", "description": "可选, 起始日 YYYY-MM-DD"}, "end": {"type": "string", "description": "可选, 截止日 YYYY-MM-DD"}}}},
-    {"name": "get_market_sentiment", "description": "查大盘打板情绪(涨停数/连板高度/炸板率/赚钱效应/热点板块)、全市场涨跌家数(几家上涨几家下跌, 含沪/深/北分市场)和涨跌分布直方图(每1%一档的家数, 看下跌集中在哪个深度), 回答'今天普跌吗/多少家在跌/跌得有多深/赚钱效应', 判断是个股原因还是大盘普涨普跌; 也用于判断市场风格(打板赚钱效应高=追涨/动量有效; 炸板率高+亏钱效应=高位分歧/反转)。",
+    {"name": "get_market_sentiment", "description": "查大盘打板情绪(涨停数/连板高度/炸板率/赚钱效应/热点板块)、全市场涨跌家数(几家上涨几家下跌, 含沪/深/北分市场)和涨跌分布直方图(每1%一档的家数, 看下跌集中在哪个深度), 回答'今天普跌吗/多少家在跌/跌得有多深/赚钱效应', 判断是个股原因还是大盘普涨普跌; 也用于判断市场风格(打板赚钱效应高=追涨/动量有效; 炸板率高+亏钱效应=高位分歧/反转)。另带 涨停质量: 逐只涨停的封单额(=买一挂单额, 真实盘口量)聚合出封单合计/中位数/一字板只数/尾盘才封只数/开过板只数/封单最厚前五/封单扎堆行业 —— 只数只告诉你有多少票涨停, 封单额才告诉你那些涨停有多硬(同样52个涨停, 57亿封单和20亿封单是两个盘)。问'今天打板情绪强不强/涨停结实吗/封单怎么样/情绪比昨天好还是差'时看这一块。",
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_etf_xray", "description": "ETF 题材透视(避雷): 用基金季报真实成分股对照名称宣称的主题, 给出 主题匹配权重%/警示(贴题·有偏离·偏离显著)/行业分布/前十大成分(逐只标贴题与否)。query 传主题词(如 红利/家电/半导体)时 = 找该主题规模最大的前5只逐只透视(只看大规模的, 小盘ETF流动性差); 传6位基金代码 = 透视这一只; 留空 = 透视用户在持的全部场内ETF。回答'这只ETF名不副实吗/XX主题买哪只ETF靠谱/我的ETF成分是啥/有没有挂羊头卖狗肉'时用。宽基/风格类(红利等)会标注行业口径不适用, 看行业分布与成分即可。数据=季报(滞后一季度), 表述时注明。",
      "input_schema": {"type": "object", "properties": {"query": {"type": "string", "description": "主题词(红利/半导体) 或 6位基金代码; 留空=在持场内ETF"}}}},
