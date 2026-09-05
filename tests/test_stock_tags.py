@@ -203,6 +203,131 @@ def test_migration_needs_no_price_data(temp_db):
     assert m[2]["上日只数"] == 1 and m[2]["今日仍涨停"] == 0
 
 
+# ── 分池兑现率 ──────────────────────────────────────────
+
+def _seed_two_days(path, spec, nxt_ret):
+    """spec: [(code, lb_count, 是否前一波涨停过)]; nxt_ret: {code: 次日收盘涨跌%}"""
+    rows = []
+    for code, lb, repeat in spec:
+        if repeat:                                  # 前一波留个涨停日, 让 进 轴数出 M>1
+            rows.append(("2026-08-04", code, code, 1, 1e8))
+        rows.append(("2026-08-06", code, code, lb, 1e8))
+    _seed_pool(path, rows)
+    bars = []
+    for code, _, _ in spec:
+        r = nxt_ret[code]
+        bars += [(code, "2026-08-06", 10.0, 10.0),
+                 (code, "2026-08-07", 10.0, 10.0 * (1 + r / 100))]
+    con = sqlite3.connect(path)
+    try:
+        con.executemany(
+            "INSERT INTO kline_cache (stock_code, date, open, high, low, close, volume, amount)"
+            " VALUES (?,?,?,?,?,?,1,1)",
+            [(c, d, o, max(o, cl), min(o, cl), cl) for c, d, o, cl in bars])
+        con.commit()
+    finally:
+        con.close()
+
+
+def test_backtest_benchmark_column_cancels_a_marketwide_move(temp_db):
+    """全市场涨停股次日**一律** +5% 时, 各池的"超出同日涨停均值"必须是 0。
+
+    没有这一列, 那天所有池子都会报"次日 +5%", 看起来像池子有优势 —— 实际是市场给的。
+    这是本函数最重要的一条: 上一轮 seal_backtest 就是差了对照, 单调关系差点被当成结论。
+    """
+    from services.stock_tags import rebuild, pool_backtest
+    spec = ([(f"60{i:04d}", 1, False) for i in range(70)]
+            + [(f"61{i:04d}", 2, True) for i in range(70)])
+    _seed_two_days(temp_db, spec, {c: 5.0 for c, _, _ in spec})
+    asyncio.run(rebuild())
+    r = asyncio.run(pool_backtest(min_sample=10))
+    scored = [x for x in r["分池"] if "次日收盘涨跌%" in x]
+    assert scored, "应该有池子拿到分数"
+    for x in scored:
+        assert abs(x["次日收盘涨跌%"] - 5.0) < 0.01          # 原始收益确实是 +5%
+        assert abs(x["超出同日涨停均值pp"]) < 0.01           # 但相对同日基准是 0
+
+
+def test_backtest_benchmark_keeps_a_real_edge(temp_db):
+    """基准列不能把真实差异也抹掉: 2连板 +8%、首板 0% 时, 前者必须报出正的超额。"""
+    from services.stock_tags import rebuild, pool_backtest
+    spec = ([(f"60{i:04d}", 1, False) for i in range(70)]
+            + [(f"61{i:04d}", 2, True) for i in range(70)])
+    ret = {c: (0.0 if lb == 1 else 8.0) for c, lb, _ in spec}
+    _seed_two_days(temp_db, spec, ret)
+    asyncio.run(rebuild())
+    r = asyncio.run(pool_backtest(min_sample=10))
+    by = {x["池"]: x for x in r["分池"]}
+    assert by["2连板"]["超出同日涨停均值pp"] > 3
+    assert by["首板"]["超出同日涨停均值pp"] < -3
+
+
+def test_backtest_reports_width_control_failure(temp_db):
+    """「板越高次日越强」有可能只是高板池里塞了更多 ±20% 幅度的票。
+
+    这里造一份反过来的数据: 首板池里全是创业板(300xxx, ±20%)且次日大涨, 2连板池全是
+    主板(±10%)且次日小涨。全样本会看到"首板更强", 但只取主板重算时首板一只都不剩 ——
+    排序对不上, 幅度对照必须报 false, 而不是把那个结论端出去。
+    """
+    from services.stock_tags import rebuild, pool_backtest
+    spec = ([(f"30{i:04d}", 1, False) for i in range(70)]          # 创业板, 首板
+            + [(f"60{i:04d}", 2, True) for i in range(70)])        # 主板, 2连板
+    ret = {c: (9.0 if c.startswith("30") else 1.0) for c, _, _ in spec}
+    _seed_two_days(temp_db, spec, ret)
+    asyncio.run(rebuild())
+    r = asyncio.run(pool_backtest(min_sample=10))
+    full = {x["池"]: x for x in r["分池"] if "超出同日涨停均值pp" in x}
+    assert full["首板"]["超出同日涨停均值pp"] > 0        # 全样本里首板看着更强
+    assert r["幅度对照通过"] is False                    # 但限主板后排序变了, 自己报不通过
+    assert r["幅度构成"]["首板"]["20%"] == 100.0
+
+
+def test_backtest_gates_itself_on_thin_coverage(temp_db):
+    """涨停股大多不是我们持仓的票, 本地日线天生缺 —— 覆盖率不够就必须自己标 可用=false。"""
+    from services.stock_tags import rebuild, pool_backtest
+    _seed_pool(temp_db, [("2026-08-06", f"60{i:04d}", "x", 1, 1e8) for i in range(100)])
+    con = sqlite3.connect(temp_db)
+    con.executemany("INSERT INTO kline_cache (stock_code, date, open, high, low, close, volume,"
+                    " amount) VALUES (?,?,10,10,10,10,1,1)",
+                    [("600000", "2026-08-06"), ("600000", "2026-08-07")])
+    con.commit(); con.close()
+    asyncio.run(rebuild())
+    r = asyncio.run(pool_backtest())
+    assert r["可用"] is False and r["warning"]
+    assert r["覆盖率%"] < 50
+
+
+def test_backtest_pools_are_split_by_axes_not_price(temp_db):
+    """分池只看板轴/进轴。若掺进价格, 池子就被结果污染了(拿次日涨幅分池再算次日涨幅)。
+
+    这里两只票次日收益天差地别(+10% 与 -10%), 但同属首板 —— 必须落进同一个池。
+    """
+    from services.stock_tags import rebuild, pool_backtest
+    spec = [(f"60{i:04d}", 1, False) for i in range(80)]
+    ret = {c: (10.0 if i % 2 == 0 else -10.0) for i, (c, _, _) in enumerate(spec)}
+    _seed_two_days(temp_db, spec, ret)
+    asyncio.run(rebuild())
+    r = asyncio.run(pool_backtest(min_sample=10))
+    by = {x["池"]: x for x in r["分池"]}
+    assert by["首板"]["样本"] == 80                       # 一只都没被价格挑走
+    assert abs(by["首板"]["次日收盘涨跌%"]) < 0.01        # 正负对冲
+    assert by["首板"]["次日收红率%"] == 50.0
+
+
+def test_backtest_separates_fresh_from_repeat(temp_db):
+    """首板与反复板要分开: 连板数都是 1, 但一批是新面孔、一批这波已涨停过。"""
+    from services.stock_tags import rebuild, pool_backtest
+    spec = ([(f"60{i:04d}", 1, False) for i in range(70)]
+            + [(f"61{i:04d}", 1, True) for i in range(70)])
+    ret = {c: (1.0 if c.startswith("60") else -6.0) for c, _, _ in spec}
+    _seed_two_days(temp_db, spec, ret)
+    asyncio.run(rebuild())
+    r = asyncio.run(pool_backtest(min_sample=10))
+    by = {x["池"]: x for x in r["分池"]}
+    assert by["首板"]["样本"] == 70 and by["反复板"]["样本"] == 70
+    assert by["反复板"]["次日收盘涨跌%"] < by["首板"]["次日收盘涨跌%"]
+
+
 def test_migration_says_so_when_there_is_nothing_to_compare(temp_db):
     from services.stock_tags import rebuild, migration
     _seed_pool(temp_db, [("2026-08-03", "600001", "甲", 1, 1e8)])
