@@ -65,6 +65,80 @@ def test_min_commission_charged_once_per_order():
     assert abs(same[0] - same[1]) < 0.02
 
 
+def _sell(price, shares, time="09:52", code="600176", date="2026-09-03", **kw):
+    return {"stock_code": code, "action_type": "SELL", "price": price, "shares": shares,
+            "trade_date": date, "trade_time": time, **kw}
+
+
+def _buy(price, shares, time="09:32", code="600183", date="2026-09-01", **kw):
+    return {"stock_code": code, "action_type": "BUY", "price": price, "shares": shares,
+            "trade_date": date, "trade_time": time, **kw}
+
+
+def test_same_minute_but_far_apart_in_price_is_two_orders():
+    """9-01 生益科技 148.62 + 148.95, 都在 09:32 —— 用户确认是两次下单。
+
+    旧写法的分组键是 代码+日期+方向+成交时刻, **完全不看价格**, 于是这两笔被算成一张委托,
+    5 元最低佣金只收了一次(6.91 元)。可它们差 33 个跳板, 一张委托的分笔成交吃不掉那么多档。
+    """
+    rows = [_buy(148.62, 100), _buy(148.95, 100)]
+    got = allocate_trade_fees(rows, 0.000086, 5.0)
+    assert abs(sum(got) - 11.91) < 0.02              # 两次最低佣金, 不是一次
+    merged = allocate_trade_fees([_buy(148.62, 100), _buy(148.63, 100)], 0.000086, 5.0)
+    assert sum(merged) < sum(got) - 4.5              # 只差 1 跳板时才该合成一张
+
+
+def test_same_minute_within_a_few_ticks_is_one_order():
+    """9-03 中国巨石 42.40/42.41/42.42 三笔卖出同在 09:52, 首尾 2 跳板 —— 一张清仓单扫三档。"""
+    rows = [_sell(42.40, 100), _sell(42.41, 400), _sell(42.42, 200)]
+    got = allocate_trade_fees(rows, 0.000086, 5.0)
+    assert abs(sum(got) - 21.75) < 0.02
+    per_fill = sum(estimate_trade_fee(r["action_type"], r["price"], r["shares"], r["stock_code"],
+                                      commission_rate=0.000086, commission_min=5.0) for r in rows)
+    assert abs(per_fill - sum(got) - 10.0) < 0.02    # 逐笔各收一次会多收两个最低佣金
+
+
+def test_old_rows_without_a_timestamp_are_not_lumped_into_one_order():
+    """早期流水没记成交时刻, 旧写法把"整天同方向"并成一张委托 —— 那是文档里承认的少算。
+
+    价差 86 个跳板(25.10 / 24.24)显然是两张单, 跳板判据能把它们分开, 不必依赖时刻。
+    """
+    rows = [_buy(25.10, 100, time=None, code="002202", date="2026-01-07"),
+            _buy(24.24, 100, time=None, code="002202", date="2026-01-07")]
+    got = allocate_trade_fees(rows, 0.000086, 5.0)
+    assert sum(got) > 9.9                            # 两次最低佣金
+
+
+def test_etf_uses_a_finer_tick_than_stocks():
+    """场内 ETF 报价到 0.001。拿个股的 0.01 去量, 差 10 个 ETF 跳板会被看成 1 跳板而错合。"""
+    rows = [_sell(2.135, 10000, code="510300"), _sell(2.145, 10000, code="510300")]
+    got = allocate_trade_fees(rows, 0.000086, 5.0)
+    assert sum(got) > 9.9                            # 10 个 ETF 跳板 → 两张委托
+    near = allocate_trade_fees(
+        [_sell(2.135, 10000, code="510300"), _sell(2.137, 10000, code="510300")], 0.000086, 5.0)
+    assert sum(near) < sum(got) - 4.5                # 2 个跳板 → 一张委托
+
+
+def test_commission_and_review_share_one_definition(monkeypatch):
+    """"同一张委托"在项目里必须只有一份定义。
+
+    两边各自演化过一次, 就对同一件事给出过两个答案(8-13 沪电 09:43+09:45: 复盘算一次决策、
+    佣金算两张委托)。这条测试把跳板上限改小, 如果佣金那侧不是调同一份实现, 它不会跟着变。
+    """
+    import services.trade_fills as tf
+    rows = [_sell(42.40, 100), _sell(42.42, 200)]    # 2 跳板
+    before = sum(allocate_trade_fees(rows, 0.000086, 5.0))
+    monkeypatch.setattr(tf, "_MAX_TICKS", 1)         # 收紧到 1 跳板 → 应该被拆成两张委托
+    after = sum(allocate_trade_fees(rows, 0.000086, 5.0))
+    assert after > before + 4.5
+    assert len(tf.merge_fills([{"date": "2026-09-03", "code": "600176", "kind": "sell",
+                                "price": 42.40, "shares": 100, "time": "09:52",
+                                "asset_class": "stock"},
+                               {"date": "2026-09-03", "code": "600176", "kind": "sell",
+                                "price": 42.42, "shares": 200, "time": "09:52",
+                                "asset_class": "stock"}])) == 2
+
+
 def test_fee_uses_passed_commission():
     amt_shares = 100000  # 100万元 @ 10, 远超最低 5
     zs = estimate_trade_fee("BUY", 10.0, amt_shares, "000001",

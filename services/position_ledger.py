@@ -59,19 +59,24 @@ def estimate_trade_fee(action_type: str, price: float, shares: int, stock_code: 
 
 
 def _order_key(a: dict) -> tuple:
-    """把「同一笔委托的多次成交」归到一组。
+    """粗分组键: 代码 + 日期 + 方向。**同一张委托的判定不在这儿** —— 组内还要按
+    trade_fills.one_order_clusters(同一分钟 + 首尾 ≤4 跳板)再聚一次。
 
-    一张委托单挂出去可能分几个价位成交, 券商按整张单清算、5 元最低佣金只收一次;
-    我们却把每次成交单独记一行, 逐行取 max(额×费率, 5) 就把最低佣金收了好几遍。
-    分组键取 代码+日期+方向+成交时刻: 有时刻的按分钟分(同分钟视作一单),
-    没记时刻的整天同方向合成一组(实测这些都是 2-4 笔百来股的分笔成交)。
-    代价是同日同方向的两张独立委托若都没记时刻会被并成一单、少算一次最低佣金 ——
-    真实费用请直接填 action 的 fee 字段, 它优先级高于估算。
+    为什么不能只按 代码+日期+方向+成交时刻(这是旧写法): 那样完全不看价格, 于是
+    9-01 生益科技 148.62 与 148.95 同在 09:32 被算成一张委托, 只收了一次 5 元最低佣金 ——
+    可它们差 33 个跳板, 一张委托的分笔成交吃不掉那么多档(用户确认是两次下单)。
+    另外没记成交时刻的老流水会整天同方向并成一组, 少算最低佣金, 也是旧写法的已知代价。
+
+    换成"粗分组 + 跳板聚簇"后, 全账本只有 6 组被拆开: 5 组是没记时刻的老行(价差
+    15~86 跳板, 显然是多张单)、1 组是生益。零误拆, 总费用 1745.42 → 1795.42 元
+    (差额全是 5 元最低佣金该收几次)。
+
+    仍然修不了的方向: 真的分几次下单、而价格恰好落在同一分钟 4 跳板内, 照样会被合掉。
+    那一半只有券商交割单里的**合同编号**能判。真实费用可以直接填 action 的 fee 字段覆盖估算。
     """
     t = (a.get("action_type") or "")
     side = "A" if t in ACQUIRE else ("R" if t in RELEASE else "?")
-    return (a.get("stock_code") or "", str(a.get("trade_date") or "")[:10],
-            side, str(a.get("trade_time") or ""))
+    return (a.get("stock_code") or "", str(a.get("trade_date") or "")[:10], side)
 
 
 def allocate_trade_fees(actions: list[dict], commission_rate: float | None = None,
@@ -82,27 +87,36 @@ def allocate_trade_fees(actions: list[dict], commission_rate: float | None = Non
     """
     c_rate = _COMMISSION_RATE if commission_rate is None else commission_rate
     c_min = _COMMISSION_MIN if commission_min is None else commission_min
+    from services.trade_fills import one_order_clusters, tick_for_code
     groups: dict[tuple, list[int]] = {}
     for i, a in enumerate(actions):
         groups.setdefault(_order_key(a), []).append(i)
 
     out = [0.0] * len(actions)
-    for key, idxs in groups.items():
+    for key, coarse in groups.items():
         code = key[0]
         if code and not is_a_share(code):
             continue
-        t0 = (actions[idxs[0]].get("action_type") or "")
+        t0 = (actions[coarse[0]].get("action_type") or "")
         if t0 not in ACQUIRE and t0 not in RELEASE:
             continue
-        amts = [float(actions[i].get("price") or 0) * int(actions[i].get("shares") or 0) for i in idxs]
-        total = sum(amts)
-        if total <= 0:
-            continue
-        commission = max(total * c_rate, c_min)     # ← 整张委托只收一次最低佣金
-        stamp_rate = _STAMP_RATE if t0 in RELEASE else 0.0
-        per_unit = stamp_rate + _TRANSFER_RATE + _EXCHANGE_HANDLE_RATE + _REGULATORY_FEE_RATE
-        for i, amt in zip(idxs, amts):
-            out[i] = commission * (amt / total) + amt * per_unit
+        # 粗分组里再按「同一分钟 + ≤4 跳板」切出真正的委托单(判据与复盘共用一份实现)
+        rows = [actions[i] for i in coarse]
+        clusters = one_order_clusters(rows, price_of=lambda a: a.get("price"),
+                                      time_of=lambda a: a.get("trade_time"),
+                                      tick=tick_for_code(code))
+        for cl in clusters:
+            idxs = [coarse[j] for j in cl]
+            amts = [float(actions[i].get("price") or 0) * int(actions[i].get("shares") or 0)
+                    for i in idxs]
+            total = sum(amts)
+            if total <= 0:
+                continue
+            commission = max(total * c_rate, c_min)     # ← 整张委托只收一次最低佣金
+            stamp_rate = _STAMP_RATE if t0 in RELEASE else 0.0
+            per_unit = stamp_rate + _TRANSFER_RATE + _EXCHANGE_HANDLE_RATE + _REGULATORY_FEE_RATE
+            for i, amt in zip(idxs, amts):
+                out[i] = commission * (amt / total) + amt * per_unit
     return out
 
 

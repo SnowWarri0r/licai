@@ -43,18 +43,53 @@ def _tick(t: dict) -> float:
     return _TICK.get(t.get("asset_class"), _TICK_DEFAULT)
 
 
-def _close_enough(first: dict, prev: dict, t: dict) -> bool:
+def tick_for_code(code: str) -> float:
+    """按代码定最小变动价位: A股 0.01; 场内 ETF/LOF 报价到 0.001。
+
+    佣金那侧只有 stock_code(没有 asset_class), 所以单独给一个入口 —— 但用的还是同一套跳板数。
+    """
+    from services.market_data import _is_etf_lof
+    return _TICK_DEFAULT if _is_etf_lof(code or "") else 0.01
+
+
+def _near(first: dict, prev: dict, t: dict, price_of, time_of, tick: float) -> bool:
     """跟簇里的**首笔**比价(不跟上一笔比, 否则 34.90→34.93→34.96 会一路串成一簇),
     跟**上一笔**比时间(连续成交是一串)。"""
-    p0, p = float(first.get("price") or 0), float(t.get("price") or 0)
+    p0, p = float(price_of(first) or 0), float(price_of(t) or 0)
     if p0 <= 0 or p <= 0:
         return False
-    if round(abs(p - p0) / _tick(first)) > _MAX_TICKS:
+    if round(abs(p - p0) / tick) > _MAX_TICKS:
         return False
-    a, b = _mins(prev.get("time")), _mins(t.get("time"))
-    if a is not None and b is not None and a != b:   # 同一分钟才算一串(与佣金那套对齐)
+    a, b = _mins(time_of(prev)), _mins(time_of(t))
+    if a is not None and b is not None and a != b:   # 跨了分钟就不算一串
         return False
     return True
+
+
+def one_order_clusters(rows: list, *, price_of, time_of, tick: float) -> list[list[int]]:
+    """把「同一张委托的多笔成交」聚成簇, 返回**输入下标**的分组。
+
+    这是"同一张委托"在本项目里的**唯一定义**。复盘(merge_fills)和佣金
+    (position_ledger.allocate_trade_fees)都调它 —— 两边各自演化过一次, 结果对同一件事给出
+    过两个答案(8-13 沪电 09:43+09:45: 复盘算一次决策、佣金算两张委托), 所以收成一份。
+
+    调用方负责先切到同标的 / 同日 / 同方向; 这里只管价和时间。
+    """
+    def _t(i):
+        m = _mins(time_of(rows[i]))
+        return (0 if m is None else m, i)
+    clusters: list[list[int]] = []
+    cur: list[int] = []
+    for i in sorted(range(len(rows)), key=_t):
+        if cur and _near(rows[cur[0]], rows[cur[-1]], rows[i], price_of, time_of, tick):
+            cur.append(i)
+        else:
+            if cur:
+                clusters.append(cur)
+            cur = [i]
+    if cur:
+        clusters.append(cur)
+    return clusters
 
 
 def _fold(cluster: list[dict]) -> dict:
@@ -97,18 +132,9 @@ def merge_fills(trades: list[dict]) -> list[dict]:
         if len(g) == 1:
             out.append(g[0])
             continue
-        # 有时间的按时间排(连续成交才是一串); 没时间的保持原顺序
-        g = sorted(g, key=lambda t: (_mins(t.get("time")) if _mins(t.get("time")) is not None else 0))
-        cluster: list[dict] = []
-        for t in g:
-            if cluster and _close_enough(cluster[0], cluster[-1], t):
-                cluster.append(t)
-            else:
-                if cluster:
-                    out.append(_fold(cluster))
-                cluster = [t]
-        if cluster:
-            out.append(_fold(cluster))
+        for cl in one_order_clusters(g, price_of=lambda t: t.get("price"),
+                                     time_of=lambda t: t.get("time"), tick=_tick(g[0])):
+            out.append(_fold([g[i] for i in cl]))
     return out
 
 
