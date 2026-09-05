@@ -76,10 +76,77 @@ def test_different_days_never_merge():
 
 
 def test_no_chain_drift():
-    """逐笔跟上一笔比会把 34.90→34.99→35.08 一路串成一簇(首尾差 0.5%), 所以跟**首笔**比。"""
-    out = merge_fills([_t(34.90, 100, time="10:00"), _t(34.99, 100, time="10:01"),
-                       _t(35.08, 100, time="10:02")])
+    """逐笔跟上一笔比会把 34.90→34.93→34.96 一路串成一簇(首尾 6 跳板), 所以跟**首笔**比。"""
+    out = merge_fills([_t(34.90, 100, time="10:00"), _t(34.93, 100, time="10:00"),
+                       _t(34.96, 100, time="10:00")])
     assert [t.get("fills", 1) for t in out] == [2, 1]
+
+
+# ── 价差按跳板算, 不按百分比 ────────────────────────────
+
+def test_high_priced_stock_does_not_get_a_wider_window():
+    """9-01 生益科技: 148.62 + 148.95 同在 09:32, 用户说是两次下单。
+
+    差 33 个跳板 —— 一次委托的分笔成交吃不掉那么多档。原来用 ≤0.3% 判, 它只差 0.22% 就被
+    合掉了: 同一个百分比在 148 元的票上等于 44 个跳板, 在 34.9 元的票上只有 10 个, 票价越高
+    白拿的窗口越宽。换成跳板后两个价位段一视同仁。
+    """
+    out = merge_fills([_t(148.62, 100, code="600183", name="生益科技", time="09:32"),
+                       _t(148.95, 100, code="600183", name="生益科技", time="09:32")])
+    assert len(out) == 2
+    assert all(t.get("fills", 1) == 1 for t in out)
+
+
+def test_cheap_stock_one_tick_still_merges():
+    """同一次改动不能把紫光那个原始 case 弄坏: 1 跳板、同一分钟, 照旧是一次决策。"""
+    out = merge_fills([_t(34.93, 200, time="10:06"), _t(34.94, 100, time="10:06")])
+    assert len(out) == 1 and out[0]["fills"] == 2
+
+
+def test_adjacent_minute_is_two_decisions():
+    """跨了分钟就不算一串 —— 与佣金那套(按成交时刻分委托)对齐, 且模糊地带宁可少合。"""
+    out = merge_fills([_t(34.93, 100, time="10:06"), _t(34.94, 100, time="10:07")])
+    assert len(out) == 2
+
+
+def test_fund_uses_a_finer_tick():
+    """场外基金净值 4 位小数, 跳板是 0.001 —— 别拿个股的 0.01 去量它。"""
+    same = merge_fills([_t(1.2340, 100, asset_class="fund", time="15:00"),
+                        _t(1.2342, 100, asset_class="fund", time="15:00")])
+    assert len(same) == 1                      # 差 2 个跳板
+    apart = merge_fills([_t(1.2340, 100, asset_class="fund", time="15:00"),
+                         _t(1.2400, 100, asset_class="fund", time="15:00")])
+    assert len(apart) == 2                     # 差 60 个跳板
+
+
+# ── 与佣金那套的包含关系 ────────────────────────────────
+
+def test_merged_cluster_is_always_one_order_for_commission():
+    """凡被当成"一次决策"的, 必定也是佣金那套眼里的"同一张委托"(反之不然)。
+
+    两处判据各自演化就会互相打脸: 复盘说一次决策、佣金说两张委托, 同一件事两个答案。
+    这条包含关系把方向钉死 —— 收窄只能发生在本模块这一侧。
+    """
+    from services.position_ledger import _order_key
+    acts = [{"stock_code": "000938", "action_type": "BUY", "price": 34.94, "shares": 100,
+             "trade_date": "2026-08-25", "trade_time": "10:06"},
+            {"stock_code": "000938", "action_type": "ADD", "price": 34.93, "shares": 200,
+             "trade_date": "2026-08-25", "trade_time": "10:06"},
+            {"stock_code": "600183", "action_type": "ADD", "price": 148.62, "shares": 100,
+             "trade_date": "2026-09-01", "trade_time": "09:32"},
+            {"stock_code": "600183", "action_type": "BUY", "price": 148.95, "shares": 100,
+             "trade_date": "2026-09-01", "trade_time": "09:32"}]
+    trades = [{"date": a["trade_date"], "code": a["stock_code"], "kind": "buy",
+               "price": a["price"], "shares": a["shares"], "time": a["trade_time"],
+               "asset_class": "stock", "_act": a} for a in acts]
+    for m in merge_fills(trades):
+        if int(m.get("fills") or 1) < 2:
+            continue
+        members = [t for t in trades if t["code"] == m["code"] and t["date"] == m["date"]
+                   and any(abs(t["price"] - float(f["price"])) < 1e-9
+                           for f in m["fill_detail"])]
+        keys = {_order_key(t["_act"]) for t in members}
+        assert len(keys) == 1, f"{m['code']} 被合成一次决策, 但佣金那边算作 {len(keys)} 张委托"
 
 
 def test_other_stocks_untouched():
