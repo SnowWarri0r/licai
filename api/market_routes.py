@@ -1234,3 +1234,27 @@ async def etf_xray_theme(theme: str, top: int = 5):
     """按主题找规模最大的前 N 只并透视(同主题避雷)。"""
     from services.etf_xray import theme_scan
     return await theme_scan(theme, min(max(top, 1), 8))
+
+
+# ============================================================
+# 归类层出口: 股池 / 连板梯队迁移
+# ============================================================
+
+@router.get("/pools")
+async def market_pools(date: str = ""):
+    """上一个归类日各格子里的票, 今天怎么样了(真实成分 + 今日实时涨幅)。"""
+    from services.stock_tags import pools
+    return await pools(date or None)
+
+
+@router.get("/ladder-migration")
+async def market_ladder_migration(date: str = ""):
+    """连板梯队的日间迁移: 接力率 / 掉出 / 掉出后两日内反包。只用板轴, 不含价格。"""
+    from services.stock_tags import migration
+    from database import get_tag_dates
+    if not date:
+        ds = await get_tag_dates(limit=10000)
+        if not ds:
+            return {"可用": False, "note": "还没有归类数据"}
+        date = ds[-1]
+    return await migration(date)
