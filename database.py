@@ -649,6 +649,61 @@ async def get_cached_amounts(codes: list[str], since: str) -> dict[str, dict[str
         await db.close()
 
 
+async def get_cached_closes(codes: list[str], day: str) -> dict[str, float]:
+    """每只票在 day(含)之前最近一个交易日的收盘价 → {代码: 收盘}。回溯估值用。
+
+    停牌/那天没数据的票取更早那根 —— 按当时能看到的最后价格算, 比直接漏掉整只票诚实。
+    """
+    if not codes:
+        return {}
+    db = await get_db()
+    try:
+        out: dict[str, float] = {}
+        for i in range(0, len(codes), 400):
+            chunk = codes[i:i + 400]
+            q = ",".join("?" * len(chunk))
+            cur = await db.execute(
+                f"SELECT stock_code, close FROM kline_cache k WHERE stock_code IN ({q}) AND date <= ? "
+                f"AND date = (SELECT MAX(date) FROM kline_cache k2 "
+                f"            WHERE k2.stock_code = k.stock_code AND k2.date <= ?)",
+                (*chunk, day, day))
+            for r in await cur.fetchall():
+                if r["close"]:
+                    out[r["stock_code"]] = float(r["close"])
+        return out
+    finally:
+        await db.close()
+
+
+async def get_position_actions_until(day: str) -> dict[str, list[dict]]:
+    """截至 day(含)的全部持仓动作, 按股票代码分组(时间升序)。回放账本还原当时的持股。"""
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT * FROM position_actions WHERE COALESCE(trade_date, date(created_at)) <= ? "
+            "ORDER BY COALESCE(trade_date, date(created_at)), id", (day,))
+        out: dict[str, list[dict]] = {}
+        for r in await cur.fetchall():
+            out.setdefault(r["stock_code"], []).append(dict(r))
+        return out
+    finally:
+        await db.close()
+
+
+async def get_snapshot_on_or_before(day: str) -> dict | None:
+    """day(含)之前最近一条组合快照。外部资产(基金/理财/现金)没有可回溯的价格历史,
+    只有这条快照记了当时的真实市值。"""
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT snap_date, total_value, by_asset FROM portfolio_snapshots "
+            "WHERE snap_date <= ? ORDER BY snap_date DESC LIMIT 1", (day,))
+        r = await cur.fetchone()
+        return dict(r) if r else None
+    finally:
+        await db.close()
+
+
 async def get_cached_latest_date(stock_code: str) -> str | None:
     db = await get_db()
     try:
