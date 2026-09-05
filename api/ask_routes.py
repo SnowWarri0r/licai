@@ -137,7 +137,7 @@ async def start_run(data: RunIn):
 @router.get("/runs")
 async def list_runs(scope: Optional[str] = None):
     """内存里还认得的 run(在跑的 + 刚跑完的), 前端用来重挂: 切回来接着看那半截。"""
-    return {"runs": ask_runs.live(scope)}
+    return {"runs": await ask_runs.live(scope)}
 
 
 @router.get("/runs/{run_id}/events")
