@@ -64,6 +64,15 @@ async def _symbol_dict_prewarm():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
+    # 上一个进程留下的"在跑"的 agent 轮次: 进程一没那些 task 就不存在了, 留着 running
+    # 会让界面一直转。标成 interrupted, 过程留着(不自动重跑 —— 重跑要再烧一遍 token)。
+    try:
+        from database import interrupt_running_ask_runs
+        _n = await interrupt_running_ask_runs()
+        if _n:
+            print(f"[startup] 上次没跑完的 agent 轮次 {_n} 条, 已标记为中断")
+    except Exception as e:
+        print(f"[startup] 标记中断轮次失败: {e}")
     # Restore saved LLM config (多厂商: base_url / key / header / prefix / proxy / model_map)
     llm_base_url = await get_config("llm_base_url")
     llm_api_key = await get_config("llm_api_key")

@@ -242,8 +242,9 @@ def test_live_filters_by_scope(temp_db, runs, monkeypatch):
         await asyncio.gather(a.task, b.task)
 
     asyncio.run(main())
-    assert [r["scope"] for r in runs.live("stock:600519")] == ["stock:600519"]
-    assert len(runs.live()) == 2
+    scoped = asyncio.run(runs.live("stock:600519"))
+    assert [r["scope"] for r in scoped] == ["stock:600519"]
+    assert len(asyncio.run(runs.live())) == 2
 
 
 def test_gc_drops_stale_finished_runs(runs):
@@ -258,3 +259,97 @@ def test_gc_drops_stale_finished_runs(runs):
     runs._RUNS[fresh.id] = fresh
     runs._gc()
     assert list(runs._RUNS) == [fresh.id]
+
+
+# ── 服务重启也不该让这一轮凭空消失 ──────────────────────
+
+def test_events_are_on_disk_while_running(temp_db, runs, monkeypatch):
+    """跑的过程要落盘: 进程一没内存就没了, 盘上这份是重启后唯一还认得这一轮的东西。"""
+    import json
+    from database import get_ask_run
+    monkeypatch.setattr(runs, "ask_stock_stream", _fake_agent())
+
+    async def main():
+        run = await runs.start("茅台今天怎么了")
+        await run.task
+        return run
+
+    run = asyncio.run(main())
+    row = asyncio.run(get_ask_run(run.id))
+    assert row and row["status"] == "done" and row["answered"] == 1
+    kinds = [e.get("type") for e in json.loads(row["events"])]
+    assert "answer" in kinds and kinds[-1] == "done"
+
+
+def _leftover_row(run_id="deadbeef1234", events=None, scope="market"):
+    """模拟上一个进程留下的行: 状态还是 running, 但那个 task 早随进程没了。
+
+    注意不能用 task.cancel() 来模拟 —— 取消只是让协程走 except 分支, 它还会把自己收尾成
+    done; 真的进程死亡不给这个机会, 行就停在 running 上。
+    """
+    import json
+    from database import save_ask_run, update_ask_run
+    import time as _t
+
+    async def go():
+        await save_ask_run(run_id, 1, scope, "茅台今天怎么了", _t.time())
+        if events:
+            await update_ask_run(run_id, json.dumps(events, ensure_ascii=False), "running", False, _t.time())
+    asyncio.run(go())
+    return run_id
+
+
+def test_restart_marks_running_as_interrupted(temp_db, runs):
+    """重启后那些 running 永远不会再有结果 —— 必须落地成 interrupted, 否则界面上是一行
+    永远转不完的"分析中"。"""
+    from database import get_ask_run, interrupt_running_ask_runs
+    rid = _leftover_row()
+    assert asyncio.run(get_ask_run(rid))["status"] == "running"
+    assert asyncio.run(interrupt_running_ask_runs()) == 1
+    assert asyncio.run(get_ask_run(rid))["status"] == "interrupted"
+
+
+def test_follow_falls_back_to_disk_after_restart(temp_db, runs):
+    """重启后内存是空的。跟看那一轮要能从盘上重放已经跑出来的步骤, 并明说它被打断了 ——
+    比一句"不在内存里了"有用: 至少知道它查到哪一步。"""
+    from database import interrupt_running_ask_runs
+    rid = _leftover_row(events=[{"type": "thought", "text": "查一下"},
+                                {"type": "step", "tool": "get_quote"}])
+    asyncio.run(interrupt_running_ask_runs())
+    runs._RUNS.clear()                              # 进程重启: 内存全空
+    evs = asyncio.run(_collect(runs.follow(rid, 0)))
+    assert [e.get("tool") for e in evs if e["type"] == "step"] == ["get_quote"]
+    assert [e["cursor"] for e in evs] == sorted(e["cursor"] for e in evs)   # 游标单调
+    assert any("重启" in (e.get("error") or "") for e in evs)
+    assert evs[-1]["type"] == "done"                # 别让前端干等
+
+
+def test_follow_from_disk_respects_cursor(temp_db, runs):
+    """断点续看在盘上这条路径同样成立: 从游标 1 起只补后面的。"""
+    from database import interrupt_running_ask_runs
+    rid = _leftover_row(events=[{"type": "thought", "text": "a"}, {"type": "step", "tool": "b"}])
+    asyncio.run(interrupt_running_ask_runs())
+    runs._RUNS.clear()
+    evs = asyncio.run(_collect(runs.follow(rid, 1)))
+    assert [e["type"] for e in evs if e["type"] in ("thought", "step")] == ["step"]
+
+
+def test_disk_runs_show_up_as_finished_in_live(temp_db, runs):
+    """盘上那些一律 done —— 它们不可能再产出新事件, 前端不该去"接着等"。"""
+    from database import interrupt_running_ask_runs
+    _leftover_row()
+    asyncio.run(interrupt_running_ask_runs())
+    runs._RUNS.clear()
+    rows = asyncio.run(runs.live("market"))
+    assert len(rows) == 1
+    assert rows[0]["done"] is True and rows[0]["interrupted"] is True
+
+
+def test_unknown_run_still_says_gone(temp_db, runs):
+    """盘上也没有(流水清理过) → 还是要给明确说法。"""
+    evs = asyncio.run(_collect(runs.follow("nope", 0)))
+    assert len(evs) == 1 and evs[0]["gone"] is True
+
+
+async def _collect(agen):
+    return [ev async for ev in agen]
