@@ -2180,6 +2180,33 @@ async def stock_tag_coverage() -> dict:
         await db.close()
 
 
+async def pool_codes_missing_klines() -> tuple[list[str], str]:
+    """涨停档案里**自己上榜那几天缺日线**的代码, 以及档案起点日期。
+
+    判据故意不是"够不够 N 根": 试过 >=200 根这版, 结果 55 只新股被判成永远缺 ——
+    001232 是 2026-08-04 上市的, 一共才 24 根, 到不了 200, 于是每天重抓一遍,
+    而且新库回填时 remaining 永远归不了零。可它对我们的用途一点都不缺: 上榜 1 次、
+    那天的日线就在。
+
+    分池兑现率真正要的是"每个 (上榜日, 代码) 都能取到当天的收盘价"(次日那根由
+    get_next_bars 自己找)。所以判据就照这个写, 顺带自然终止 —— 补上了就不再进名单。
+    """
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT MIN(snap_date) FROM limit_up_pool")
+        since = (await cur.fetchone())[0]
+        if not since:
+            return [], ""
+        cur = await db.execute(
+            "SELECT DISTINCT p.stock_code FROM limit_up_pool p"
+            " WHERE NOT EXISTS (SELECT 1 FROM kline_cache k"
+            "   WHERE k.stock_code = p.stock_code AND k.date = p.snap_date)"
+            " ORDER BY p.stock_code")
+        return [r[0] for r in await cur.fetchall()], since
+    finally:
+        await db.close()
+
+
 async def limit_up_pool_coverage() -> dict:
     """回填进度/来源构成。凭空说"有历史"没用, 要能报出到底攒了多少天。"""
     db = await get_db()

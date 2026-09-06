@@ -182,6 +182,51 @@ def test_agent_tool_converts_the_date_format(temp_db, monkeypatch):
     assert out["涨停质量"]["涨停只数"] == 1
 
 
+# ── 给涨停股补日线 ──────────────────────────────────────
+
+def test_missing_klines_criterion_is_per_archive_day_not_a_bar_count(temp_db):
+    """判据必须是「它上榜那几天有没有日线」, 不能是「够不够 N 根」。
+
+    试过 >=200 根那版, 结果 55 只新股被判成永远缺 —— 001232 是 2026-08-04 上市的, 一共才
+    24 根, 到不了 200, 于是每天重抓一遍, 新库回填时 remaining 也永远归不了零。可它对分池
+    兑现率一点都不缺: 上榜 1 次、那天的日线就在。这条把判据钉成"自然终止"的那种。
+    """
+    from database import save_limit_up_pool, pool_codes_missing_klines
+    asyncio.run(save_limit_up_pool([
+        _row("301999", "em", snap_date="2026-08-20"),      # 新股: 只有很少几根, 但那天有
+        _row("600001", "em", snap_date="2026-08-20"),      # 老票: 根数多, 但偏偏缺那天
+    ]))
+    _seed_bars(temp_db, "301999", [("2026-08-19", 10, 10), ("2026-08-20", 10, 11)])
+    _seed_bars(temp_db, "600001", [(f"2026-07-{d:02d}", 10, 10) for d in range(1, 29)])
+    codes, since = asyncio.run(pool_codes_missing_klines())
+    assert codes == ["600001"]          # 只有真正缺当日日线的那只进名单
+    assert since == "2026-08-20"
+
+
+def test_warm_reports_what_it_did_not_do(temp_db, monkeypatch):
+    """单次限量是为了不把收盘那趟拖成半小时, 但**剩多少要照实报** ——
+    无声截断会让人以为已经补齐了。"""
+    import services.limit_up_pool as lup
+    from database import save_limit_up_pool
+    asyncio.run(save_limit_up_pool(
+        [_row(f"60{i:04d}", "em", snap_date="2026-08-20") for i in range(5)]))
+
+    import pandas as pd
+    calls = []
+
+    def _fake(code, n):
+        calls.append(code)
+        return pd.DataFrame([{"日期": "2026-08-20", "开盘": 1.0, "收盘": 1.0,
+                              "最高": 1.0, "最低": 1.0, "成交量": 1, "成交额": 1}])
+
+    monkeypatch.setattr(lup, "_WARM_EOD_CAP", 2)
+    import services.market_data as md
+    monkeypatch.setattr(md, "_kline_tencent_a", _fake)
+    r = asyncio.run(lup.warm_pool_klines(limit=2, sleep=0))
+    assert r["missing"] == 5 and r["filled"] == 2 and r["remaining"] == 3
+    assert len(calls) == 2
+
+
 # ── 兑现度回测的自我约束 ────────────────────────────────
 
 def _seed_bars(path, code, bars):
