@@ -210,6 +210,16 @@ async def eod_summary_loop():
                     except Exception as e:
                         print(f"[eod] 归类层失败: {e}")
                     try:
+                        # 给新上榜的涨停股补本地日线 —— 分池兑现率的次日行情全靠它, 没有的话
+                        # 覆盖率会一路掉回闸门以下。单次限量, 剩余量照实打印, 不做无声截断。
+                        from services.limit_up_pool import warm_pool_klines
+                        wk = await warm_pool_klines()
+                        if wk.get("missing"):
+                            print(f"[eod] 涨停股日线补齐 {wk['filled']}/{wk['missing']} "
+                                  f"(失败 {wk['failed']}, 还剩 {wk['remaining']} 只下次补)")
+                    except Exception as e:
+                        print(f"[eod] 涨停股日线补齐失败: {e}")
+                    try:
                         # 榜单里没日线的票补一批: 概念线的资金曲线要靠它, 涨幅榜天天换新面孔
                         from services.concept_trend import warm_cache
                         w = await warm_cache()
