@@ -326,6 +326,21 @@ CREATE TABLE IF NOT EXISTS position_thesis (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 逻辑修订史(append-only)。position_thesis 只留最新一版, 覆盖写会把"改过什么"这件事本身抹掉 ——
+-- 而最值得看的恰恰是它: 人跌了之后会不自觉地把买入理由换成一个能解释当前股价的说法, 事后回看
+-- 只见一句自洽的逻辑, 看不见它被改过三次。facts 存"写这段话那一刻的客观事实快照", 有它才分得清
+-- 「事实变了所以改逻辑」和「事实没变只是改了说法」。
+CREATE TABLE IF NOT EXISTS thesis_revision (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT NOT NULL,
+    rev INTEGER NOT NULL,                     -- 1 起递增
+    thesis TEXT NOT NULL,
+    facts TEXT DEFAULT '',                    -- JSON 快照; '' = 当时没记(老数据/取数失败), 不是"没变化"
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(code, rev)
+);
+CREATE INDEX IF NOT EXISTS idx_thesis_rev_code ON thesis_revision(code, rev);
+
 CREATE TABLE IF NOT EXISTS ask_session (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT DEFAULT '',                    -- 用首个问题做标题
@@ -617,6 +632,21 @@ async def init_db():
                 (asset_id, action_type, cost, float(shares) if shares else None, unit_price, seed_date),
             )
             print(f"[migration] Seeded {action_type} for asset#{asset_id} ({atype}): ¥{cost} on {seed_date}")
+        await db.commit()
+
+        # Seed thesis_revision: 已有的买入逻辑补一条 rev=1。
+        # facts 留空是刻意的 —— 那时候没存快照, 编一个"用今天的数字当第一版事实"会让漂移分析
+        # 把这段时间的变化全算成 0。空快照在下游被显式当作"当时没记"。
+        cursor = await db.execute(
+            "SELECT code, thesis, created_at FROM position_thesis t "
+            "WHERE NOT EXISTS (SELECT 1 FROM thesis_revision r WHERE r.code = t.code)")
+        rows = await cursor.fetchall()
+        for r in rows:
+            await db.execute(
+                "INSERT INTO thesis_revision (code, rev, thesis, facts, created_at) VALUES (?, 1, ?, '', ?)",
+                (r["code"], r["thesis"], r["created_at"]),
+            )
+            print(f"[migration] Seeded thesis rev1 for {r['code']} (无事实快照)")
         await db.commit()
     finally:
         await db.close()
@@ -976,9 +1006,18 @@ async def list_theses() -> list[dict]:
         await db.close()
 
 
-async def set_thesis(code: str, thesis: str, name: str = ""):
+async def set_thesis(code: str, thesis: str, name: str = "", facts: str = "") -> dict:
+    """写入/更新买入逻辑, 并在**正文真的变了**的时候追加一条修订。
+
+    只在正文变化时追加: 前端每次打开弹窗点保存都会 PUT 一次, 原文没动也记一版会把修订史灌成
+    一堆同文, 漂移分析里"改过几次"就废了。facts 是调用方在保存那一刻取的事实快照(JSON 串),
+    取不到就传空 —— 空要当"当时没记"处理, 不能当"事实没变"。
+    """
     db = await get_db()
     try:
+        cur = await db.execute("SELECT thesis FROM position_thesis WHERE code = ?", (code,))
+        row = await cur.fetchone()
+        changed = (row is None) or ((row["thesis"] or "").strip() != (thesis or "").strip())
         await db.execute(
             "INSERT INTO position_thesis (code, name, thesis, updated_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP) "
             "ON CONFLICT(code) DO UPDATE SET thesis = excluded.thesis, "
@@ -986,15 +1025,38 @@ async def set_thesis(code: str, thesis: str, name: str = ""):
             "updated_at = CURRENT_TIMESTAMP",
             (code, name, thesis),
         )
+        rev = 0
+        if changed:
+            cur = await db.execute("SELECT COALESCE(MAX(rev), 0) FROM thesis_revision WHERE code = ?", (code,))
+            rev = int((await cur.fetchone())[0]) + 1
+            await db.execute(
+                "INSERT INTO thesis_revision (code, rev, thesis, facts) VALUES (?, ?, ?, ?)",
+                (code, rev, thesis, facts or ""),
+            )
         await db.commit()
+        return {"appended": changed, "rev": rev}
+    finally:
+        await db.close()
+
+
+async def get_thesis_revisions(code: str) -> list[dict]:
+    """某只的全部修订, rev 升序(第 1 版在前)。"""
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT rev, thesis, facts, created_at FROM thesis_revision WHERE code = ? ORDER BY rev", (code,))
+        return [dict(r) for r in await cur.fetchall()]
     finally:
         await db.close()
 
 
 async def delete_thesis(code: str):
+    """清空逻辑。修订史一并删 —— 逻辑都不要了, 留着"改过几次"没有意义, 而且下次重记会从
+    rev=N+1 接着编号, 看上去像是接着改的。"""
     db = await get_db()
     try:
         await db.execute("DELETE FROM position_thesis WHERE code = ?", (code,))
+        await db.execute("DELETE FROM thesis_revision WHERE code = ?", (code,))
         await db.commit()
     finally:
         await db.close()

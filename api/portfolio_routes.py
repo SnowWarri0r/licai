@@ -1696,10 +1696,31 @@ async def read_thesis(code: str):
 
 @router.put("/thesis/{code}")
 async def write_thesis(code: str, data: ThesisIn):
+    """保存买入逻辑。正文真的变了才追加一条修订, 并把**此刻**的客观事实一起存下来。
+
+    快照必须在保存这一刻取: 事后再补只能拿到"后来的数字", 而漂移分析问的恰恰是"你写下这句话
+    的时候, 事实是什么样"。取数失败就存空 —— 空在下游标成"判不了", 不冒充"没变化"。
+    """
+    import json
     bare = code.split(".")[-1]
     text = (data.thesis or "").strip()
     if not text:
         await delete_thesis(bare)
         return {"message": "已清空"}
-    await set_thesis(bare, text, data.name or "")
-    return {"message": "已保存"}
+    facts = ""
+    cur = await get_thesis(bare)
+    if not cur or (cur.get("thesis") or "").strip() != text:
+        from services.thesis_drift import snapshot
+        try:
+            facts = json.dumps(await snapshot(bare), ensure_ascii=False)
+        except Exception as e:
+            print(f"[thesis] 事实快照取数失败 {bare}: {e}")
+    r = await set_thesis(bare, text, data.name or "", facts)
+    return {"message": "已保存", **r}
+
+
+@router.get("/thesis/{code}/drift")
+async def thesis_drift_report(code: str):
+    """逻辑漂移: 改过几次、每次是跟着事实改的还是跟着股价改的、末版之后事实又变了什么。"""
+    from services.thesis_drift import drift
+    return await drift(code)

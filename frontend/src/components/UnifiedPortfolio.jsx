@@ -687,7 +687,7 @@ function TypeMiniInfo({ row }) {
 // ============================================================
 // Hover action buttons
 // ============================================================
-function RowActions({ row, visible, onEdit, onHistory, onRemove, onAddLot, onReduceLot, onShowActions, onKline, onThesis, hasThesis, onCashAdjust }) {
+function RowActions({ row, visible, onEdit, onHistory, onRemove, onAddLot, onReduceLot, onShowActions, onKline, onThesis, hasThesis, onQuality, onCashAdjust }) {
   // 桌面: hover 才显示 (opacity 控制); 移动: 始终显示, 1 字按钮
   const btnBase = 'rounded border border-border-med bg-surface-2 text-text-dim ' +
     'hover:border-accent hover:text-accent transition-colors cursor-pointer whitespace-nowrap'
@@ -697,6 +697,8 @@ function RowActions({ row, visible, onEdit, onHistory, onRemove, onAddLot, onRed
   if (row.type === 'A') {
     actions.push({ short: '线', label: 'K 线', fn: () => onKline?.(row._raw) })
     actions.push({ short: '史', label: '历史', fn: () => onHistory?.(row._raw) })
+    // 质地只对 A 股给: 7 条去劣指标算的是工商企业的财报, 基金/现金/理财无从谈起
+    actions.push({ short: '质', label: '质地', fn: () => onQuality?.(row) })
     actions.push(thesisAction)
     actions.push({ short: '改', label: '编辑', fn: () => onEdit?.(row) })
   } else {
@@ -906,6 +908,7 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
   const [actionsAsset, setActionsAsset] = useState(null)
   const [klineHolding, setKlineHolding] = useState(null)
   const [thesisTarget, setThesisTarget] = useState(null)
+  const [qualityTarget, setQualityTarget] = useState(null)
   const [thesisCodes, setThesisCodes] = useState(() => new Set())
   const loadThesisCodes = useCallback(async () => {
     try {
@@ -1356,6 +1359,9 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
         <ThesisModal row={thesisTarget} onClose={() => setThesisTarget(null)}
           onSaved={() => { loadThesisCodes(); setThesisTarget(null) }} />
       )}
+      {qualityTarget && (
+        <QualityModal row={qualityTarget} onClose={() => setQualityTarget(null)} />
+      )}
 
       {/* Column headers */}
       {!isEmpty && (
@@ -1662,7 +1668,8 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
                         onShowActions={handleShowActions}
                         onCashAdjust={(r) => setCashAdjustAsset(r._raw)}
                         onKline={setKlineHolding}
-                        onThesis={setThesisTarget} hasThesis={thesisCodes.has(row.code)} />
+                        onThesis={setThesisTarget} hasThesis={thesisCodes.has(row.code)}
+                        onQuality={setQualityTarget} />
                     </div>
                   </div>
                 </div>
@@ -1805,6 +1812,185 @@ function ClosedPositionsBlock({ items, onHistory, onKline }) {
 // ============================================================
 // Add stock form — compact, inline
 // ============================================================
+// 漂移三档的配色: 跟股价走是唯一需要刺眼的一档 —— 它说的是"你改的是说法, 不是事实"
+const DRIFT_TONE = {
+  '跟股价走': 'text-bear-bright border-bear-border bg-bear-bg',
+  '跟事实走': 'text-text border-border bg-surface-3',
+  '只改了说法': 'text-warn border-border-med bg-surface-3',
+  '判不了': 'text-text-muted border-border bg-surface-3',
+}
+
+function DriftPanel({ drift }) {
+  if (!drift?.有记录) return null
+  const changes = drift.逐次改写 || []
+  const track = drift.改写时浮亏轨迹 || {}
+  return (
+    <div className="mt-3 pt-3 border-t border-border">
+      <div className="flex items-baseline gap-2 mb-1.5">
+        <span className="text-[12px] font-semibold text-text-bright">逻辑漂移</span>
+        <span className="text-[10px] text-text-muted">
+          共 {drift.修订次数} 版{drift.距末版天数 != null ? ` · 末版距今 ${drift.距末版天数} 天` : ''}
+        </span>
+      </div>
+      {changes.length === 0 && (
+        <p className="text-[10.5px] text-text-muted m-0">只写过一版, 没有改写记录。</p>
+      )}
+      {changes.map(c => {
+        const v = c.判定 || {}
+        const t = c.文本变化 || {}
+        return (
+          <div key={c.rev} className={`mb-1.5 px-2 py-1.5 rounded-lg border text-[10.5px] ${DRIFT_TONE[v.档] || DRIFT_TONE['判不了']}`}>
+            <div className="flex items-baseline gap-1.5">
+              <span className="font-semibold">第{c.rev}版</span>
+              <span className="text-text-muted">{c.日期}</span>
+              <span className="ml-auto font-semibold">{v.档}</span>
+            </div>
+            <div className="mt-0.5 leading-relaxed">{v.说明}</div>
+            {(t.删除 || []).length > 0 && (
+              <div className="mt-0.5 text-text-muted">删掉: {t.删除.join(' / ')}</div>
+            )}
+            {(t.新增 || []).length > 0 && (
+              <div className="text-text-muted">新增: {t.新增.join(' / ')}</div>
+            )}
+            {(t.改写 || []).map((r, i) => (
+              <div key={i} className="text-text-muted">改写: {r.旧} → {r.新}</div>
+            ))}
+          </div>
+        )
+      })}
+      {track.逐次走低 && (
+        <p className="text-[10.5px] text-bear-bright m-0 mb-1">{track.说明}</p>
+      )}
+      {drift.自末版以来 && (
+        <p className="text-[10.5px] text-text-muted m-0">{drift.自末版以来}</p>
+      )}
+      <p className="text-[10px] text-text-muted m-0 mt-1 leading-relaxed">{drift.口径}</p>
+    </div>
+  )
+}
+
+// 去劣筛选: 只有"被排除/未被排除/判不了"三种结论。判不了刻意用灰而不是绿 ——
+// 缺数据不是通过, 混成一个颜色就等于用缺失冒充合格。
+const SCREEN_TONE = {
+  '通过': 'text-bull',
+  '排除': 'text-bear-bright',
+  '豁免': 'text-warn',
+  '判不了': 'text-text-muted',
+  '不适用': 'text-text-muted',
+}
+
+function QualityModal({ row, onClose }) {
+  const code = row.code
+  const [d, setD] = useState(null)
+  const [err, setErr] = useState('')
+  const [cap, setCap] = useState(null)      // 资本配置台账: 另一个 5-10 秒的多源请求, 各自到各自渲染
+  const [capErr, setCapErr] = useState('')
+  useEffect(() => {
+    let alive = true
+    setD(null); setErr(''); setCap(null); setCapErr('')
+    const nm = encodeURIComponent(row.name || '')
+    fetchJSON(`/api/market/quality-screen/${encodeURIComponent(code)}?name=${nm}`)
+      .then(r => { if (alive) setD(r) })
+      .catch(e => { if (alive) setErr(String(e?.message || e)) })
+    fetchJSON(`/api/market/capital-allocation/${encodeURIComponent(code)}?name=${nm}`)
+      .then(r => { if (alive) setCap(r) })
+      .catch(e => { if (alive) setCapErr(String(e?.message || e)) })
+    return () => { alive = false }
+  }, [code, row.name])
+  const head = d?.结论 === '排除' ? 'text-bear-bright' : d?.结论 === '未被排除' ? 'text-bull' : 'text-text-muted'
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
+      <div className="bg-surface-2 border border-border rounded-xl w-full max-w-lg max-h-[85vh] overflow-y-auto p-4 md:p-5" onClick={e => e.stopPropagation()}>
+        <div className="flex items-baseline gap-2 mb-1">
+          <h3 className="text-[14px] font-semibold text-text-bright m-0">去劣筛选</h3>
+          <span className="text-[12px] text-text-bright">{row.name}</span>
+          <span className="font-mono text-[10.5px] text-text-muted">{code}</span>
+          {d?.行业 && <span className="text-[10.5px] text-text-dim">{d.行业}</span>}
+          <button onClick={onClose} className="ml-auto text-text-muted hover:text-text cursor-pointer">✕</button>
+        </div>
+        <p className="text-[10.5px] text-text-muted mb-2">7 条硬指标排除"不是一流公司"。这是排除法 —— <span className="text-text-dim">未被排除不等于值得买</span>, 它只说这 7 条没抓住它。</p>
+        {!d && !err && <p className="text-[11px] text-text-muted">取多年财报中… (要拉 30 期年报, 约 5-10 秒)</p>}
+        {err && <p className="text-[11px] text-bear-bright">取数失败: {err}</p>}
+        {d && (
+          <>
+            <div className="flex items-baseline gap-2 mb-2">
+              <span className={`text-[13px] font-semibold ${head}`}>{d.结论}</span>
+              <span className="text-[10.5px] text-text-dim">{d.说明}</span>
+            </div>
+            {d.适配提醒 && (
+              <p className="text-[10.5px] text-warn m-0 mb-2 leading-relaxed">适配提醒: {d.适配提醒}</p>
+            )}
+            <table className="w-full text-[11px]">
+              <tbody>
+                {(d.逐条 || []).map(x => (
+                  <tr key={x.指标} className="border-t border-border-subtle">
+                    <td className="py-1 pr-2 text-text">{x.指标}</td>
+                    <td className="py-1 pr-2 text-text-dim font-mono text-right whitespace-nowrap">{x.值 == null ? '—' : x.值}</td>
+                    <td className="py-1 pr-2 text-text-muted whitespace-nowrap text-[10px]">{x.门限}</td>
+                    <td className={`py-1 font-semibold whitespace-nowrap ${SCREEN_TONE[x.结论] || ''}`}>{x.结论}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {(d.逐条 || []).filter(x => x.说明).map(x => (
+              <p key={x.指标} className="text-[10px] text-text-muted m-0 mt-1 leading-relaxed">
+                <span className="text-text-dim">{x.指标}:</span> {x.说明}
+              </p>
+            ))}
+            {(d.取数缺口 || []).length > 0 && (
+              <p className="text-[10px] text-bear-bright m-0 mt-1.5">取数失败: {d.取数缺口.join('; ')}</p>
+            )}
+            <p className="text-[10px] text-text-muted m-0 mt-2 leading-relaxed">{d.口径}</p>
+            {d.股本口径 && <p className="text-[10px] text-text-muted m-0 leading-relaxed">股本对比: {d.股本口径}</p>}
+          </>
+        )}
+
+        <div className="mt-3 pt-3 border-t border-border">
+          <div className="flex items-baseline gap-2 mb-1.5">
+            <span className="text-[12px] font-semibold text-text-bright">资本配置台账</span>
+            <span className="text-[10px] text-text-muted">从股东拿到多少现金, 分红回购还了多少</span>
+          </div>
+          {!cap && !capErr && <p className="text-[11px] text-text-muted m-0">取分红/融资/回购记录中…</p>}
+          {capErr && <p className="text-[11px] text-bear-bright m-0">取数失败: {capErr}</p>}
+          {cap && (
+            <>
+              <p className="text-[11px] text-text m-0 leading-relaxed">{cap.一句话}</p>
+              {(cap.回购逐笔 || []).length > 0 && (
+                <table className="w-full text-[11px] mt-1.5">
+                  <tbody>
+                    <tr className="text-text-muted text-[10px]">
+                      <td className="py-0.5">回购</td><td className="text-right">金额</td>
+                      <td className="text-right">均价</td><td className="text-right">回购PB</td>
+                    </tr>
+                    {cap.回购逐笔.map(b => (
+                      <tr key={b.起始} className="border-t border-border-subtle">
+                        <td className="py-1 pr-2 font-mono text-[10.5px] text-text-dim whitespace-nowrap">{b.起始}</td>
+                        <td className="py-1 pr-2 text-right font-mono text-text-dim">{b.金额亿}亿</td>
+                        <td className="py-1 pr-2 text-right font-mono text-text-dim">{b.均价}</td>
+                        <td className={`py-1 text-right font-mono ${b.回购PB != null && cap.当前PB != null && b.回购PB > cap.当前PB ? 'text-warn' : 'text-text-dim'}`}>
+                          {b.回购PB == null ? '—' : b.回购PB}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              {(cap.回购逐笔 || []).length > 0 && cap.当前PB != null && (
+                <p className="text-[10px] text-text-muted m-0 mt-1">当前PB {cap.当前PB} —— 回购PB 高于它的那几笔(标黄)是买在比现在更贵的位置。不拿回购均价直接和现价比涨跌: 中间的分红送转会让这个比较失真。</p>
+              )}
+              {(cap.取数缺口 || []).length > 0 && (
+                <p className="text-[10px] text-bear-bright m-0 mt-1">取数失败: {cap.取数缺口.join('; ')}</p>
+              )}
+              <p className="text-[10px] text-text-muted m-0 mt-1 leading-relaxed">{cap.拿?.口径}</p>
+              <p className="text-[10px] text-text-muted m-0 leading-relaxed">「拿得多还得少」本身不是缺点 —— 扩张期公司本该融资, 关键看融来的钱变成了什么, 台账答不了这一步。</p>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function ThesisModal({ row, onClose, onSaved }) {
   const code = row.code
   const name = row.name || ''
@@ -1812,14 +1998,20 @@ function ThesisModal({ row, onClose, onSaved }) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [meta, setMeta] = useState(null)
+  const [drift, setDrift] = useState(null)
+  const loadDrift = useCallback(() => {
+    fetchJSON(`/api/portfolio/thesis/${encodeURIComponent(code)}/drift`)
+      .then(setDrift).catch(() => {})
+  }, [code])
   useEffect(() => {
     let alive = true
     fetchJSON(`/api/portfolio/thesis/${encodeURIComponent(code)}`)
       .then(d => { if (alive) { setText(d?.thesis || ''); setMeta(d || null) } })
       .catch(() => {})
       .finally(() => { if (alive) setLoading(false) })
+    loadDrift()
     return () => { alive = false }
-  }, [code])
+  }, [code, loadDrift])
   const created = (meta?.created_at || '').slice(0, 10)
   const updated = (meta?.updated_at || '').slice(0, 10)
   const save = async () => {
@@ -1828,19 +2020,20 @@ function ThesisModal({ row, onClose, onSaved }) {
       await fetchJSON(`/api/portfolio/thesis/${encodeURIComponent(code)}`, {
         method: 'PUT', body: JSON.stringify({ thesis: text, name }),
       })
+      loadDrift()          // 保存那一刻会存下事实快照, 漂移随之变化, 就地刷新
       onSaved?.()
     } catch (e) { console.error(e) } finally { setSaving(false) }
   }
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={onClose}>
-      <div className="bg-surface-2 border border-border rounded-xl w-full max-w-md p-4 md:p-5" onClick={e => e.stopPropagation()}>
+      <div className="bg-surface-2 border border-border rounded-xl w-full max-w-md max-h-[85vh] overflow-y-auto p-4 md:p-5" onClick={e => e.stopPropagation()}>
         <div className="flex items-baseline gap-2 mb-1">
           <h3 className="text-[14px] font-semibold text-text-bright m-0">买入逻辑</h3>
           <span className="text-[12px] text-text-bright">{name}</span>
           <span className="font-mono text-[10.5px] text-text-muted">{code}</span>
           <button onClick={onClose} className="ml-auto text-text-muted hover:text-text cursor-pointer">✕</button>
         </div>
-        <p className="text-[10.5px] text-text-muted mb-2">记下当初为什么买、看中什么、预期。以后问 AI「这只逻辑还成立吗」会照这个客观复盘。</p>
+        <p className="text-[10.5px] text-text-muted mb-2">记下当初为什么买、看中什么、预期。以后问 AI「这只逻辑还成立吗」会照这个客观复盘。每次改动都会连同当时的股价与基本面一起存档, 用来分辨改的是事实还是说法。</p>
         <textarea value={text} onChange={e => setText(e.target.value)} disabled={loading}
           rows={6}
           placeholder={loading ? '加载中…' : '例: 国产算力龙头, 中科院系国资背景; 看好 AI 数据中心需求; 等存储涨价兑现到业绩'}
@@ -1852,6 +2045,7 @@ function ThesisModal({ row, onClose, onSaved }) {
             {saving ? '保存中…' : '保存'}
           </button>
         </div>
+        <DriftPanel drift={drift} />
       </div>
     </div>
   )
