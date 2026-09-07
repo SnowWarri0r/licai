@@ -154,23 +154,86 @@ def _fetch_kpl_sync(day: str) -> list[dict]:
     return out
 
 
-async def sync_day(day: str, *, allow_kpl: bool = False) -> dict:
-    """抓某一天并落库。日常只走东财; allow_kpl=True 时东财空了才退到开盘啦(回填用)。"""
+def _fetch_kpl_themes(day: str) -> dict:
+    """按 code 取开盘啦的**题材标签**, 只为给东财涨停股补 theme —— 东财 getTopicZTPool 只给
+    行业(hybk)不给题材(光模块/CPO、数字货币这种炒作主线), 而题材才是打板复盘真正要看的那层。
+
+    与 _fetch_kpl_sync 的分工: 那个是"东财整天都够不着时用开盘啦顶上整行"(回填); 这个只抠出
+    code→题材一张小表, 回来贴到东财行上, 不碰东财的任何其它字段。别把两者合并 —— 一个是
+    兜底整行、一个是增补单列, 混在一起就说不清某一行的数到底谁给的了。
+
+    Day 在 apphis 这个接口上是生效的(实测 09-01/02/04 逐档家数与东财池逐日不同且对得上),
+    所以历史日与当日都能补。列 [12]=完整题材, [5]=短题材, 取前者、空则退后者。
+    """
+    import requests as _rq
+    import uuid as _uuid
+    s = _rq.Session()
+    s.trust_env = False
+    headers = {"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+               "User-Agent": "Dalvik/2.1.0 (Linux; U; Android 9; Build/PQ3A.190605.01141736)",
+               "Host": _KPL_HOST, "Connection": "Keep-Alive", "Accept-Encoding": "gzip"}
+    out: dict = {}
+    dry = 0
+    for pid in range(1, _KPL_MAX_PID + 1):
+        try:
+            r = s.post(f"https://{_KPL_HOST}/w1/api/index.php",
+                       data={"Order": "0", "a": "DailyLimitPerformance", "st": "2000",
+                             "c": "HisHomeDingPan", "PhoneOSNew": "1",
+                             "DeviceID": str(_uuid.uuid4()), "VerSion": _KPL_VER, "Index": "0",
+                             "PidType": str(pid), "apiv": "w42", "Type": "4", "Day": day},
+                       headers=headers, timeout=20)
+            info = (r.json() or {}).get("info") or []
+        except Exception:
+            info = []
+        rows = info[0] if info else []
+        if not rows:
+            dry += 1
+            if dry >= _KPL_DRY:
+                break
+            continue
+        dry = 0
+        for a in rows:
+            if not isinstance(a, list) or len(a) < 13 or not a[0]:
+                continue
+            theme = (a[12] or None) or (a[5] or None)
+            if theme:
+                out[str(a[0])] = str(theme).strip()
+    return out
+
+
+async def sync_day(day: str, *, allow_kpl: bool = False, with_theme: bool = False) -> dict:
+    """抓某一天并落库。日常只走东财; allow_kpl=True 时东财空了才退到开盘啦(回填用)。
+
+    with_theme=True 时, 东财抓成功后再从开盘啦按 code 补题材标签(东财不给题材)。默认关: 它每天
+    要多打 3-8 次 apphis, 只在收盘钩子(当日一次)开; 历史回填要题材再显式传 True。
+    """
     rows = await asyncio.to_thread(_fetch_em_sync, day)
     src = "em"
     if not rows and allow_kpl:
         rows = await asyncio.to_thread(_fetch_kpl_sync, day)
         src = "kpl"
     if not rows:
-        return {"date": day, "n": 0, "source": None, "saved": 0}
+        return {"date": day, "n": 0, "source": None, "saved": 0, "themed": 0}
+    themed = 0
+    # 只有东财行需要补(kpl 整行回填时 theme 已在 _fetch_kpl_sync 里取过); 且只填空的, 不覆盖。
+    if with_theme and src == "em" and any(not r.get("theme") for r in rows):
+        try:
+            tmap = await asyncio.to_thread(_fetch_kpl_themes, day)
+            for r in rows:
+                if not r.get("theme") and tmap.get(r["stock_code"]):
+                    r["theme"] = tmap[r["stock_code"]]
+                    themed += 1
+        except Exception:
+            pass          # 题材是增补项, 取不到不连累主流程 —— 东财那份照常落库
     saved = await save_limit_up_pool(rows)
-    return {"date": day, "n": len(rows), "source": src, "saved": saved}
+    return {"date": day, "n": len(rows), "source": src, "themed": themed, "saved": saved}
 
 
 async def sync_today() -> dict:
-    """收盘钩子用。封单额是盘口快照 —— 收盘后取到的才是定格值, 盘中取到的会变。"""
+    """收盘钩子用。封单额是盘口快照 —— 收盘后取到的才是定格值, 盘中取到的会变。
+    顺带从开盘啦补题材标签: 东财只给行业, 题材(炒作主线)得靠开盘啦。"""
     today = datetime.now(tz=_CST).strftime("%Y-%m-%d")
-    return await sync_day(today)
+    return await sync_day(today, with_theme=True)
 
 
 async def backfill(start: str, end: str, *, sleep: float = 0.25,
@@ -281,6 +344,20 @@ async def quality(day: str | None = None) -> dict:
                    "封单亿": _fmt_yi(sum(x["seal_amount"] or 0 for x in v))}
                   for k, v in by_ind.items()),
                  key=lambda x: -x["封单亿"])[:6]
+    # 题材扎堆: 与行业是两个维度 —— 行业是静态分类(多元金融/通信设备), 题材是当日炒作主线
+    # (数字货币/光模块/机器人), 后者才是打板情绪真正围着转的东西。开盘啦一只票挂多个题材
+    # (逗号分隔), 逐个拆开计数, 一只票可同时进多个题材桶。全天没有一条题材(老回填的档案)时
+    # 整块省掉, 不给空壳。
+    by_theme: dict[str, list] = {}
+    for r in rows:
+        for t in str(r["theme"] or "").replace("，", "、").split("、"):
+            t = t.strip()
+            if t:
+                by_theme.setdefault(t, []).append(r)
+    themes = sorted(({"题材": k, "只数": len(v),
+                      "封单亿": _fmt_yi(sum(x["seal_amount"] or 0 for x in v))}
+                     for k, v in by_theme.items()),
+                    key=lambda x: (-x["只数"], -x["封单亿"]))[:8] or None
     # 与上一个有档案的交易日比: 封单总额的方向比绝对值更说明问题
     hist = await list_limit_up_days(limit=2, end=day)
     prev = hist[0] if len(hist) > 1 else None
@@ -300,6 +377,7 @@ async def quality(day: str | None = None) -> dict:
                       "封成比": (round((r["seal_amount"] or 0) / r["amount"], 2)
                                  if r["amount"] else None)} for r in rows[:5]],
         "封单扎堆": ind,
+        "题材扎堆": themes,
         "较上一档案日": ({"日期": prev["date"],
                           "封单合计亿": _fmt_yi(prev["seal_sum"]),
                           "只数": prev["n"]} if prev else None),

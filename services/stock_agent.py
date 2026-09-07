@@ -2262,6 +2262,32 @@ async def _tool_trades(code: str = "", start: str = "", end: str = "") -> dict:
         return {"recent_trades": recs, "note": "最近成交(仅个股, 基金账本读取失败)。"}
 
 
+async def _tool_capital_allocation(code: str) -> dict:
+    """资本配置台账: 从股东拿了多少现金、分红回购还了多少、回购贵不贵。只陈述钱的流向, 不评价人。"""
+    from services.market_data import normalize_stock_code, is_a_share
+    raw = normalize_stock_code(_norm_code(code))
+    if not is_a_share(raw):
+        return {"error": "资本配置台账仅支持 A 股(分红送配与现金流量表口径只对得上 A 股)"}
+    from services.capital_allocation import ledger
+    try:
+        return await ledger(_norm_code(code))
+    except Exception as e:
+        return {"error": f"资本配置台账取数失败: {e}"}
+
+
+async def _tool_screen_quality(code: str) -> dict:
+    """去劣筛选 7 条: 用多年财报排除"不是一流公司"。只出排除/未被排除/判不了, 不出评分与买卖。"""
+    from services.market_data import normalize_stock_code, is_a_share
+    raw = normalize_stock_code(_norm_code(code))
+    if not is_a_share(raw):
+        return {"error": "去劣筛选仅支持 A 股(多年财报口径只对得上 A 股财务摘要)"}
+    from services.quality_screen import screen
+    try:
+        return await screen(_norm_code(code))
+    except Exception as e:
+        return {"error": f"去劣筛选取数失败: {e}"}
+
+
 async def _tool_get_thesis(code: str) -> dict:
     """读用户当初记的买入逻辑(thesis-tracker), 用于复盘'当初为什么买、逻辑还成不成立'。不带 code 看全部。"""
     from database import get_thesis, list_theses
@@ -2284,10 +2310,30 @@ async def _tool_get_thesis(code: str) -> dict:
             days_since = (today - _dt.date.fromisoformat(created)).days
     except Exception:
         pass
+    # 漂移: 逻辑改过几次、每次跟着什么改。改过的逻辑不能当"当初的逻辑"复盘 —— 现在这一版
+    # 可能已经是照着股价改过的说法, 拿它去对现状必然自洽。
+    dr = {}
+    try:
+        from services.thesis_drift import drift as _drift
+        d = await _drift(bare)
+        if d.get("有记录") and int(d.get("修订次数") or 0) > 1:
+            dr = {"逻辑漂移": {k: d.get(k) for k in
+                             ("修订次数", "首版日期", "末版日期", "逐次改写", "改写时浮亏轨迹",
+                              "自末版以来", "口径")}}
+        elif d.get("有记录"):
+            dr = {"逻辑漂移": {"修订次数": 1, "自末版以来": d.get("自末版以来"),
+                             "note": "只写过一版, 没有改写记录。"}}
+    except Exception as e:
+        dr = {"逻辑漂移": {"error": f"取数失败: {e}"}}
     return {"code": bare, "name": t.get("name"), "thesis": t.get("thesis"),
             "recorded_at": created, "updated_at": (t.get("updated_at") or "")[:10], "days_since": days_since,
-            "note": "thesis=用户记的买入逻辑; recorded_at=当初记下的日期, days_since=距今天数。"
-                    "复盘时先点明'这是你X天前/X个月前记的逻辑', 再逐条对照现价/基本面/消息/红线客观判定每条是否仍成立, 买卖结论由用户自定。"}
+            **dr,
+            "note": "thesis=用户记的买入逻辑(最新一版); recorded_at=当初记下的日期, days_since=距今天数。"
+                    "复盘时先点明'这是你X天前/X个月前记的逻辑', 再逐条对照现价/基本面/消息/红线客观判定每条是否仍成立, 买卖结论由用户自定。"
+                    "逻辑漂移里 逐次改写.判定.档 有三档: 跟事实走(基本面确实变了)/跟股价走(基本面没动只有股价动)/"
+                    "只改了说法。出现'跟股价走'要如实指出来并把当时的浮亏说出来 —— 这是事后合理化的迹象, "
+                    "但只陈述这个行为事实, 不引申成买卖结论。文本变化里的 改写/删除/新增 是逐句 diff, "
+                    "语义上是同义改写还是换了另一条理由, 由你读 diff 自己判断并说明依据。"}
 
 
 def _dca_desc(p: dict) -> str:
@@ -2830,6 +2876,16 @@ async def _tool_market_sentiment() -> dict:
                          "口径": p["口径"]}
         except Exception:
             relay = None
+        # 开盘啦情绪(第二数据源): 东财没有的跳水榜/多空风向标/官方市场评价。按统计交易日取, 失败整块省。
+        kpl = None
+        try:
+            from services.kaipanla_sentiment import sentiment as _kpl_senti
+            d = str(s.get("date") or "")
+            iso = f"{d[:4]}-{d[4:6]}-{d[6:8]}" if len(d) == 8 and d.isdigit() else d
+            k = await _kpl_senti(iso or None)
+            kpl = k or None
+        except Exception:
+            kpl = None
         return {"统计交易日": s.get("date_cn") or s.get("date"),
                 "mood": s.get("mood"), "mood_desc": s.get("mood_desc"),
                 "n_zt": s.get("n_zt"), "n_dt": s.get("n_dt"), "zbl_rate": s.get("zbl_rate"),
@@ -2841,6 +2897,7 @@ async def _tool_market_sentiment() -> dict:
                          if s.get("zdfb") else None),
                 "涨停质量": quality,
                 "接力": relay,
+                "开盘啦情绪": kpl,
                 "note": "涨停/连板/炸板等指标属于 统计交易日 这一天; money_effect=上一交易日涨停的票在统计交易日的平均涨幅。"
                         "落笔时间一律用统计交易日的具体日期(带星期), 相对词(今天/昨天)按它换算。"
                         "涨跌家数(全市场+沪/深/北分市场)是调用时点的最新快照: 交易时段=此刻盘中实况, 收盘后或休市日=最近收盘的定格, 按此措辞引用。"
@@ -2848,12 +2905,18 @@ async def _tool_market_sentiment() -> dict:
                         "(主板±10%在±10档, 创业/科创±20%在 涨>10%/跌>10% 档), 可用来说'跌是集中在-3%~-5%还是大面积深跌'这类结构。"
                         "涨停质量=逐只涨停的封单额(买一挂单额, 真实盘口量)聚合: 只数一样但封单合计差一倍就是两个盘, "
                         "描述打板情绪强弱时以它为主、只数为辅; 一字板多=共识硬, 尾盘才封多+开过板多=分歧大。为 null 表示那天还没落档, 此时别就封单下结论。"
+                        "涨停质量.封单扎堆是按**行业**(静态分类)聚合、题材扎堆是按**当日炒作主线**(数字货币/光模块/机器人这种)聚合——"
+                        "问'今天在炒什么主线/资金扎堆哪个题材/哪个方向最强'看题材扎堆(一只票可同时属多个题材, 已逐个拆开计数); "
+                        "题材扎堆为 null 表示那天档案是回填的、没有题材标签。"
                         "接力=锚点日(上一交易日)各股池今天的实际表现+连板梯队迁移: 昨日首板/昨日连板/昨日反复板三个池的今日平均涨幅与红盘数, "
                         "以及各连板高度的接力率(昨日涨停的票今日仍涨停的比例)。回答'昨天那批今天接住了吗/打板还赚不赚钱/情绪在升温还是退潮'看这块——"
                         "它是已发生的事实而非预测。注意'昨日反复板'(连板数=1 但这波已涨停过几次的高位老票)与'昨日首板'(真新面孔)要分开说, 两者表现常相反。"
                         "接力.历史分池均值=245 个交易日回放的同池长期均值, 是判断'今天这个数算大还是算小'的唯一标尺——单日只有几十只样本, 不比不出强弱; "
                         "其中『超出同日涨停均值pp』才是关键列(减掉了当天全市场涨停股的平均次日收益, 否则大盘涨的日子每个池都好看)。"
-                        "⚠ 高板池带生存者偏差: 3板的票是已通过两次接力筛选剩下的, 只能说'已经连上去的那批次日更强', 不能读成'买高板更好'。"}
+                        "⚠ 高板池带生存者偏差: 3板的票是已通过两次接力筛选剩下的, 只能说'已经连上去的那批次日更强', 不能读成'买高板更好'。"
+                        "开盘啦情绪=第二数据源(开盘啦App)补东财没有的三样: 跳水榜(冲高又跳水的票=资金出逃, 封单额的反面)、"
+                        "多空风向标(全市场量能较昨日同期%, 负=缩量退场)、以及一句开盘啦官方市场评价。其'实际涨停'与本项目东财口径可能差几只(封住到收盘 vs 盘中触及), "
+                        "两个源不一致时把两个数都说出来、指明口径差, 不要挑一个当唯一真值。为 null 表示开盘啦那边没取到(非交易日或接口抖动)。"}
     except Exception as e:
         return {"error": str(e)}
 
@@ -2865,6 +2928,19 @@ async def _tool_market_review() -> dict:
         return await asyncio.to_thread(scan_strong_stocks)
     except Exception as e:
         return {"error": str(e)}
+
+
+async def _tool_kpl_lhb(code: str, date: str = "") -> dict:
+    """开盘啦深度龙虎榜席位(带游资标签)。登录态失效时如实报 need_login。"""
+    from services.market_data import normalize_stock_code, is_a_share
+    raw = normalize_stock_code(_norm_code(code))
+    if not is_a_share(raw):
+        return {"error": "开盘啦龙虎榜仅支持 A 股"}
+    from services.kaipanla_lhb import stock_lhb
+    try:
+        return await stock_lhb(_norm_code(code), date or None)
+    except Exception as e:
+        return {"error": f"开盘啦龙虎榜取数失败: {e}"}
 
 
 async def _tool_seat_history(q: str) -> dict:
@@ -2907,6 +2983,18 @@ async def _tool_earnings(code: str = "") -> dict:
 
 
 _TOOLS = [
+    {"name": "calc", "description": "算术兜底(Decimal 精算, 禁止心算时用它)。三种 op: "
+     "eval=算表达式(expr, 只支持数字与 + - * / ( ) 和百分号, 如 '(4.36-3.96)/3.96*100'); "
+     "market_cap=市值验算(price 现价, shares 股本(亿股), 可选 reported 外部报出的市值(亿), unit 默认'亿')——"
+     "会告诉你算出来多少、与报出值偏差多少、以及是不是正好差 10/100/1000 倍(那基本就是单位或总股本/流通股本搞错了); "
+     "cross=多来源交叉验证(field 字段名, values 各来源的值数组, 可选 tol_pct 默认1)——返回离散度与是否一致。"
+     "凡是要写进结论的乘除、百分比、市值、同比环比, 都过这个工具再落笔; 它不做估值判断(不给内在价值/目标价)。",
+     "input_schema": {"type": "object", "properties": {
+         "op": {"type": "string", "enum": ["eval", "market_cap", "cross"]},
+         "expr": {"type": "string"}, "price": {"type": "number"}, "shares": {"type": "number"},
+         "reported": {"type": "number"}, "unit": {"type": "string"},
+         "field": {"type": "string"}, "values": {"type": "array", "items": {"type": "number"}},
+         "tol_pct": {"type": "number"}}, "required": []}},
     {"name": "resolve_stock", "description": "把股票名字或代码解析成标准代码+名称。用户报名字(如'中钨高新')时先调它拿代码。",
      "input_schema": {"type": "object", "properties": {"query": {"type": "string", "description": "股票名字或代码"}}, "required": ["query"]}},
     {"name": "get_quote", "description": "查个股实时行情: 现价/当日涨跌幅/开高低/成交额/换手。code 直接用 resolve_stock 返回的 code 原样传(A股是裸6位如 600667 / 000657; 港美股 HK.00700 / US.AAPL), 保持原样、A股无需 sh/sz 前缀。",
@@ -2923,6 +3011,10 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_lhb", "description": "龙虎榜: code+date→该股该上榜日的席位明细(买卖前五营业部名称+金额+席位画像: 机构/北向/常见量化通道, 回答'那天谁在买谁在砸/是量化砸的吗'); 仅 code→该股近期是否上榜及净买额/上榜原因; 都不传→最近交易日资金净买额榜(资金主线)。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选; 留空看全市场榜"}, "date": {"type": "string", "description": "可选 YYYY-MM-DD, 与code一起给=查该日席位明细"}}}},
+    {"name": "get_capital_allocation", "description": "资本配置台账(近10个年报期): 这家公司从股东手里**拿到**多少现金(股权融资实际到账)、**还回**多少(现金分红+已实施回购)、净额、窗口内累计分红占累计归母净利润的比例, 以及逐笔回购的金额/均价/回购当时的PB。回答'管理层对股东厚道吗/这公司只融资不分红吗/分红大方吗/回购是不是买在高位/管理层会不会花钱/资本配置怎么样'时用。融资额取的是现金流量表「吸收投资收到的现金」减子公司吸收少数股东投资 —— 换股吸收合并虽走定向增发但不进现金, 按这个口径自然不计入(拿发行额算会把一次换股并购算成天量抽血)。这是台账不是评价: 不打分不排名不给买卖也不评价管理层人品; 「拿得多还得少」本身不是缺点, 扩张期公司本该融资, 关键看融来的钱变成了什么(台账答不了这一步)。回购均价是当时名义价, 不要直接和现价比涨跌(中间分红送转会失真), 要比贵贱就用返回里的 回购PB 对 当前PB。要拉五个数据源约5-10秒。仅 A 股。",
+     "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "6位代码"}}, "required": ["code"]}},
+    {"name": "screen_quality", "description": "去劣筛选(7 条硬指标, 排除法): 10年平均ROE<8% / 5年累计自由现金流为负 / 利息覆盖<2倍 / 长期毛利率<15% / 经营现金流比净利润<0.7 / 长期净利率<5% / 5年真实股本膨胀>20% —— 命中任一条即「排除」。回答'这家质地怎么样/够不够一流/是不是好公司/长期能不能拿/财务健康吗'时用。它给的是**多年**财务(近30期年报聚合), get_fundamentals 只给最新一期, 问长期质地必须用这个。结论只有 被排除/未被排除/判不了 三种: **未被排除≠值得买**, 只表示这7条没抓住它; 判不了=缺数据, 不许当成通过。门限沿用 ai-berkshire 的约定而非本项目实测, 转述时要带这句。第7条已扣除送股转股(送转不改变持股比例, 不是稀释)。银行/保险的利息覆盖不适用, 且整套对金融股适配有限(返回里会提醒)。要拉三个数据源约5-10秒, 一次只查一只。仅 A 股。",
+     "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "6位代码"}}, "required": ["code"]}},
     {"name": "get_red_flags", "description": "客观红线清单: 扫近期公告(监管处罚/立案/退市风险/业绩预亏/商誉减值/交易所问询/违规占用/股东减持等) + 解禁抛压 + 基本面健康度, 列出有事实依据的风险点(按高/中/低排)。回答'这票有没有雷/风险/暴雷过吗/能不能放心拿'时用。命中=有该风险事实, 非卖出建议。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_company_profile", "description": "查公司是做什么的 + 什么背景: 公司简介(主营业务) + 细分行业 + 主营构成(各产品/地区收入占比和毛利率) + 控股/实际控制人/前三大股东(判断国资/央企/地方国企/中科院系/民营/外资性质)。回答'这家公司主营什么、靠什么赚钱、谁控股、什么背景、和同行业务差异'时必用。仅 A 股。",
@@ -2945,7 +3037,7 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"file_id": {"type": "string", "description": "附件 id, 从 附件列表 取"}, "name": {"type": "string", "description": "文件名(可选, 用于判断格式)"}}, "required": ["file_id"]}},
     {"name": "get_holdings", "description": "查用户当前**全部**在持: A股(代码/名称/股数/综合成本/持有天数) + 其他持仓(场内ETF/场外基金/理财/现金/加密/机器人, 含份额或金额; 有定投计划的基金带 定投计划 字段——频率+每期金额)。回答'我的持仓/我有什么/我持有啥/哪些在定投/跟我持仓的关系'时用——持仓不止A股, 用户还有基金/ETF/现金/理财/机器人。要各大类占比或现金理财结构分析则用 get_asset_allocation。",
      "input_schema": {"type": "object", "properties": {}}},
-    {"name": "get_thesis", "description": "读用户当初记录的买入逻辑(为什么买这只)。回答'我当初为什么买X、X的逻辑还成立吗、帮我复盘X'时用: 拿到 thesis 后对照现价/基本面/消息/红线, 客观说每条理由还成不成立。不传 code 看全部持仓的逻辑。仅当用户记过才有。",
+    {"name": "get_thesis", "description": "读用户当初记录的买入逻辑(为什么买这只)+ **逻辑漂移**。回答'我当初为什么买X、X的逻辑还成立吗、帮我复盘X'时用: 拿到 thesis 后对照现价/基本面/消息/红线, 客观说每条理由还成不成立。传 code 时另带漂移分析: 这段逻辑改过几版、每一版是跟着基本面改的还是**只跟着股价**改的(后者=事后合理化的迹象, 带当时的浮亏)、末版之后事实又变了什么、以及逐句 diff(改写/删除/新增)。复盘改过的逻辑必须先说它被改过 —— 拿照着股价改过的说法去对现状, 必然自洽。不传 code 看全部持仓的逻辑(不含漂移)。仅当用户记过才有。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选, 留空看全部"}}}},
     {"name": "get_asset_allocation", "description": "查用户全量资产配置与总盈亏: 总资产 + 各大类(股票/现金/理财/基金/加密/机器人)市值占比 + **全口径盈亏**(总盈亏/浮动/已实现, 与看板顶栏同一算法) + 现金理财逐笔明细(金额/年化/持有天数)。回答'我总共赚了/亏了多少、我的总盈亏、回本了吗、浮亏多少、已经亏掉多少'以及'现金理财怎么分配、应急金够不够、资产结构合不合理'时用——总盈亏只有这个工具有, get_holdings 只给成本与份额、不含盈亏。不涉及个股买卖。",
      "input_schema": {"type": "object", "properties": {}}},
@@ -2953,7 +3045,7 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"min_pct": {"type": "number", "description": "可选, 只看占总资产 ≥ 这个百分比的标的, 默认 0.5"}, "as_of": {"type": "string", "description": "可选, YYYY-MM-DD; 回看那天的持仓结构, 留空=当下"}}}},
     {"name": "get_trades", "description": "查用户成交记录(含个股/场内ETF/场外基金): 传 code→该标的买卖/加减仓/分红或申赎流水(A股另给综合成本/已实现盈亏/持有天数, 同日有买有卖=做T); 不传→最近全部成交(三类合并)。可用 start/end(YYYY-MM-DD)按成交日期筛区间('这周/6月/上个月'自己换算成日期传)。回答'我什么时候买的、成本多少、做过几次T、这票赚没赚、持有多久、最近/某段时间交易了啥、哪些买入是定投'时用(定投计划自动买入的行带 来源=定投)。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选; 留空看全部"}, "start": {"type": "string", "description": "可选, 起始日 YYYY-MM-DD"}, "end": {"type": "string", "description": "可选, 截止日 YYYY-MM-DD"}}}},
-    {"name": "get_market_sentiment", "description": "查大盘打板情绪(涨停数/连板高度/炸板率/赚钱效应/热点板块)、全市场涨跌家数(几家上涨几家下跌, 含沪/深/北分市场)和涨跌分布直方图(每1%一档的家数, 看下跌集中在哪个深度), 回答'今天普跌吗/多少家在跌/跌得有多深/赚钱效应', 判断是个股原因还是大盘普涨普跌; 也用于判断市场风格(打板赚钱效应高=追涨/动量有效; 炸板率高+亏钱效应=高位分歧/反转)。另带 涨停质量: 逐只涨停的封单额(=买一挂单额, 真实盘口量)聚合出封单合计/中位数/一字板只数/尾盘才封只数/开过板只数/封单最厚前五/封单扎堆行业 —— 只数只告诉你有多少票涨停, 封单额才告诉你那些涨停有多硬(同样52个涨停, 57亿封单和20亿封单是两个盘)。问'今天打板情绪强不强/涨停结实吗/封单怎么样/情绪比昨天好还是差'时看这一块。",
+    {"name": "get_market_sentiment", "description": "查大盘打板情绪(涨停数/连板高度/炸板率/赚钱效应/热点板块)、全市场涨跌家数(几家上涨几家下跌, 含沪/深/北分市场)和涨跌分布直方图(每1%一档的家数, 看下跌集中在哪个深度), 回答'今天普跌吗/多少家在跌/跌得有多深/赚钱效应', 判断是个股原因还是大盘普涨普跌; 也用于判断市场风格(打板赚钱效应高=追涨/动量有效; 炸板率高+亏钱效应=高位分歧/反转)。另带 涨停质量: 逐只涨停的封单额(=买一挂单额, 真实盘口量)聚合出封单合计/中位数/一字板只数/尾盘才封只数/开过板只数/封单最厚前五/封单扎堆(按行业)/题材扎堆(按当日炒作主线, 如数字货币·光模块·机器人) —— 只数只告诉你有多少票涨停, 封单额才告诉你那些涨停有多硬(同样52个涨停, 57亿封单和20亿封单是两个盘); 题材扎堆看资金主线扎在哪个方向。另带 开盘啦情绪(第二数据源): 跳水榜(冲高跳水=资金出逃)/多空风向标(量能较昨同期%)/开盘啦官方市场评价, 是东财口径之外的交叉印证。问'今天打板情绪强不强/涨停结实吗/封单怎么样/在炒什么主线/资金扎堆哪个题材/有没有票冲高跳水/量能是放还是缩/情绪比昨天好还是差'时看这一块。",
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_etf_xray", "description": "ETF 题材透视(避雷): 用基金季报真实成分股对照名称宣称的主题, 给出 主题匹配权重%/警示(贴题·有偏离·偏离显著)/行业分布/前十大成分(逐只标贴题与否)。query 传主题词(如 红利/家电/半导体)时 = 找该主题规模最大的前5只逐只透视(只看大规模的, 小盘ETF流动性差); 传6位基金代码 = 透视这一只; 留空 = 透视用户在持的全部场内ETF。回答'这只ETF名不副实吗/XX主题买哪只ETF靠谱/我的ETF成分是啥/有没有挂羊头卖狗肉'时用。宽基/风格类(红利等)会标注行业口径不适用, 看行业分布与成分即可。数据=季报(滞后一季度), 表述时注明。",
      "input_schema": {"type": "object", "properties": {"query": {"type": "string", "description": "主题词(红利/半导体) 或 6位基金代码; 留空=在持场内ETF"}}}},
@@ -2961,6 +3053,8 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_inst_flow", "description": "机构席位动向(龙虎榜机构专用席位买卖统计): code 留空=近30天全市场机构净买入/净卖出榜, 每行带 距最近/首次上榜日至今涨跌%——大额净买入+至今大跌 即市场说的'机构接在山顶', 净卖出+至今大跌='机构跑对了'; 传6位代码=该股机构席位事件时间线。回答'机构最近在买什么/XX是不是机构被套/机构在这只票上怎么操作的'时用。上榜日才披露(抽样非全量), 表述时注明。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "6位代码查单票; 留空看全市场榜"}}}},
+    {"name": "get_kpl_lhb", "description": "开盘啦深度龙虎榜(登录态): 传 code(+可选 date)→该股该日龙虎榜买卖席位明细, 每个席位带营业部名 + 买卖金额 + **游资分组标签**(知名游资/机构专用/量化抢筹这类身份识别)。与 get_lhb 的区别: get_lhb 走东财只给裸营业部名, 这个多一层游资身份标签, 回答'那天是哪个游资在买/是不是知名游资进场/机构还是量化'时更准。盘后16:30后当日数据才全。需开盘啦登录态, 没配或Token失效时返回里带 need_login=true, 此时提示用户去设置页填/更新开盘啦Token。仅 A 股, 已披露客观数据非买卖建议。",
+     "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "6位股票代码"}, "date": {"type": "string", "description": "可选 YYYY-MM-DD, 默认最近交易日"}}, "required": ["code"]}},
     {"name": "get_seat_history", "description": "龙虎榜席位追踪: 传席位名号(章盟主/陈小群/拉萨天团)或营业部名(子串/全名), 返回该席位近90天上榜明细(股票/净额/上榜后1·5·10日涨跌)+客观统计(上榜次数/净买入后1日与5日红盘率)。回答'章盟主最近在买什么/这个席位胜率怎么样/大佬说XX进场了帮我看看'时用。名号映射来自公开名录会漂移, 统计是纯历史描述, 表述时注明。",
      "input_schema": {"type": "object", "properties": {"q": {"type": "string", "description": "席位名号或营业部名"}}, "required": ["q"]}},
     {"name": "get_earnings", "description": "业绩预告(最新报告期, 当前=中报): code 留空=全市场预喜榜(预增/扭亏, 按归母净利同比幅度排)+预警榜(预减/首亏)+持仓关联清单(直持或经由在持ETF成分); 传6位代码=查该股预告。回答'哪些股票中报业绩好/最近业绩雷有哪些/我持仓相关的业绩怎么样/XX中报预告了吗'时用。未披露≠业绩差(预告只对大幅变动强制), 表述时注明; 正式财报数字用 get_fundamentals。",
@@ -2987,7 +3081,21 @@ _TOOLS = [
     {"type": "web_search_20250305", "name": "web_search", "max_uses": 12},
 ]
 
+async def _tool_calc(a: dict) -> dict:
+    """算术兜底。关键数字不许心算 —— 乘除/百分比/市值验算/多源交叉一律过这儿。"""
+    from services import calc_rigor as _cr
+    op = (a.get("op") or "eval").strip()
+    if op == "market_cap":
+        return _cr.verify_market_cap(a.get("price"), a.get("shares"),
+                                     a.get("reported"), a.get("unit") or "亿")
+    if op == "cross":
+        return _cr.cross_validate(a.get("field") or "该字段", a.get("values") or [],
+                                  float(a.get("tol_pct") or 1.0))
+    return _cr.evaluate(a.get("expr") or "")
+
+
 _EXECUTORS = {
+    "calc": lambda a: _tool_calc(a),
     "resolve_stock": lambda a: _tool_resolve_stock(a.get("query", "")),
     "get_quote": lambda a: _tool_get_quote(a.get("code", "")),
     "get_trend": lambda a: _tool_get_trend(a.get("code", ""), a.get("days", 20)),
@@ -2997,7 +3105,10 @@ _EXECUTORS = {
     "get_fund_flow": lambda a: _tool_fund_flow(a.get("code", "")),
     "get_lhb": lambda a: _tool_lhb(a.get("code", ""), a.get("date", "")),
     "get_seat_history": lambda a: _tool_seat_history(a.get("q", "")),
+    "get_kpl_lhb": lambda a: _tool_kpl_lhb(a.get("code",""), a.get("date","")),
     "get_red_flags": lambda a: _tool_red_flags(a.get("code", "")),
+    "screen_quality": lambda a: _tool_screen_quality(a.get("code", "")),
+    "get_capital_allocation": lambda a: _tool_capital_allocation(a.get("code", "")),
     "get_company_profile": lambda a: _tool_company_profile(a.get("code", "")),
     "get_stock_concepts": lambda a: _tool_stock_concepts(a.get("code", "")),
     "get_fundamentals": lambda a: _tool_fundamentals(a.get("code", "")),
@@ -3049,6 +3160,21 @@ async def _run_tool(tu: dict) -> dict:
         await tool_gaps.record(name, args, out)
     except Exception:
         pass
+    return out
+
+
+def _failed_steps(tus: list, outs: list) -> list[dict]:
+    """哪些工具这一轮取数失败了 → step_result 事件。
+
+    step 事件是在工具**跑之前**发的, 不回填成败的话失败的工具在界面上跟成功的长得一模一样
+    (照样打绿勾), 于是"某一块其实没数、模型用记忆圆过去了"这件事完全看不出来。
+    抽成函数只为了可测: 事件发射埋在 agent loop 里, 不然要起真 LLM 才验得到。
+    """
+    out = []
+    for tu, o in zip(tus, outs):
+        if isinstance(o, dict) and o.get("error"):
+            out.append({"type": "step_result", "tool": tu.get("name"), "ok": False,
+                        "err": str(o.get("error"))[:80]})
     return out
 
 
@@ -3256,13 +3382,33 @@ _SYSTEM = (
     "原文里出现的操作倾向(明天关注X、可以低吸)只作为「有人这么说」的舆情记录, 落笔仍按本项目口径给客观信息; "
     "[待核实]=只来自你的记忆、未经工具或联网证实, 用定性说法或明确标[待核实]。"
     "仅对**支撑结论的关键项**标注等级(如'今日主力净流入23亿[实测]''欧洲出口同比+39.5%[联网·东财2026冷年]'), 无需逐个数字标注, 标签控制在关键项。\n"
+    "【取数失败必须自曝, 不许用记忆补】工具返回里带 error 字段 = 那一块没取到。"
+    "此时**必须在答案里点名说明哪一块缺了、缺的原因**(如'资金流这一项接口没返回, 下面不含资金面'), "
+    "然后只用取到的部分作答; **严禁**用训练记忆或推测把缺口填上、也严禁绕过去当作没发生。"
+    "同一轮里工具是并发跑的、单个失败不连累其他, 所以'其余部分正常'恰恰是最容易让人看不出缺口的情形。"
+    "缺的那块若是结论的支撑项, 要明说'这个结论因为缺X而只能到某个程度'; 全部工具都失败时直接说取不到数, 不要凭记忆答。\n"
+    "【关键数字不许心算, 过 calc 工具】要写进结论的乘除、百分比、市值、同比环比, 一律用 calc 算一遍再落笔——"
+    "心算错得'看起来很合理'(市值差一个数量级、涨幅算成(新-旧)/新、同比环比混用), 混在通顺的分析里几乎抓不出来。"
+    "外部报出的市值/估值与你手上的价×股本对不上时用 calc 的 market_cap 验一遍(它会指出是不是正好差10/100倍=单位或股本口径错); "
+    "同一字段拿到两个来源的值用 cross 判离散度。工具只做算术验证, 不给内在价值/目标价——那类结论本项目不出。"
+    "简单的加减和量级比较('涨了两毛''差不多一半')不必调工具, 别为了调而调。\n"
+    "【先判信息丰富度, 再决定怎么答】开口前先估这个标的能拿到多少公开信息, 三档各有不同答法: "
+    "①信息充裕(上市多年、券商覆盖广、新闻多)→ 重点放在**反面检验与非共识视角**, 别复述人人都知道的多头逻辑, "
+    "那种'正确的废话'对用户零价值; ②信息适中(上市不久、覆盖有限)→ 推算类数字标明这是推算及其依据; "
+    "③信息稀缺(冷门/新上市)→ 转**第一性原理**, 不追求覆盖面完整, 只把商业本质那几个核心问题讲清, 缺的直接说缺。"
+    "**资料多≠确定性高, 资料少≠确定性低** —— 你能给出的把握度不等于事情本身的确定性, 别把'搜到很多'说成'因此更可靠'。\n"
     "【公司状态以代码表为准——上市/退市/更名先查一次】提到某公司'是否上市/未上市/尚未IPO/已退市/改了名'时, "
     "先用 resolve_stock 查代码表(收录全部 A股与场内基金, 每日刷新, 新股上市当周即入表)。"
     "查到代码即为已上市, 报出代码并用 get_quote 给实时价[实测]; 查不到再说'代码表未收录'并标[待核实], "
     "同时用 web_search 核一次。新股上市与公司更名正是记忆最容易过期的地方——"
     "实测长鑫科技 688825 于 2026-07-27 上市、日成交额上百亿, 而仅凭记忆会答'母公司未上市'。\n"
     "【多源校验——重要外部数字尽量核对第二来源】出口/销量/同比/份额/市占 这类影响结论的外部数字, 尽量检索一个独立来源核对: "
-    "本地工具值与联网值、或两条联网结果明显不一致时, 列出两个数值并指明'两源不一致, 倾向以X为准(原因)/暂存疑', 将分歧呈现给用户; 一致时正常引用。单一来源获取的如实标注[联网]单源, 据实说明未经交叉验证。\n"
+    "本地工具值与联网值、或两条联网结果明显不一致时, 列出两个数值并指明'两源不一致, 倾向以X为准(原因)/暂存疑', 将分歧呈现给用户; 一致时正常引用。单一来源获取的如实标注[联网]单源, 据实说明未经交叉验证。"
+    "核第二源时按市场配对取, 别两次都落在同一家的转载上: A股=东方财富 + 巨潮资讯网(cninfo.com.cn); "
+    "港股=aastocks.com + macrotrends.net; 美股=stockanalysis.com + macrotrends.net。"
+    "**原始披露优先于任何二手站点**——A股公告去 cninfo、港股去 hkexnews、美股去 SEC EDGAR; "
+    "二手站点之间对不上, 最常见的原因不是有一方算错, 而是口径不同(调整后 vs 报告口径、币种、合并范围、"
+    "TTM vs 最近财年), 所以发现不一致先看口径再论谁错。这些站点的数字一律 read_url 抓页面正文再引用, 不凭记忆报。\n"
     "【时效——分清'行情'和'消息面'两类数据, 各按各的节奏取】问'这两天/最近/周末在炒什么、情绪、还在发酵吗'这类时:\n"
     "  · 消息面(新闻/政策/社媒情绪/研报)不随交易日休市, 周末持续更新。周末时主动调用 web_search, 按日期检索周六周日及最近几天的新消息, 这是研判下周开盘前题材酝酿的关键窗口。检索到周末或近几天日期的新催化, 即为当前正在发酵的题材, 据实陈述。\n"
     "  · 【广覆盖·检索分散到不同板块】研判'在炒什么/情绪/发酵'这类全市场问题, 检索目标是覆盖尽量多的不同板块, 而非把最热的一个板块反复搜。先调 get_hot_concepts + get_sector_momentum 取当周实际活跃的板块/概念清单(通常有 6-10 个不同板块, 含强势与异动), 据此让每次 web_search 锚定一个不同板块, 一个板块仅搜一次。"
@@ -3275,6 +3421,9 @@ _SYSTEM = (
     "  · 仅在检索后确认近几天无新进展时, 表述为'近两天无新消息, 以下为更早的背景脉络', 即先检索后陈述。\n"
     "回答用简体中文, 简洁直接, 分点列出证据(数字), 工具数据支撑的客观结论明确给出。"
     "排版一律用 markdown 原生语法: 强调写 **粗体**, 标题写 ## , 列表写 - , 表格用 | 分隔, 引用角标写 ⟦N⟧——前端按这套语法渲染。"
+    "【不用 emoji】正文与表格里都不要出现 emoji 或彩色符号(✅❌⚠️🔴🟢📈 之类)。"
+    "用文字写判定: 表格的结论列直接写 通过/排除/判不了/不适用, 不要拿对错勾叉代替 ——"
+    "颜色和图标看着像结论其实没有信息量, 而且'⚠️判不了'读起来像一个警告, 它本来只是'数据不够'。"
 )
 
 
@@ -3302,8 +3451,8 @@ def _system() -> str:
 
 _TOOL_CN = {
     "resolve_stock": "解析代码", "get_quote": "查行情", "get_trend": "查走势",
-    "get_news": "查新闻", "get_intraday": "查分时", "get_announcements": "查公告", "get_fund_flow": "查资金流", "get_lhb": "查龙虎榜", "get_seat_history": "查席位历史",
-    "get_company_profile": "查公司主营", "get_red_flags": "查红线风险", "get_stock_concepts": "查所属概念", "get_fundamentals": "查基本面", "get_commodity": "查商品价",
+    "get_news": "查新闻", "get_intraday": "查分时", "get_announcements": "查公告", "get_fund_flow": "查资金流", "get_lhb": "查龙虎榜", "get_seat_history": "查席位历史", "get_kpl_lhb": "查深度龙虎榜",
+    "get_company_profile": "查公司主营", "get_red_flags": "查红线风险", "screen_quality": "跑去劣筛选", "get_capital_allocation": "查资本配置", "get_stock_concepts": "查所属概念", "get_fundamentals": "查基本面", "get_commodity": "查商品价",
     "get_peers": "同行对比", "get_shareholders": "查股东解禁",
     "get_holdings": "看持仓", "get_zsxq_digest": "读星球", "search_zsxq": "搜星球", "read_zsxq_file": "读星球附件", "get_thesis": "看买入逻辑", "get_asset_allocation": "看资产配置", "get_trades": "查成交记录", "get_market_sentiment": "看大盘情绪", "get_market_review": "复盘强势股", "get_inst_flow": "查机构动向", "get_earnings": "查业绩预告",
     "get_sector_momentum": "看板块动量", "get_hot_rank": "看资金热度",
@@ -3513,6 +3662,12 @@ async def ask_stock_stream(question: str, history: list | None = None, images: l
         outs = await asyncio.gather(*[_run_tool(tu) for tu in tus])
         for tu, out in zip(tus, outs):
             tool_outs.setdefault(tu.get("name") or "", []).append(out)
+        # 取数失败要**看得见**: step 事件是在工具跑之前发的, 之前失败的工具在界面上照样打绿勾,
+        # 模型完全可以用记忆把那一段圆过去而用户看不出来。这类"工具挂了但答案看着完整"是最难
+        # 发现的失败模式(ai-berkshire 的 issue #58 同一类问题: 后台 agent 联网被静默拦截,
+        # 却仍输出一份看起来完整的伪研究)。所以逐个回填成败。
+        for ev in _failed_steps(tus, outs):
+            yield ev
         for out in outs:
             if isinstance(out, dict) and out.get("chart_url"):
                 yield {"type": "chart", "url": out["chart_url"], "code": out.get("code", "")}

@@ -99,6 +99,44 @@ class ZsxqConfig(BaseModel):
         return out
 
 
+@router.get("/kpl")
+async def get_kpl_config():
+    """开盘啦登录态状态。绝不回传 Token 明文, 只给脱敏(UID + 是否有效)。"""
+    from services.kaipanla_auth import check
+    st = await check()
+    return {"configured": st.get("configured", False), "valid": st.get("valid", False),
+            "uid": st.get("uid", ""), "note": st.get("note", "")}
+
+
+class KplLogin(BaseModel):
+    uid: str
+    token: str
+
+
+@router.post("/kpl")
+async def set_kpl_config(data: KplLogin):
+    """存开盘啦 UID/Token(手机登录 App 抓的登录响应里那两个字段)。存 DB config, 存完探活。"""
+    from database import set_config
+    uid = (data.uid or "").strip()
+    tok = (data.token or "").strip()
+    if not uid or not tok:
+        return {"ok": False, "note": "UID 和 Token 都要填"}
+    await set_config("kpl_uid", uid)
+    await set_config("kpl_token", tok)
+    import os
+    os.environ.pop("KPL_UID", None); os.environ.pop("KPL_TOKEN", None)  # 让 credentials() 走新存的 DB 值
+    from services.kaipanla_auth import check
+    st = await check()
+    return {"ok": bool(st.get("valid")), "valid": st.get("valid", False), "note": st.get("note", "")}
+
+
+@router.delete("/kpl")
+async def clear_kpl_config():
+    from database import set_config
+    await set_config("kpl_uid", ""); await set_config("kpl_token", "")
+    return {"ok": True}
+
+
 @router.get("/zsxq")
 async def get_zsxq_config():
     """当前配置 + 端点健康度。绝不回传含 api_key 的 URL, 只给脱敏 host+path。"""

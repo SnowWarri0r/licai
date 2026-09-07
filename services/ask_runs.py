@@ -85,15 +85,20 @@ def _gc() -> None:
             _RUNS.pop(r.id, None)
 
 
-async def _drive(run: Run, agent_question: str, history: list, images: Optional[list]) -> None:
-    """把 agent 跑完, 事件塞进缓冲, 收尾落库。这里不碰任何请求对象 —— 前端在不在都一样跑。"""
+async def _drive(run: Run, events) -> None:
+    """把一条事件流跑完, 事件塞进缓冲, 收尾落库。这里不碰任何请求对象 —— 前端在不在都一样跑。
+
+    events 是一个**已经创建好的异步生成器**, 不再写死 ask_stock_stream: 多视角对抗那条链
+    (四层并行 + 综合, 实测一轮 3 分半)同样需要"后台跑 + 切页不断 + 历史里能翻", 那正是本
+    模块存在的理由, 没必要为它再造一套。只要产出同一套事件(step/answer/done)就能挂进来。
+    """
     answer = None
     sources: list = []
     steps: list = []
     charts: list = []
     cancelled = False
     try:
-        async for ev in ask_stock_stream(agent_question, history, images):
+        async for ev in events:
             run.events.append(ev)
             await run.flush()               # 合并窗口内不重复写
             t = ev.get("type")
@@ -129,10 +134,12 @@ async def _drive(run: Run, agent_question: str, history: list, images: Optional[
 async def start(question: str, *, agent_question: Optional[str] = None,
                 history: Optional[list] = None, images: Optional[list] = None,
                 session_id: Optional[int] = None, title: Optional[str] = None,
-                scope: str = "market", user_meta: Optional[dict] = None) -> Run:
+                scope: str = "market", user_meta: Optional[dict] = None,
+                events=None) -> Run:
     """建会话(如需) → 先把问题落库 → 起后台 task。返回后这一轮的命运已经跟前端无关了。
 
     question 是给人看的原话; agent_question 是真正喂给 agent 的(抽屉会前缀上"名称(代码): ")。
+    events 可传一条自定义事件流(如多视角对抗); 不传就走默认的问答 agent。
     """
     _gc()
     if not session_id:
@@ -146,7 +153,9 @@ async def start(question: str, *, agent_question: Optional[str] = None,
         await prune_ask_runs()
     except Exception:
         pass
-    run.task = asyncio.create_task(_drive(run, agent_question or question, history or [], images))
+    stream = events if events is not None else ask_stock_stream(
+        agent_question or question, history or [], images)
+    run.task = asyncio.create_task(_drive(run, stream))
     return run
 
 

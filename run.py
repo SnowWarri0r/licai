@@ -15,6 +15,20 @@ warnings.filterwarnings("ignore", message=".*OpenSSL.*", module="urllib3")
 for _k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"):
     os.environ.pop(_k, None)
 
+# 极简 .env 加载(不引第三方依赖): 只认 KEY=VALUE 行, 已在 os.environ 里的不覆盖。
+# 用于开盘啦登录态等 secrets —— .env 被 .gitignore 挡着, 不进库。
+_envf = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+if os.path.exists(_envf):
+    with open(_envf, encoding="utf-8") as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if not _line or _line.startswith("#") or "=" not in _line:
+                continue
+            _key, _val = _line.split("=", 1)
+            _key, _val = _key.strip(), _val.strip().strip('"').strip("'")
+            if _key and _key not in os.environ:
+                os.environ[_key] = _val
+
 import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles

@@ -299,3 +299,192 @@ def test_backtest_refuses_to_score_a_thin_bucket(temp_db):
     thin = [b for b in r["按封单额"] + r["按封成比"] if b["样本"] < 20]
     assert thin and all(b.get("结论") == "样本不足, 不给数" for b in thin)
     assert all("次日收盘涨跌%" not in b for b in thin)
+
+
+# ── 题材标签补全(东财只给行业, 题材从开盘啦补) ──────────
+
+def _kpl_theme_resp(rows_by_pid):
+    """造一个按 PidType 返回不同行的假 Session, 行是开盘啦的 23 列裸数组。"""
+    class _R:
+        def __init__(self, rows): self._rows = rows
+        def json(self): return {"info": [self._rows], "errcode": "0"}
+    class _S:
+        trust_env = True
+        def post(self, url, data=None, **k):
+            pid = int((data or {}).get("PidType", 0))
+            return _R(rows_by_pid.get(pid, []))
+    return _S
+
+
+def _kpl_row(code, theme_full="", theme_short=""):
+    a = [code, "名", 0, "", 1788485400, theme_short, 5e8, 1e9, 7e8, 9e8, -2e8,
+         1e9, theme_full, 5e9, 20.0, 1, 0, 1.0, "", "801584", 2, 21.0, 10]
+    return a
+
+
+def test_theme_fetch_prefers_full_then_short(monkeypatch):
+    """[12] 完整题材优先, 空则退 [5] 短题材; 两者都空的不进表(别塞空串当题材)。"""
+    import services.limit_up_pool as lup
+    import requests
+    rows = {1: [_kpl_row("600000", "数字货币、数字经济", "数字经济"),
+                _kpl_row("600001", "", "疫苗概念"),
+                _kpl_row("600002", "", "")]}
+    monkeypatch.setattr(lup, "_KPL_MAX_PID", 3)
+    monkeypatch.setattr(requests, "Session", _kpl_theme_resp(rows))
+    tmap = lup._fetch_kpl_themes("2026-09-04")
+    assert tmap["600000"] == "数字货币、数字经济"
+    assert tmap["600001"] == "疫苗概念"
+    assert "600002" not in tmap
+
+
+def test_theme_fetch_walks_pid_tiers_until_dry(monkeypatch):
+    """逐档取直到连续 _KPL_DRY 档为空 —— 连板会断档(3板可能0只), 不能一遇空就停。"""
+    import services.limit_up_pool as lup
+    import requests
+    rows = {1: [_kpl_row("600000", "甲")], 2: [], 3: [], 4: [_kpl_row("600003", "乙")]}
+    monkeypatch.setattr(lup, "_KPL_MAX_PID", 8)
+    monkeypatch.setattr(lup, "_KPL_DRY", 3)
+    monkeypatch.setattr(requests, "Session", _kpl_theme_resp(rows))
+    tmap = lup._fetch_kpl_themes("2026-09-04")
+    # pid2,3 空但没到 dry=3, pid4 还能取到; pid5,6,7 连空到 dry 才停
+    assert tmap.get("600003") == "乙" and tmap.get("600000") == "甲"
+
+
+def test_theme_fetch_drops_short_arrays(monkeypatch):
+    """协议变短(<13 列)时那一行不读 —— 题材在 [12], 读不到就别瞎取。"""
+    import services.limit_up_pool as lup
+    import requests
+    rows = {1: [["600000", "名", 0, "", 1788485400]]}   # 只有 5 列
+    monkeypatch.setattr(lup, "_KPL_MAX_PID", 1)
+    monkeypatch.setattr(requests, "Session", _kpl_theme_resp(rows))
+    assert lup._fetch_kpl_themes("2026-09-04") == {}
+
+
+def test_sync_day_fills_missing_theme_without_touching_em_fields(temp_db, monkeypatch):
+    """东财行补题材: theme 填上, 但东财自带的 industry/封单/换手一列都不能动, source 仍是 em。"""
+    import services.limit_up_pool as lup
+    from database import get_limit_up_pool
+
+    def _em(day):
+        return [_row("600000", "em", industry="通信设备", theme=None,
+                     broken_times=2, turnover=8.5, snap_date=day)]
+    monkeypatch.setattr(lup, "_fetch_em_sync", _em)
+    monkeypatch.setattr(lup, "_fetch_kpl_themes", lambda day: {"600000": "光模块、CPO/MPO"})
+    r = asyncio.run(lup.sync_day("2026-08-20", with_theme=True))
+    assert r["source"] == "em" and r["themed"] == 1
+    got = asyncio.run(get_limit_up_pool("2026-08-20"))[0]
+    assert got["theme"] == "光模块、CPO/MPO"
+    assert got["industry"] == "通信设备"        # 东财的行业没被题材顶掉
+    assert got["broken_times"] == 2 and got["turnover"] == 8.5 and got["source"] == "em"
+
+
+def test_sync_day_does_not_overwrite_existing_theme(temp_db, monkeypatch):
+    """东财行本来就带题材(极少数)时不覆盖 —— 只填空的。"""
+    import services.limit_up_pool as lup
+    from database import get_limit_up_pool
+    monkeypatch.setattr(lup, "_fetch_em_sync",
+                        lambda day: [_row("600000", "em", theme="自带题材", snap_date=day)])
+    called = {"n": 0}
+    def _themes(day):
+        called["n"] += 1
+        return {"600000": "别的题材"}
+    monkeypatch.setattr(lup, "_fetch_kpl_themes", _themes)
+    r = asyncio.run(lup.sync_day("2026-08-20", with_theme=True))
+    # 全部行都已有 theme → 根本不该去打开盘啦
+    assert called["n"] == 0 and r["themed"] == 0
+    assert asyncio.run(get_limit_up_pool("2026-08-20"))[0]["theme"] == "自带题材"
+
+
+def test_mixed_rows_only_fill_the_empty_ones(temp_db, monkeypatch):
+    """一行缺题材、一行已有: 进了补全循环, 但已有的那行不能被开盘啦顶掉。
+
+    (上一版只测"全部已有→不打接口", 那条被外层 any() 短路, 没真正守住循环内的判断 ——
+    去掉循环里的 not-empty 判断照样过。这条造一个混合行强制进循环, 把它钉死。)
+    """
+    import services.limit_up_pool as lup
+    from database import get_limit_up_pool
+    monkeypatch.setattr(lup, "_fetch_em_sync", lambda day: [
+        _row("600000", "em", theme="自带题材", snap_date=day),
+        _row("600001", "em", theme=None, snap_date=day)])
+    monkeypatch.setattr(lup, "_fetch_kpl_themes",
+                        lambda day: {"600000": "别的题材", "600001": "光模块、CPO/MPO"})
+    r = asyncio.run(lup.sync_day("2026-08-20", with_theme=True))
+    assert r["themed"] == 1                    # 只补了缺的那一行
+    by = {x["stock_code"]: x for x in asyncio.run(get_limit_up_pool("2026-08-20"))}
+    assert by["600000"]["theme"] == "自带题材"          # 已有的没被顶掉
+    assert by["600001"]["theme"] == "光模块、CPO/MPO"
+
+
+def test_theme_fetch_failure_does_not_sink_the_pool(temp_db, monkeypatch):
+    """题材是增补项: 开盘啦挂了, 东财那份照常落库, theme 留空。"""
+    import services.limit_up_pool as lup
+    from database import get_limit_up_pool
+
+    def _boom(day):
+        raise RuntimeError("apphis 超时")
+    monkeypatch.setattr(lup, "_fetch_em_sync",
+                        lambda day: [_row("600000", "em", theme=None, snap_date=day)])
+    monkeypatch.setattr(lup, "_fetch_kpl_themes", _boom)
+    r = asyncio.run(lup.sync_day("2026-08-20", with_theme=True))
+    assert r["n"] == 1 and r["themed"] == 0 and r["source"] == "em"
+    assert asyncio.run(get_limit_up_pool("2026-08-20"))[0]["theme"] is None
+
+
+def test_theme_off_by_default_for_backfill(temp_db, monkeypatch):
+    """默认不补题材 —— 历史回填每天多打好几次 apphis, 只该在收盘钩子(当日一次)开。"""
+    import services.limit_up_pool as lup
+    monkeypatch.setattr(lup, "_fetch_em_sync",
+                        lambda day: [_row("600000", "em", theme=None, snap_date=day)])
+    called = {"n": 0}
+    monkeypatch.setattr(lup, "_fetch_kpl_themes",
+                        lambda day: called.__setitem__("n", called["n"] + 1) or {})
+    asyncio.run(lup.sync_day("2026-08-20"))            # 不传 with_theme
+    assert called["n"] == 0
+
+
+# ── 题材扎堆(theme 维度, 区别于行业扎堆) ─────────────────
+
+def test_quality_clusters_by_theme_separately_from_industry(temp_db):
+    """题材和行业是两个维度: 行业是静态分类, 题材是当日炒作主线。
+
+    实测 09-04 行业扎堆最多才 4 只(饲料), 题材维度立刻看出主线是农业(11)/AI应用(6) ——
+    quality 里 by_ind 用的是 `industry or theme`, 东财行 industry 永远有值, theme 永远走不到,
+    所以题材必须单独聚一份。
+    """
+    from database import save_limit_up_pool
+    from services.limit_up_pool import quality
+    asyncio.run(save_limit_up_pool([
+        _row("600001", "em", industry="多元金融", theme="数字货币、数字经济", seal_amount=5e8),
+        _row("600002", "em", industry="通信设备", theme="数字货币、光模块", seal_amount=4e8),
+        _row("600003", "em", industry="种植业", theme="农业、种植业", seal_amount=1e8),
+    ]))
+    q = asyncio.run(quality("2026-08-20"))
+    themes = {t["题材"]: t for t in q["题材扎堆"]}
+    assert themes["数字货币"]["只数"] == 2          # 一票多题材, 逐个拆开各进各桶
+    assert themes["农业"]["只数"] == 1
+    assert set(themes) == {"数字货币", "数字经济", "光模块", "农业", "种植业"}
+    # 行业扎堆仍按行业, 没被题材污染
+    assert {i["名称"] for i in q["封单扎堆"]} == {"多元金融", "通信设备", "种植业"}
+
+
+def test_quality_theme_cluster_null_when_no_theme(temp_db):
+    """全是回填档案(没题材)时, 题材扎堆整块 null —— 不给一个装着'未归类'的空壳。"""
+    from database import save_limit_up_pool
+    from services.limit_up_pool import quality
+    asyncio.run(save_limit_up_pool([_row("600001", "kpl", theme=None),
+                                    _row("600002", "kpl", theme="")]))
+    assert asyncio.run(quality("2026-08-20"))["题材扎堆"] is None
+
+
+def test_quality_theme_ranks_by_count_then_seal(temp_db):
+    """题材扎堆按只数优先排(主线看广度), 只数相同再看封单额。"""
+    from database import save_limit_up_pool
+    from services.limit_up_pool import quality
+    asyncio.run(save_limit_up_pool([
+        _row("600001", "em", theme="甲", seal_amount=1e7),
+        _row("600002", "em", theme="甲", seal_amount=1e7),
+        _row("600003", "em", theme="乙", seal_amount=9e8),   # 只 1 只但封单巨大
+    ]))
+    q = asyncio.run(quality("2026-08-20"))
+    assert q["题材扎堆"][0]["题材"] == "甲"        # 2 只 > 1 只, 广度优先
+    assert q["题材扎堆"][1]["题材"] == "乙"

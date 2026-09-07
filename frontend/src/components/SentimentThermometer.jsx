@@ -122,6 +122,42 @@ export default function SentimentThermometer() {
         {d.mood_desc && <div className="text-[11.5px] text-text-dim mt-1 leading-relaxed">{d.mood_desc}</div>}
       </div>
 
+      {/* 开盘啦第二数据源: 跳水榜 / 多空风向标 / 官方市场评价 —— 东财没有的维度 */}
+      {d.kpl && (() => {
+        const k = d.kpl
+        const bl = k['多空风向标']?.['量能较昨同期%']
+        const sw = k['跳水榜']
+        const verdict = k['连板梯队']?.['市场评价']
+        const relay = k['连板梯队']?.['昨连板今表现%']
+        return (
+          <div className="mb-3 px-3 py-2 rounded-lg bg-surface-3/60 border border-border-subtle">
+            <div className="flex items-baseline gap-1.5 mb-1">
+              <span className="text-[10.5px] text-text-muted">开盘啦</span>
+              {verdict && <span className="text-[11.5px] text-text-bright">{verdict}</span>}
+            </div>
+            <div className="flex items-center gap-x-4 gap-y-1 flex-wrap text-[11px] text-text-dim">
+              {bl != null && (
+                <span title="全市场量能 vs 昨日同一时点">量能较昨
+                  <span className={`ml-1 font-mono ${bl > 0 ? 'text-bear-bright' : bl < 0 ? 'text-bull-bright' : ''}`}>
+                    {bl > 0 ? '+' : ''}{bl}%</span>
+                  <span className="text-text-muted ml-0.5">{bl < 0 ? '缩量' : bl > 0 ? '放量' : ''}</span>
+                </span>
+              )}
+              {relay != null && (
+                <span title="昨日连板股今日平均涨幅(高位资金接力赚钱效应)">昨连板今表现
+                  <span className={`ml-1 font-mono ${pctColor(relay)}`}>{relay > 0 ? '+' : ''}{relay}%</span>
+                </span>
+              )}
+              {sw?.只数 != null && (
+                <span title={(sw.前几只 || []).map(x => `${x.名称} ${x['回撤%']}%`).join('、')}>
+                  冲高跳水 <span className="font-mono text-bull-bright">{sw.只数}</span> 只
+                </span>
+              )}
+            </div>
+          </div>
+        )
+      })()}
+
       {/* AI 情绪解读 */}
       {aiLoading && !ai?.summary && <div className="text-[11.5px] text-text-dim mb-3">AI 分析市场情绪中…<span className="text-text-muted">(Opus 推理约 10–20 秒)</span></div>}
       {ai && ai.summary && (

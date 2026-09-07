@@ -575,6 +575,85 @@ function Ticks({ ticks, decimals = 2 }) {
 // ---------------------------------------------------------------------------
 // 主弹窗
 // ---------------------------------------------------------------------------
+// 开盘啦深度龙虎榜: 折叠, 点开才拉(登录态接口, 别每次开K线都打)。席位带游资身份标签。
+function LhbPanel({ code }) {
+  const [open, setOpen] = useState(false)
+  const [d, setD] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [err, setErr] = useState('')
+  const load = () => {
+    if (d || loading) return
+    setLoading(true); setErr('')
+    fetchJSON(`/api/market/kpl-lhb/${encodeURIComponent(code)}`)
+      .then(r => {
+        if (r?.need_login) { setErr('need_login'); return }
+        if (r?.error) { setErr(r.error); return }
+        setD(r)
+      })
+      .catch(e => setErr(String(e?.message || e)))
+      .finally(() => setLoading(false))
+  }
+  const toggle = () => { const n = !open; setOpen(n); if (n) load() }
+  const yi = v => v == null ? '' : `${v}亿`
+
+  return (
+    <div className="mt-3 border-t border-border-subtle pt-2">
+      <button onClick={toggle} className="flex items-center gap-1.5 text-[12px] text-text-dim hover:text-text cursor-pointer">
+        <span className={`transition-transform ${open ? 'rotate-90' : ''}`}>▸</span>
+        深度龙虎榜 <span className="text-[10px] text-text-muted">开盘啦 · 席位带游资标签</span>
+      </button>
+      {open && (
+        <div className="mt-2">
+          {loading && <div className="text-[11px] text-text-dim">拉取中…</div>}
+          {err === 'need_login' && (
+            <div className="text-[11px] text-warn">
+              需要开盘啦登录态 — 去 设置 → 开盘啦登录态 填一次 Token(手机登录响应里的 UserID/Token)。
+            </div>
+          )}
+          {err && err !== 'need_login' && <div className="text-[11px] text-text-muted">{err}</div>}
+          {d && !d.上榜 && <div className="text-[11px] text-text-muted">{d.note}</div>}
+          {d && d.上榜 && (
+            <div className="space-y-2">
+              <div className="text-[11px] text-text-dim flex flex-wrap gap-x-3">
+                <span>{d.date}</span>
+                <span>龙虎榜成交 <span className="font-mono text-text">{yi(d.龙虎榜成交额亿)}</span></span>
+                <span>买入合计 <span className="font-mono text-bear-bright">{yi(d.买入合计亿)}</span></span>
+                {d.连板数 > 0 && <span className="text-accent">{d.连板数}连板</span>}
+              </div>
+              {(d.席位 || []).map((b, i) => (
+                <div key={i} className="bg-surface-3 rounded p-2">
+                  {b.上榜原因 && <div className="text-[10.5px] text-text-muted mb-1">{Array.isArray(b.上榜原因) ? b.上榜原因.join(' · ') : b.上榜原因}</div>}
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                    <div>
+                      <div className="text-[10px] text-bear-bright mb-0.5">买入 {yi(b.买入合计亿)}</div>
+                      {(b.买入席位 || []).slice(0, 5).map((s, j) => (
+                        <div key={j} className="text-[10.5px] text-text-dim flex justify-between gap-2">
+                          <span className="truncate">{s.营业部}{s.标签 && <span className="text-accent ml-1">{s.标签.join('/')}</span>}</span>
+                          <span className="font-mono text-bear-bright shrink-0">{yi(s.买入亿)}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <div>
+                      <div className="text-[10px] text-bull-bright mb-0.5">卖出 {yi(b.卖出合计亿)}</div>
+                      {(b.卖出席位 || []).slice(0, 5).map((s, j) => (
+                        <div key={j} className="text-[10.5px] text-text-dim flex justify-between gap-2">
+                          <span className="truncate">{s.营业部}{s.标签 && <span className="text-accent ml-1">{s.标签.join('/')}</span>}</span>
+                          <span className="font-mono text-bull-bright shrink-0">{yi(s.卖出亿)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ))}
+              <div className="text-[10px] text-text-muted">开盘啦深度龙虎榜 · 标签为游资/机构身份识别 · 已披露数据不构成买卖建议</div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function StockKlineModal({ holding, onClose }) {
   const [tdxOn, setTdxOn] = useState(false)
   const [tab, setTab] = useState('日')            // 分时 | 日 | 周 | 月
@@ -721,6 +800,8 @@ export default function StockKlineModal({ holding, onClose }) {
             </div>
           )}
         </div>
+
+        {isA && <LhbPanel code={code} />}
 
         <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-text-dim">
           {cost != null && <span>成本 <span className="text-accent font-mono">{fmtVal(cost)}</span></span>}

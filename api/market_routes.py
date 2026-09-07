@@ -920,6 +920,16 @@ async def market_sentiment():
             r["volume"]["markets_intraday"] = mv["intraday"]
         except Exception:
             pass
+        # 开盘啦第二数据源: 东财没有的跳水榜/多空风向标/官方市场评价。失败不影响东财老口径。
+        try:
+            from services.kaipanla_sentiment import sentiment as _kpl_senti
+            d = str(r.get("date") or "")
+            iso = f"{d[:4]}-{d[4:6]}-{d[6:8]}" if len(d) == 8 and d.isdigit() else d
+            k = await _kpl_senti(iso or None)
+            if k:
+                r["kpl"] = k
+        except Exception:
+            pass
         _senti_cache["s"] = (r, _time.time())
         return r
     return {"date": None, "mood": "数据不足", "n_zt": 0}
@@ -1265,3 +1275,30 @@ async def market_pool_backtest(days: int = 300):
     """各股池的次日兑现度(245 个归类日回放): 含同日基准超额与幅度对照。"""
     from services.stock_tags import pool_backtest
     return await pool_backtest(days)
+
+
+@router.get("/capital-allocation/{code}")
+async def market_capital_allocation(code: str, name: str = ""):
+    """资本配置台账: 窗口内从股东拿到多少现金、分红回购还了多少、分红率、回购逐笔与回购PB。"""
+    from services.capital_allocation import ledger
+    return await ledger(code, name)
+
+
+@router.get("/quality-screen/{code}")
+async def market_quality_screen(code: str, name: str = ""):
+    """去劣筛选(7 条硬指标): 只出"被排除/未被排除/判不了", 不出评分也不出买卖。
+
+    要拉 30 期年报 + 利润表 + 分红送配三个源, 约 5-10 秒, 所以不做批量。
+    """
+    from services.quality_screen import screen
+    return await screen(code, name)
+
+
+@router.get("/kpl-lhb/{code}")
+async def market_kpl_lhb(code: str, date: str = ""):
+    """开盘啦深度龙虎榜(登录态): 席位明细 + 游资身份标签。
+
+    未配开盘啦登录态 / Token 失效时返回 need_login=true, 前端据此提示去设置页填 Token。
+    """
+    from services.kaipanla_lhb import stock_lhb
+    return await stock_lhb(code, date or None)

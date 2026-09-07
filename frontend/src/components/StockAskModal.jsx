@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { MiniMarkdown, SourcesBlock, ToolCallStrip, startRun, followRun, liveRuns, cancelRun } from './askShared'
+import { MiniMarkdown, SourcesBlock, ToolCallStrip, startRun, startDeepDive, followRun, liveRuns, cancelRun } from './askShared'
 import ImageZoom from './ImageZoom'
 
 function pctColor(v) {
@@ -14,6 +14,19 @@ function pctColor(v) {
 // 也接着落在那条会话里)。只留最近几只, 免得把长对话无限攒在内存里。
 // run 也记在这儿: 关抽屉时那一轮还在服务端跑(执行权不在浏览器), 重开照游标接着看。
 // 注: 刷新整页会清掉这份内存缓存 —— 但 run 还活着, 重新打开抽屉会去服务端把它捞回来。
+// 抽屉宽度: 可拖拽 + 记住。原来写死 520px —— 深挖那份输出里有多列表格(可验证的事实、同业
+// PE/PB 排名), 520 下被横向截断, 要左右拖着看。默认调到 880, 但**不再由我拍一个数**:
+// 左边缘可拖, 拖完记进 localStorage, 下次开还是这个宽度。
+const DRAWER_W_KEY = 'ask_drawer_w'
+const DRAWER_W_MIN = 420
+const DRAWER_W_DEFAULT = 880
+
+function readDrawerW() {
+  const n = Number(localStorage.getItem(DRAWER_W_KEY))
+  if (!n || Number.isNaN(n)) return DRAWER_W_DEFAULT
+  return Math.min(Math.max(n, DRAWER_W_MIN), window.innerWidth - 40)
+}
+
 const DRAWER_CACHE = new Map()      // code -> { history, sessionId, run }
 const DRAWER_CACHE_MAX = 8
 
@@ -78,6 +91,14 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
 
   const handleEv = (ev) => {
     if (ev.type === 'step') patchLast(it => ({ ...it, steps: [...it.steps, { tool: ev.tool, label: ev.label, arg: ev.arg }] }))
+    // 取数失败要回填到对应的 chip 上 —— step 是工具跑之前发的, 不回填的话失败的工具
+    // 也会跟成功的一样打绿勾, 界面上看不出这一块其实没数
+    if (ev.type === 'step_result' && ev.ok === false) patchLast(it => ({
+      ...it,
+      steps: it.steps.map((s, i) =>
+        s.tool === ev.tool && !s.failed && !it.steps.slice(i + 1).some(x => x.tool === ev.tool && !x.failed)
+          ? { ...s, failed: true, err: ev.err } : s),
+    }))
     else if (ev.type === 'chart') patchLast(it => ({ ...it, charts: [...it.charts, ev.url] }))
     else if (ev.type === 'sources') patchLast(it => ({ ...it, sources: [...it.sources, ...(ev.sources || [])] }))
     else if (ev.type === 'answer') { patchLast(it => ({ ...it, answer: ev.text })); typewriter(ev.text || '') }
@@ -148,6 +169,23 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
     }
   }
 
+  // 四层交叉深挖。显式入口 —— 一轮 5 次 LLM、约 3 分半, 不能让模型自己决定要不要跑。
+  // 走的是同一套 run + 跟随机制, 所以中途关抽屉/切页它照样跑完并落进历史。
+  const deepDive = async () => {
+    if (loading || !stock) return
+    const label = `深挖 ${stock.name}: 四层交叉(生意/数/局/雷)`
+    setLoading(true); follow.current = true
+    setHistory(h => [...h, { q: label, steps: [], answer: null, typed: '', done: false, sources: [], charts: [] }])
+    try {
+      const r = await startDeepDive({ code: stock.code, name: stock.name, session_id: sessionId.current })
+      if (r.error) throw new Error(r.error)
+      sessionId.current = r.session_id
+      attach(r.run_id, 0)
+    } catch (e) {
+      patchLast(it => ({ ...it, err: `深挖没跑起来: ${e.message}`, done: true })); setLoading(false)
+    }
+  }
+
   // 重开抽屉: 上次那一轮如果还在跑(关抽屉不会杀它), 接着跟看
   const resume = async () => {
     if (runRef.current) { attach(runRef.current.id, runRef.current.cursor); return true }
@@ -196,12 +234,47 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // ── 左边缘拖拽改宽 ──
+  const [drawerW, setDrawerW] = useState(readDrawerW)
+  const drawerWRef = useRef(drawerW)
+  drawerWRef.current = drawerW
+  const dragFrom = useRef(null)
+  useEffect(() => {
+    const onMove = (e) => {
+      if (!dragFrom.current) return
+      const { x0, w0 } = dragFrom.current
+      // 抽屉贴右侧, 所以往左拖 = 变宽 → 用 x0 - clientX
+      const w = Math.min(Math.max(w0 + (x0 - e.clientX), DRAWER_W_MIN), window.innerWidth - 40)
+      setDrawerW(w)
+    }
+    const onUp = () => {
+      if (!dragFrom.current) return
+      dragFrom.current = null
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+      try { localStorage.setItem(DRAWER_W_KEY, String(drawerWRef.current)) } catch {}
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp) }
+  }, [])
+  const startDrag = (e) => {
+    e.preventDefault(); e.stopPropagation()
+    dragFrom.current = { x0: e.clientX, w0: drawerWRef.current }
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'      // 不然拖的时候会把答案文字全选中
+  }
+
   if (!stock) return null
 
   return createPortal(
     <div className={`fixed inset-0 z-[200] flex justify-end bg-black/60 backdrop-blur-sm transition-opacity duration-300 ${shown ? 'opacity-100' : 'opacity-0'}`} onClick={close}>
-      <div className={`bg-surface-2 border-l border-border w-[520px] max-w-[94vw] h-full flex flex-col shadow-2xl transition-transform duration-300 ease-out ${shown ? 'translate-x-0' : 'translate-x-full'}`}
+      <div style={{ width: drawerW }}
+        className={`relative bg-surface-2 border-l border-border max-w-[96vw] h-full flex flex-col shadow-2xl transition-transform duration-300 ease-out ${shown ? 'translate-x-0' : 'translate-x-full'}`}
         onClick={e => e.stopPropagation()}>
+        {/* 左边缘拖拽把手: 只有 6px 宽, hover 才显色, 不抢内容的注意力 */}
+        <div onMouseDown={startDrag} title="拖动改变宽度(会记住)"
+          className="absolute left-0 top-0 h-full w-[6px] -ml-[3px] cursor-col-resize z-10 hover:bg-accent/40 transition-colors" />
         {/* header */}
         <div className="flex items-baseline gap-2 px-4 py-3 border-b border-border-subtle shrink-0">
           <span className="text-[15px] font-semibold text-text-bright">{stock.name}</span>
@@ -210,7 +283,12 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
             <span className={`text-[13px] font-mono font-semibold ${pctColor(stock.pct)}`}>{stock.pct >= 0 ? '+' : ''}{stock.pct}%</span>
           )}
           {stock['行业'] && <span className="text-[10.5px] text-text-dim ml-1">{stock['行业']}</span>}
-          <button onClick={close} className="ml-auto text-text-dim hover:text-text text-[20px] leading-none px-1">×</button>
+          <button onClick={deepDive} disabled={loading}
+            title="四层视角在同一份事实上各自成文, 再挑出彼此的冲突点与证伪条件。约 3 分半, 期间可以关掉抽屉"
+            className="ml-auto text-[11px] px-2 py-[3px] rounded-full border border-accent/40 bg-accent/10 text-accent hover:bg-accent/20 disabled:opacity-40 disabled:cursor-not-allowed">
+            深挖
+          </button>
+          <button onClick={close} className="text-text-dim hover:text-text text-[20px] leading-none px-1">×</button>
         </div>
 
         {/* 对话流 */}
