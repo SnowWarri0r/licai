@@ -66,8 +66,10 @@ function EtfBlock({ x }) {
   )
 }
 
-export default function EtfXray() {
-  const [tab, setTab] = useState('mine')      // mine | theme
+// mode: 'mine' = 我的ETF暴露(归【我的·配置建议】) | 'theme' = 题材ETF查询(归【市场·板块】)
+// 两种模式共用取数与渲染骨架, 只是入口和默认视角不同。
+export default function EtfXray({ mode = 'mine' }) {
+  const tab = mode
   const [theme, setTheme] = useState('')
   const [input, setInput] = useState('')
   const [data, setData] = useState(null)
@@ -86,29 +88,28 @@ export default function EtfXray() {
     finally { setLoading(false) }
   }, [])
 
-  useEffect(() => { if (tab === 'mine') load('mine') }, [tab, load])
-
   const goTheme = (th) => {
     const t = (th || '').trim()
     if (!t) return
-    setTab('theme'); setTheme(t); setInput(t); load('theme', t)
+    setTheme(t); setInput(t); load('theme', t)
   }
+
+  useEffect(() => {
+    if (mode === 'mine') load('mine')
+    else if (QUICK.length) goTheme(QUICK[0])
+  // goTheme 稳定, 首屏只跑一次
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, load])
 
   return (
     <div className="bg-surface-2 border border-border rounded-xl p-4 md:p-5">
       <div className="flex items-center gap-2 mb-2 flex-wrap">
-        <h3 className="text-[14px] font-semibold text-text-bright m-0">ETF 题材透视</h3>
-        <span className="text-[10.5px] text-text-muted">季报真实成分 vs 名称主题 · 避雷挂羊头</span>
-        <div className="flex gap-1 ml-auto">
-          <button onClick={() => setTab('mine')}
-            className={`text-[11px] px-2 py-0.5 rounded border ${tab === 'mine' ? 'bg-accent/20 text-accent border-accent/40' : 'bg-surface-3 text-text-dim border-transparent hover:text-text'}`}>
-            我的ETF
-          </button>
-          <button onClick={() => { setTab('theme'); if (theme) load('theme', theme) }}
-            className={`text-[11px] px-2 py-0.5 rounded border ${tab === 'theme' ? 'bg-accent/20 text-accent border-accent/40' : 'bg-surface-3 text-text-dim border-transparent hover:text-text'}`}>
-            查主题
-          </button>
-        </div>
+        <h3 className="text-[14px] font-semibold text-text-bright m-0">
+          {mode === 'mine' ? '我的 ETF 暴露' : '题材 ETF 透视'}
+        </h3>
+        <span className="text-[10.5px] text-text-muted">
+          {mode === 'mine' ? '我持有的 ETF 真实成分 vs 名称主题' : '季报真实成分 vs 名称主题 · 避雷挂羊头'}
+        </span>
       </div>
 
       {tab === 'theme' && (
