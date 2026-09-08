@@ -468,6 +468,10 @@ export default function Rankings() {
               </button>
             ))}
           </div>
+          {/* 查股框/取数日期/刷新 只对个股列表页签有意义: 整卡页签没有右侧 K 线面板,
+              选中的股票无处可去(pickCand 只 setSelected), 留着就是三个点了没反应的死控件。 */}
+          {!isCard && (
+          <>
           <div className="relative shrink-0">
             <input value={sq} onChange={e => onSearch(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && sqCands.length) pickCand(sqCands[0]); if (e.key === 'Escape') { setSq(''); setSqCands([]) } }}
@@ -495,6 +499,8 @@ export default function Rankings() {
           </div>
           <span className="text-[10px] text-text-muted whitespace-nowrap shrink-0">{(tab === 'structure' ? structure?.as_of : tab === 'lhb' ? lhbDaily?.date : data?.as_of)?.slice(5, 11) || ''}</span>
           <button onClick={load} title="刷新" className="text-[10.5px] px-1.5 py-0.5 rounded border border-border text-text-dim hover:text-text shrink-0">刷新</button>
+          </>
+          )}
         </div>
 
         {/* 板块筛选 */}
