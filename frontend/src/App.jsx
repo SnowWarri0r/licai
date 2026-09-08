@@ -137,7 +137,8 @@ export default function App() {
             <div className={`${PAD} space-y-3 md:space-y-4`}>
               <MorningBriefing />
               <SentimentThermometer />
-              <EtfXray />
+              <EtfXray mode="mine" />
+              <EtfXray mode="theme" />
               <SectorShare />
               <SectorMatrix />
               <KplInstTheme />
