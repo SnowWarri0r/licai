@@ -166,7 +166,8 @@ export default function App() {
                   单独上页会浮在背景上。这里补上与同页 BenchmarkCompare/SectorRadar
                   同款的 section 外壳 + 标题带; [&>div]:mb-0 抹掉组件自带的 mb-3,
                   否则会和页面 space-y-3 叠成双份间距。 */}
-              <section className="rounded-xl border border-border bg-surface/60 overflow-hidden">
+              <section className="rounded-xl border border-border bg-surface/60 overflow-hidden"
+                style={{ animation: 'fade-up 0.4s ease-out' }}>
                 <div className="px-3 md:px-5 py-3 border-b border-border flex items-baseline gap-2 flex-wrap"
                   style={{ background: 'linear-gradient(180deg, var(--color-surface-2), var(--color-surface))' }}>
                   <h3 className="text-[13px] font-semibold text-text-bright m-0">盈亏曲线</h3>
@@ -177,7 +178,8 @@ export default function App() {
                 </div>
               </section>
 
-              <section className="rounded-xl border border-border bg-surface/60 overflow-hidden">
+              <section className="rounded-xl border border-border bg-surface/60 overflow-hidden"
+                style={{ animation: 'fade-up 0.4s ease-out' }}>
                 <div className="px-3 md:px-5 py-3 border-b border-border flex items-baseline gap-2 flex-wrap"
                   style={{ background: 'linear-gradient(180deg, var(--color-surface-2), var(--color-surface))' }}>
                   <h3 className="text-[13px] font-semibold text-text-bright m-0">同源风险</h3>
