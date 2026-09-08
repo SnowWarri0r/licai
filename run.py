@@ -40,7 +40,6 @@ from services import llm_client
 from api.portfolio_routes import router as portfolio_router
 from api.market_routes import router as market_router
 from api.settings_routes import router as settings_router
-from api.unwind_routes import router as unwind_router
 from api.assets_routes import router as assets_router
 from api.briefing_routes import router as briefing_router
 from api.sector_routes import router as sector_router
@@ -188,7 +187,6 @@ app.mount("/assets", StaticFiles(directory="static/assets"), name="assets")
 app.include_router(portfolio_router)
 app.include_router(market_router)
 app.include_router(settings_router)
-app.include_router(unwind_router)
 app.include_router(assets_router)
 app.include_router(briefing_router)
 app.include_router(sector_router)
