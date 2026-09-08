@@ -20,6 +20,8 @@ import SectorShare from './components/SectorShare'
 import SectorMatrix from './components/SectorMatrix'
 import SectorOpportunities from './components/SectorOpportunities'
 import EtfXray from './components/EtfXray'
+// 市场·大盘股池
+import MarketPools from './components/MarketPools'
 // 市场·资金机构 / 宏观 / 资讯
 import KplInstTheme from './components/KplInstTheme'
 import MacroDashboard from './components/MacroDashboard'
@@ -216,6 +218,15 @@ export default function App() {
             // 窗口一变高、顶栏一换行就对不上, 底下留出一条谁也用不上的空带。
             <div className={`${PAD} h-full flex flex-col`}>
               <Rankings />
+            </div>
+          )}
+
+          {/* 大盘·股池: 三列卡 + 连板梯队 + 历史分池回测表, 是"昨日涨停今天怎么样"的复盘面板,
+              信息形态跟榜单那种左列表+右K线天生冲突 —— 所以单独上页, 满宽铺开。
+              MarketPools 的 onPick 可选, 不传就用它自带的 K 线弹窗。 */}
+          {view === 'pools' && (
+            <div className={`${PAD} space-y-3 md:space-y-4`}>
+              <MarketPools />
             </div>
           )}
 
