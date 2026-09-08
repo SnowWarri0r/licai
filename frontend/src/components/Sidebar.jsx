@@ -52,12 +52,14 @@ export default function Sidebar({ active, onNav, open, onToggle }) {
       <nav className="flex-1 py-2 overflow-y-auto">
         {NAV.map((sec, si) => (
           <div key={sec.group || `misc-${si}`}>
-            {/* 展开时显示分组标题; 折叠时只剩图标, 文字无处安放 → 退化成一条分隔线 */}
+            {/* 展开时显示分组标题; 折叠时只剩图标, 文字无处安放 → 退化成一条分隔线。
+                分隔线的职责是"隔开两组", 首组之前无组可隔 —— 所以 si > 0 才画,
+                否则会在收起按钮的 border-b 下面多出一条什么都没隔开的发丝线。 */}
             {sec.group
               ? (open
                   ? <div className="px-4 pt-3 pb-1 text-[10px] tracking-wider text-text-muted">{sec.group}</div>
-                  : <div className="mx-3 my-2 border-t border-border-subtle" />)
-              : <div className="mx-3 my-2 border-t border-border-subtle" />}
+                  : si > 0 && <div className="mx-3 my-2 border-t border-border-subtle" />)
+              : si > 0 && <div className="mx-3 my-2 border-t border-border-subtle" />}
             {sec.items.map(n => {
               const on = active === n.key
               return (
