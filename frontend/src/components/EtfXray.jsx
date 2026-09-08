@@ -97,7 +97,7 @@ export default function EtfXray({ mode = 'mine' }) {
   useEffect(() => {
     if (mode === 'mine') load('mine')
     else if (QUICK.length) goTheme(QUICK[0])
-  // goTheme 稳定, 首屏只跑一次
+  // 依赖 [mode, load] 恒定, 首屏只跑一次; goTheme 每次渲染重建但不入依赖
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, load])
 

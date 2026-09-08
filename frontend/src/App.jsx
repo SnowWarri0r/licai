@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { useWebSocket } from './hooks/useWebSocket'
 import { api } from './hooks/useApi'
 import Header from './components/Header'
-import Sidebar from './components/Sidebar'
+import Sidebar, { NAV } from './components/Sidebar'
 import Dashboard from './components/Dashboard'
 import RiskBanner from './components/RiskBanner'
 import StaleBundleNotice from './components/StaleBundleNotice'
@@ -39,13 +39,29 @@ import AITradeReview from './components/AITradeReview'
 
 // 合法 view key。setView 与 hash 初始化共用 —— 只在初始化校验的话,
 // 运行时传入非法 key(历史上有已删视图的残留调用)会让内容区渲染成空白。
-// 顺序与侧栏分组一致, 便于对读。
-const VIEWS = [
-  'portfolio', 'cashflow', 'performance', 'allocation', 'review',
-  'open', 'sector', 'rankings', 'capital', 'macro', 'news',
-  'ask', 'settings',
-]
+// 直接从侧栏 NAV 派生, 不再手抄一份: 两份列表漂移时两个方向都是静默失败
+// (NAV 多一个 → 点了跳回持仓; 这边多一个 → 一个谁也点不到的页), 都不报错。
+const VIEWS = NAV.flatMap(s => s.items.map(i => i.key))
 const normalizeView = (v) => (VIEWS.includes(v) ? v : 'portfolio')
+
+// 与 BenchmarkCompare/SectorRadar 同款的 section 外壳 + 标题带。给"自身没有卡壳"的
+// 组件用: 那类组件原先住在别的卡内部(根节点只是 mb-3), 单独上页会浮在背景上。
+// [&>div]:mb-0 抹掉组件自带的 mb-3, 否则会和页面 space-y-3 叠成双份间距。
+function CardShell({ title, sub, children }) {
+  return (
+    <section className="rounded-xl border border-border bg-surface/60 overflow-hidden"
+      style={{ animation: 'fade-up 0.4s ease-out' }}>
+      <div className="px-3 md:px-5 py-3 border-b border-border flex items-baseline gap-2 flex-wrap"
+        style={{ background: 'linear-gradient(180deg, var(--color-surface-2), var(--color-surface))' }}>
+        <h3 className="text-[13px] font-semibold text-text-bright m-0">{title}</h3>
+        <span className="text-[11px] text-text-dim">{sub}</span>
+      </div>
+      <div className="px-3 md:px-5 py-3 [&>div]:mb-0">
+        {children}
+      </div>
+    </section>
+  )
+}
 
 export default function App() {
   const [holdings, setHoldings] = useState([])
@@ -162,33 +178,14 @@ export default function App() {
             <div className={`${PAD} space-y-3 md:space-y-4`}>
               <BenchmarkCompare />
               <SectorRadar />
-              {/* 这两张卡原先住在 AI 复盘卡内部, 自身没有卡壳(根节点只是 mb-3),
-                  单独上页会浮在背景上。这里补上与同页 BenchmarkCompare/SectorRadar
-                  同款的 section 外壳 + 标题带; [&>div]:mb-0 抹掉组件自带的 mb-3,
-                  否则会和页面 space-y-3 叠成双份间距。 */}
-              <section className="rounded-xl border border-border bg-surface/60 overflow-hidden"
-                style={{ animation: 'fade-up 0.4s ease-out' }}>
-                <div className="px-3 md:px-5 py-3 border-b border-border flex items-baseline gap-2 flex-wrap"
-                  style={{ background: 'linear-gradient(180deg, var(--color-surface-2), var(--color-surface))' }}>
-                  <h3 className="text-[13px] font-semibold text-text-bright m-0">盈亏曲线</h3>
-                  <span className="text-[11px] text-text-dim">时间加权 · 对照沪深300</span>
-                </div>
-                <div className="px-3 md:px-5 py-3 [&>div]:mb-0">
-                  <PortfolioCurve />
-                </div>
-              </section>
+              {/* 这两张卡原先住在 AI 复盘卡内部, 自身没有卡壳 —— 外壳见上面的 CardShell */}
+              <CardShell title="盈亏曲线" sub="时间加权 · 对照沪深300">
+                <PortfolioCurve />
+              </CardShell>
 
-              <section className="rounded-xl border border-border bg-surface/60 overflow-hidden"
-                style={{ animation: 'fade-up 0.4s ease-out' }}>
-                <div className="px-3 md:px-5 py-3 border-b border-border flex items-baseline gap-2 flex-wrap"
-                  style={{ background: 'linear-gradient(180deg, var(--color-surface-2), var(--color-surface))' }}>
-                  <h3 className="text-[13px] font-semibold text-text-bright m-0">同源风险</h3>
-                  <span className="text-[11px] text-text-dim">在持标的两两相关性 · 分散是否名义</span>
-                </div>
-                <div className="px-3 md:px-5 py-3 [&>div]:mb-0">
-                  <PortfolioCorrelation />
-                </div>
-              </section>
+              <CardShell title="同源风险" sub="在持标的两两相关性 · 分散是否名义">
+                <PortfolioCorrelation />
+              </CardShell>
             </div>
           )}
 
