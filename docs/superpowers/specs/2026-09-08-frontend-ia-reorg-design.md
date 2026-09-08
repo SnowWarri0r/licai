@@ -45,6 +45,7 @@
   开盘·情绪        open          (新)
   板块            sector
   榜单            rankings
+  大盘·股池        pools         (新, 见 §九 修订)
   资金·机构        capital       (新)
   宏观            macro
   资讯            news
@@ -53,7 +54,7 @@
   设置            settings
 ```
 
-新增 5 个 view key:`cashflow` `performance` `allocation` `open` `capital`。保留的 6 个(`portfolio` `sector` `rankings` `macro` `news` `review`)内容瘦身。
+新增 6 个 view key:`cashflow` `performance` `allocation` `open` `capital` `pools`。保留的 6 个(`portfolio` `sector` `rankings` `macro` `news` `review`)内容瘦身。
 
 **侧栏折叠态**:当前折叠只保留图标、隐藏文字。分组标题在折叠态退化为一条分隔线(文字无处安放)。
 
@@ -75,7 +76,8 @@
 | --- | --- |
 | 开盘·情绪 | `MorningBriefing` + `SentimentThermometer`(含 `SentimentDetailModal`) |
 | 板块 | `SectorShare` + `SectorMatrix` + `SectorOpportunities` + 题材 ETF(自 `EtfXray` 拆出) |
-| 榜单 | `Rankings`(内含 `RotationBoard`)+ `HotRank` + `MarketPools`,合为页内 tab |
+| 榜单 | `Rankings`(内含 `RotationBoard`)+ 资金热度(自 `HotRank` 接入,作为**标准列表型 tab**) |
+| 大盘·股池 | `MarketPools`(满宽复盘面板,不作为榜单 tab —— 见 §九 修订) |
 | 资金·机构 | `KplInstTheme`(机构增仓 + 本月热门题材) |
 | 宏观 | `MacroDashboard` |
 | 资讯 | `PortfolioNews` |
@@ -86,7 +88,7 @@
 
 ## 三、合并
 
-1. **榜单三合一**:榜单页当前是撑满全屏的面板(`h-full flex`),把热度榜/股池直接堆上去会破坏该布局。做法是**并入 `Rankings` 内部 tab**(个股榜 / 机构 / 热度榜 / 股池 / 轮动),保持全屏面板体验,且是真合并而非堆叠。
+1. **榜单合并(经 §九 修订)**:资金热度榜并入 `Rankings` 成为一个**标准列表型 tab**,与其余 8 个 tab 共用同一套页面骨架(概念条 / 板块筛选 / 查股 / 左列表 + 右 K 线)。`MarketPools`(大盘·股池)**不并入**,改为【市场】下的独立页。
 2. **绩效四合一**:跑赢基准 + 板块雷达 + 盈亏曲线 + 相关性,四者都是"你 vs 参照物"。
 3. **配置三合一**:配置建议 + 行业缺口 + 我的 ETF 暴露,三者都回答"该怎么配"。
 
@@ -137,3 +139,28 @@ view 走 `window.location.hash`(`App.jsx:44-49`:初始化时读 hash,`setView` �
 
 - 榜单合并要改 `Rankings` 的 tab 机制,该文件 1120 行。风险比预想低:tab 来自 hash query(`#rankings?t=inst`),`Rankings.jsx:297-303` 已对 `TABS` 做合法性校验并保留了旧值映射(`coiled`/`unbroken` → `structure`),非法值回落 `gainers`。新增 tab 只需往 `TABS` 加项,无存量数据迁移问题。
 - 无自动化测试兜底,回归全靠截图核对,因此改动分步提交、每步可单独回滚。
+
+## 九、修订(2026-09-08,首版实现上线后)
+
+首版按"榜单三合一"把 `HotRank` 与 `MarketPools` 都做成了 `Rankings` 的页内 tab。上线后实拍三个 tab 对比,发现**切 tab 时整个页面骨架在跳**:
+
+| | 列表型 8 个 | 资金热度(首版) | 股池(首版) |
+| --- | --- | --- | --- |
+| 页签行 | 挤在 420px 左栏内、**被截断** | 满宽 | 满宽 |
+| 概念条 / 板块筛选 / 查股 / 刷新 | 有 | 无 | 无 |
+| 布局 | 左列表 + 右 K 线两栏 | 单栏稀疏列表 + 大片空白 | 三列卡 + 连板梯队 + 历史分池表 |
+
+两个缺陷:
+
+1. **骨架不一致**:两个"整卡"tab 实质是另一个页面,只是共用了一条页签栏。
+2. **页签行溢出**:8 个 tab 挤在 420px 左栏本已勉强,加到 10 个直接截断 —— 这是首版改动的直接副作用。
+
+根因判断:**"榜单三合一"合并过头了。** `MarketPools` 不是一个"榜",它是"昨日涨停今天怎么样"的复盘面板(三列卡 + 连板梯队 + 历史分池回测),信息形态与列表型榜天生冲突。而 `HotRank` 是真正的榜,其接口 `/api/market/hot-rank` 返回 `items: [{rank, code, name, price, pct}]`,`pct` 键名与标准行渲染器已经一致,零成本即可同构。
+
+修订方案:
+
+- **页签行移出 420px 左栏,恒定满宽** —— 修掉截断,并让页签栏位置/宽度在所有 tab 间恒定。
+- **资金热度改为标准列表型 tab**:按仓库既有模式接入(自有 state + `load()` 里一条 fetch 分支 + 懒加载 entry + `rawList` 里一条映射),从而自动继承概念条、板块筛选、查股与右侧 K 线面板。
+- **`MarketPools` 移出为【市场】下的独立页 `pools`**(满宽复盘面板)。
+
+**连带简化**:上述两步之后 `CARD_TABS` 为空,首版为承载整卡 tab 而引入的 `isCard` 机制(含满宽左栏、隐藏筛选行/查股/StockPanel 的一系列条件分支、滚动包裹层)可整体删除。首版 review 中 parked 的"`list.map` 缺 `!isCard` 守卫"遗留项随之消失 —— 榜单页回到只有一种形态。
