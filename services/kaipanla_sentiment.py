@@ -8,8 +8,7 @@
 开盘啦补的是东财没有的三样: 跳水榜(资金出逃的另一面)、多空风向标(全市场量能 vs 昨日同期)、
 以及一句官方"市场评价"。多一个源交叉着看, 情绪判断更稳。
 
-口径见 [[reference_kaipanla_unpack_and_apis]]: host 按功能分家, 非交易日返回 errcode 1020,
-服务端不校验 VerSion。全部免登录, 无签名。
+口径: host 按功能分家, 非交易日返回 errcode 1020, 服务端不校验 VerSion。全部免登录, 无签名。
 """
 from __future__ import annotations
 

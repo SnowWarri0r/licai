@@ -15,6 +15,11 @@ import services.kaipanla_auth as ka
 def _clean_env(monkeypatch):
     monkeypatch.delenv("KPL_UID", raising=False)
     monkeypatch.delenv("KPL_TOKEN", raising=False)
+    # 隔离 DB 双通道回落: 不让测试受真实 portfolio.db 里已配的 kpl 凭证影响,
+    # 否则"未配置"路径会被真实 DB 里存的 Token 顶掉(设置页存的是真号)。
+    async def _no_db_config(_key):
+        return None
+    monkeypatch.setattr("database.get_config", _no_db_config)
     yield
 
 

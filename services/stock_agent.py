@@ -2943,6 +2943,33 @@ async def _tool_kpl_lhb(code: str, date: str = "") -> dict:
         return {"error": f"开盘啦龙虎榜取数失败: {e}"}
 
 
+async def _tool_kpl_bidding() -> dict:
+    """开盘啦板块竞价异动(当日集合竞价, 实时无历史)。登录态失效时如实报 need_login。"""
+    try:
+        from services.kaipanla_bidding import plate_bidding
+        return await plate_bidding()
+    except Exception as e:
+        return {"error": f"开盘啦竞价异动取数失败: {e}"}
+
+
+async def _tool_kpl_hot_theme() -> dict:
+    """开盘啦本月热门题材榜。登录态失效时如实报 need_login。"""
+    try:
+        from services.kaipanla_theme import hot_themes
+        return await hot_themes()
+    except Exception as e:
+        return {"error": f"开盘啦热门题材取数失败: {e}"}
+
+
+async def _tool_kpl_inst_position(date: str = "") -> dict:
+    """开盘啦机构增仓/减仓榜(行业板块, 季报口径)。登录态失效时如实报 need_login。"""
+    try:
+        from services.kaipanla_inst_position import inst_position
+        return await inst_position(date or None)
+    except Exception as e:
+        return {"error": f"开盘啦机构增仓取数失败: {e}"}
+
+
 async def _tool_seat_history(q: str) -> dict:
     """龙虎榜席位追踪(名号/营业部名 → 近期上榜明细+统计)。"""
     try:
@@ -3055,6 +3082,12 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "6位代码查单票; 留空看全市场榜"}}}},
     {"name": "get_kpl_lhb", "description": "开盘啦深度龙虎榜(登录态): 传 code(+可选 date)→该股该日龙虎榜买卖席位明细, 每个席位带营业部名 + 买卖金额 + **游资分组标签**(知名游资/机构专用/量化抢筹这类身份识别)。与 get_lhb 的区别: get_lhb 走东财只给裸营业部名, 这个多一层游资身份标签, 回答'那天是哪个游资在买/是不是知名游资进场/机构还是量化'时更准。盘后16:30后当日数据才全。需开盘啦登录态, 没配或Token失效时返回里带 need_login=true, 此时提示用户去设置页填/更新开盘啦Token。仅 A 股, 已披露客观数据非买卖建议。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "6位股票代码"}, "date": {"type": "string", "description": "可选 YYYY-MM-DD, 默认最近交易日"}}, "required": ["code"]}},
+    {"name": "get_kpl_bidding", "description": "开盘啦板块竞价异动(登录态): 早盘集合竞价(约9:15-9:25)阶段被资金抢筹的板块及领涨个股, 分三组——今日新增竞价异动 / 昨日爆发板块延续异动 / 其他异动板块, 每个板块带 竞价换手·竞价涨幅·竞价主力净额亿。回答'今天竞价哪些板块异动/开盘资金主攻什么方向/竞价领涨板块是谁'时用, 是判断当天主线的开盘先手信号。**只有当日、无历史**, 且数据只在集合竞价前后(约9:15-9:31)产出, 非该时段返回 有数据=false 并说明是时段问题(不是故障)。需开盘啦登录态, 没配或Token失效时返回 need_login=true, 提示去设置页填/更新Token。仅A股, 客观数据非买卖建议。",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "get_kpl_hot_theme", "description": "开盘啦本月热门题材榜(登录态): 本月资金关注度最高的题材/板块, 按热度降序排名。回答'现在市场主线题材是什么/这个月哪些题材最热/题材轮动到哪了'时用, 是月度视角的主线判断(补 get_sector_momentum 的日度动能和涨停题材的当日视角)。需开盘啦登录态, 没配或Token失效返回 need_login=true。客观数据非买卖建议。",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "get_kpl_inst_position", "description": "开盘啦机构增仓/减仓榜(登录态): 按最新季报持仓, 机构在哪些行业板块**增仓/减仓**(增仓金额带符号)+机构持仓市值+占流通比, 返回增仓榜和减仓榜。回答'机构最近在加仓什么方向/机构在减持哪些板块/机构中线往哪搬仓'时用。这是**中线季度持仓变化**, 与 get_inst_flow(龙虎榜机构席位=短线盘口)互补, 别处(东财/akshare)没有这个开盘啦口径。date 可传季报日默认最新。季报滞后, 客观持仓数据非买卖建议。需登录态, 失效返回 need_login=true。",
+     "input_schema": {"type": "object", "properties": {"date": {"type": "string", "description": "可选季报日 YYYY-MM-DD, 默认最新可用季报"}}}},
     {"name": "get_seat_history", "description": "龙虎榜席位追踪: 传席位名号(章盟主/陈小群/拉萨天团)或营业部名(子串/全名), 返回该席位近90天上榜明细(股票/净额/上榜后1·5·10日涨跌)+客观统计(上榜次数/净买入后1日与5日红盘率)。回答'章盟主最近在买什么/这个席位胜率怎么样/大佬说XX进场了帮我看看'时用。名号映射来自公开名录会漂移, 统计是纯历史描述, 表述时注明。",
      "input_schema": {"type": "object", "properties": {"q": {"type": "string", "description": "席位名号或营业部名"}}, "required": ["q"]}},
     {"name": "get_earnings", "description": "业绩预告(最新报告期, 当前=中报): code 留空=全市场预喜榜(预增/扭亏, 按归母净利同比幅度排)+预警榜(预减/首亏)+持仓关联清单(直持或经由在持ETF成分); 传6位代码=查该股预告。回答'哪些股票中报业绩好/最近业绩雷有哪些/我持仓相关的业绩怎么样/XX中报预告了吗'时用。未披露≠业绩差(预告只对大幅变动强制), 表述时注明; 正式财报数字用 get_fundamentals。",
@@ -3106,6 +3139,9 @@ _EXECUTORS = {
     "get_lhb": lambda a: _tool_lhb(a.get("code", ""), a.get("date", "")),
     "get_seat_history": lambda a: _tool_seat_history(a.get("q", "")),
     "get_kpl_lhb": lambda a: _tool_kpl_lhb(a.get("code",""), a.get("date","")),
+    "get_kpl_bidding": lambda a: _tool_kpl_bidding(),
+    "get_kpl_hot_theme": lambda a: _tool_kpl_hot_theme(),
+    "get_kpl_inst_position": lambda a: _tool_kpl_inst_position(a.get("date", "")),
     "get_red_flags": lambda a: _tool_red_flags(a.get("code", "")),
     "screen_quality": lambda a: _tool_screen_quality(a.get("code", "")),
     "get_capital_allocation": lambda a: _tool_capital_allocation(a.get("code", "")),

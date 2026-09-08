@@ -242,6 +242,28 @@ async def lhb_daily_list():
     return await lhb_daily()
 
 
+@router.get("/kpl-bidding")
+async def kpl_bidding_api():
+    """开盘啦板块竞价异动(登录态): 当日集合竞价被抢筹的板块+领涨个股, 三分组。
+    只有当日无历史, 数据仅在集合竞价前后(约9:15-9:31)产出; Token 失效返回 need_login。"""
+    from services.kaipanla_bidding import plate_bidding
+    return await plate_bidding()
+
+
+@router.get("/kpl-hot-theme")
+async def kpl_hot_theme_api():
+    """开盘啦本月热门题材榜(登录态): 本月资金最热题材, 按热度降序。Token 失效返回 need_login。"""
+    from services.kaipanla_theme import hot_themes
+    return await hot_themes()
+
+
+@router.get("/kpl-inst-position")
+async def kpl_inst_position_api(date: str = ""):
+    """开盘啦机构增仓/减仓榜(登录态, 季报口径, 行业板块): 增仓榜+减仓榜。Token 失效返回 need_login。"""
+    from services.kaipanla_inst_position import inst_position
+    return await inst_position(date or None)
+
+
 @router.get("/changes")
 async def market_changes_api(group: str = "全部"):
     """盘口异动事件流(同花顺式): 拉升/跳水/竞价 分组, 近30分钟市场脉搏。"""

@@ -2,7 +2,7 @@
 
 与我们已有的 get_lhb/get_seat_history(东财+名录) 的区别: 开盘啦这份带**游资分组标签**
 (章盟主/赵老哥这类知名游资, 以及"量化抢筹"等标签), 是东财裸营业部名给不出来的那层。
-要登录态(用户自己账号), 走 [[kaipanla_auth]]; 口径见 [[reference_kaipanla_unpack_and_apis]]。
+要登录态(用户自己账号), 走 kaipanla_auth。
 
 接口: applhb / c=Stock / a=GetNewOneStockInfo / Type=0 / Time=日期 / StockID=6位码。
 盘后 16:30 之后当日数据才全。List[].BuyList/SellList 是买卖席位, 每席位:

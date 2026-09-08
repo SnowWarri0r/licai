@@ -1,7 +1,7 @@
 """开盘啦登录态: 凭证读取 + 带 Token 的请求 + Token 失效检测。
 
 登录态接口(竞价异动、深度龙虎榜游资标签等)要带 UserID+Token。Token 来自**用户自己账号**的
-一次登录响应(手机登录 App 时抓一次即可, 长期有效), 用于用户自己的炒股助手, 不做他人数据抓取。
+一次登录(长期有效, 无自动续签, 失效后重新登录获取), 用于用户自己的炒股助手。
 
 凭证不硬编码、不进 git: 走项目既有的双通道(env 优先 → 回落 DB config, 与 tdx/zsxq 同模式)。
   env:  KPL_UID / KPL_TOKEN     (run.py 启动时从 .env 载入, .env 被 gitignore 挡着)
@@ -9,7 +9,6 @@
 
 Token 会失效(改密码/长期未用/被踢)。失效时**明确抛 KplAuthError**, 让调用方提示"去重新登录"
 而不是把空数据当成"今天没行情" —— 后者会让用户对着一个其实是登录过期的空界面纳闷。
-接口口径见 [[reference_kaipanla_unpack_and_apis]]。
 """
 from __future__ import annotations
 
