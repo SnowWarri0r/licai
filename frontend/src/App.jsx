@@ -12,31 +12,39 @@ import StockAsk from './components/StockAsk'
 import Settings from './components/Settings'
 import EditModal from './components/EditModal'
 import TransactionHistory from './components/TransactionHistory'
-// 板块
+// 市场·开盘情绪
 import MorningBriefing from './components/MorningBriefing'
 import SentimentThermometer from './components/SentimentThermometer'
-import SectorMatrix from './components/SectorMatrix'
+// 市场·板块
 import SectorShare from './components/SectorShare'
-import KplInstTheme from './components/KplInstTheme'
-import SectorRadar from './components/SectorRadar'
+import SectorMatrix from './components/SectorMatrix'
 import SectorOpportunities from './components/SectorOpportunities'
-// 宏观
-import MacroDashboard from './components/MacroDashboard'
 import EtfXray from './components/EtfXray'
-// 资讯
+// 市场·资金机构 / 宏观 / 资讯
+import KplInstTheme from './components/KplInstTheme'
+import MacroDashboard from './components/MacroDashboard'
 import PortfolioNews from './components/PortfolioNews'
-// 复盘
-import AITradeReview from './components/AITradeReview'
+// 我的·资金现金流
+import Cashflow from './components/Cashflow'
+// 我的·绩效基准
+import BenchmarkCompare from './components/BenchmarkCompare'
+import SectorRadar from './components/SectorRadar'
 import PortfolioCurve from './components/PortfolioCurve'
 import PortfolioCorrelation from './components/PortfolioCorrelation'
-import BenchmarkCompare from './components/BenchmarkCompare'
-import Cashflow from './components/Cashflow'
+// 我的·配置建议
 import AllocationAdvisor from './components/AllocationAdvisor'
 import AShareSectorGap from './components/AShareSectorGap'
+// 我的·复盘
+import AITradeReview from './components/AITradeReview'
 
 // 合法 view key。setView 与 hash 初始化共用 —— 只在初始化校验的话,
-// 运行时传入非法 key(历史上 setView('dashboard'))会让内容区渲染成空白。
-const VIEWS = ['portfolio', 'sector', 'rankings', 'macro', 'news', 'review', 'ask', 'settings']
+// 运行时传入非法 key(历史上有已删视图的残留调用)会让内容区渲染成空白。
+// 顺序与侧栏分组一致, 便于对读。
+const VIEWS = [
+  'portfolio', 'cashflow', 'performance', 'allocation', 'review',
+  'open', 'sector', 'rankings', 'capital', 'macro', 'news',
+  'ask', 'settings',
+]
 const normalizeView = (v) => (VIEWS.includes(v) ? v : 'portfolio')
 
 export default function App() {
@@ -137,15 +145,69 @@ export default function App() {
 
           {view === 'sector' && (
             <div className={`${PAD} space-y-3 md:space-y-4`}>
-              <MorningBriefing />
-              <SentimentThermometer />
-              <EtfXray mode="mine" />
-              <EtfXray mode="theme" />
               <SectorShare />
               <SectorMatrix />
-              <KplInstTheme />
-              <SectorRadar />
               <SectorOpportunities />
+              <EtfXray mode="theme" />
+            </div>
+          )}
+
+          {view === 'cashflow' && (
+            <div className={`${PAD} space-y-3 md:space-y-4`}>
+              <Cashflow />
+            </div>
+          )}
+
+          {view === 'performance' && (
+            <div className={`${PAD} space-y-3 md:space-y-4`}>
+              <BenchmarkCompare />
+              <SectorRadar />
+              {/* 这两张卡原先住在 AI 复盘卡内部, 自身没有卡壳(根节点只是 mb-3),
+                  单独上页会浮在背景上。这里补上与同页 BenchmarkCompare/SectorRadar
+                  同款的 section 外壳 + 标题带; [&>div]:mb-0 抹掉组件自带的 mb-3,
+                  否则会和页面 space-y-3 叠成双份间距。 */}
+              <section className="rounded-xl border border-border bg-surface/60 overflow-hidden">
+                <div className="px-3 md:px-5 py-3 border-b border-border flex items-baseline gap-2 flex-wrap"
+                  style={{ background: 'linear-gradient(180deg, var(--color-surface-2), var(--color-surface))' }}>
+                  <h3 className="text-[13px] font-semibold text-text-bright m-0">盈亏曲线</h3>
+                  <span className="text-[11px] text-text-dim">时间加权 · 对照沪深300</span>
+                </div>
+                <div className="px-3 md:px-5 py-3 [&>div]:mb-0">
+                  <PortfolioCurve />
+                </div>
+              </section>
+
+              <section className="rounded-xl border border-border bg-surface/60 overflow-hidden">
+                <div className="px-3 md:px-5 py-3 border-b border-border flex items-baseline gap-2 flex-wrap"
+                  style={{ background: 'linear-gradient(180deg, var(--color-surface-2), var(--color-surface))' }}>
+                  <h3 className="text-[13px] font-semibold text-text-bright m-0">同源风险</h3>
+                  <span className="text-[11px] text-text-dim">在持标的两两相关性 · 分散是否名义</span>
+                </div>
+                <div className="px-3 md:px-5 py-3 [&>div]:mb-0">
+                  <PortfolioCorrelation />
+                </div>
+              </section>
+            </div>
+          )}
+
+          {view === 'allocation' && (
+            <div className={`${PAD} space-y-3 md:space-y-4`}>
+              <AllocationAdvisor />
+              <AShareSectorGap />
+              <EtfXray mode="mine" />
+            </div>
+          )}
+
+          {view === 'open' && (
+            <div className={`${PAD} space-y-3 md:space-y-4`}>
+              <MorningBriefing />
+              <SentimentThermometer />
+            </div>
+          )}
+
+          {view === 'capital' && (
+            <div className={`${PAD} space-y-3 md:space-y-4`}>
+              <KplInstTheme />
             </div>
           )}
 
@@ -173,12 +235,6 @@ export default function App() {
           {view === 'review' && (
             <div className={`${PAD} space-y-3 md:space-y-4`}>
               <AITradeReview />
-              <PortfolioCurve />
-              <PortfolioCorrelation />
-              <BenchmarkCompare />
-              <Cashflow />
-              <AllocationAdvisor />
-              <AShareSectorGap />
             </div>
           )}
 
