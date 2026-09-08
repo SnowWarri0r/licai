@@ -25,7 +25,8 @@ const BOARDS = ['全部', '主板', '创业板', '科创板', '北交所']
 
 export default function Rankings() {
   const [tab, setTab] = useState(() => {
-    // deep-link: #rankings?t=inst 直达指定页签(旧 coiled/unbroken 併入 structure)
+    // deep-link: #rankings?t=inst 直达指定页签(旧 coiled/unbroken 併入 structure;
+    // 旧 t=pools 整页搬去了【市场·股池】, 在 App 的 view 初始化那里改派, 到不了这儿)
     const q = new URLSearchParams((window.location.hash.split('?')[1] || ''))
     let t = q.get('t')
     if (t === 'coiled' || t === 'unbroken') t = 'structure'
@@ -323,8 +324,11 @@ export default function Rankings() {
     })()
     return () => { stop = true }
   }, [selected, tab, loading])
-  // 切到结构/机构/业绩 tab 时懒加载(服务端有缓存, 之后秒回)
-  useEffect(() => { if ((tab === 'structure' && !structure) || (tab === 'inst' && !inst) || (tab === 'earnings' && !earnings) || (tab === 'lhb' && !lhbDaily) || (tab === 'watch' && !watch) || (tab === 'hotrank' && !hotRank)) load() }, [tab])   // eslint-disable-line react-hooks/exhaustive-deps
+  // 切页签时懒加载各自那份数据(服务端有缓存, 之后秒回)。
+  // 涨幅/成交额也要在列: 它们共用 /api/market/rankings 那一份 data, 而挂载时的 load()
+  // 只拉了 deep-link 落地的那个页签 —— 漏掉这两个的话, 从别的页签深链进来再点「涨幅」
+  // 会一直是空列表, 得手按一次「刷新」才出来。所以条件是 data 没拿到, 而非某个专属 state。
+  useEffect(() => { if ((tab === 'structure' && !structure) || (tab === 'inst' && !inst) || (tab === 'earnings' && !earnings) || (tab === 'lhb' && !lhbDaily) || (tab === 'watch' && !watch) || (tab === 'hotrank' && !hotRank) || ((tab === 'gainers' || tab === 'by_amount') && !data)) load() }, [tab])   // eslint-disable-line react-hooks/exhaustive-deps
   // 异动页: 进页签/换组立即拉 + 60s 静默轮询(服务端45s缓存, 盘中事件流持续滚动, 不闪加载态)
   useEffect(() => {
     if (tab !== 'changes') return
@@ -415,8 +419,12 @@ export default function Rankings() {
           : (earnings && earnings[earnSide]) || []
         ).map(r => ({ ...r, pct: r['幅度%'] }))
       )
-    // 资金热度: 接口返回的 pct 键名与标准行渲染器已经一致, 无需映射
-    : tab === 'hotrank' ? ((hotRank?.items) || [])
+    // 资金热度: 接口返回的 pct 键名与标准行渲染器已经一致, 另有两件事要在这里归一 ——
+    // _idx 取榜上真实名次: 兜底是数组下标, 一加板块筛选前导序号就重编成 1..N, 而这是
+    //   人气榜, 名次就是它的主键(筛到创业板显示 1-5, 实际这几只在全榜隔得很远)。
+    // mine → source='持仓': 接口算好了"这只票在不在我的持仓里"(标出持仓是这个端点存在
+    //   的理由), 归到观察池那一列用的同一个字段上, 两个页签共用同一个「持」标记。
+    : tab === 'hotrank' ? ((hotRank?.items) || []).map(r => ({ ...r, _idx: r.rank, source: r.mine ? '持仓' : undefined }))
     : tab === 'structure' ? []
     : ((data && data[tab]) || [])
   // 结构页: 行业分组 → 组头行 + 个股行 摊平成一个列表(板块/阶段筛选后空组不显示)
@@ -440,6 +448,14 @@ export default function Rankings() {
   const hotNames = new Set(((data?.groups?.[tab] || {}).concepts || [])
     .slice(0, 10).flatMap(g => [g.name, ...(g.aliases || [])]))
   const hotOf = (r) => (r['概念'] || []).filter(c => hotNames.has(c)).slice(0, 3)
+  // 副行第三段(板块 · 代码 · ???): 各页签取各自那条信息。取不到就连分隔点一起省掉 ——
+  // 资金热度那份数据里没有「行业」字段, 原来落到 '—' 兜底, 100 行整整齐齐印一列
+  // 「主板 · 600127 · —」, 等于标了一个这份数据里不存在的字段(和已修掉的「量比—」同一类)。
+  const metaTail = (r) => (tab === 'inst'
+    ? `净买 ${r['机构净买亿']}亿 · 上榜${r['上榜次数']}次`
+    : tab === 'lhb' ? (r['解读'] || r['上榜原因'] || '—')
+    : tab === 'changes' ? (r['描述'] || '—')
+    : (r['行业'] || ''))
   const trendOf = (name) => (trend?.rows || []).find(t => t.name === name)
   const list = tab === 'structure' ? structList
     : (() => {
@@ -510,7 +526,6 @@ export default function Rankings() {
 
       <div className="flex flex-col lg:flex-row flex-1 min-h-0">
       <div className="flex flex-col min-h-0 lg:w-[420px] shrink-0 border-b lg:border-b-0 lg:border-r border-border">
-
         {/* 板块筛选 */}
         <div className="flex items-center gap-1 px-3 py-1.5 border-b border-border-subtle flex-wrap">
           {tab === 'watch' && (
@@ -665,6 +680,7 @@ export default function Rankings() {
             }
             const active = selected?.code === r.code
             const wlCtl = tab === 'watch' && r.source !== '持仓'   // 手动自选才可排序/分组
+            const mTail = metaTail(r)
             return (
               <div key={r._k || r.code} className="relative group/row"
                 draggable={wlCtl}
@@ -686,20 +702,16 @@ export default function Rankings() {
                     {tab === 'changes' && r.n_today >= 3 && (
                       <span className="text-[8.5px] px-1 rounded bg-accent/15 text-accent shrink-0" title="该股今日在当前事件流内反复触发异动">今日{r.n_today}次</span>
                     )}
-                    {tab === 'watch' && r.source === '持仓' && (
+                    {/* 「持」= 这一行是我当前持仓。判据只看行上的 source, 不看页签:
+                        观察池的持仓组、资金热度榜上命中持仓的行走同一个标记, 两处长一样。 */}
+                    {r.source === '持仓' && (
                       <span className="text-[8.5px] px-1 rounded bg-accent/20 text-accent shrink-0" title="当前持仓, 自动跟踪">持</span>
                     )}
                     {r.is_new && <span className="text-[8.5px] px-1 rounded bg-accent/15 text-accent shrink-0" title="上市前5日无涨跌幅限制">新</span>}
                     {r.is_st && <span className="text-[8.5px] px-1 rounded bg-bear/15 text-bear-bright shrink-0">ST</span>}
                   </span>
                   <span className={`text-[10px] text-text-muted font-mono ${tab === 'lhb' || tab === 'changes' ? 'block truncate' : ''}`}>
-                    {boardOf(r.code)} · {r.code} · {tab === 'inst'
-                      ? `净买 ${r['机构净买亿']}亿 · 上榜${r['上榜次数']}次`
-                      : tab === 'lhb'
-                      ? (r['解读'] || r['上榜原因'] || '—')
-                      : tab === 'changes'
-                      ? (r['描述'] || '—')
-                      : (r['行业'] || '—')}
+                    {boardOf(r.code)} · {r.code}{mTail ? ` · ${mTail}` : ''}
                     {tab === 'watch' && r['业绩预告'] && (
                       <span className="ml-1 px-1 rounded bg-accent/15 text-accent text-[9px] whitespace-nowrap">{r['业绩预告']}</span>
                     )}
@@ -791,7 +803,6 @@ export default function Rankings() {
               </div>
             )
           })}
-
         </div>
 
         {tab === 'changes' && (changes?.rows || []).length > 0 && (
