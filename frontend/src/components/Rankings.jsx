@@ -19,8 +19,11 @@ const TABS = [
   { key: 'hotrank', label: '资金热度' },
   { key: 'pools', label: '股池' },
 ]
-// 这两个页签挂的是整卡(原先散在板块页/复盘页), 不是个股列表: 铺满整宽、不要板块筛选、右侧不留K线位
-const CARD_TABS = ['hotrank', 'pools']
+// 这两个页签挂的是整卡(原先散在板块页/复盘页), 不是个股列表: 铺满整宽、不要板块筛选、右侧不留K线位。
+// 「页签 key → 组件」这张表是唯一真相: 布局分支(isCard)和内容渲染都从它派生。
+// 原先是一个 key 数组 + 两条写死的 tab === 'x' 渲染分支 —— 加第三个整卡页签时漏写渲染
+// 分支就会得到一整片空白面板, 不报错也不进 console。
+const CARD_TABS = { hotrank: HotRank, pools: MarketPools }
 
 const BOARDS = ['全部', '主板', '创业板', '科创板', '北交所']
 
@@ -343,9 +346,13 @@ export default function Rankings() {
       const tag = (document.activeElement?.tagName || '').toLowerCase()
       if (tag === 'input' || tag === 'textarea' || tag === 'select') return
       if (isUD) {
+        // 没有可翻的行就把 ↑↓ 交还给浏览器: preventDefault 必须跟"确实换了一行"绑在一起。
+        // 整卡页签(资金热度/股池)的 list 恒为空, 早先无条件 preventDefault 的写法让
+        // ↑↓ 既不翻行、又吞掉了浏览器对超过一屏的面板的原生滚动 —— 滚轮和 PageUp 还能用,
+        // 所以一直没被发现。这两张卡在板块页/复盘页时是普通文档流卡片, ↑↓ 本来是能滚的。
+        const arr = listRef.current
+        if (!arr?.length) return
         setSelected(prev => {
-          if (!listRef.current?.length) return prev
-          const arr = listRef.current
           // 定位当前行优先用唯一键 _k: 异动榜同一只票会出现多条事件, 只按 code 找会永远
           // 命中第一条, 于是「下一条」还是同一只票, 方向键原地打转下不去。
           let i = prev?._k ? arr.findIndex(x => x._k === prev._k) : -1
@@ -440,7 +447,8 @@ export default function Rankings() {
         if (hotCodes) rs = rs.filter(r => hotCodes.has(r.code))
         return rs
       })()
-  const isCard = CARD_TABS.includes(tab)
+  const isCard = tab in CARD_TABS
+  const CardTab = CARD_TABS[tab]        // 整卡页签的组件; 个股列表页签为 undefined
   listRef.current = list.filter(r => !r._gheader && !r._wh)
   indsRef.current = ['全部', ...(structure?.groups || []).map(g => g.行业)]
   chKindsRef.current = ['全部', ...(changes?.kinds || []).map(k => k.kind)]
@@ -623,13 +631,15 @@ export default function Rankings() {
         )}
 
         <div className="flex-1 overflow-y-auto min-h-0">
-          {/* 整卡页签: 自取数、无 props, 外面这层 overflow-y-auto h-full 是必需的
-              —— 榜单页外壳撑满一屏, 普通文档流卡片挂进来会溢出被裁掉。 */}
-          {tab === 'hotrank' && (
-            <div className="overflow-y-auto h-full p-3"><HotRank /></div>
-          )}
-          {tab === 'pools' && (
-            <div className="overflow-y-auto h-full p-3"><MarketPools /></div>
+          {/* 整卡页签: 组件从 CARD_TABS 取, 自取数、无 props。
+              外面这层 overflow-y-auto h-full 是必需的 —— 榜单页外壳撑满一屏,
+              普通文档流卡片挂进来会溢出被裁掉。
+              这两张卡自带 bg-surface-2 + border + rounded-xl + p-4(它们原本是独立上页的),
+              而榜单面板本身已经是同款卡壳, 直接挂进来会看到"卡里套一张同色同框的卡" +
+              双份内边距。就地抹掉直接子节点的框和底色(卡自己的 p-4 留着当内边距, 所以
+              这层不再加 p-3), 不去改 HotRank/MarketPools —— 它们在别处还要独立上页。 */}
+          {CardTab && (
+            <div className="overflow-y-auto h-full [&>div]:border-0 [&>div]:bg-transparent"><CardTab /></div>
           )}
           {!isCard && !loading && !err && list.length === 0 && (
             <div className="text-center py-8 text-text-dim text-[12px] px-4 leading-relaxed">

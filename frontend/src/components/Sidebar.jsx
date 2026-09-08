@@ -16,7 +16,12 @@ const ICONS = {
 
 // 顶层按「我的钱 / 看市场」分组 —— 边界是"跟我的钱有关 vs 无关",
 // 这条界最硬, 不容易再退化成杂物抽屉。group 为 null 的是不归属两大类的独立项。
-const NAV = [
+// 同时是 App.jsx 里合法 view key 的唯一来源(VIEWS 从这里派生) —— 两份手抄的列表
+// 一旦漂移是静默的: NAV 有而 VIEWS 无 → 点了跳回持仓; VIEWS 有而 NAV 无 → 一个进不去的页。
+// 组件文件里多导出一个常量, 代价是本文件在 dev 下退回整页刷新(拿不到 fast refresh);
+// 为此把导航表挪去单独模块并不划算 —— 它和侧栏是同一件事, 分开反而更容易漂。
+// eslint-disable-next-line react-refresh/only-export-components
+export const NAV = [
   { group: '我的', items: [
     { key: 'portfolio',   label: '持仓' },
     { key: 'cashflow',    label: '资金·现金流' },

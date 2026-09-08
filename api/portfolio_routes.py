@@ -1530,7 +1530,7 @@ async def _auto_match_tranche(stock_code: str, action_type: str, price: float,
     """自动撮合 action ↔ tranche (返回匹配的 tranche 或 None):
 
     ACQUIRE (BUY/ADD): pending tranche, 价格 ±5% 内取最近, mark executed.
-    SELL/REDUCE 不自动撮合 — 用户应该走 UnwindCard 的「卖出回收」按钮,
+    SELL/REDUCE 不自动撮合 — 档位完成只认对该 tranche 的显式回收操作,
     避免普通止损/调仓被误标为档位完成.
     """
     plan = await get_unwind_plan(stock_code)
