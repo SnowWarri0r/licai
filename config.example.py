@@ -38,12 +38,6 @@ class Config:
     # --- 告警 ---
     alert_cooldown: int = 300            # 同 alert 防抖秒数
 
-    # --- 解套 / 经济性参数 ---
-    risk_free_rate: float = 0.03         # 无风险年化 (用于 NPV)
-    patience_years: float = 2.0          # 最大耐心年限 (超过即建议割肉换指数)
-    index_annual_return: float = 0.06    # 沪深300 长期年化基准
-    default_unwind_budget: float = 16000.0  # 解套档位默认子弹预算 ¥
-
     # --- 服务器 ---
     host: str = "0.0.0.0"
     port: int = 8888

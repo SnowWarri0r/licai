@@ -1546,10 +1546,7 @@ async def create_action(stock_code: str, data: ActionCreate):
         broker=(data.broker or None),
     )
     await _recompute_holding(stock_code)
-    return {
-        "message": "记录已添加",
-        "matched_tranche": None,   # 特性已退役, 保留字段避免改动响应结构
-    }
+    return {"message": "记录已添加"}
 
 
 @router.put("/actions/{action_id}")
