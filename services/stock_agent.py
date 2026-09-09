@@ -1987,12 +1987,12 @@ async def _tool_red_flags(code: str) -> dict:
         flags.append({"类别": "解禁抛压", "级别": lvl,
                       "依据": f"{u0.get('date')} 解禁约占流通市值 {pct}% ({u0.get('类型') or ''})"})
     # 3) 基本面健康度
+    # 只有红灯算命中。黄灯是"信号中性/混杂"这个区间(评分 -0.5~0.5), 既盖偏正也盖偏负,
+    # 不是风险事实 —— 早先黄灯也挂 flag, 而绝大多数票本来就落在这一档, 于是每只票的
+    # 红线清单里都恒定多出一条「健康度黄灯」, 它不区分任何东西, 纯噪音。
     if health and isinstance(health, dict):
-        lv = health.get("level")
-        if lv == "red":
+        if health.get("level") == "red":
             flags.append({"类别": "基本面健康度", "级别": "中", "依据": f"健康度红灯 (评分 {health.get('score')})"})
-        elif lv == "yellow":
-            flags.append({"类别": "基本面健康度", "级别": "提示", "依据": f"健康度黄灯 (评分 {health.get('score')})"})
 
     order = {"高": 0, "中": 1, "低": 2, "提示": 3}
     flags.sort(key=lambda f: order.get(f["级别"], 9))
