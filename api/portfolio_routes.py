@@ -8,7 +8,7 @@ from models import HoldingCreate, HoldingUpdate, HoldingResponse
 from database import (
     get_all_holdings, get_holding, add_holding, update_holding, delete_holding,
     get_position_actions, add_position_action, update_position_action, delete_position_action,
-    get_unwind_plan, get_tranches, mark_tranche_executed, list_brokers,
+    list_brokers,
     get_thesis, list_theses, set_thesis, delete_thesis,
 )
 from services.market_data import (
@@ -1522,57 +1522,17 @@ async def list_actions(stock_code: str):
     return actions
 
 
-_ACQUIRE = {"BUY", "ADD"}
-
-
-async def _auto_match_tranche(stock_code: str, action_type: str, price: float,
-                              shares: int | None = None) -> dict | None:
-    """自动撮合 action ↔ tranche (返回匹配的 tranche 或 None):
-
-    ACQUIRE (BUY/ADD): pending tranche, 价格 ±5% 内取最近, mark executed.
-    SELL/REDUCE 不自动撮合 — 档位完成只认对该 tranche 的显式回收操作,
-    避免普通止损/调仓被误标为档位完成.
-    """
-    plan = await get_unwind_plan(stock_code)
-    if not plan:
-        return None
-    tranches = await get_tranches(stock_code)
-
-    if action_type in _ACQUIRE:
-        pending = [t for t in tranches if t["status"] == "pending"]
-        if not pending:
-            return None
-        eligible = [
-            (abs(t["trigger_price"] - price) / t["trigger_price"], t)
-            for t in pending
-            if t["trigger_price"] > 0 and abs(t["trigger_price"] - price) / t["trigger_price"] < 0.05
-        ]
-        if not eligible:
-            return None
-        eligible.sort(key=lambda x: x[0])
-        best = eligible[0][1]
-        await mark_tranche_executed(best["id"], price)
-        return best
-
-    return None
-
-
 @router.post("/{stock_code}/actions")
 async def create_action(stock_code: str, data: ActionCreate):
     """Add a new buy/sell action. Recomputes holding aggregate.
 
-    If this is a BUY/ADD that matches a pending tranche's trigger price
-    (within ±5%), auto-mark that tranche as executed so the plan view stays in sync.
+    解套计划/加仓子弹池已退役: BUY/ADD 不再自动撮合 pending tranche,
+    历史 tranche 数据冻结保留, 新 action 一律不写 tranche_id.
     """
     stock_code = normalize_stock_code(stock_code)
     holding = await get_holding(stock_code)
     if not holding:
         raise HTTPException(404, f"持仓 {stock_code} 不存在")
-    # 撮合在写 action 之前, 这样 tranche_id 能直接随 action 写入,
-    # 避免 action 已写但 tranche 没标 (或反之) 的不一致状态被外部观察.
-    matched = await _auto_match_tranche(
-        stock_code, data.action_type, data.price, data.shares,
-    )
     await add_position_action(
         stock_code=stock_code,
         action_type=data.action_type,
@@ -1580,7 +1540,7 @@ async def create_action(stock_code: str, data: ActionCreate):
         shares=data.shares,
         trade_date=data.trade_date,
         note=data.note or "",
-        tranche_id=(matched["id"] if matched else None),
+        tranche_id=None,
         fee=data.fee,
         trade_time=(data.trade_time or None),
         broker=(data.broker or None),
@@ -1588,7 +1548,7 @@ async def create_action(stock_code: str, data: ActionCreate):
     await _recompute_holding(stock_code)
     return {
         "message": "记录已添加",
-        "matched_tranche": {"idx": matched["idx"], "trigger_price": matched["trigger_price"]} if matched else None,
+        "matched_tranche": None,   # 特性已退役, 保留字段避免改动响应结构
     }
 
 
