@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { fetchJSON } from '../hooks/useApi'
 import KlineChart from './KlineChart'
-import { MinuteChart } from './StockKlineModal'
+import { MinuteChart } from './kline/MinuteChart'
 
 // 有分时的指数: A股(TDX) / 港股·美股(腾讯) / 日经·KOSPI·FTSE(新浪 gi.finance, 只有价没有量)。
 // 'gi' 这档的时段随夏令时漂, 由后端按当天首个分时点算好回传, 前端不预设。
