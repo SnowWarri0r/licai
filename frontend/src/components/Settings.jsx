@@ -441,7 +441,7 @@ function ZsxqSection() {
    K 线用 TradingView Lightweight Charts (Apache-2.0)。它的许可要求「在用户可见的
    页面上给出署名 + tradingview.com 链接」—— 图上那枚角标只是满足要求的一种方式,
    我们把角标关了(layout.attributionLogo = false), 所以署名必须落在这里。
-   要动这段先看 ProKline.jsx / PriceChart.jsx 里的说明。 */
+   要动这段先看 ProKline.jsx 里的说明。 */
 function AttributionSection() {
   return (
     <div>
