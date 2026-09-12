@@ -1,8 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { fetchJSON, prefetchJSON } from '../hooks/useApi'
 import RotationBoard from './RotationBoard'
-import HotRank from './HotRank'
-import MarketPools from './MarketPools'
 import GroupPicker from './rankings/GroupPicker'
 import StockPanel from './rankings/StockPanel'
 import { pctColor, boardOf, WL_ALL, WL_HELD, WL_DEFAULT, WL_LAST_KEY } from './rankings/shared'
@@ -17,13 +15,11 @@ const TABS = [
   { key: 'inst', label: '机构' },
   { key: 'earnings', label: '业绩' },
   { key: 'hotrank', label: '资金热度' },
-  { key: 'pools', label: '股池' },
 ]
-// 这两个页签挂的是整卡(原先散在板块页/复盘页), 不是个股列表: 铺满整宽、不要板块筛选、右侧不留K线位。
-// 「页签 key → 组件」这张表是唯一真相: 布局分支(isCard)和内容渲染都从它派生。
-// 原先是一个 key 数组 + 两条写死的 tab === 'x' 渲染分支 —— 加第三个整卡页签时漏写渲染
-// 分支就会得到一整片空白面板, 不报错也不进 console。
-const CARD_TABS = { hotrank: HotRank, pools: MarketPools }
+// 全部 9 个页签都是同一形态: 概念条 / 满宽页签行 / 板块筛选 / 左列表 + 右 K 线。
+// 首版曾把资金热度与股池做成"整卡"页签(isCard: 满宽左栏、藏掉筛选行/查股/StockPanel),
+// 结果切页签时整个页面骨架在跳, 且 10 个页签挤在 420px 左栏被截断。现在股池是【市场】
+// 下的独立页, 资金热度是标准列表页签, 这里不再有第二种形态。
 
 const BOARDS = ['全部', '主板', '创业板', '科创板', '北交所']
 
@@ -44,6 +40,7 @@ export default function Rankings() {
   const [instSide, setInstSide] = useState('net_buy')   // net_buy | net_sell
   const [earnings, setEarnings] = useState(null)
   const [earnSide, setEarnSide] = useState('预喜')       // 预喜 | 预警 | 持仓关联
+  const [hotRank, setHotRank] = useState(null)           // 东财资金人气榜(资金热度)
   const [lhbDaily, setLhbDaily] = useState(null)         // 最新披露日龙虎榜全榜单
   const [watch, setWatch] = useState(null)               // 自选池(全量视图)
   const [watchSet, setWatchSet] = useState(new Set())    // 自选代码集(☆按钮状态)
@@ -96,6 +93,8 @@ export default function Rankings() {
       ? fetchJSON('/api/market/earnings?top=100').then(d => { if (d.error) setErr(true); else setEarnings(d) })
       : tab === 'lhb'
       ? fetchJSON('/api/market/lhb-daily').then(d => { if (d.error) setErr(true); else setLhbDaily(d) })
+      : tab === 'hotrank'
+      ? fetchJSON('/api/market/hot-rank?top=100').then(d => { if (d.error) setErr(true); else setHotRank(d) })
       : tab === 'watch'
       ? fetchJSON('/api/market/watchlist').then(d => { if (d.error) setErr(true); else setWatch(d) })
       : tab === 'changes'
@@ -325,7 +324,7 @@ export default function Rankings() {
     return () => { stop = true }
   }, [selected, tab, loading])
   // 切到结构/机构/业绩 tab 时懒加载(服务端有缓存, 之后秒回)
-  useEffect(() => { if ((tab === 'structure' && !structure) || (tab === 'inst' && !inst) || (tab === 'earnings' && !earnings) || (tab === 'lhb' && !lhbDaily) || (tab === 'watch' && !watch)) load() }, [tab])   // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if ((tab === 'structure' && !structure) || (tab === 'inst' && !inst) || (tab === 'earnings' && !earnings) || (tab === 'lhb' && !lhbDaily) || (tab === 'watch' && !watch) || (tab === 'hotrank' && !hotRank)) load() }, [tab])   // eslint-disable-line react-hooks/exhaustive-deps
   // 异动页: 进页签/换组立即拉 + 60s 静默轮询(服务端45s缓存, 盘中事件流持续滚动, 不闪加载态)
   useEffect(() => {
     if (tab !== 'changes') return
@@ -347,9 +346,8 @@ export default function Rankings() {
       if (tag === 'input' || tag === 'textarea' || tag === 'select') return
       if (isUD) {
         // 没有可翻的行就把 ↑↓ 交还给浏览器: preventDefault 必须跟"确实换了一行"绑在一起。
-        // 整卡页签(资金热度/股池)的 list 恒为空, 早先无条件 preventDefault 的写法让
-        // ↑↓ 既不翻行、又吞掉了浏览器对超过一屏的面板的原生滚动 —— 滚轮和 PageUp 还能用,
-        // 所以一直没被发现。这两张卡在板块页/复盘页时是普通文档流卡片, ↑↓ 本来是能滚的。
+        // 列表为空(还在加载 / 筛到空 / 数据源挂了)时无条件 preventDefault 会既不翻行、
+        // 又吞掉浏览器对超过一屏内容的原生滚动 —— 滚轮和 PageUp 还能用, 所以很难被发现。
         const arr = listRef.current
         if (!arr?.length) return
         setSelected(prev => {
@@ -417,6 +415,8 @@ export default function Rankings() {
           : (earnings && earnings[earnSide]) || []
         ).map(r => ({ ...r, pct: r['幅度%'] }))
       )
+    // 资金热度: 接口返回的 pct 键名与标准行渲染器已经一致, 无需映射
+    : tab === 'hotrank' ? ((hotRank?.items) || [])
     : tab === 'structure' ? []
     : ((data && data[tab]) || [])
   // 结构页: 行业分组 → 组头行 + 个股行 摊平成一个列表(板块/阶段筛选后空组不显示)
@@ -447,8 +447,6 @@ export default function Rankings() {
         if (hotCodes) rs = rs.filter(r => hotCodes.has(r.code))
         return rs
       })()
-  const isCard = tab in CARD_TABS
-  const CardTab = CARD_TABS[tab]        // 整卡页签的组件; 个股列表页签为 undefined
   listRef.current = list.filter(r => !r._gheader && !r._wh)
   indsRef.current = ['全部', ...(structure?.groups || []).map(g => g.行业)]
   chKindsRef.current = ['全部', ...(changes?.kinds || []).map(k => k.kind)]
@@ -465,54 +463,55 @@ export default function Rankings() {
           onPickTag={setHotTag} onKindChange={(k) => { setTagKind(k); setHotTag('') }}
           onPickStock={(s) => setSelected(s)} />
       )}
-      <div className="flex flex-col lg:flex-row flex-1 min-h-0">
-      <div className={`flex flex-col min-h-0 ${isCard ? 'flex-1' : 'lg:w-[420px] shrink-0 border-b lg:border-b-0 lg:border-r border-border'}`}>
-        <div className="flex items-center gap-1.5 px-3 py-2 border-b border-border-subtle">
-          <div className="no-scrollbar flex items-center gap-1 overflow-x-auto min-w-0 flex-1">
-            {TABS.map(t => (
-              <button key={t.key} onClick={() => setTab(t.key)}
-                className={`text-[12px] px-2 py-1 rounded border whitespace-nowrap shrink-0 ${tab === t.key ? 'bg-accent/20 text-accent border-accent/40' : 'bg-surface-3 text-text-dim border-transparent hover:text-text'}`}>
-                {t.label}
-              </button>
-            ))}
-          </div>
-          {/* 查股框/取数日期/刷新 只对个股列表页签有意义: 整卡页签没有右侧 K 线面板,
-              选中的股票无处可去(pickCand 只 setSelected), 留着就是三个点了没反应的死控件。 */}
-          {!isCard && (
-          <>
-          <div className="relative shrink-0">
-            <input value={sq} onChange={e => onSearch(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && sqCands.length) pickCand(sqCands[0]); if (e.key === 'Escape') { setSq(''); setSqCands([]) } }}
-              placeholder="查任意股票" title="代码/名称/拼音子串, 选中后与榜单一样看K线/分时/龙虎榜/问AI"
-              className="w-[86px] focus:w-[130px] transition-all text-[11px] px-2 py-1 rounded bg-surface-3 border border-border text-text placeholder:text-text-muted focus:border-accent/50 outline-none" />
-            {sqBusy && sqCands.length === 0 && sq.trim() && (
-              <div className="absolute right-0 top-full mt-1 z-30 w-56 bg-surface-2 border border-border rounded-lg px-2.5 py-1.5 text-[11px] text-text-muted shadow-xl">
-                查询中…
-              </div>
-            )}
-            {sqCands.length > 0 && (
-              <div className={`absolute right-0 top-full mt-1 z-30 w-56 bg-surface-2 border border-border rounded-lg overflow-hidden shadow-xl ${sqBusy ? 'opacity-60' : ''}`}>
-                {sqCands.map(c => (
-                  <button key={c.code} onClick={() => pickCand(c)}
-                    className="w-full flex items-baseline gap-2 px-2.5 py-1.5 text-left hover:bg-surface-3/80 border-b border-border-subtle/50">
-                    <span className="text-[12px] text-text-bright truncate">{c.name || c.code}</span>
-                    <span className="text-[10px] font-mono text-text-muted shrink-0">{c.code}</span>
-                    {c.pct != null && (
-                      <span className={`ml-auto text-[11px] font-mono shrink-0 ${pctColor(c.pct)}`}>{c.pct >= 0 ? '+' : ''}{c.pct}%</span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-          <span className="text-[10px] text-text-muted whitespace-nowrap shrink-0">{(tab === 'structure' ? structure?.as_of : tab === 'lhb' ? lhbDaily?.date : data?.as_of)?.slice(5, 11) || ''}</span>
-          <button onClick={load} title="刷新" className="text-[10.5px] px-1.5 py-0.5 rounded border border-border text-text-dim hover:text-text shrink-0">刷新</button>
-          </>
+      {/* 页签行: 恒定满宽, 摆在左右两栏之外。原先它住在 420px 左栏里 —— 8 个页签已经勉强,
+          加到 10 个直接被截断(实测 scrollWidth 519 / clientWidth 232, 只看得见前 5 个)。
+          移出来之后它的位置和宽度在所有页签间恒定, 切页签不再有骨架跳动。查股/取数日期/刷新
+          跟着留在这一行(现在有地方放了); 板块筛选留在左栏 —— 它筛的是左栏那份列表。 */}
+      <div className="flex items-center gap-1.5 px-3 py-2 border-b border-border-subtle">
+        <div className="no-scrollbar flex items-center gap-1 overflow-x-auto min-w-0 flex-1">
+          {TABS.map(t => (
+            <button key={t.key} onClick={() => setTab(t.key)}
+              className={`text-[12px] px-2 py-1 rounded border whitespace-nowrap shrink-0 ${tab === t.key ? 'bg-accent/20 text-accent border-accent/40' : 'bg-surface-3 text-text-dim border-transparent hover:text-text'}`}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <div className="relative shrink-0">
+          <input value={sq} onChange={e => onSearch(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter' && sqCands.length) pickCand(sqCands[0]); if (e.key === 'Escape') { setSq(''); setSqCands([]) } }}
+            placeholder="查任意股票" title="代码/名称/拼音子串, 选中后与榜单一样看K线/分时/龙虎榜/问AI"
+            className="w-[86px] focus:w-[130px] transition-all text-[11px] px-2 py-1 rounded bg-surface-3 border border-border text-text placeholder:text-text-muted focus:border-accent/50 outline-none" />
+          {sqBusy && sqCands.length === 0 && sq.trim() && (
+            <div className="absolute right-0 top-full mt-1 z-30 w-56 bg-surface-2 border border-border rounded-lg px-2.5 py-1.5 text-[11px] text-text-muted shadow-xl">
+              查询中…
+            </div>
+          )}
+          {sqCands.length > 0 && (
+            <div className={`absolute right-0 top-full mt-1 z-30 w-56 bg-surface-2 border border-border rounded-lg overflow-hidden shadow-xl ${sqBusy ? 'opacity-60' : ''}`}>
+              {sqCands.map(c => (
+                <button key={c.code} onClick={() => pickCand(c)}
+                  className="w-full flex items-baseline gap-2 px-2.5 py-1.5 text-left hover:bg-surface-3/80 border-b border-border-subtle/50">
+                  <span className="text-[12px] text-text-bright truncate">{c.name || c.code}</span>
+                  <span className="text-[10px] font-mono text-text-muted shrink-0">{c.code}</span>
+                  {c.pct != null && (
+                    <span className={`ml-auto text-[11px] font-mono shrink-0 ${pctColor(c.pct)}`}>{c.pct >= 0 ? '+' : ''}{c.pct}%</span>
+                  )}
+                </button>
+              ))}
+            </div>
           )}
         </div>
+        {/* 取数日期按页签取各自数据源的。资金热度接口不返回日期, 这里给空串而不是落到
+            兜底的 data?.as_of —— 那是 /api/market/rankings 的取数时间, 跟这张榜没关系,
+            印上去等于给用户一个来自别的数据集的假日期。 */}
+        <span className="text-[10px] text-text-muted whitespace-nowrap shrink-0">{(tab === 'structure' ? structure?.as_of : tab === 'lhb' ? lhbDaily?.date : tab === 'hotrank' ? '' : data?.as_of)?.slice(5, 11) || ''}</span>
+        <button onClick={load} title="刷新" className="text-[10.5px] px-1.5 py-0.5 rounded border border-border text-text-dim hover:text-text shrink-0">刷新</button>
+      </div>
+
+      <div className="flex flex-col lg:flex-row flex-1 min-h-0">
+      <div className="flex flex-col min-h-0 lg:w-[420px] shrink-0 border-b lg:border-b-0 lg:border-r border-border">
 
         {/* 板块筛选 */}
-        {!isCard && (
         <div className="flex items-center gap-1 px-3 py-1.5 border-b border-border-subtle flex-wrap">
           {tab === 'watch' && (
             <>
@@ -596,7 +595,6 @@ export default function Rankings() {
             </button>
           ))}
         </div>
-        )}
 
         {/* 事件类型快捷条(异动页): 组内再按具体事件细分, 带当前流内计数 */}
         {tab === 'changes' && (changes?.kinds || []).length > 0 && (
@@ -631,17 +629,7 @@ export default function Rankings() {
         )}
 
         <div className="flex-1 overflow-y-auto min-h-0">
-          {/* 整卡页签: 组件从 CARD_TABS 取, 自取数、无 props。
-              外面这层 overflow-y-auto h-full 是必需的 —— 榜单页外壳撑满一屏,
-              普通文档流卡片挂进来会溢出被裁掉。
-              这两张卡自带 bg-surface-2 + border + rounded-xl + p-4(它们原本是独立上页的),
-              而榜单面板本身已经是同款卡壳, 直接挂进来会看到"卡里套一张同色同框的卡" +
-              双份内边距。就地抹掉直接子节点的框和底色(卡自己的 p-4 留着当内边距, 所以
-              这层不再加 p-3), 不去改 HotRank/MarketPools —— 它们在别处还要独立上页。 */}
-          {CardTab && (
-            <div className="overflow-y-auto h-full [&>div]:border-0 [&>div]:bg-transparent"><CardTab /></div>
-          )}
-          {!isCard && !loading && !err && list.length === 0 && (
+          {!loading && !err && list.length === 0 && (
             <div className="text-center py-8 text-text-dim text-[12px] px-4 leading-relaxed">
               {tab === 'structure' ? '今天龙头池里没有满足条件的蓄势/强势结构（大波动市里稀缺属正常）'
                 : tab === 'lhb' ? (lhbDaily?.note || '近10天无龙虎榜披露数据')
@@ -650,8 +638,8 @@ export default function Rankings() {
                 : `榜单 top100 里暂无${board}标的`}
             </div>
           )}
-          {!isCard && loading && <div className="text-center py-8 text-text-dim text-[12px]">{tab === 'structure' ? '全市场扫描中…（首扫约1分钟, 之后10分钟缓存秒开）' : '加载榜单…'}</div>}
-          {!isCard && err && <div className="text-center py-8 text-text-dim text-[12px]">榜单源暂不可达（东财抖动），<button onClick={load} className="text-accent">重试</button></div>}
+          {loading && <div className="text-center py-8 text-text-dim text-[12px]">{tab === 'structure' ? '全市场扫描中…（首扫约1分钟, 之后10分钟缓存秒开）' : '加载榜单…'}</div>}
+          {err && <div className="text-center py-8 text-text-dim text-[12px]">榜单源暂不可达（东财抖动），<button onClick={load} className="text-accent">重试</button></div>}
           {!loading && !err && list.map((r, i) => {
             if (r._wh) {
               return (
@@ -770,6 +758,11 @@ export default function Rankings() {
                       ? `${r['类型']}·${(r['披露日'] || '').slice(5)}披露`
                       : tab === 'by_amount'
                       ? `${r['成交额亿']}亿`
+                      // 资金热度接口只给 rank/price/pct, 没有量比/涨停占比。不给它一条自己的
+                      // 分支就会落到最后那个兜底上, 100 行整整齐齐印一列「量比—」——
+                      // 标了一个这份数据里根本不存在的字段。改印它确实有的现价。
+                      : tab === 'hotrank'
+                      ? `现价 ${r.price ?? '—'}`
                       : r.is_new ? '新股·无涨停'
                       : (r['涨停占比%'] != null ? `占停${r['涨停占比%']}%` : `量比${r['量比'] ?? '—'}`)}
                   </span>
@@ -867,13 +860,11 @@ export default function Rankings() {
         )}
       </div>
 
-      {!isCard && (
-        <div className="flex-1 min-h-0 min-w-0">
-          <StockPanel stock={selected} watched={selected ? watchSet.has(selected.code) : false}
-            onToggleWatch={toggleWatch} groups={wlMeta.groups} onSetGroups={pickGroups}
-            myGroups={selected ? groupsOf(selected.code) : []} />
-        </div>
-      )}
+      <div className="flex-1 min-h-0 min-w-0">
+        <StockPanel stock={selected} watched={selected ? watchSet.has(selected.code) : false}
+          onToggleWatch={toggleWatch} groups={wlMeta.groups} onSetGroups={pickGroups}
+          myGroups={selected ? groupsOf(selected.code) : []} />
+      </div>
       </div>
     </div>
   )

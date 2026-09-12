@@ -2,6 +2,8 @@ const ICONS = {
   portfolio: <><rect x="4" y="8" width="16" height="11" rx="2" /><path d="M9 8V6a2 2 0 012-2h2a2 2 0 012 2v2M4 13h16" /></>,
   sector: <><rect x="4" y="4" width="7" height="7" rx="1" /><rect x="13" y="4" width="7" height="7" rx="1" /><rect x="4" y="13" width="7" height="7" rx="1" /><rect x="13" y="13" width="7" height="7" rx="1" /></>,
   rankings: <><path d="M8 4h8v4a4 4 0 01-8 0z" /><path d="M8 5H5v1a3 3 0 003 3M16 5h3v1a3 3 0 01-3 3M10 15h4M9 19.5h6M12 15v4.5" /></>,
+  // 大盘·股池: 三档收窄的梯队(首板 → 2 连板 → 3 板及以上), 和 sector 那个等大四宫格区分得开
+  pools: <><rect x="3" y="4" width="18" height="4" rx="1" /><rect x="6" y="10" width="12" height="4" rx="1" /><rect x="9" y="16" width="6" height="4" rx="1" /></>,
   macro: <><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z" /><path d="M12 12v9M4 7.5l8 4.5 8-4.5" /></>,
   news: <><rect x="5" y="4" width="14" height="16" rx="2" /><path d="M8 9h8M8 12h8M8 15h5" /></>,
   review: <><path d="M7 4h8l4 4v12H7zM15 4v4h4M10 13h6M10 16.5h4" /></>,
@@ -33,6 +35,7 @@ export const NAV = [
     { key: 'open',     label: '开盘·情绪' },
     { key: 'sector',   label: '板块' },
     { key: 'rankings', label: '榜单' },
+    { key: 'pools',    label: '大盘·股池' },
     { key: 'capital',  label: '资金·机构' },
     { key: 'macro',    label: '宏观' },
     { key: 'news',     label: '资讯' },
