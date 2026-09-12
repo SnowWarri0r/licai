@@ -199,6 +199,14 @@ export default function StockAsk({ page = false }) {
 
   const handleEv = (ev) => {
     if (ev.type === 'step') patchLast(it => ({ ...it, steps: [...it.steps, { tool: ev.tool, label: ev.label, arg: ev.arg }] }))
+    // 取数失败要回填到对应的 chip 上 —— step 是工具跑之前发的, 不回填的话失败的工具
+    // 也会跟成功的一样打绿勾, 界面上看不出这一块其实没数
+    if (ev.type === 'step_result' && ev.ok === false) patchLast(it => ({
+      ...it,
+      steps: it.steps.map((s, i) =>
+        s.tool === ev.tool && !s.failed && !it.steps.slice(i + 1).some(x => x.tool === ev.tool && !x.failed)
+          ? { ...s, failed: true, err: ev.err } : s),
+    }))
     else if (ev.type === 'thought') patchLast(it => ({ ...it, thought: ev.text }))
     else if (ev.type === 'answer') { patchLast(it => ({ ...it, answer: ev.text })); typewriter(ev.text || '') }
     else if (ev.type === 'sources') patchLast(it => ({ ...it, sources: [...(it.sources || []), ...(ev.sources || [])] }))

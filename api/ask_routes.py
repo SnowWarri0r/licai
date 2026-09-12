@@ -81,6 +81,13 @@ class RunIn(BaseModel):
     scope: str = "market"                   # market | stock:<code>, 前端按它认领自己那条
 
 
+class DeepIn(BaseModel):
+    code: str
+    name: Optional[str] = None
+    question: Optional[str] = None
+    session_id: Optional[int] = None
+
+
 class SessionMsg(BaseModel):
     session_id: Optional[int] = None     # 空=新建会话
     role: str                            # user | assistant
@@ -116,6 +123,28 @@ async def ask_stream(data: AskIn):
 
 
 # --- 后台运行的一轮(run): 界面走这条 ---
+
+@router.post("/deep-dive")
+async def start_deep_dive(data: DeepIn):
+    """四层交叉深挖: 起一条后台 run, 立刻返回 run_id。
+
+    为什么走 run 而不是同步返回: 一轮实测 3 分半(四层并行 + 综合共 5 次 LLM), 同步请求会被
+    浏览器/代理掐断; 走 run 还顺带白拿"切页不断 + 断线续拉 + 历史里能翻"。
+    显式入口(用户点了才跑), 不挂成 agent 工具 —— 挂成工具的话模型会自己决定调, 5 次调用的
+    开销就不受控了。
+    """
+    from services.multi_lens import stream as _lens_stream
+    code = (data.code or "").strip()
+    if not code:
+        return {"error": "缺 code"}
+    nm = (data.name or "").strip()
+    q = (data.question or "").strip() or "这门生意的质地怎么样"
+    title = f"深挖 {nm or code}"
+    run = await ask_runs.start(
+        f"{title}: {q}", session_id=data.session_id, title=title,
+        scope=f"stock:{code}", events=_lens_stream(code, nm, q))
+    return {"run_id": run.id, "session_id": run.session_id, "cursor": 0}
+
 
 @router.post("/runs")
 async def start_run(data: RunIn):

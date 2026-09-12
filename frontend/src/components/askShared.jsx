@@ -81,14 +81,18 @@ export function ToolCallStrip({ steps, settled }) {
         {steps.map((s, j) => {
           const retry = META_STEPS.includes(s.tool)
           return (
-            <span key={j}
+            <span key={j} title={s.failed ? `这一项没取到: ${s.err || '接口报错'}` : undefined}
               className={`inline-flex items-center gap-1 text-[10.5px] pl-1.5 pr-2 py-[3px] rounded-full border transition-colors ${
-                retry ? 'bg-warn/12 border-warn/40 text-warn'
+                s.failed ? 'bg-bear/12 border-bear/40 text-bear'
+                : retry ? 'bg-warn/12 border-warn/40 text-warn'
                 : settled ? 'bg-accent/8 border-accent/25 text-text-dim' : 'bg-accent/12 border-accent/40 text-text'}`}>
               <ToolIcon tool={s.tool} />
               <span>{s.label}</span>
               {s.arg ? <span className="font-mono text-text-muted">{s.arg}</span> : null}
-              {retry ? null : settled
+              {/* 失败的不能打勾 —— 原来 settled 时一律打绿勾, 挂掉的工具跟成功的长得一模一样,
+                  于是"某一块其实没数"这件事在界面上完全看不出来 */}
+              {s.failed ? <span className="text-bear text-[11px] leading-none font-bold">!</span>
+                : retry ? null : settled
                 ? <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" className="text-bull shrink-0"><path d="M5 12.5l4.5 4.5L19 7" /></svg>
                 : <span className="text-accent/50 leading-none">·</span>}
             </span>
@@ -172,9 +176,21 @@ const isTableSep = (t) => /^\|?[\s:|-]+\|[\s:|-]*$/.test(t) && t.includes('-')
 const splitCells = (t) => t.replace(/^\||\|$/g, '').split('|').map(c => c.trim())
 
 // 极简 markdown(## 标题/**粗**/列表/表格/⟦N⟧引用/红涨绿跌), 不引依赖
+// 流式打字机是逐字吐的, 所以经常出现"开了 ** 但闭合的还没到"的中间态。加粗正则要求配对
+// (\*\*[^*]+\*\*), 配不上就把 ** 当字面量画出来 —— 屏幕上直接露出一串星号。四层交叉那种
+// 五千字满是加粗的答案要吐好几分钟, 这个中间态会一直闪。
+// 修法: ** 的出现次数为奇数时, 抹掉**最后那一个**(它必然是还没闭合的那个), 已配对的不动。
+function hideDanglingBold(text) {
+  const s = text || ''
+  const n = (s.match(/\*\*/g) || []).length
+  if (n % 2 === 0) return s
+  const at = s.lastIndexOf('**')
+  return s.slice(0, at) + s.slice(at + 2)
+}
+
 export function MiniMarkdown({ text, sources }) {
   const renderInline = (t, kp) => renderInlineBase(t, kp, sources)
-  const lines = stripUnknownTags(normalizeHtml(text)).split('\n')
+  const lines = stripUnknownTags(normalizeHtml(hideDanglingBold(text))).split('\n')
   const out = []
   let i = 0
   while (i < lines.length) {
@@ -260,6 +276,16 @@ export async function startRun(body) {
   })
   if (!r.ok) throw new Error(`${r.status}`)
   return r.json()          // {run_id, session_id, cursor, images}
+}
+
+// 四层交叉深挖: 起一条后台 run(一轮约 3 分半, 5 次 LLM), 返回同样的 {run_id, session_id}。
+// 走 run 而不是同步请求: 同步的话浏览器/代理会掐断, 而且切页就白跑了。
+export async function startDeepDive(body) {
+  const r = await fetch('/api/ask/deep-dive', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  })
+  if (!r.ok) throw new Error(`${r.status}`)
+  return r.json()
 }
 
 // 跟看一条 run: 从 cursor 起把事件喂给 onEvent(每条带 ev.cursor, 记着它就能断点续看)。
