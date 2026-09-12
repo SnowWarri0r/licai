@@ -27,6 +27,8 @@ import EtfXray from './components/EtfXray'
 import PortfolioNews from './components/PortfolioNews'
 // 复盘
 import AITradeReview from './components/AITradeReview'
+import PortfolioCurve from './components/PortfolioCurve'
+import PortfolioCorrelation from './components/PortfolioCorrelation'
 import BenchmarkCompare from './components/BenchmarkCompare'
 import Cashflow from './components/Cashflow'
 import AllocationAdvisor from './components/AllocationAdvisor'
@@ -171,6 +173,8 @@ export default function App() {
           {view === 'review' && (
             <div className={`${PAD} space-y-3 md:space-y-4`}>
               <AITradeReview />
+              <PortfolioCurve />
+              <PortfolioCorrelation />
               <BenchmarkCompare />
               <Cashflow />
               <AllocationAdvisor />
