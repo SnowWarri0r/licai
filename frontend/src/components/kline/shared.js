@@ -19,3 +19,7 @@ export const fmtHand = (h, unit = '手') => h == null ? '--'
   : Math.round(h) + unit
 
 export const colorPctHex = (v) => v >= 0 ? UP : DOWN
+
+// ProKline / DayOverlay 用的价格格式化。⚠️ 与上面的 fmtVal 只差一点(取绝对值判档、
+// 档位也不同), 但两边的显示精度都是调过的 —— 合并会静默改掉其中一边的位数, 所以分开放。
+export const fmt = (v) => v == null ? '--' : Math.abs(v) >= 100 ? v.toFixed(1) : Math.abs(v) >= 10 ? v.toFixed(2) : v.toFixed(3)
