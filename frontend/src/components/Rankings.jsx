@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { fetchJSON, prefetchJSON } from '../hooks/useApi'
 import RotationBoard from './RotationBoard'
+import HotRank from './HotRank'
+import MarketPools from './MarketPools'
 import GroupPicker from './rankings/GroupPicker'
 import StockPanel from './rankings/StockPanel'
 import { pctColor, boardOf, WL_ALL, WL_HELD, WL_DEFAULT, WL_LAST_KEY } from './rankings/shared'
@@ -14,7 +16,11 @@ const TABS = [
   { key: 'structure', label: '蓄势/强势' },
   { key: 'inst', label: '机构' },
   { key: 'earnings', label: '业绩' },
+  { key: 'hotrank', label: '资金热度' },
+  { key: 'pools', label: '股池' },
 ]
+// 这两个页签挂的是整卡(原先散在板块页/复盘页), 不是个股列表: 铺满整宽、不要板块筛选、右侧不留K线位
+const CARD_TABS = ['hotrank', 'pools']
 
 const BOARDS = ['全部', '主板', '创业板', '科创板', '北交所']
 
@@ -434,6 +440,7 @@ export default function Rankings() {
         if (hotCodes) rs = rs.filter(r => hotCodes.has(r.code))
         return rs
       })()
+  const isCard = CARD_TABS.includes(tab)
   listRef.current = list.filter(r => !r._gheader && !r._wh)
   indsRef.current = ['全部', ...(structure?.groups || []).map(g => g.行业)]
   chKindsRef.current = ['全部', ...(changes?.kinds || []).map(k => k.kind)]
@@ -451,7 +458,7 @@ export default function Rankings() {
           onPickStock={(s) => setSelected(s)} />
       )}
       <div className="flex flex-col lg:flex-row flex-1 min-h-0">
-      <div className="lg:w-[420px] shrink-0 flex flex-col border-b lg:border-b-0 lg:border-r border-border min-h-0">
+      <div className={`flex flex-col min-h-0 ${isCard ? 'flex-1' : 'lg:w-[420px] shrink-0 border-b lg:border-b-0 lg:border-r border-border'}`}>
         <div className="flex items-center gap-1.5 px-3 py-2 border-b border-border-subtle">
           <div className="no-scrollbar flex items-center gap-1 overflow-x-auto min-w-0 flex-1">
             {TABS.map(t => (
@@ -491,6 +498,7 @@ export default function Rankings() {
         </div>
 
         {/* 板块筛选 */}
+        {!isCard && (
         <div className="flex items-center gap-1 px-3 py-1.5 border-b border-border-subtle flex-wrap">
           {tab === 'watch' && (
             <>
@@ -574,6 +582,7 @@ export default function Rankings() {
             </button>
           ))}
         </div>
+        )}
 
         {/* 事件类型快捷条(异动页): 组内再按具体事件细分, 带当前流内计数 */}
         {tab === 'changes' && (changes?.kinds || []).length > 0 && (
@@ -608,7 +617,15 @@ export default function Rankings() {
         )}
 
         <div className="flex-1 overflow-y-auto min-h-0">
-          {!loading && !err && list.length === 0 && (
+          {/* 整卡页签: 自取数、无 props, 外面这层 overflow-y-auto h-full 是必需的
+              —— 榜单页外壳撑满一屏, 普通文档流卡片挂进来会溢出被裁掉。 */}
+          {tab === 'hotrank' && (
+            <div className="overflow-y-auto h-full p-3"><HotRank /></div>
+          )}
+          {tab === 'pools' && (
+            <div className="overflow-y-auto h-full p-3"><MarketPools /></div>
+          )}
+          {!isCard && !loading && !err && list.length === 0 && (
             <div className="text-center py-8 text-text-dim text-[12px] px-4 leading-relaxed">
               {tab === 'structure' ? '今天龙头池里没有满足条件的蓄势/强势结构（大波动市里稀缺属正常）'
                 : tab === 'lhb' ? (lhbDaily?.note || '近10天无龙虎榜披露数据')
@@ -617,8 +634,8 @@ export default function Rankings() {
                 : `榜单 top100 里暂无${board}标的`}
             </div>
           )}
-          {loading && <div className="text-center py-8 text-text-dim text-[12px]">{tab === 'structure' ? '全市场扫描中…（首扫约1分钟, 之后10分钟缓存秒开）' : '加载榜单…'}</div>}
-          {err && <div className="text-center py-8 text-text-dim text-[12px]">榜单源暂不可达（东财抖动），<button onClick={load} className="text-accent">重试</button></div>}
+          {!isCard && loading && <div className="text-center py-8 text-text-dim text-[12px]">{tab === 'structure' ? '全市场扫描中…（首扫约1分钟, 之后10分钟缓存秒开）' : '加载榜单…'}</div>}
+          {!isCard && err && <div className="text-center py-8 text-text-dim text-[12px]">榜单源暂不可达（东财抖动），<button onClick={load} className="text-accent">重试</button></div>}
           {!loading && !err && list.map((r, i) => {
             if (r._wh) {
               return (
@@ -834,11 +851,13 @@ export default function Rankings() {
         )}
       </div>
 
-      <div className="flex-1 min-h-0 min-w-0">
-        <StockPanel stock={selected} watched={selected ? watchSet.has(selected.code) : false}
-          onToggleWatch={toggleWatch} groups={wlMeta.groups} onSetGroups={pickGroups}
-          myGroups={selected ? groupsOf(selected.code) : []} />
-      </div>
+      {!isCard && (
+        <div className="flex-1 min-h-0 min-w-0">
+          <StockPanel stock={selected} watched={selected ? watchSet.has(selected.code) : false}
+            onToggleWatch={toggleWatch} groups={wlMeta.groups} onSetGroups={pickGroups}
+            myGroups={selected ? groupsOf(selected.code) : []} />
+        </div>
+      )}
       </div>
     </div>
   )
