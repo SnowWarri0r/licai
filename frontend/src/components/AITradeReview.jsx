@@ -2,8 +2,6 @@ import { useState, useEffect, useCallback } from 'react'
 import { fetchJSON } from '../hooks/useApi'
 import DailyReview from './DailyReview'
 import EodSummaryCard from './EodSummaryCard'
-import PortfolioCurve from './PortfolioCurve'
-import PortfolioCorrelation from './PortfolioCorrelation'
 import SkeletonCard from './Skeleton'
 
 const PERIODS = [
@@ -58,13 +56,6 @@ export default function AITradeReview() {
         <div className="mb-4 pb-3 border-b border-border-subtle">
           <EodSummaryCard />
           <DailyReview bare />
-        </div>
-      )}
-
-      {period === 'all' && (
-        <div className="mb-4 pb-3 border-b border-border-subtle">
-          <PortfolioCurve />
-          <PortfolioCorrelation />
         </div>
       )}
 
