@@ -1,9 +1,13 @@
 """Morning briefing — once-a-day LLM-driven evaluation of each holding.
 
-Pulls news + recent kline + current tranches + cost/price, asks Claude haiku to:
+Pulls news + announcements + recent kline + 基本面健康度 + cost/price, asks Claude haiku to:
   1. Read the news for sentiment signals (gap risk, sector regime change)
-  2. Decide a verdict per stock: lock/hold/raise/lower/add_now
-  3. Call out the 1-2 key headlines that drove the verdict
+  2. 给一个只描述消息面倾向的 signal(偏暖/中性/偏冷/警惕) —— **不是操作指令**
+  3. 用 2-4 条带数字/日期/主体的事实要点说清今天该知道的事, 有风险则单列一句
+
+SYSTEM_PROMPT 里有一条硬规则: 绝不输出买卖/加减仓/价位指令。此前这段注释写的
+"decide a verdict: lock/hold/raise/lower/add_now" 是解套档位时代的产物, 与那条
+规则正相反, 已更正。
 
 The briefing is meant to run ~9:00 CST before market open and persist the result
 for the rest of the day. User reads it once, no real-time noise.

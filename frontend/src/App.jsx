@@ -80,7 +80,9 @@ export default function App() {
     // 随便挑一个页签(现在是静默落到「涨幅」)给的是另一份数据, 等于骗人。
     if (h === 'rankings' && new URLSearchParams(raw.split('?')[1] || '').get('t') === 'pools') {
       try { window.location.hash = 'pools' } catch { /* 忽略, 视图已经切对了 */ }
-      return 'pools'
+      // 走 normalizeView 而不是直接 return: 万一哪天 'pools' 从 NAV 里下掉,
+      // 这里跟着回落持仓页, 而不是把一个不存在的 key 塞进 state 渲染成空白。
+      return normalizeView('pools')
     }
     return normalizeView(h)
   })
