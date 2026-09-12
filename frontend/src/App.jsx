@@ -34,19 +34,27 @@ import Cashflow from './components/Cashflow'
 import AllocationAdvisor from './components/AllocationAdvisor'
 import AShareSectorGap from './components/AShareSectorGap'
 
+// 合法 view key。setView 与 hash 初始化共用 —— 只在初始化校验的话,
+// 运行时传入非法 key(历史上 setView('dashboard'))会让内容区渲染成空白。
+const VIEWS = ['portfolio', 'sector', 'rankings', 'macro', 'news', 'review', 'ask', 'settings']
+const normalizeView = (v) => (VIEWS.includes(v) ? v : 'portfolio')
+
 export default function App() {
   const [holdings, setHoldings] = useState([])
   const [marketOpen, setMarketOpen] = useState(false)
   const [editTarget, setEditTarget] = useState(null)
   const [historyTarget, setHistoryTarget] = useState(null)
   const [lastUpdate, setLastUpdate] = useState(null)
-  const _VIEWS = ['portfolio', 'sector', 'rankings', 'macro', 'news', 'review', 'ask', 'settings']
   const [view, _setView] = useState(() => {
     // 支持 #view?k=v 形式的 deep-link(子参数由各组件自行读取)
     const h = (window.location.hash || '').slice(1).split('?')[0]
-    return _VIEWS.includes(h) ? h : 'portfolio'
+    return normalizeView(h)
   })
-  const setView = (v) => { _setView(v); try { window.location.hash = v } catch {} }
+  const setView = (v) => {
+    const next = normalizeView(v)
+    _setView(next)
+    try { window.location.hash = next } catch {}
+  }
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [dataVersion, setDataVersion] = useState(0)
   const quotesRef = useRef({})
@@ -181,7 +189,7 @@ export default function App() {
 
           {view === 'settings' && (
             <div className={`${PAD} max-w-[900px]`}>
-              <Settings onClose={() => setView('dashboard')} />
+              <Settings onClose={() => setView('portfolio')} />
             </div>
           )}
           </div>
