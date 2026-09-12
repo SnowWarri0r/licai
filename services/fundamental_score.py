@@ -1,4 +1,7 @@
-"""Fundamental health scoring for unwind decisions.
+"""Fundamental health scoring — 一只标的当下的"基本面健康度".
+
+消费方两处: `stock_agent` 的红线清单工具、`morning_briefing` 的盘前简报。
+(原本是解套档位的放行闸门, 那个特性已退役, 这个打分本身留下来了。)
 
 Combines 4 signals into a single score in [-1, 1]:
 - Sector index 5-day performance (weight 0.3)
@@ -41,9 +44,9 @@ def compute_score(
 def classify_health(score: float) -> str:
     """Map score to health band.
 
-    >= 0.5  → green  (freely add)
-    >= -0.5 → yellow (only shallow tranches)
-    <  -0.5 → red    (pause all adding)
+    >= 0.5  → green   信号偏正
+    >= -0.5 → yellow  信号中性/混杂
+    <  -0.5 → red     信号偏负
     """
     if score >= 0.5:
         return "green"
@@ -185,8 +188,13 @@ async def fetch_health_snapshot(stock_code: str, stock_name: str = "") -> dict:
             }
         }
 
-    LLM sentiment and announcement scoring are stubbed to 0 for MVP.
-    Will wire in later iterations.
+    llm_sentiment / announcement_score 都是真实调用(见下方 gather), 早期"MVP 里恒 0"
+    的说明已过期。
+
+    ⚠️ 已知口径缺陷, 两个占 0.5 权重的输入都不是它们名字说的东西:
+      - sector_5d_perf: 下面写死了只匹配「有色」指数, 任何标的都拿有色金属当行业;
+        且取的是当日 change_pct, 不是 5 日。
+      - futures_5d_perf: 拿当日商品涨跌除以 5 当 5 日代理。
     """
     from services.market_data import get_market_indices, get_commodity_for_stock
 
