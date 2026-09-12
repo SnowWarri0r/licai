@@ -3,13 +3,16 @@
 消费方两处: `stock_agent` 的红线清单工具、`morning_briefing` 的盘前简报。
 (原本是解套档位的放行闸门, 那个特性已退役, 这个打分本身留下来了。)
 
-Combines 4 signals into a single score in [-1, 1]:
-- Sector index 5-day performance (weight 0.3)
-- Related futures 5-day performance (weight 0.2)
-- LLM news sentiment (weight 0.3)
-- Company announcement sentiment (weight 0.2)
+四路信号加权成一个 [-1, 1] 的分, 再映射成 green / yellow / red:
+- 所属行业板块近 5 日涨跌 (权重 0.3)
+- 关联商品期货当日涨跌 (权重 0.2)
+- 新闻情感 (权重 0.3)
+- 公告重要性 (权重 0.2)
 
-Then maps the score to a discrete health level: green / yellow / red.
+**四路都必须先归一到 [-1, 1] 再进来** —— 见 norm_pct。这条是踩出来的:
+情感两路本来就是 [-1,1], 而行情两路早先直接喂 `change_pct / 100`(3% 涨 → 0.03),
+于是名义上占一半权重的行情信号实际只贡献了万分之几, 分数几乎全由情感决定,
+绿灯要两路情感同时打满才够 —— 等价于绿灯不可达、几乎恒黄。
 """
 from __future__ import annotations
 import asyncio
@@ -25,20 +28,42 @@ WEIGHT_FUTURES = 0.2
 WEIGHT_NEWS = 0.3
 WEIGHT_ANNOUNCEMENT = 0.2
 
+# 归一满量程: 板块 5 日 / 商品当日 涨跌 ±5% 视作 ±1(超出截断)。
+# 5% 不是拍的: 行业板块 5 日 ±5% 已是明显的板块级异动, 再大属极端行情, 截断不丢信息。
+SECTOR_FULL_SCALE_PCT = 5.0
+FUTURES_FULL_SCALE_PCT = 5.0
+
+
+def norm_pct(pct: float | None, full_scale_pct: float) -> float | None:
+    """把百分数(-3.2 表示 -3.2%)归一到 [-1, 1]。None 透传 —— 代表这路信号取不到。"""
+    if pct is None or full_scale_pct <= 0:
+        return None
+    return max(-1.0, min(1.0, pct / full_scale_pct))
+
 
 def compute_score(
-    sector_5d_perf: float = 0.0,
-    futures_5d_perf: float = 0.0,
-    llm_sentiment: float = 0.0,
-    announcement_score: float = 0.0,
+    sector_perf: float | None = None,
+    futures_perf: float | None = None,
+    news_sentiment: float | None = None,
+    announcement_score: float | None = None,
 ) -> float:
-    """Weighted combination. All inputs are signed floats, roughly in [-1, 1]."""
-    return (
-        WEIGHT_SECTOR * sector_5d_perf
-        + WEIGHT_FUTURES * futures_5d_perf
-        + WEIGHT_NEWS * llm_sentiment
-        + WEIGHT_ANNOUNCEMENT * announcement_score
+    """四路已归一信号的加权平均。None = 该路取不到, 按剩余权重重新归一。
+
+    取不到的信号不能拿 0 顶替: 0 是"中性"这个真实判断, 而"没数据"混进去只会把
+    分数往中间(黄灯)拖。四个权重之和恰为 1, 所以按存活权重重新归一之后, 分数
+    仍然落在 [-1, 1], ±0.5 的档位边界才是可达的。
+    """
+    parts = (
+        (WEIGHT_SECTOR, sector_perf),
+        (WEIGHT_FUTURES, futures_perf),
+        (WEIGHT_NEWS, news_sentiment),
+        (WEIGHT_ANNOUNCEMENT, announcement_score),
     )
+    live = [(w, v) for w, v in parts if v is not None]
+    if not live:
+        return 0.0
+    total_w = sum(w for w, _ in live)
+    return sum(w * v for w, v in live) / total_w
 
 
 def classify_health(score: float) -> str:
@@ -173,67 +198,104 @@ async def _fetch_announcement_sentiment(stock_code: str, stock_name: str = "") -
     return score
 
 
+async def _sector_5d_pct(stock_code: str) -> tuple[float | None, str]:
+    """所属行业板块近 5 日涨跌%。取不到给 (None, "")。
+
+    走 sector_compare —— 板块雷达用的同一条行业解析链路(同花顺细分板块 → 硬编码 ETF
+    代理), 所以"这只票该对标哪个板块"全项目只有一份判断。它自带 30 分钟缓存, 每只
+    持仓调一次不会额外打网络。
+
+    ⚠️ source == "fallback" 表示没匹配到对标板块、退到了沪深300。那是大盘不是板块,
+    所以按"这路信号取不到"处理 —— 拿大盘冒充板块, 等于给每只票都加一份同样的偏置。
+    """
+    try:
+        from services.sector_compare import get_sector_compare
+        cmp = await get_sector_compare(stock_code)
+    except Exception:
+        return None, ""
+    if not isinstance(cmp, dict) or cmp.get("source") == "fallback":
+        return None, ""
+    closes = [k.get("close") for k in (cmp.get("etf_kline") or []) if k.get("close")]
+    if len(closes) < 6:
+        return None, ""
+    prior = closes[-6]
+    if prior <= 0:
+        return None, ""
+    return round((closes[-1] / prior - 1) * 100, 2), (cmp.get("etf_name") or "")
+
+
+async def _futures_1d_pct(stock_code: str) -> tuple[float | None, str]:
+    """关联商品期货当日涨跌%。没有关联品种(多数标的)给 (None, "")。
+
+    只有当日, 不是 5 日 —— 商品报价接口这里只给快照。早先版本拿当日涨跌除以 5
+    "当 5 日代理", 那不是 5 日数据, 只是把同一个当日信号缩小到五分之一。
+    """
+    try:
+        from services.market_data import get_commodity_for_stock
+        commodity = await get_commodity_for_stock(stock_code)
+    except Exception:
+        return None, ""
+    if not commodity:
+        return None, ""
+    pct = commodity.get("change_pct")
+    if pct is None:
+        return None, ""
+    try:
+        return round(float(pct), 2), (commodity.get("label") or "")
+    except (TypeError, ValueError):
+        return None, ""
+
+
 async def fetch_health_snapshot(stock_code: str, stock_name: str = "") -> dict:
-    """Fetch live inputs and compute health score.
+    """拉四路实时输入, 算健康度。
 
     Returns:
         {
-            "score": float,
+            "score": float,                        # [-1, 1]
             "level": "green" | "yellow" | "red",
-            "details": {
-                "sector_5d_perf": ...,
-                "futures_5d_perf": ...,
-                "llm_sentiment": ...,
-                "announcement_score": ...,
+            "details": {                           # 每路都给原始值+归一值, 便于核对
+                "sector":       {"板块": str, "近5日%": float|None, "归一": float|None},
+                "futures":      {"品种": str, "当日%": float|None, "归一": float|None},
+                "news_sentiment": float,
+                "announcement_score": float,
+                "参与打分": [str, ...],            # 实际进了加权的那几路
             }
         }
 
-    llm_sentiment / announcement_score 都是真实调用(见下方 gather), 早期"MVP 里恒 0"
-    的说明已过期。
-
-    ⚠️ 已知口径缺陷, 两个占 0.5 权重的输入都不是它们名字说的东西:
-      - sector_5d_perf: 下面写死了只匹配「有色」指数, 任何标的都拿有色金属当行业;
-        且取的是当日 change_pct, 不是 5 日。
-      - futures_5d_perf: 拿当日商品涨跌除以 5 当 5 日代理。
+    四路并发取。行情两路取不到就是 None(不参与加权、按剩余权重重新归一), 不拿 0 顶替。
     """
-    from services.market_data import get_market_indices, get_commodity_for_stock
-
-    sector_perf = 0.0
-    try:
-        indices = await get_market_indices()
-        for idx in indices:
-            if "有色" in idx.get("name", ""):
-                sector_perf = idx.get("change_pct", 0) / 100.0
-                break
-    except Exception:
-        pass
-
-    futures_perf = 0.0
-    try:
-        commodity = await get_commodity_for_stock(stock_code)
-        if commodity:
-            futures_perf = commodity.get("change_pct", 0) / 100.0 / 5  # rough 5d proxy
-    except Exception:
-        pass
-
-    llm_sent, ann = await asyncio.gather(
+    (sector_pct, sector_name), (fut_pct, fut_name), news, ann = await asyncio.gather(
+        _sector_5d_pct(stock_code),
+        _futures_1d_pct(stock_code),
         _fetch_news_sentiment(stock_code, stock_name),
         _fetch_announcement_sentiment(stock_code, stock_name),
     )
 
+    sector_n = norm_pct(sector_pct, SECTOR_FULL_SCALE_PCT)
+    fut_n = norm_pct(fut_pct, FUTURES_FULL_SCALE_PCT)
+
     score = compute_score(
-        sector_5d_perf=sector_perf,
-        futures_5d_perf=futures_perf,
-        llm_sentiment=llm_sent,
+        sector_perf=sector_n,
+        futures_perf=fut_n,
+        news_sentiment=news,
         announcement_score=ann,
     )
+    live = ["新闻情感", "公告重要性"]
+    if sector_n is not None:
+        live.insert(0, f"板块近5日({sector_name})")
+    if fut_n is not None:
+        live.append(f"商品当日({fut_name})")
+
     return {
         "score": round(score, 3),
         "level": classify_health(score),
         "details": {
-            "sector_5d_perf": round(sector_perf, 4),
-            "futures_5d_perf": round(futures_perf, 4),
-            "llm_sentiment": llm_sent,
+            "sector": {"板块": sector_name, "近5日%": sector_pct,
+                       "归一": None if sector_n is None else round(sector_n, 4)},
+            "futures": {"品种": fut_name, "当日%": fut_pct,
+                        "归一": None if fut_n is None else round(fut_n, 4)},
+            "news_sentiment": news,
             "announcement_score": ann,
+            "参与打分": live,
         },
     }

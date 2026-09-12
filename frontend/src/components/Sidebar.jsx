@@ -46,6 +46,16 @@ export const NAV = [
   ] },
 ]
 
+// NAV 与 ICONS 是两份手写清单, 漂移的表现是"图标那一格空着" —— svg 照样渲染, 只是里面
+// 什么都没有, 不报错、不留痕。所以模块加载时就对一遍, 开发期直接抛出来。
+// import.meta.env.DEV 在生产构建里是常量 false, 整块会被摇掉, 不进 bundle。
+if (import.meta.env.DEV) {
+  const missing = NAV.flatMap(s => s.items).filter(i => !ICONS[i.key]).map(i => i.key)
+  if (missing.length) throw new Error(`Sidebar: 这些 NAV 项没有图标: ${missing.join(', ')}`)
+  const orphan = Object.keys(ICONS).filter(k => !NAV.some(s => s.items.some(i => i.key === k)))
+  if (orphan.length) console.warn(`Sidebar: 这些图标已无对应 NAV 项: ${orphan.join(', ')}`)
+}
+
 export default function Sidebar({ active, onNav, open, onToggle }) {
   return (
     <aside className={`shrink-0 border-r border-border bg-surface/60 backdrop-blur-xl flex flex-col transition-[width] duration-200 ${open ? 'w-44' : 'w-14'}`}>
