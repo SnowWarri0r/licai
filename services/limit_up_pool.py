@@ -204,6 +204,55 @@ async def backfill(start: str, end: str, *, sleep: float = 0.25,
             "empty_days": empty[:20], "n_empty": len(empty)}
 
 
+_WARM_DATALEN = 300          # 一次拉这么多根(覆盖一年多)
+_WARM_EOD_CAP = 200          # 收盘钩子里单次最多补这么多只, 免得把 EOD 那趟拖成半小时
+
+
+async def warm_pool_klines(limit: int | None = _WARM_EOD_CAP, *, sleep: float = 0.12) -> dict:
+    """给涨停档案里的票补齐本地日线 —— 分池兑现率的次日行情全靠它。
+
+    **为什么必须有这个**: 涨停股绝大多数不是用户持仓, kline_cache 里天然没有。实测新库
+    覆盖率只有 33%, 那时 pool_backtest 的闸门直接判 可用=false; 补完 2652 只后到 99.5%。
+    补数原来是临时脚本, 换台机器 clone 下来就退回 33% —— 收进来挂到收盘钩子上, 每天新
+    上榜的票自动跟上。
+
+    **只能用前复权源**: market_data 里写明 Sina 的 getKLineData 是不复权, 混进 kline_cache
+    会让次日涨幅算出来是假的(除权那天劈一刀)。这里走腾讯 qfq, 空了再退东财 push2his(fqt=1),
+    两条都是前复权。
+
+    limit=None 表示补到底(新库首次灌, 2652 只约 17 分钟); 默认只补一批, 剩下的下次接着补 ——
+    **剩多少会照实返回 remaining**, 不做无声截断。
+    """
+    from database import pool_codes_missing_klines
+    from services.market_data import _kline_tencent_a, _fetch_history_em, _save_klines_complete
+    codes, since = await pool_codes_missing_klines()
+    if not codes:
+        return {"missing": 0, "filled": 0, "failed": 0, "remaining": 0, "since": since}
+    todo = codes if limit is None else codes[:max(0, limit)]
+    ok = fail = 0
+    for code in todo:
+        df = None
+        for fetch in (_kline_tencent_a, _fetch_history_em):
+            try:
+                df = await asyncio.to_thread(fetch, code, _WARM_DATALEN)
+                if df is not None and len(df):
+                    break
+            except Exception:
+                df = None
+        if df is None or not len(df):
+            fail += 1
+        else:
+            try:
+                await _save_klines_complete(code, df.to_dict("records"))
+                ok += 1
+            except Exception:
+                fail += 1
+        if sleep:
+            await asyncio.sleep(sleep)
+    return {"missing": len(codes), "filled": ok, "failed": fail,
+            "remaining": max(0, len(codes) - len(todo)), "since": since}
+
+
 def _fmt_yi(v) -> float:
     return round((v or 0) / 1e8, 2)
 
