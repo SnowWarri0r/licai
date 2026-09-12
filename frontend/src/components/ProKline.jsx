@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { createChart, CandlestickSeries, HistogramSeries, LineSeries, CrosshairMode, LineStyle } from 'lightweight-charts'
 import { fetchJSON, prefetchJSON } from '../hooks/useApi'
-import { MinuteChart } from './StockKlineModal'
+import { MinuteChart } from './kline/MinuteChart'
 import SeatHistoryModal from './SeatHistoryModal'
 
 const UP = '#cf5c5c', DOWN = '#5fa86c'   // A股 红涨绿跌
