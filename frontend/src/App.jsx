@@ -18,6 +18,7 @@ import SentimentThermometer from './components/SentimentThermometer'
 import SectorMatrix from './components/SectorMatrix'
 import SectorShare from './components/SectorShare'
 import HotRank from './components/HotRank'
+import ProviderInstTheme from './components/ProviderInstTheme'
 import SectorRadar from './components/SectorRadar'
 import SectorOpportunities from './components/SectorOpportunities'
 // 宏观
@@ -134,6 +135,7 @@ export default function App() {
               <SectorShare />
               <SectorMatrix />
               <HotRank />
+              <ProviderInstTheme />
               <SectorRadar />
               <SectorOpportunities />
             </div>
