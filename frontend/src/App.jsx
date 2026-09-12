@@ -73,7 +73,15 @@ export default function App() {
   const [lastUpdate, setLastUpdate] = useState(null)
   const [view, _setView] = useState(() => {
     // 支持 #view?k=v 形式的 deep-link(子参数由各组件自行读取)
-    const h = (window.location.hash || '').slice(1).split('?')[0]
+    const raw = (window.location.hash || '').slice(1)
+    const h = raw.split('?')[0]
+    // 退役 deep-link #rankings?t=pools: 股池不再是榜单的一个页签, 已经是【市场】下的
+    // 独立页。这是"整页搬走"而不是"页签改名", 所以在这里改派到那一页 —— 落回榜单
+    // 随便挑一个页签(现在是静默落到「涨幅」)给的是另一份数据, 等于骗人。
+    if (h === 'rankings' && new URLSearchParams(raw.split('?')[1] || '').get('t') === 'pools') {
+      try { window.location.hash = 'pools' } catch { /* 忽略, 视图已经切对了 */ }
+      return 'pools'
+    }
     return normalizeView(h)
   })
   const setView = (v) => {
