@@ -4,7 +4,7 @@ import Tooltip from './Tooltip'
 import SectorKlineModal from './SectorKlineModal'
 import SkeletonCard from './Skeleton'
 
-function Sparkline({ data, width = 64, height = 22, stroke = '#85a0b4' }) {
+function Sparkline({ data, width = 64, height = 22 }) {
   if (!data || data.length < 2) return null
   const closes = data.map(d => d.close).filter(c => c > 0)
   if (closes.length < 2) return null

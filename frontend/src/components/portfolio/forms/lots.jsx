@@ -30,7 +30,6 @@ export function AddLotRow({ asset, onDone, onCancel, brokers = [] }) {
   const isFund = t === 'FUND'
   const isCrypto = t === 'CRYPTO'
   const isWealth = t === 'WEALTH'
-  const isCash = t === 'CASH'
   const isOtcFund = isFund && !isEtfCode(asset.code)
   const isShareBased = isFund || isCrypto
 
@@ -297,7 +296,6 @@ export function ReduceLotRow({ asset, onDone, onCancel }) {
   const t = asset.asset_type
   const isShareBased = t === 'FUND' || t === 'CRYPTO'
   const isOtcFund = t === 'FUND' && !isEtfCode(asset.code)
-  const isImmediate = !isOtcFund  // ETF/CRYPTO/WEALTH/CASH 立即结算
 
   const [amount, setAmount] = React.useState('')
   const [shares, setShares] = React.useState('')

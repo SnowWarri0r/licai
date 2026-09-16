@@ -18,7 +18,7 @@ export default function DailyReview({ bare = false }) {
     setLoading(true); setErr('')
     try {
       setData(await fetchJSON(`/api/news/daily-review${force ? '?force=true' : ''}`))
-    } catch (e) {
+    } catch {
       setErr('复盘生成失败，稍后重试')
     } finally {
       setLoading(false)
