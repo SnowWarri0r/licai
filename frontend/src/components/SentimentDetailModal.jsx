@@ -37,6 +37,15 @@ function VolBars({ series, intraday, unit }) {
 // 预测量能(全天外推式): 逐分钟"按当时节奏预测的全天量能", 画成相对昨日总量的 % 偏离曲线。
 // 橙线=预测量能, 蓝线(0轴)=昨日总量能; 早盘节奏快预测高, 随盘中修正收敛到收盘实际。
 function IntradayLine({ intra, metric, unit }) {
+  // ⚠️ hook 必须在任何 early return 之前调。这两个原来写在下面两处 return null 之后,
+  // 于是同一个实例"有数据时调 2 个 hook, 没数据时调 0 个" —— React 按调用顺序认 hook,
+  // 一旦在挂载期间跨过那道分界就会抛 Rendered fewer hooks than expected。
+  // 这条路径用户点得到: 量能口径(成交额/成交量)是个可切换按钮, 切到 prev_full 那一侧
+  // 缺失的口径就会从"有数据"翻成"没数据"。
+  // hover: 鼠标滑过取最近数据点 → 十字线 + 浮标
+  const [hi, setHi] = useState(null)
+  const svgRef = useRef(null)
+
   const series = intra?.proj_series || []
   if (series.length < 2) return null
   const val = p => (metric === 'amt' ? p.amt : p.vol)
@@ -63,9 +72,6 @@ function IntradayLine({ intra, metric, unit }) {
   const finalPct = pct(projLast)
   const delta = projLast - prevFull
   const up = delta >= 0
-  // hover: 鼠标滑过取最近数据点 → 十字线 + 浮标
-  const [hi, setHi] = useState(null)
-  const svgRef = useRef(null)
   const onMove = (e) => {
     const el = svgRef.current
     if (!el) return
