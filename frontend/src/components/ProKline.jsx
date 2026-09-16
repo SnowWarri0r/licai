@@ -342,9 +342,14 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
                  color: col, borderColor: col, wickColor: col }
       }))
       // 量/额画到独立副图(见下方 volChart): 叠在主图里读不出具体数字, 拆开后有独立刻度
+      // ⚠️ 这里读 volModeRef 而不是 volMode: 这个 effect 的依赖是 [code, days, lhbDate],
+      // 把 volMode 加进去会让"切一下 量/额"整张 K 线重新拉一次网络 —— 而上面那个
+      // [volMode] 的 effect 存在的意义正是"用已有 bars 重绘, 不重新请求"。
+      // 读 ref 还顺带修掉一个竞态: 请求在飞的时候切口径, 回来的 .then 会拿切换前的
+      // 闭包值把副图画成旧口径, 直到下次再切才恢复。
       volSeriesRef.current?.setData(bars.map((b, i) => ({
         time: b.time,
-        value: volMode === '额' ? (b.amount || 0) : (b.volume || 0),
+        value: volModeRef.current === '额' ? (b.amount || 0) : (b.volume || 0),
         color: volColor(b, bars[i - 1]),
       })))
       mas.forEach((s, i) => s.setData(maLine(bars, MA_DEFS[i].n)))

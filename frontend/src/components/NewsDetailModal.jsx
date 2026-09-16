@@ -24,6 +24,10 @@ export default function NewsDetailModal({ item, onClose }) {
     }).then(r => r.json()).then(d => { _cache.set(cacheKey, d); setInterp(d) })
       .catch(() => setInterp({ error: '解读暂不可用' }))
       .finally(() => setLoading(false))
+    // cacheKey = item.url || item.title, 就是 item 的身份: 换一条资讯它必然变。
+    // 列 item 反而会因对象身份变化重复请求解读, 还会把 _cache 打穿。
+    // (这里不加 eslint-disable: 那条注释会让 react-hooks 的编译器类规则对整个
+    //  effect 放弃分析, 把同一处的 set-state-in-effect 错误一并吞掉。)
   }, [cacheKey])
 
   if (!item) return null

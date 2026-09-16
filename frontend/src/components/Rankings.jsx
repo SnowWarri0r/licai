@@ -78,6 +78,9 @@ export default function Rankings() {
   const deepSelRef = useRef(new URLSearchParams(window.location.hash.split('?')[1] || '').get('s') || '')
 
   // deep-link: #rankings?t=lhb&s=688008 榜单加载完自动选中该股
+  // 刻意不给依赖数组: 要一直等到榜单数据到位(listRef 是 ref, 变化不触发渲染),
+  // 所以每次渲染都试一下。命中后把 deepSelRef 清空, 之后直接 return —— 自终止,
+  // 不会转圈。eslint 只看到「没有依赖数组 + 调了 setSelected」因而报警。
   useEffect(() => {
     if (!deepSelRef.current) return
     const r = listRef.current.find(x => x.code === deepSelRef.current)
@@ -103,6 +106,8 @@ export default function Rankings() {
       : fetchJSON('/api/market/rankings?limit=100').then(d => { if (d.error) setErr(true); else setData(d) })
     req.catch(() => setErr(true)).finally(() => setLoading(false))
   }
+  // 只在挂载时拉一次(换 tab 由下面那个 effect 负责)。load 是每次渲染新建的普通函数,
+  // 列进依赖数组会无限重取。
   useEffect(() => { load() }, [])
   // 各条线近几日的资金曲线: 一天的快照答不了"谁在接力谁在退潮"。跟榜单分开取, 慢一点不挡榜。
   useEffect(() => {
