@@ -3,16 +3,21 @@ import { ACQUIRE, BUY_COLOR, DOWN, SELL_COLOR, UP, colorPct, fmtPct, fmtVal } fr
 
 // ---------------------------------------------------------------------------
 // 蜡烛图 (日/周/月) — 真蜡烛 + 成本线 + 自己历史 BS 标记
+// 画布尺寸与内边距。这些原来声明在组件体里 —— P 是对象字面量, 每次渲染都是新引用,
+// 于是下面几个 useMemo 要么漏掉它(eslint exhaustive-deps 报警), 要么把它写进依赖数组
+// 从而每渲染必重算、memo 形同虚设。值本身是死的, 提到模块级两个问题一起没了。
+const W = 720, H = 410, P = { l: 64, r: 16, t: 16, b: 28 }
+const innerW = W - P.l - P.r, innerH = H - P.t - P.b
+const volH = 70, volGap = 30                 // 底部副图加高; volGap 留出空隙放图例/切换钮, 不压副图内容
+const priceH = innerH - volH - volGap        // 价格区高度
+const volTop = P.t + priceH + volGap         // 副图顶部
+const MA_DEFS = [{ n: 5, c: '#e8e0cf' }, { n: 10, c: '#c8a876' }, { n: 20, c: '#7aa2d6' }, { n: 30, c: '#6fc0b2' }, { n: 60, c: '#9a8cf0' }]
+
 // ---------------------------------------------------------------------------
 export function CandleChart({ series, cost, actions, warmup = [] }) {
   const [hover, setHover] = useState(null)
   const [sub, setSub] = useState('vol')   // 底部副图: vol | macd | kdj
   const svgRef = useRef(null)
-  const W = 720, H = 410, P = { l: 64, r: 16, t: 16, b: 28 }
-  const innerW = W - P.l - P.r, innerH = H - P.t - P.b
-  const volH = 70, volGap = 30                 // 底部副图加高; volGap 留出空隙放图例/切换钮, 不压副图内容
-  const priceH = innerH - volH - volGap        // 价格区高度
-  const volTop = P.t + priceH + volGap         // 副图顶部
 
   const allLows = series.map(d => d.low).filter(v => v > 0)
   const allHighs = series.map(d => d.high).filter(v => v > 0)
@@ -30,7 +35,7 @@ export function CandleChart({ series, cost, actions, warmup = [] }) {
       const yOf = (v) => P.t + priceH - ((v - rangeMin) / range) * priceH
       return { ...d, x, yOpen: yOf(d.open), yClose: yOf(d.close), yHigh: yOf(d.high), yLow: yOf(d.low), i }
     })
-  }, [series, innerH, innerW, rangeMin, range])
+  }, [series, rangeMin, range])
 
   const candleW = useMemo(() => {
     if (points.length < 2) return 4
@@ -44,7 +49,7 @@ export function CandleChart({ series, cost, actions, warmup = [] }) {
       const v = rangeMin + step * i
       return { v, y: P.t + priceH - ((v - rangeMin) / range) * priceH }
     })
-  }, [points.length, rangeMin, range, innerH])
+  }, [points.length, rangeMin, range])
 
   const xTicks = useMemo(() => {
     if (points.length < 2) return []
@@ -77,7 +82,7 @@ export function CandleChart({ series, cost, actions, warmup = [] }) {
                                               : (g.isBuy ? g.yLow : g.yHigh)
       return { ...g, price, yPrice }
     })
-  }, [points, actions, rangeMin, range, innerH])
+  }, [points, actions, rangeMin, range])
 
   const lastI = points.length ? points[points.length - 1].i : 0
   // 副图图例(等宽字体按字符宽度均匀排, 从绘图区左边界起)
@@ -120,7 +125,6 @@ export function CandleChart({ series, cost, actions, warmup = [] }) {
   }, [series])
 
   // 均线 MA5/10/20
-  const MA_DEFS = [{ n: 5, c: '#e8e0cf' }, { n: 10, c: '#c8a876' }, { n: 20, c: '#7aa2d6' }, { n: 30, c: '#6fc0b2' }, { n: 60, c: '#9a8cf0' }]
   const maLines = useMemo(() => {
     if (points.length < 2) return []
     const w = warmup.length
@@ -138,7 +142,7 @@ export function CandleChart({ series, cost, actions, warmup = [] }) {
       }
       return { n, c, d: pts.join(' '), enough: pts.length > 1, last: lastVal }
     })
-  }, [points, warmup, rangeMin, range, innerH])
+  }, [points, warmup, rangeMin, range])
 
   const onMove = (e) => {
     if (!svgRef.current || !points.length) return
@@ -221,17 +225,20 @@ export function CandleChart({ series, cost, actions, warmup = [] }) {
         {/* 均线 MA + 图例(SVG 内, 从绘图区左边界起, 等宽字体按字符宽度均匀排, 避开左侧Y轴刻度) */}
         {maLines.map(m => m.enough && <polyline key={m.n} points={m.d} fill="none" stroke={m.c} strokeWidth="1" opacity="0.9" />)}
         {(() => {
-          let x = P.l + 2
-          return maLines.filter(m => m.enough).map(m => {
-            const label = `MA${m.n} ${fmtVal(m.last)}`
-            const el = (
-              <g key={m.n}>
-                <line x1={x} y1={P.t + 6} x2={x + 11} y2={P.t + 6} stroke={m.c} strokeWidth="2" />
-                <text x={x + 15} y={P.t + 9} fontSize="10" fill={m.c} fontFamily="monospace">{label}</text>
+          // MA 图例横排: 每项的起点 = 它前面所有项宽度之和(等宽 ~6.1px/字符 + 间距)。
+          // 原来是边 map 边 x += ... 累加; 值是对的, 但 render 里改写变量,
+          // react-hooks/immutability 看不出它安全(P 提到模块级后这条才被它发现)。
+          // 改成先算宽度再取前缀和, 没有可变状态, 行为逐像素不变。
+          const items = maLines.filter(m => m.enough).map(m => ({ m, label: `MA${m.n} ${fmtVal(m.last)}` }))
+          const widths = items.map(it => 15 + it.label.length * 6.1 + 12)
+          return items.map((it, i) => {
+            const x = P.l + 2 + widths.slice(0, i).reduce((sum, w) => sum + w, 0)
+            return (
+              <g key={it.m.n}>
+                <line x1={x} y1={P.t + 6} x2={x + 11} y2={P.t + 6} stroke={it.m.c} strokeWidth="2" />
+                <text x={x + 15} y={P.t + 9} fontSize="10" fill={it.m.c} fontFamily="monospace">{it.label}</text>
               </g>
             )
-            x += 15 + label.length * 6.1 + 12   // 等宽 ~6.1px/字符 + 间距
-            return el
           })
         })()}
         {costY != null && (
