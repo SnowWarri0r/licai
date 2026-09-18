@@ -226,6 +226,46 @@ async def trade(code: str, limit: int = 60) -> dict | None:
     return {"ticks": merged} if merged else None
 
 
+async def price_volume(code: str, date: str = "") -> dict | None:
+    """分价表: 全日逐笔按**价位**聚合。返回 {levels:[{price, vol(手), buy_vol, sell_vol,
+    neu_vol, amount(成交额,元), buy_ratio(竞买率 0~1)}]}(价格从高到低) 或 None。
+    date 空=当日; 传 YYYYMMDD 取历史某日。"""
+    if not _BASE_URL:
+        return None
+    params = {"code": _mkcode(code)}
+    if date:
+        params["date"] = date
+    # 全天分时成交(含集合竞价), 比 /api/trade 的近1800笔完整
+    data = await asyncio.to_thread(_get_sync, "/api/minute-trade-all", params)
+    rows = (data or {}).get("List") if isinstance(data, dict) else None
+    if not rows:   # 兜底: 全天接口无数据时退回近笔逐笔
+        data = await asyncio.to_thread(_get_sync, "/api/trade", params)
+        rows = (data or {}).get("List") if isinstance(data, dict) else None
+    if not rows:
+        return None
+    div = _price_div([x.get("Price") for x in rows], await _ref_price(code), code)
+    agg: dict[float, list[int]] = {}   # price -> [buy, sell, neutral] (手)
+    for x in rows:
+        p = _f(x.get("Price"), div)
+        if p is None:
+            continue
+        vol = x.get("Volume") or 0
+        a = agg.setdefault(round(p, 3), [0, 0, 0])
+        st = x.get("Status")
+        a[0 if st == 0 else 1 if st == 1 else 2] += vol
+    levels = []
+    for p, (b, s, n) in agg.items():
+        tot = b + s + n
+        bs = b + s
+        levels.append({
+            "price": p, "vol": tot, "buy_vol": b, "sell_vol": s, "neu_vol": n,
+            "amount": round(p * tot * 100, 0),          # 手→股 ×100
+            "buy_ratio": round(b / bs, 3) if bs else 0.0,
+        })
+    levels.sort(key=lambda r: r["price"], reverse=True)
+    return {"levels": levels} if levels else None
+
+
 async def test_connection(base_url: str = "") -> dict:
     """连通性自检(给 settings 用): 试拉一只票的 quote。"""
     global _BASE_URL

@@ -66,3 +66,6 @@ com.lovart.stock-t-assistant.plist
 portfolio.db.*
 *.bak-*
 *.bak
+
+# 本地脚本与中间产物(不进仓)
+scripts/broker_import/

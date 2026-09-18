@@ -3,6 +3,7 @@ import { fetchJSON } from '../hooks/useApi'
 import { CandleChart } from './kline/CandleChart'
 import { MinuteChart } from './kline/MinuteChart'
 import { LhbPanel, OrderBook, Ticks } from './kline/panels'
+import PriceVolumeTable from './kline/PriceVolumeTable'
 import { BUY_COLOR, MA_WARMUP, SELL_COLOR, colorPct, fmtPct, fmtVal } from './kline/shared'
 import { createPortal } from 'react-dom'
 
@@ -32,6 +33,7 @@ export default function StockKlineModal({ holding, onClose }) {
   // 主图数据: 日→akshare(带成本/BS); 周月→TDX蜡烛; 分时→TDX
   useEffect(() => {
     if (!code) return
+    if (tab === '分价') { setLoading(false); return }   // 分价表组件自管取数
     setLoading(true); setErr('')
     const done = () => setLoading(false)
     if (tab === '分时' && tdxOn) {
@@ -99,7 +101,7 @@ export default function StockKlineModal({ holding, onClose }) {
   const prevClose = book?.prev_close || (series.length ? series[series.length - 1].close : holding.current_price) || holding.current_price
   const closes = series.map(d => d.close).filter(c => c > 0)
   const vsCostPct = cost && (book?.price || closes[closes.length - 1]) ? (((book?.price || closes[closes.length - 1]) / cost) - 1) * 100 : null
-  const showTabs = tdxOn ? ['分时', '日', '周', '月'] : ['日']
+  const showTabs = tdxOn ? ['分时', '日', '周', '月', ...(isA ? ['分价'] : [])] : ['日']
   const hasSide = tdxOn && isA
 
   return createPortal(
@@ -118,7 +120,7 @@ export default function StockKlineModal({ holding, onClose }) {
           <div className="flex gap-1 items-center">
             {showTabs.map(t => (
               <button key={t} onClick={() => setTab(t)} className="px-2.5 py-[3px] rounded text-[11px] cursor-pointer transition-colors"
-                style={{ border: '1px solid', borderColor: tab === t ? 'var(--color-accent)' : 'var(--color-border-med)', color: tab === t ? 'var(--color-accent)' : 'var(--color-text-dim)', background: tab === t ? 'rgba(200,168,118,.1)' : 'transparent' }}>{t}{t !== '分时' ? 'K' : ''}</button>
+                style={{ border: '1px solid', borderColor: tab === t ? 'var(--color-accent)' : 'var(--color-border-med)', color: tab === t ? 'var(--color-accent)' : 'var(--color-text-dim)', background: tab === t ? 'rgba(200,168,118,.1)' : 'transparent' }}>{t}{(t !== '分时' && t !== '分价') ? 'K' : ''}</button>
             ))}
             <button onClick={onClose} className="text-text-dim hover:text-text text-[18px] leading-none px-2 ml-1 cursor-pointer">×</button>
           </div>
@@ -137,7 +139,8 @@ export default function StockKlineModal({ holding, onClose }) {
               </div>
             )}
             <div className="bg-surface-3 rounded-md p-2">
-              {loading ? <div className="h-[360px] flex items-center justify-center text-text-dim text-[12px]">加载中…</div>
+              {tab === '分价' ? <PriceVolumeTable code={code} prevClose={prevClose} decimals={/^[15]\d{5}$/.test(String(code)) ? 3 : 2} />
+                : loading ? <div className="h-[360px] flex items-center justify-center text-text-dim text-[12px]">加载中…</div>
                 : err ? <div className="h-[360px] flex items-center justify-center text-text-dim text-[12px]">{err}</div>
                 : tab === '分时' ? <MinuteChart points={minute?.points || []} prevClose={prevClose} actions={actions} day={minute?.date} />
                 : <CandleChart series={series} cost={tab === '日' ? cost : null} actions={tab === '日' ? actions : []} warmup={tab === '日' ? warmup : []} />}
