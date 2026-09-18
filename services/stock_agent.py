@@ -2876,16 +2876,12 @@ async def _tool_market_sentiment() -> dict:
                          "口径": p["口径"]}
         except Exception:
             relay = None
-        # 扩展数据源情绪(第二数据源): 东财没有的跳水榜/多空风向标/官方市场评价。按统计交易日取, 失败整块省。
-        kpl = None
-        try:
-            from services.provider_ext_sentiment import sentiment as _kpl_senti
-            d = str(s.get("date") or "")
-            iso = f"{d[:4]}-{d[4:6]}-{d[6:8]}" if len(d) == 8 and d.isdigit() else d
-            k = await _kpl_senti(iso or None)
-            kpl = k or None
-        except Exception:
-            kpl = None
+        # 第二数据源(可选 provider): 东财没有的跳水榜/多空风向标/官方市场评价。
+        # 按统计交易日取; 没接入或取不到就整块省 —— 别把"未接入"的提示塞进给模型的数字里。
+        from services.providers import gateway as _pg
+        d = str(s.get("date") or "")
+        iso = f"{d[:4]}-{d[4:6]}-{d[6:8]}" if len(d) == 8 and d.isdigit() else d
+        ext_senti = await _pg.try_call("sentiment", iso or None)
         return {"统计交易日": s.get("date_cn") or s.get("date"),
                 "mood": s.get("mood"), "mood_desc": s.get("mood_desc"),
                 "n_zt": s.get("n_zt"), "n_dt": s.get("n_dt"), "zbl_rate": s.get("zbl_rate"),
@@ -2897,7 +2893,7 @@ async def _tool_market_sentiment() -> dict:
                          if s.get("zdfb") else None),
                 "涨停质量": quality,
                 "接力": relay,
-                "扩展数据源情绪": kpl,
+                "扩展源情绪": ext_senti,
                 "note": "涨停/连板/炸板等指标属于 统计交易日 这一天; money_effect=上一交易日涨停的票在统计交易日的平均涨幅。"
                         "落笔时间一律用统计交易日的具体日期(带星期), 相对词(今天/昨天)按它换算。"
                         "涨跌家数(全市场+沪/深/北分市场)是调用时点的最新快照: 交易时段=此刻盘中实况, 收盘后或休市日=最近收盘的定格, 按此措辞引用。"
@@ -2914,9 +2910,9 @@ async def _tool_market_sentiment() -> dict:
                         "接力.历史分池均值=245 个交易日回放的同池长期均值, 是判断'今天这个数算大还是算小'的唯一标尺——单日只有几十只样本, 不比不出强弱; "
                         "其中『超出同日涨停均值pp』才是关键列(减掉了当天全市场涨停股的平均次日收益, 否则大盘涨的日子每个池都好看)。"
                         "⚠ 高板池带生存者偏差: 3板的票是已通过两次接力筛选剩下的, 只能说'已经连上去的那批次日更强', 不能读成'买高板更好'。"
-                        "扩展数据源情绪=第二数据源(扩展数据源App)补东财没有的三样: 跳水榜(冲高又跳水的票=资金出逃, 封单额的反面)、"
-                        "多空风向标(全市场量能较昨日同期%, 负=缩量退场)、以及一句扩展数据源官方市场评价。其'实际涨停'与本项目东财口径可能差几只(封住到收盘 vs 盘中触及), "
-                        "两个源不一致时把两个数都说出来、指明口径差, 不要挑一个当唯一真值。为 null 表示扩展数据源那边没取到(非交易日或接口抖动)。"}
+                        "扩展源情绪=可选的第二数据源, 补东财没有的三样: 跳水榜(冲高又跳水的票=资金出逃, 封单额的反面)、"
+                        "多空风向标(全市场量能较昨日同期%, 负=缩量退场)、以及一句该源的官方市场评价。其'实际涨停'与本项目东财口径可能差几只(封住到收盘 vs 盘中触及), "
+                        "两个源不一致时把两个数都说出来、指明口径差, 不要挑一个当唯一真值。为 null 表示没接扩展数据源、或那边这次没取到(非交易日或接口抖动)。"}
     except Exception as e:
         return {"error": str(e)}
 
@@ -2930,44 +2926,34 @@ async def _tool_market_review() -> dict:
         return {"error": str(e)}
 
 
-async def _tool_kpl_lhb(code: str, date: str = "") -> dict:
-    """扩展数据源深度龙虎榜席位(带游资标签)。登录态失效时如实报 need_login。"""
+# 以下四个由**可选的扩展数据源(provider)**供数。没接入的时候这几个工具压根不会挂给模型
+# (见 _active_tools), 所以正常不会被调到; 真被调到就如实说没接入, 不编。
+
+async def _tool_deep_lhb(code: str, date: str = "") -> dict:
+    """深度龙虎榜席位(带游资身份标签)。凭证失效时如实报 need_login。"""
     from services.market_data import normalize_stock_code, is_a_share
-    raw = normalize_stock_code(_norm_code(code))
-    if not is_a_share(raw):
-        return {"error": "扩展数据源龙虎榜仅支持 A 股"}
-    from services.provider_ext_lhb import stock_lhb
-    try:
-        return await stock_lhb(_norm_code(code), date or None)
-    except Exception as e:
-        return {"error": f"扩展数据源龙虎榜取数失败: {e}"}
+    if not is_a_share(normalize_stock_code(_norm_code(code))):
+        return {"error": "深度龙虎榜仅支持 A 股"}
+    from services.providers import gateway
+    return await gateway.call("stock_lhb", _norm_code(code), date or None)
 
 
-async def _tool_kpl_bidding() -> dict:
-    """扩展数据源板块竞价异动(当日集合竞价, 实时无历史)。登录态失效时如实报 need_login。"""
-    try:
-        from services.provider_ext_bidding import plate_bidding
-        return await plate_bidding()
-    except Exception as e:
-        return {"error": f"扩展数据源竞价异动取数失败: {e}"}
+async def _tool_plate_bidding() -> dict:
+    """板块竞价异动(当日集合竞价, 实时无历史)。凭证失效时如实报 need_login。"""
+    from services.providers import gateway
+    return await gateway.call("plate_bidding")
 
 
-async def _tool_kpl_hot_theme() -> dict:
-    """扩展数据源本月热门题材榜。登录态失效时如实报 need_login。"""
-    try:
-        from services.provider_ext_theme import hot_themes
-        return await hot_themes()
-    except Exception as e:
-        return {"error": f"扩展数据源热门题材取数失败: {e}"}
+async def _tool_hot_themes() -> dict:
+    """本月热门题材榜。凭证失效时如实报 need_login。"""
+    from services.providers import gateway
+    return await gateway.call("hot_themes")
 
 
-async def _tool_kpl_inst_position(date: str = "") -> dict:
-    """扩展数据源机构增仓/减仓榜(行业板块, 季报口径)。登录态失效时如实报 need_login。"""
-    try:
-        from services.provider_ext_inst_position import inst_position
-        return await inst_position(date or None)
-    except Exception as e:
-        return {"error": f"扩展数据源机构增仓取数失败: {e}"}
+async def _tool_inst_position(date: str = "") -> dict:
+    """机构增仓/减仓榜(行业板块, 季报口径)。凭证失效时如实报 need_login。"""
+    from services.providers import gateway
+    return await gateway.call("inst_position", date or None)
 
 
 async def _tool_seat_history(q: str) -> dict:
@@ -3072,7 +3058,7 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"min_pct": {"type": "number", "description": "可选, 只看占总资产 ≥ 这个百分比的标的, 默认 0.5"}, "as_of": {"type": "string", "description": "可选, YYYY-MM-DD; 回看那天的持仓结构, 留空=当下"}}}},
     {"name": "get_trades", "description": "查用户成交记录(含个股/场内ETF/场外基金): 传 code→该标的买卖/加减仓/分红或申赎流水(A股另给综合成本/已实现盈亏/持有天数, 同日有买有卖=做T); 不传→最近全部成交(三类合并)。可用 start/end(YYYY-MM-DD)按成交日期筛区间('这周/6月/上个月'自己换算成日期传)。回答'我什么时候买的、成本多少、做过几次T、这票赚没赚、持有多久、最近/某段时间交易了啥、哪些买入是定投'时用(定投计划自动买入的行带 来源=定投)。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选; 留空看全部"}, "start": {"type": "string", "description": "可选, 起始日 YYYY-MM-DD"}, "end": {"type": "string", "description": "可选, 截止日 YYYY-MM-DD"}}}},
-    {"name": "get_market_sentiment", "description": "查大盘打板情绪(涨停数/连板高度/炸板率/赚钱效应/热点板块)、全市场涨跌家数(几家上涨几家下跌, 含沪/深/北分市场)和涨跌分布直方图(每1%一档的家数, 看下跌集中在哪个深度), 回答'今天普跌吗/多少家在跌/跌得有多深/赚钱效应', 判断是个股原因还是大盘普涨普跌; 也用于判断市场风格(打板赚钱效应高=追涨/动量有效; 炸板率高+亏钱效应=高位分歧/反转)。另带 涨停质量: 逐只涨停的封单额(=买一挂单额, 真实盘口量)聚合出封单合计/中位数/一字板只数/尾盘才封只数/开过板只数/封单最厚前五/封单扎堆(按行业)/题材扎堆(按当日炒作主线, 如数字货币·光模块·机器人) —— 只数只告诉你有多少票涨停, 封单额才告诉你那些涨停有多硬(同样52个涨停, 57亿封单和20亿封单是两个盘); 题材扎堆看资金主线扎在哪个方向。另带 扩展数据源情绪(第二数据源): 跳水榜(冲高跳水=资金出逃)/多空风向标(量能较昨同期%)/扩展数据源官方市场评价, 是东财口径之外的交叉印证。问'今天打板情绪强不强/涨停结实吗/封单怎么样/在炒什么主线/资金扎堆哪个题材/有没有票冲高跳水/量能是放还是缩/情绪比昨天好还是差'时看这一块。",
+    {"name": "get_market_sentiment", "description": "查大盘打板情绪(涨停数/连板高度/炸板率/赚钱效应/热点板块)、全市场涨跌家数(几家上涨几家下跌, 含沪/深/北分市场)和涨跌分布直方图(每1%一档的家数, 看下跌集中在哪个深度), 回答'今天普跌吗/多少家在跌/跌得有多深/赚钱效应', 判断是个股原因还是大盘普涨普跌; 也用于判断市场风格(打板赚钱效应高=追涨/动量有效; 炸板率高+亏钱效应=高位分歧/反转)。另带 涨停质量: 逐只涨停的封单额(=买一挂单额, 真实盘口量)聚合出封单合计/中位数/一字板只数/尾盘才封只数/开过板只数/封单最厚前五/封单扎堆(按行业)/题材扎堆(按当日炒作主线, 如数字货币·光模块·机器人) —— 只数只告诉你有多少票涨停, 封单额才告诉你那些涨停有多硬(同样52个涨停, 57亿封单和20亿封单是两个盘); 题材扎堆看资金主线扎在哪个方向。接了扩展数据源时另带 扩展源情绪(第二数据源): 跳水榜(冲高跳水=资金出逃)/多空风向标(量能较昨同期%)/该源官方市场评价, 是东财口径之外的交叉印证。问'今天打板情绪强不强/涨停结实吗/封单怎么样/在炒什么主线/资金扎堆哪个题材/有没有票冲高跳水/量能是放还是缩/情绪比昨天好还是差'时看这一块。",
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_etf_xray", "description": "ETF 题材透视(避雷): 用基金季报真实成分股对照名称宣称的主题, 给出 主题匹配权重%/警示(贴题·有偏离·偏离显著)/行业分布/前十大成分(逐只标贴题与否)。query 传主题词(如 红利/家电/半导体)时 = 找该主题规模最大的前5只逐只透视(只看大规模的, 小盘ETF流动性差); 传6位基金代码 = 透视这一只; 留空 = 透视用户在持的全部场内ETF。回答'这只ETF名不副实吗/XX主题买哪只ETF靠谱/我的ETF成分是啥/有没有挂羊头卖狗肉'时用。宽基/风格类(红利等)会标注行业口径不适用, 看行业分布与成分即可。数据=季报(滞后一季度), 表述时注明。",
      "input_schema": {"type": "object", "properties": {"query": {"type": "string", "description": "主题词(红利/半导体) 或 6位基金代码; 留空=在持场内ETF"}}}},
@@ -3080,13 +3066,13 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_inst_flow", "description": "机构席位动向(龙虎榜机构专用席位买卖统计): code 留空=近30天全市场机构净买入/净卖出榜, 每行带 距最近/首次上榜日至今涨跌%——大额净买入+至今大跌 即市场说的'机构接在山顶', 净卖出+至今大跌='机构跑对了'; 传6位代码=该股机构席位事件时间线。回答'机构最近在买什么/XX是不是机构被套/机构在这只票上怎么操作的'时用。上榜日才披露(抽样非全量), 表述时注明。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "6位代码查单票; 留空看全市场榜"}}}},
-    {"name": "get_kpl_lhb", "description": "扩展数据源深度龙虎榜(登录态): 传 code(+可选 date)→该股该日龙虎榜买卖席位明细, 每个席位带营业部名 + 买卖金额 + **游资分组标签**(知名游资/机构专用/量化抢筹这类身份识别)。与 get_lhb 的区别: get_lhb 走东财只给裸营业部名, 这个多一层游资身份标签, 回答'那天是哪个游资在买/是不是知名游资进场/机构还是量化'时更准。盘后16:30后当日数据才全。需扩展数据源登录态, 没配或Token失效时返回里带 need_login=true, 此时提示用户去设置页填/更新扩展数据源Token。仅 A 股, 已披露客观数据非买卖建议。",
+    {"name": "get_deep_lhb", "description": "深度龙虎榜(扩展数据源): 传 code(+可选 date)→该股该日龙虎榜买卖席位明细, 每个席位带营业部名 + 买卖金额 + **游资分组标签**(知名游资/机构专用/量化抢筹这类身份识别)。与 get_lhb 的区别: get_lhb 走东财只给裸营业部名, 这个多一层游资身份标签, 回答'那天是哪个游资在买/是不是知名游资进场/机构还是量化'时更准。盘后16:30后当日数据才全。由可选的扩展数据源供数, 凭证失效时返回里带 need_login=true, 此时提示用户去设置页更新扩展数据源凭证。仅 A 股, 已披露客观数据非买卖建议。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "6位股票代码"}, "date": {"type": "string", "description": "可选 YYYY-MM-DD, 默认最近交易日"}}, "required": ["code"]}},
-    {"name": "get_kpl_bidding", "description": "扩展数据源板块竞价异动(登录态): 早盘集合竞价(约9:15-9:25)阶段被资金抢筹的板块及领涨个股, 分三组——今日新增竞价异动 / 昨日爆发板块延续异动 / 其他异动板块, 每个板块带 竞价换手·竞价涨幅·竞价主力净额亿。回答'今天竞价哪些板块异动/开盘资金主攻什么方向/竞价领涨板块是谁'时用, 是判断当天主线的开盘先手信号。**只有当日、无历史**, 且数据只在集合竞价前后(约9:15-9:31)产出, 非该时段返回 有数据=false 并说明是时段问题(不是故障)。需扩展数据源登录态, 没配或Token失效时返回 need_login=true, 提示去设置页填/更新Token。仅A股, 客观数据非买卖建议。",
+    {"name": "get_plate_bidding", "description": "板块竞价异动(扩展数据源): 早盘集合竞价(约9:15-9:25)阶段被资金抢筹的板块及领涨个股, 分三组——今日新增竞价异动 / 昨日爆发板块延续异动 / 其他异动板块, 每个板块带 竞价换手·竞价涨幅·竞价主力净额亿。回答'今天竞价哪些板块异动/开盘资金主攻什么方向/竞价领涨板块是谁'时用, 是判断当天主线的开盘先手信号。**只有当日、无历史**, 且数据只在集合竞价前后(约9:15-9:31)产出, 非该时段返回 有数据=false 并说明是时段问题(不是故障)。由可选的扩展数据源供数, 凭证失效返回 need_login=true, 提示去设置页更新。仅A股, 客观数据非买卖建议。",
      "input_schema": {"type": "object", "properties": {}}},
-    {"name": "get_kpl_hot_theme", "description": "扩展数据源本月热门题材榜(登录态): 本月资金关注度最高的题材/板块, 按热度降序排名。回答'现在市场主线题材是什么/这个月哪些题材最热/题材轮动到哪了'时用, 是月度视角的主线判断(补 get_sector_momentum 的日度动能和涨停题材的当日视角)。需扩展数据源登录态, 没配或Token失效返回 need_login=true。客观数据非买卖建议。",
+    {"name": "get_hot_themes", "description": "本月热门题材榜(扩展数据源): 本月资金关注度最高的题材/板块, 按热度降序排名。回答'现在市场主线题材是什么/这个月哪些题材最热/题材轮动到哪了'时用, 是月度视角的主线判断(补 get_sector_momentum 的日度动能和涨停题材的当日视角)。由可选的扩展数据源供数, 凭证失效返回 need_login=true。客观数据非买卖建议。",
      "input_schema": {"type": "object", "properties": {}}},
-    {"name": "get_kpl_inst_position", "description": "扩展数据源机构增仓/减仓榜(登录态): 按最新季报持仓, 机构在哪些行业板块**增仓/减仓**(增仓金额带符号)+机构持仓市值+占流通比, 返回增仓榜和减仓榜。回答'机构最近在加仓什么方向/机构在减持哪些板块/机构中线往哪搬仓'时用。这是**中线季度持仓变化**, 与 get_inst_flow(龙虎榜机构席位=短线盘口)互补, 别处(东财/akshare)没有这个扩展数据源口径。date 可传季报日默认最新。季报滞后, 客观持仓数据非买卖建议。需登录态, 失效返回 need_login=true。",
+    {"name": "get_inst_position", "description": "机构增仓/减仓榜(扩展数据源): 按最新季报持仓, 机构在哪些行业板块**增仓/减仓**(增仓金额带符号)+机构持仓市值+占流通比, 返回增仓榜和减仓榜。回答'机构最近在加仓什么方向/机构在减持哪些板块/机构中线往哪搬仓'时用。这是**中线季度持仓变化**, 与 get_inst_flow(龙虎榜机构席位=短线盘口)互补, 东财/akshare 没有这个口径。date 可传季报日默认最新。季报滞后, 客观持仓数据非买卖建议。由可选的扩展数据源供数, 凭证失效返回 need_login=true。",
      "input_schema": {"type": "object", "properties": {"date": {"type": "string", "description": "可选季报日 YYYY-MM-DD, 默认最新可用季报"}}}},
     {"name": "get_seat_history", "description": "龙虎榜席位追踪: 传席位名号(章盟主/陈小群/拉萨天团)或营业部名(子串/全名), 返回该席位近90天上榜明细(股票/净额/上榜后1·5·10日涨跌)+客观统计(上榜次数/净买入后1日与5日红盘率)。回答'章盟主最近在买什么/这个席位胜率怎么样/大佬说XX进场了帮我看看'时用。名号映射来自公开名录会漂移, 统计是纯历史描述, 表述时注明。",
      "input_schema": {"type": "object", "properties": {"q": {"type": "string", "description": "席位名号或营业部名"}}, "required": ["q"]}},
@@ -3138,10 +3124,10 @@ _EXECUTORS = {
     "get_fund_flow": lambda a: _tool_fund_flow(a.get("code", "")),
     "get_lhb": lambda a: _tool_lhb(a.get("code", ""), a.get("date", "")),
     "get_seat_history": lambda a: _tool_seat_history(a.get("q", "")),
-    "get_kpl_lhb": lambda a: _tool_kpl_lhb(a.get("code",""), a.get("date","")),
-    "get_kpl_bidding": lambda a: _tool_kpl_bidding(),
-    "get_kpl_hot_theme": lambda a: _tool_kpl_hot_theme(),
-    "get_kpl_inst_position": lambda a: _tool_kpl_inst_position(a.get("date", "")),
+    "get_deep_lhb": lambda a: _tool_deep_lhb(a.get("code", ""), a.get("date", "")),
+    "get_plate_bidding": lambda a: _tool_plate_bidding(),
+    "get_hot_themes": lambda a: _tool_hot_themes(),
+    "get_inst_position": lambda a: _tool_inst_position(a.get("date", "")),
     "get_red_flags": lambda a: _tool_red_flags(a.get("code", "")),
     "screen_quality": lambda a: _tool_screen_quality(a.get("code", "")),
     "get_capital_allocation": lambda a: _tool_capital_allocation(a.get("code", "")),
@@ -3228,12 +3214,21 @@ def _result_content(out: dict):
 
 _ZSXQ_TOOLS = ("get_zsxq_digest", "search_zsxq", "read_zsxq_file")
 
+# 扩展数据源(provider)供数的工具 → 它依赖的那项能力。provider 没声明该能力就不挂这个工具。
+_PROVIDER_TOOLS = {
+    "get_deep_lhb": "stock_lhb",
+    "get_plate_bidding": "plate_bidding",
+    "get_hot_themes": "hot_themes",
+    "get_inst_position": "inst_position",
+}
 
-def _active_tools() -> list:
+
+async def _active_tools() -> list:
     """web_search 是 Anthropic 服务端工具, 只有官方端点支持; 若切到 DeepSeek/硅基流动等
     非 Anthropic 厂商, 必须去掉它, 否则请求会被对方拒绝。其余自定义工具各厂商通用。
 
-    知识星球两个工具是可选接入(默认没有), 没接就别塞给模型 —— 否则它会去调然后拿一串 error。"""
+    知识星球与扩展数据源的工具都是可选接入(默认没有), 没接就别塞给模型 —— 否则它会去调
+    然后拿一串 error, 既浪费一轮又容易让它把"没接入"读成"查不到这只票"。"""
     tools = _TOOLS
     try:
         from services import zsxq_client
@@ -3241,6 +3236,13 @@ def _active_tools() -> list:
             tools = [t for t in tools if t.get("name") not in _ZSXQ_TOOLS]
     except Exception:
         tools = [t for t in tools if t.get("name") not in _ZSXQ_TOOLS]
+    try:
+        from services.providers import gateway
+        caps = await gateway.capabilities()
+    except Exception:
+        caps = frozenset()
+    tools = [t for t in tools
+             if _PROVIDER_TOOLS.get(t.get("name")) in (None, *caps)]
     try:
         if _llm._is_anthropic_official():
             return tools
@@ -3487,7 +3489,7 @@ def _system() -> str:
 
 _TOOL_CN = {
     "resolve_stock": "解析代码", "get_quote": "查行情", "get_trend": "查走势",
-    "get_news": "查新闻", "get_intraday": "查分时", "get_announcements": "查公告", "get_fund_flow": "查资金流", "get_lhb": "查龙虎榜", "get_seat_history": "查席位历史", "get_kpl_lhb": "查深度龙虎榜",
+    "get_news": "查新闻", "get_intraday": "查分时", "get_announcements": "查公告", "get_fund_flow": "查资金流", "get_lhb": "查龙虎榜", "get_seat_history": "查席位历史", "get_deep_lhb": "查深度龙虎榜",
     "get_company_profile": "查公司主营", "get_red_flags": "查红线风险", "screen_quality": "跑去劣筛选", "get_capital_allocation": "查资本配置", "get_stock_concepts": "查所属概念", "get_fundamentals": "查基本面", "get_commodity": "查商品价",
     "get_peers": "同行对比", "get_shareholders": "查股东解禁",
     "get_holdings": "看持仓", "get_zsxq_digest": "读星球", "search_zsxq": "搜星球", "read_zsxq_file": "读星球附件", "get_thesis": "看买入逻辑", "get_asset_allocation": "看资产配置", "get_trades": "查成交记录", "get_market_sentiment": "看大盘情绪", "get_market_review": "复盘强势股", "get_inst_flow": "查机构动向", "get_earnings": "查业绩预告",
@@ -3613,7 +3615,7 @@ async def _llm_round(messages: list):
     for attempt in range(_OVERLOAD_ROUND_RETRIES + 1):
         try:
             resp = await asyncio.to_thread(
-                _llm.call_claude_messages, messages, _system(), _MODEL, 4096, _active_tools())
+                _llm.call_claude_messages, messages, _system(), _MODEL, 4096, await _active_tools())
             yield ("resp", resp)
             return
         except _llm.LLMOverloaded as e:

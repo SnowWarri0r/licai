@@ -222,12 +222,13 @@ def test_health_reports_unconfigured():
 
 def test_agent_hides_tools_when_not_configured():
     """没接入时这两个工具不该塞给模型, 否则它会去调然后拿一串 error。"""
+    import asyncio
     import services.stock_agent as sa
     z.configure("", [])
-    names = {t.get("name") for t in sa._active_tools()}
+    names = {t.get("name") for t in asyncio.run(sa._active_tools())}
     assert "get_zsxq_digest" not in names and "search_zsxq" not in names
     z.configure(URL, [{"group_id": "1", "name": "x"}])
-    names = {t.get("name") for t in sa._active_tools()}
+    names = {t.get("name") for t in asyncio.run(sa._active_tools())}
     assert "get_zsxq_digest" in names and "search_zsxq" in names
     z.configure("", [])
 

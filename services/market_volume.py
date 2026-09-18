@@ -214,7 +214,7 @@ def _complete_days(by_day: dict, min_bars: int) -> list:
 
 
 async def market_volume_intraday(market: str = "两市") -> dict:
-    """当日分时累计成交量(亿股)/成交额(亿元) + 昨日同期对照 + 全天外推式全天预测。
+    """当日分时累计成交量(亿股)/成交额(亿元) + 昨日同期对照 + 全天量能外推预测。
     预测 = 今日到此刻累计 ÷ 近15日完成度剖面(该时点累计占全天比的中位数)。60s 缓存。"""
     market = market if market in ("两市", "沪", "深", "创业", "科创") else "两市"
     c = _intraday_cache.get(market)
@@ -252,7 +252,7 @@ async def market_volume_intraday(market: str = "两市") -> dict:
     prev_points = pts_of(prev)
     prev_full = ({"vol": round(prev[-1][1] / 1e8, 1), "amt": round(prev[-1][2] / 1e8)} if prev else None)
 
-    # 预测量能序列(全天外推式): proj(t) = 今日累计(t) ÷ 剖面完成度(t)。
+    # 预测量能序列(全天外推): proj(t) = 今日累计(t) ÷ 剖面完成度(t)。
     # 完成度剖面 = 近15完整日(5分钟)每时点 median(cum_d/full_d), 按交易分钟轴插值到今日1分钟点。
     # 纯比例外推: anchor 被约掉, 预测跟随今日真实量级(清淡日不死扛均值)。收盘=实际。
     # 前向回测(30日样本): 整体 MAE ~4%, 午后 ±2%, 早盘 ±7%(开盘不可测性的地板)。
@@ -284,7 +284,7 @@ async def market_volume_intraday(market: str = "两市") -> dict:
     out = {"market": market, "points": points, "prev_points": prev_points,
            "prev_full": prev_full, "actual": actual,
            "proj_series": proj_series, "projected": projected,
-           "note": "预测量能(全天外推式): 今日累计 ÷ 近15日完成度剖面中位数外推全天, 相对昨日总量的偏离; 收盘收敛到实际。"}
+           "note": "预测量能(全天外推): 今日累计 ÷ 近15日完成度剖面中位数外推全天, 相对昨日总量的偏离; 收盘收敛到实际。"}
     if points:
         _intraday_cache[market] = (out, time.time())
     return out

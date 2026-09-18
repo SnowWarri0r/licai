@@ -207,7 +207,7 @@ export default function Settings({ onClose }) {
           <ZsxqSection />
         </div>
 
-        {/* 扩展数据源登录态(可选): 解锁深度龙虎榜游资标签等登录接口 */}
+        {/* 扩展数据源(可选): 深度龙虎榜席位身份 / 竞价异动 / 机构增仓等自带公开源没有的口径 */}
         <div className="mt-2 pt-4 border-t border-border">
           <ProviderSection />
         </div>

@@ -9,20 +9,18 @@
   · 东财涨停股池(push2ex getTopicZTPool?date=) —— 日常与实时。字段最全: 除封单额外还有
     炸板次数 / 换手 / 流通市值 / N天M板, 而且是我们本来就在用的源(不会因为某个 app 改版
     整块死掉)。**但历史只有滚动约 3 周**: 实测 8-13 起有数, 8-06 及更早一律返回 0 只。
-  · 扩展数据源(apphis [provider-endpoint], 按 PidType=连板数 逐档取) —— **只做一次性历史
-    回填**。实测能回到 2024-06-18。字段少(没有炸板次数/换手/流通市值), 所以约定它不许
-    覆盖东财那份(见 database.save_limit_up_pool 的冲突规则)。灌完这批数据就归我们了,
-    之后不再依赖它。
+  · 扩展数据源(可选 provider, 能力 limit_up_history / limit_up_themes) —— **只做一次性历史
+    回填 + 题材标签补全**。字段少(没有炸板次数/换手/流通市值), 所以约定它不许覆盖东财那份
+    (见 database.save_limit_up_pool 的冲突规则)。灌完这批数据就归我们了, 之后不再依赖它。
 
-**两源交叉验证过, 不是二选一的赌**: 8-20 那天东财 79 只 / 扩展数据源 79 只, 股票集合完全
-一致, 封单额 79 只全等; 首封时刻在分钟级一致(扩展数据源精到秒 09:25:59, 东财截到 09:25:00,
+**两源交叉验证过, 不是二选一的赌**: 8-20 那天东财 79 只 / 扩展源 79 只, 股票集合完全
+一致, 封单额 79 只全等; 首封时刻在分钟级一致(扩展源精到秒 09:25:59, 东财截到 09:25:00,
 所以逐秒比会有约 10 只"不符", 实际是同一分钟)。东财的封单额另外拿新浪盘口买一(量×价)
 逐只验过, 49 只零偏离。
 
-扩展数据源那份是数组、字段没有名字, 下标是拿东财逐只比出来的(79/79 命中):
-    [0]代码 [1]名称 [4]首封unix时间戳 [5]主题 [6]封单额 [11]成交额 [12]概念
-    [15]连板数 [19]板块代码 [22]涨跌幅;  PidType 恒等于连板数
-炸板次数/换手/流通市值 在那份里匹配率低(<20%), 所以**不猜、留空**。
+**没接 provider 也照常跑**: 日常链路本来就只走东财, 回填与题材补全在没有 provider 时
+静默跳过(回填那天记 0 只、题材留空), 不报错、不拦主流程。列位映射之类的脏活在 provider
+那一侧, 本模块只认它返回的行结构。
 """
 from __future__ import annotations
 import asyncio
@@ -35,12 +33,6 @@ _CST = timezone(timedelta(hours=8))
 
 _EM_HOSTS = ["push2ex.eastmoney.com"]
 _EM_UT = "7eea3edcaed734bea9cbfc24409ed989"
-_KPL_HOST = "[provider-host]"
-_KPL_VER = "5.21.0.2"                 # app 版本号写死在协议里, 哪天 400 了就是它过期
-_KPL_MAX_PID = 12                     # 连板高度上限; 连续 _KPL_DRY 档空了就收工
-_KPL_DRY = 3                          # 8-20 实测 首板75/2板3/**3板0**/4板1 —— 中间会断档,
-                                      # 所以不能见到一个空档就停
-
 # 一字板: 集合竞价就封住(9:25 撮合出的开盘价即涨停价)。这类封板的共识最硬。
 _OPEN_SEAL = "09:26:00"
 _LATE_SEAL = "14:30:00"               # 尾盘偷袭: 剩半小时才封, 次日承接最没保证
@@ -64,17 +56,6 @@ def _hhmmss(v) -> str | None:
         return None
     s = f"{n:06d}"
     return f"{s[:2]}:{s[2:4]}:{s[4:6]}"
-
-
-def _ts_hhmmss(v) -> str | None:
-    """扩展数据源给 unix 秒。固定按东八区解 —— 跟着服务器本地时区走的话, 换台机器时刻就飘了。"""
-    try:
-        n = int(v)
-    except (TypeError, ValueError):
-        return None
-    if n <= 0:
-        return None
-    return datetime.fromtimestamp(n, tz=_CST).strftime("%H:%M:%S")
 
 
 def _clean_name(s) -> str:
@@ -112,126 +93,38 @@ def _fetch_em_sync(day: str) -> list[dict]:
     return []
 
 
-def _fetch_kpl_sync(day: str) -> list[dict]:
-    """按 PidType(=连板数) 逐档取。一天要打好几次, 只用于一次性回填, 不进日常链路。"""
-    import requests as _rq
-    import uuid as _uuid
-    s = _rq.Session()
-    s.trust_env = False
-    headers = {"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-               "User-Agent": "[provider-ua]",
-               "Host": _KPL_HOST, "Connection": "Keep-Alive", "Accept-Encoding": "gzip"}
-    out: list[dict] = []
-    dry = 0
-    for pid in range(1, _KPL_MAX_PID + 1):
-        try:
-            r = s.post(f"https://{_KPL_HOST}/w1/api/index.php",
-                       data={"Order": "0", "a": "[provider-endpoint]", "st": "2000",
-                             "c": "[provider-endpoint]", "PhoneOSNew": "1",
-                             "DeviceID": str(_uuid.uuid4()), "VerSion": _KPL_VER, "Index": "0",
-                             "PidType": str(pid), "apiv": "w42", "Type": "4", "Day": day},
-                       headers=headers, timeout=20)      # 证书是好的, 不必关校验(实测过)
-            info = (r.json() or {}).get("info") or []
-        except Exception:
-            info = []
-        rows = info[0] if info else []
-        if not rows:
-            dry += 1
-            if dry >= _KPL_DRY:
-                break
-            continue
-        dry = 0
-        for a in rows:
-            if not isinstance(a, list) or len(a) < 23 or not a[0]:
-                continue                       # 数组变短就是协议改了, 宁可丢这条不要错位
-            out.append({
-                "snap_date": day, "stock_code": str(a[0]), "name": _clean_name(a[1]),
-                "seal_amount": a[6], "first_seal": _ts_hhmmss(a[4]), "last_seal": None,
-                "lb_count": a[15] or pid, "broken_times": None, "zt_days": None, "zt_ct": None,
-                "industry": None, "theme": (a[5] or None) or (a[12] or None),
-                "amount": a[11], "float_mv": None, "turnover": None, "pct": a[22],
-                "source": "kpl"})
-    return out
+async def sync_day(day: str, *, allow_provider: bool = False, with_theme: bool = False) -> dict:
+    """抓某一天并落库。日常只走东财; allow_provider=True 时东财空了才退到扩展数据源(回填用)。
 
+    with_theme=True 时, 东财抓成功后再从扩展源按 code 补题材标签(东财不给题材)。默认关:
+    它每天要多打好几次对方接口, 只在收盘钩子(当日一次)开; 历史回填要题材再显式传 True。
 
-def _fetch_kpl_themes(day: str) -> dict:
-    """按 code 取扩展数据源的**题材标签**, 只为给东财涨停股补 theme —— 东财 getTopicZTPool 只给
-    行业(hybk)不给题材(光模块/CPO、数字货币这种炒作主线), 而题材才是打板复盘真正要看的那层。
-
-    与 _fetch_kpl_sync 的分工: 那个是"东财整天都够不着时用扩展数据源顶上整行"(回填); 这个只抠出
-    code→题材一张小表, 回来贴到东财行上, 不碰东财的任何其它字段。别把两者合并 —— 一个是
-    兜底整行、一个是增补单列, 混在一起就说不清某一行的数到底谁给的了。
-
-    Day 在 apphis 这个接口上是生效的(实测 09-01/02/04 逐档家数与东财池逐日不同且对得上),
-    所以历史日与当日都能补。列 [12]=完整题材, [5]=短题材, 取前者、空则退后者。
+    两个 provider 分支都走 gateway.try_call —— 没接入/取不到一律当成"这次没有", 静默跳过。
+    扩展源是可选项, 缺了只是少一截历史, 不该把日常链路拦下来。
     """
-    import requests as _rq
-    import uuid as _uuid
-    s = _rq.Session()
-    s.trust_env = False
-    headers = {"Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-               "User-Agent": "[provider-ua]",
-               "Host": _KPL_HOST, "Connection": "Keep-Alive", "Accept-Encoding": "gzip"}
-    out: dict = {}
-    dry = 0
-    for pid in range(1, _KPL_MAX_PID + 1):
-        try:
-            r = s.post(f"https://{_KPL_HOST}/w1/api/index.php",
-                       data={"Order": "0", "a": "[provider-endpoint]", "st": "2000",
-                             "c": "[provider-endpoint]", "PhoneOSNew": "1",
-                             "DeviceID": str(_uuid.uuid4()), "VerSion": _KPL_VER, "Index": "0",
-                             "PidType": str(pid), "apiv": "w42", "Type": "4", "Day": day},
-                       headers=headers, timeout=20)
-            info = (r.json() or {}).get("info") or []
-        except Exception:
-            info = []
-        rows = info[0] if info else []
-        if not rows:
-            dry += 1
-            if dry >= _KPL_DRY:
-                break
-            continue
-        dry = 0
-        for a in rows:
-            if not isinstance(a, list) or len(a) < 13 or not a[0]:
-                continue
-            theme = (a[12] or None) or (a[5] or None)
-            if theme:
-                out[str(a[0])] = str(theme).strip()
-    return out
-
-
-async def sync_day(day: str, *, allow_kpl: bool = False, with_theme: bool = False) -> dict:
-    """抓某一天并落库。日常只走东财; allow_kpl=True 时东财空了才退到扩展数据源(回填用)。
-
-    with_theme=True 时, 东财抓成功后再从扩展数据源按 code 补题材标签(东财不给题材)。默认关: 它每天
-    要多打 3-8 次 apphis, 只在收盘钩子(当日一次)开; 历史回填要题材再显式传 True。
-    """
+    from services.providers import gateway
     rows = await asyncio.to_thread(_fetch_em_sync, day)
     src = "em"
-    if not rows and allow_kpl:
-        rows = await asyncio.to_thread(_fetch_kpl_sync, day)
-        src = "kpl"
+    if not rows and allow_provider:
+        rows = await gateway.try_call("limit_up_history", day) or []
+        src = "provider" if rows else None
     if not rows:
         return {"date": day, "n": 0, "source": None, "saved": 0, "themed": 0}
     themed = 0
-    # 只有东财行需要补(kpl 整行回填时 theme 已在 _fetch_kpl_sync 里取过); 且只填空的, 不覆盖。
+    # 只有东财行需要补(扩展源整行回填时 theme 已经带回来了); 且只填空的, 不覆盖。
     if with_theme and src == "em" and any(not r.get("theme") for r in rows):
-        try:
-            tmap = await asyncio.to_thread(_fetch_kpl_themes, day)
-            for r in rows:
-                if not r.get("theme") and tmap.get(r["stock_code"]):
-                    r["theme"] = tmap[r["stock_code"]]
-                    themed += 1
-        except Exception:
-            pass          # 题材是增补项, 取不到不连累主流程 —— 东财那份照常落库
+        tmap = await gateway.try_call("limit_up_themes", day) or {}
+        for r in rows:
+            if not r.get("theme") and tmap.get(r["stock_code"]):
+                r["theme"] = tmap[r["stock_code"]]
+                themed += 1
     saved = await save_limit_up_pool(rows)
     return {"date": day, "n": len(rows), "source": src, "themed": themed, "saved": saved}
 
 
 async def sync_today() -> dict:
     """收盘钩子用。封单额是盘口快照 —— 收盘后取到的才是定格值, 盘中取到的会变。
-    顺带从扩展数据源补题材标签: 东财只给行业, 题材(炒作主线)得靠扩展数据源。"""
+    顺带从扩展源补题材标签(东财只给行业, 题材=炒作主线得靠扩展源); 没接扩展源就只是没题材。"""
     today = datetime.now(tz=_CST).strftime("%Y-%m-%d")
     return await sync_day(today, with_theme=True)
 
@@ -256,12 +149,12 @@ async def backfill(start: str, end: str, *, sleep: float = 0.25,
         if ds in have:
             skipped += 1
             continue
-        r = await sync_day(ds, allow_kpl=True)
+        r = await sync_day(ds, allow_provider=True)
         if r["n"]:
             days += 1
             rows += r["n"]
         else:
-            empty.append(ds)          # 交易日却一条没有 = 那天真没涨停, 或者两个源都够不着
+            empty.append(ds)          # 交易日却一条没有 = 那天真没涨停, 两个源都够不着, 或没接扩展源
         await asyncio.sleep(sleep)
     return {"days": days, "rows": rows, "skipped": skipped,
             "empty_days": empty[:20], "n_empty": len(empty)}
@@ -345,7 +238,7 @@ async def quality(day: str | None = None) -> dict:
                   for k, v in by_ind.items()),
                  key=lambda x: -x["封单亿"])[:6]
     # 题材扎堆: 与行业是两个维度 —— 行业是静态分类(多元金融/通信设备), 题材是当日炒作主线
-    # (数字货币/光模块/机器人), 后者才是打板情绪真正围着转的东西。扩展数据源一只票挂多个题材
+    # (数字货币/光模块/机器人), 后者才是打板情绪真正围着转的东西。扩展源一只票挂多个题材
     # (逗号分隔), 逐个拆开计数, 一只票可同时进多个题材桶。全天没有一条题材(老回填的档案)时
     # 整块省掉, 不给空壳。
     by_theme: dict[str, list] = {}
@@ -382,7 +275,7 @@ async def quality(day: str | None = None) -> dict:
                           "封单合计亿": _fmt_yi(prev["seal_sum"]),
                           "只数": prev["n"]} if prev else None),
         "口径": ("封单额=买一挂单额(量×价), 收盘定格值; 一字板=9:25 集合竞价即封住; "
-                 "开过板只数只有东财那份能判(扩展数据源历史没有炸板次数), 为空表示那天的档案来自回填。"),
+                 "开过板只数只有东财那份能判(扩展源的历史没有炸板次数), 为空表示那天的档案来自回填。"),
     }
 
 

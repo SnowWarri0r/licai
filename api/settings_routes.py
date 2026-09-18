@@ -99,42 +99,88 @@ class ZsxqConfig(BaseModel):
         return out
 
 
-@router.get("/kpl")
-async def get_kpl_config():
-    """扩展数据源登录态状态。绝不回传 Token 明文, 只给脱敏(UID + 是否有效)。"""
-    from services.provider_ext_auth import check
-    st = await check()
-    return {"configured": st.get("configured", False), "valid": st.get("valid", False),
-            "uid": st.get("uid", ""), "note": st.get("note", "")}
+# --- 扩展数据源(provider) ---------------------------------------------------
+# 本项目自带的行情源都是公开接口, 不要凭证。少数口径(带身份标签的深度龙虎榜、集合竞价异动、
+# 机构季度增减仓)只有商业终端才有 —— 那需要用户自己的账号凭证去打对方的接口, 是**用户自己**
+# 与对方的关系, 所以本仓库只定义协议、不自带任何实现。装哪个 provider、填不填凭证, 由用户
+# 在这里按一次开关; 什么都不配就是 NullProvider, 其余功能照常。
+#
+# 这三个端点对所有 provider 通用: 表单字段由 provider 自己声明(credential_fields), 设置页
+# 照着渲染 —— 不为任何一个 provider 写死表单, 换一个实现不用改后端也不用改前端。
+
+async def _provider_state() -> dict:
+    from services.providers import get_provider, load_error
+    spec = (await get_config("market_provider")) or ""
+    p = await get_provider()
+    st = await p.status()
+    return {
+        "spec": spec,
+        "provider": st.get("provider", p.name),
+        "display_name": st.get("display_name", p.display_name),
+        "capabilities": sorted(p.capabilities),
+        # secret 字段永不回传明文; echo 里只放 provider 自己判定可回显的那些(如账号 ID)
+        "fields": [{"key": f.key, "label": f.label, "secret": f.secret,
+                    "echo": f.echo, "placeholder": f.placeholder}
+                   for f in p.credential_fields],
+        "echo": st.get("echo", {}),
+        "configured": st.get("configured", False),
+        "valid": st.get("valid", False),
+        "note": st.get("note", ""),
+        "load_error": load_error(),
+    }
 
 
-class KplLogin(BaseModel):
-    uid: str
-    token: str
+@router.get("/provider")
+async def get_provider_config():
+    """扩展数据源状态: 装了哪个、要填哪些字段、凭证还有效没。绝不回传 secret 字段明文。"""
+    return await _provider_state()
 
 
-@router.post("/kpl")
-async def set_kpl_config(data: KplLogin):
-    """存扩展数据源 UID/Token(手机登录 App 抓的登录响应里那两个字段)。存 DB config, 存完探活。"""
-    from database import set_config
-    uid = (data.uid or "").strip()
-    tok = (data.token or "").strip()
-    if not uid or not tok:
-        return {"ok": False, "note": "UID 和 Token 都要填"}
-    await set_config("provider_uid", uid)
-    await set_config("provider_token", tok)
+class ProviderConfig(BaseModel):
+    spec: Optional[str] = None          # "包名:类名"; 传空串 = 卸掉, 退回 NullProvider
+    values: Optional[dict] = None       # 凭证字段, 键为 provider 声明的 field.key
+
+
+@router.post("/provider")
+async def set_provider_config(data: ProviderConfig):
+    """装/换 provider, 和/或存凭证。两件事可以一次做完, 也可以分两次。"""
+    from services.providers import get_provider, reset_cache
+    if data.spec is not None:
+        await set_config("market_provider", (data.spec or "").strip())
+        import os
+        os.environ.pop("MARKET_PROVIDER", None)   # env 留着旧值会一直盖过刚存的这份
+        reset_cache()
+    saved = None
+    if data.values:
+        p = await get_provider()
+        if not p.credential_fields:
+            return {"ok": False, "note": f"{p.display_name} 不需要凭证", **(await _provider_state())}
+        # 只收 provider 声明过的键 —— 别把前端随手多塞的字段原样存进 config 表
+        allowed = {f.key for f in p.credential_fields}
+        try:
+            saved = await p.save_credentials({k: v for k, v in data.values.items() if k in allowed})
+        except Exception as e:
+            return {"ok": False, "note": f"存凭证失败: {e}", **(await _provider_state())}
+    state = await _provider_state()
+    return {"ok": bool(saved["ok"]) if saved else True,
+            "note": (saved or {}).get("note", ""), **state}
+
+
+@router.delete("/provider")
+async def clear_provider_config():
+    """清凭证并卸掉 provider。顺序不能反 —— 先卸了就没人知道该清哪些键了。"""
+    from services.providers import get_provider, reset_cache
+    p = await get_provider()
+    if p.credential_fields:
+        try:
+            await p.clear_credentials()
+        except Exception:
+            pass
+    await set_config("market_provider", "")
     import os
-    os.environ.pop("PROVIDER_UID", None); os.environ.pop("PROVIDER_TOKEN", None)  # 让 credentials() 走新存的 DB 值
-    from services.provider_ext_auth import check
-    st = await check()
-    return {"ok": bool(st.get("valid")), "valid": st.get("valid", False), "note": st.get("note", "")}
-
-
-@router.delete("/kpl")
-async def clear_kpl_config():
-    from database import set_config
-    await set_config("provider_uid", ""); await set_config("provider_token", "")
-    return {"ok": True}
+    os.environ.pop("MARKET_PROVIDER", None)
+    reset_cache()
+    return {"ok": True, **(await _provider_state())}
 
 
 @router.get("/zsxq")
