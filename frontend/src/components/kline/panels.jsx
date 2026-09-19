@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { fetchJSON } from '../../hooks/useApi'
 import { DOWN, UP, colorPct, fmtHand } from './shared'
 
@@ -71,19 +71,25 @@ export function LhbPanel({ code }) {
   const [d, setD] = useState(null)
   const [loading, setLoading] = useState(false)
   const [err, setErr] = useState('')
-  const load = () => {
-    if (d || loading) return
-    setLoading(true); setErr('')
+  // ⚠️ 必须跟着 code 走: 榜单里这个面板是**常驻**的(持仓弹窗里才随弹窗销毁重建),
+  // 原来只在展开时 load 且 `if (d) return`, 换股票后会一直显示上一只票的龙虎榜。
+  useEffect(() => {
+    if (!open || !code) return
+    let alive = true
+    setLoading(true); setErr(''); setD(null)
     fetchJSON(`/api/market/kpl-lhb/${encodeURIComponent(code)}`)
       .then(r => {
+        if (!alive) return
         if (r?.need_login) { setErr('need_login'); return }
         if (r?.error) { setErr(r.error); return }
         setD(r)
       })
-      .catch(e => setErr(String(e?.message || e)))
-      .finally(() => setLoading(false))
-  }
-  const toggle = () => { const n = !open; setOpen(n); if (n) load() }
+      .catch(e => { if (alive) setErr(String(e?.message || e)) })
+      .finally(() => { if (alive) setLoading(false) })
+    return () => { alive = false }
+  }, [open, code])
+
+  const toggle = () => setOpen(v => !v)
   const yi = v => v == null ? '' : `${v}亿`
 
   return (
