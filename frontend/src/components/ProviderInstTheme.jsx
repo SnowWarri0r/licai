@@ -7,8 +7,7 @@ const yiColor = (v) => v == null ? 'text-text-dim' : v > 0 ? 'text-bear-bright' 
 const fmtYi = (v) => v == null ? '—' : `${v > 0 ? '+' : ''}${v}亿`
 
 // 凭证失效时的统一提示(不静默空, 引导去设置里更新)。
-// "没接扩展数据源"是另一回事 —— 那种情况整块不渲染, 见下面的 available 判断:
-// 没装插件的人不该看见一个一直在催他去设置的空卡片。
+// "没接扩展数据源"是另一回事, 见下面的 available 判断。
 function NeedLogin({ what }) {
   return (
     <div className="bg-surface-2 border border-border rounded-xl p-4 md:p-5">
@@ -20,7 +19,23 @@ function NeedLogin({ what }) {
   )
 }
 
-export default function ProviderInstTheme() {
+// 没接扩展数据源时的说明。**只在这块是整页内容时才出**(standalone):
+//   · 当卡片跟别的模块并排 → 什么都不渲染, 没装插件的人不该看见一个一直催他去设置的空卡片
+//   · 当它就是整页 → 必须出, 否则侧栏点进来是一片空白, 看着像页面坏了
+function NotConnected() {
+  return (
+    <div className="bg-surface-2 border border-border rounded-xl p-4 md:p-5">
+      <h3 className="text-[14px] font-semibold text-text-bright m-0 mb-1.5">机构增仓 · 本月热门题材</h3>
+      <div className="text-[11.5px] text-text-muted leading-relaxed">
+        这一页的两块内容——机构季报行业增减仓、当月题材热度——自带的公开行情源没有这个口径，
+        由可选的<span className="text-accent">扩展数据源</span>提供。装一个 provider 插件后在
+        「设置 → 扩展数据源」里选中即可；不接不影响其它任何页面。
+      </div>
+    </div>
+  )
+}
+
+export default function ProviderInstTheme({ standalone = false }) {
   const [pos, setPos] = useState(null)
   const [theme, setTheme] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -33,13 +48,13 @@ export default function ProviderInstTheme() {
   }, [])
 
   if (loading) return <SkeletonCard rows={6} label="机构风向加载中" />
-  // 没接扩展数据源 → 整块不存在(不是"失败", 是这个口径本来就没接), 什么都不渲染
-  if (pos?.available === false && theme?.available === false) return null
+  // 没接扩展数据源 —— 不是"失败", 是这个口径本来就没接。整页时给句说明, 并排时静默。
+  if (pos?.available === false && theme?.available === false) return standalone ? <NotConnected /> : null
   // 接了但凭证失效 → 一个提示; 都没数据 → 不显示
   if (pos?.need_login && theme?.need_login) return <NeedLogin what="机构增仓 · 本月热门题材" />
   const hasPos = pos && pos['有数据']
   const hasTheme = theme && theme['有数据']
-  if (!hasPos && !hasTheme && !pos?.need_login) return null
+  if (!hasPos && !hasTheme && !pos?.need_login) return standalone ? <NotConnected /> : null
 
   return (
     <div className="bg-surface-2 border border-border rounded-xl p-4 md:p-5 space-y-4">
