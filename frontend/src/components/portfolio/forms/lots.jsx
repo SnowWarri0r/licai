@@ -51,6 +51,8 @@ export function AddLotRow({ asset, onDone, onCancel, brokers = [] }) {
       const est = estimateFee(amount, brokers, asset.broker, kind)
       setFee(est.toFixed(2))
     }
+    // sNum/uNum 是 shares/unitPrice 解析出来的派生值, 源头已经在依赖里了。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shares, unitPrice, feeTouched, isFund, isCrypto, brokers, asset.broker, asset.code])
 
   let preview = null

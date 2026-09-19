@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 
 // 共用 K 线图: 周期切换(30/60/半年/1年) + 真 K 线蜡烛(有 OHLC 时)/折线(仅 close)。
 // 用在宏观放大图 (MacroKlineModal) 和板块雷达放大图 (SectorKlineModal)。
@@ -19,7 +19,7 @@ const PERIODS = [
 
 // 同 CandleChart: 纯常量提到模块级, 否则 P 每渲染新引用, useMemo 依赖数组两难。
 const W = 720, H = 320, P = { l: 64, r: 16, t: 16, b: 28 }
-const innerW = W - P.l - P.r
+const innerW = W - P.l - P.r, innerH = H - P.t - P.b
 
 export default function KlineChart({ fetchByDays, initialSeries = [], defaultDays = 60, fmtVal, renderStats, footerExtra }) {
   const [days, setDays] = useState(defaultDays)
@@ -53,8 +53,9 @@ export default function KlineChart({ fetchByDays, initialSeries = [], defaultDay
   const end = closes[closes.length - 1]
   const periodPct = start && end ? ((end / start) - 1) * 100 : null
 
-  const innerH = H - P.t - P.b
-  const yOf = (v) => P.t + innerH - ((v - min) / range) * innerH
+  // yOf 只随量程(min/range)变。原来是每渲染新建的普通函数, 于是下面两个 useMemo
+  // 要么漏它、要么把它写进依赖数组从而每渲染必重算。useCallback 锁到量程上, 两全。
+  const yOf = useCallback((v) => P.t + innerH - ((v - min) / range) * innerH, [min, range])
 
   const points = useMemo(() => {
     if (series.length < 2) return []
@@ -67,7 +68,7 @@ export default function KlineChart({ fetchByDays, initialSeries = [], defaultDay
       yLow: d.low != null ? yOf(d.low) : null,
       i,
     }))
-  }, [series, innerH, innerW, min, range])
+  }, [series, yOf])
 
   const candleW = points.length > 1
     ? Math.max(1.2, Math.min(11, (innerW / points.length) * 0.62))
@@ -80,7 +81,7 @@ export default function KlineChart({ fetchByDays, initialSeries = [], defaultDay
     if (!points.length) return ''
     const top = points.map((p, i) => (i === 0 ? 'M' : 'L') + p.x.toFixed(1) + ' ' + p.y.toFixed(1)).join(' ')
     return top + ` L ${points[points.length - 1].x.toFixed(1)} ${(P.t + innerH).toFixed(1)} L ${points[0].x.toFixed(1)} ${(P.t + innerH).toFixed(1)} Z`
-  }, [points, innerH])
+  }, [points])
 
   const yTicks = useMemo(() => {
     if (!closes.length) return []
@@ -89,7 +90,7 @@ export default function KlineChart({ fetchByDays, initialSeries = [], defaultDay
       const v = min + step * i
       return { v, y: yOf(v) }
     })
-  }, [closes.length, min, range, innerH])
+  }, [closes.length, min, range, yOf])
 
   const xTicks = useMemo(() => {
     if (points.length < 2) return []

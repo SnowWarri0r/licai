@@ -231,6 +231,10 @@ function EditActionModal({ asset, action, onClose, onDone }) {
       const next = (s * u + f).toFixed(2)
       if (next !== amount) setAmount(next)
     }
+    // 刻意只听 fee(见上方注释): 它的职责就是「改 fee 时让 amount 跟上」。
+    // 把 shares/unitPrice/amount 列进来, 用户编辑股数时它也会抢着改 amount,
+    // 与另外几个 effect 打架; 而 amount 本身又被它 setAmount, 有转圈风险。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fee])
 
   React.useEffect(() => {
