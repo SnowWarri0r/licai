@@ -83,6 +83,8 @@ export default function SentimentThermometer() {
       .catch(() => {}).finally(() => setAiLoading(false))
   }
 
+  // 挂载时各拉一次。loadAi 是每次渲染新建的普通函数, 列进依赖会无限重取
+  // (而且 AI 情绪解读那一趟要 10-20 秒, 转起来代价很大)。
   useEffect(() => {
     fetchJSON('/api/market/sentiment').then(setD).catch(() => {}).finally(() => setLoading(false))
     loadAi()

@@ -38,6 +38,11 @@ export function DayOverlay({ day, code, getBars, onClose, onJumpDay }) {
     const onEsc = (e) => { if (e.key === 'Escape') { onClose() } }
     window.addEventListener('keydown', onEsc)
     return () => { alive = false; window.removeEventListener('keydown', onEsc) }
+    // 不列 onClose: 父组件每次渲染都新建一个 () => { setIntraday(null); setHint(null) },
+    // 列进来这个 effect 就跟着重跑 —— 每次父渲染重拉一次分时。而 onClose 只做
+    // setState, 拿到旧闭包也是对的, 所以省掉它安全。
+    // (这里不加 eslint-disable: 那条注释会让 react-hooks 的编译器类规则对整个
+    //  effect 放弃分析, 把同一处的 set-state-in-effect 错误一并吞掉。)
   }, [day, code])
 
   // 分时区实际宽高比 → viewBox 高度(svg 按 720:minH 缩放正好占满容器, 大屏不再上浮留白)

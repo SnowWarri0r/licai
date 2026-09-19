@@ -114,6 +114,8 @@ export default function TransactionHistory({ stockCode, stockName, onClose, onCh
       setLoading(false)
     }
   }
+  // 只按 stockCode 取。load 是每次渲染新建的普通函数, 列进依赖会无限重取。
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load() }, [stockCode])
 
   const handleAdd = async () => {
