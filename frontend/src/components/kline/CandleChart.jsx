@@ -90,7 +90,6 @@ export function CandleChart({ series, cost, actions, warmup = [] }) {
     })
   }
   const costY = cost != null && range > 0 ? P.t + priceH - ((cost - rangeMin) / range) * priceH : null
-  const closes = series.map(d => d.close).filter(c => c > 0)
   const volMax = Math.max(1, ...series.map(d => Number(d.volume) || 0))
 
   // 技术指标 MACD / KDJ (用于底部可切换副图)

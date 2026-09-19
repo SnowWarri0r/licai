@@ -456,7 +456,6 @@ export default function Rankings() {
     : tab === 'lhb' ? (r['解读'] || r['上榜原因'] || '—')
     : tab === 'changes' ? (r['描述'] || '—')
     : (r['行业'] || ''))
-  const trendOf = (name) => (trend?.rows || []).find(t => t.name === name)
   const list = tab === 'structure' ? structList
     : (() => {
         let rs = board === '全部' ? rawList : rawList.filter(r => boardOf(r.code) === board)
