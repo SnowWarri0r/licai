@@ -73,7 +73,7 @@ export function EditAssetRow({ asset, onDone, onCancel, brokers = [] }) {
     const next = { unitCost, shares, nav, mv, pending }
     next[field] = value
     const numOf = (k) => parseFloat(next[k]) || 0
-    const u = numOf('unitCost'), s = numOf('shares'), n = numOf('nav'), p = numOf('pending')
+    const s = numOf('shares'), n = numOf('nav'), p = numOf('pending')
 
     if (field === 'unitCost') {
       // unit cost change doesn't affect shares/nav/mv/pending — just recomputes total at save

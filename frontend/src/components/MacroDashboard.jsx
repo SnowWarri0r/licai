@@ -44,7 +44,7 @@ function fmtPct(pct) {
   return `${sign}${pct.toFixed(2)}%`
 }
 
-function Sparkline({ data, width = 80, height = 28, pct = 0 }) {
+function Sparkline({ data, width = 80, height = 28 }) {
   if (!data || data.length < 2) {
     return <div style={{ width, height }} className="flex items-center justify-center text-[9.5px] text-text-muted">无 K 线</div>
   }
@@ -97,7 +97,7 @@ function MacroChip({ item, onClick }) {
         <span className="text-[11.5px] font-mono text-text-bright">{fmtPrice(item.symbol, item.price)}</span>
       </div>
       <div className="flex items-center justify-between gap-2">
-        <Sparkline data={k} pct={periodPct ?? 0} />
+        <Sparkline data={k} />
         <div className="flex flex-col items-end gap-0">
           <span className={`text-[11px] font-mono ${colorOfPct(pct)}`}>{fmtPct(pct)}</span>
           {periodPct != null && (
