@@ -105,6 +105,86 @@ def test_spec_change_rebuilds_the_cached_provider(monkeypatch):
     assert isinstance(asyncio.run(registry.get_provider()), NullProvider)
 
 
+# ── 已装 provider 的发现 ────────────────────────────────
+
+class _FakeDist:
+    def __init__(self, name, version):
+        self.name, self.version = name, version
+
+
+class _FakeEP:
+    def __init__(self, name, value, dist=None):
+        self.name, self.value, self.dist = name, value, dist
+
+
+def _stub_eps(monkeypatch, eps):
+    monkeypatch.setattr(registry, "_entry_points", lambda: list(eps))
+
+
+def test_installing_a_provider_does_not_enable_it(monkeypatch):
+    """**这层的核心不变量**: 装上 ≠ 启用。
+
+    加了入口点发现之后最容易破的就是这条 —— 一旦哪天图省事改成"只装了一个就自动用它",
+    公开仓库就又变回"pip install 完就自带一条第三方直连通道"了。所以这里造一个**真能加载**
+    的候选(不是坏 spec), 确认它被列了出来、却仍然没生效。
+    """
+    _stub_eps(monkeypatch, [_FakeEP("demo", "tests.test_providers:_Demo",
+                                    _FakeDist("licai-provider-demo", "0.1"))])
+    assert [d["name"] for d in registry.discover()] == ["demo"]      # 列得出来
+    p = asyncio.run(registry.get_provider())
+    assert isinstance(p, NullProvider) and p.capabilities == frozenset()   # 但没启用
+
+
+def test_discover_lists_installed_entry_points(monkeypatch):
+    _stub_eps(monkeypatch, [
+        _FakeEP("zeta", "z.pkg:Provider", _FakeDist("licai-provider-zeta", "1.0")),
+        _FakeEP("alpha", "a.pkg:Provider", _FakeDist("licai-provider-alpha", "0.2")),
+    ])
+    got = registry.discover()
+    assert [d["name"] for d in got] == ["alpha", "zeta"]          # 按名字排稳, 别每次刷新换序
+    assert got[0]["spec"] == "a.pkg:Provider" and got[0]["version"] == "0.2"
+
+
+def test_discover_does_not_import_anything(monkeypatch):
+    """列候选**只读元数据**。一 import 就等于"装上某个包 = 它的代码每次开设置页都跑一遍",
+    "没配就零 import"这条约定当场破掉。所以指向一个 import 必炸的模块也照样列得出来。"""
+    _stub_eps(monkeypatch, [_FakeEP("boom", "no.such.module.at.all:Provider")])
+    assert registry.discover() == [{"name": "boom", "spec": "no.such.module.at.all:Provider",
+                                    "dist": "", "version": ""}]
+
+
+def test_discover_dedupes_and_survives_missing_dist(monkeypatch):
+    """同一个 spec 被登记两次(装了两遍/名字不同)只算一个; dist 信息缺了也不能炸。"""
+    _stub_eps(monkeypatch, [_FakeEP("a", "same:Provider"),
+                            _FakeEP("b", "same:Provider"),
+                            _FakeEP("c", "")])
+    got = registry.discover()
+    assert len(got) == 1 and got[0]["dist"] == "" and got[0]["version"] == ""
+
+
+def test_entry_point_name_works_as_a_spec(monkeypatch):
+    """设置页点一下候选存的就是这个名字 —— 不必让用户手敲导入路径。"""
+    _stub_eps(monkeypatch, [_FakeEP("demo", "tests.test_providers:_Demo",
+                                    _FakeDist("licai-provider-demo", "0.1"))])
+    monkeypatch.setenv("MARKET_PROVIDER", "demo")
+    assert asyncio.run(registry.get_provider()).name == "demo"
+
+
+def test_unknown_bare_name_names_what_is_installed(monkeypatch):
+    """打错名字时报错要说清"装了哪些可选" —— 只说"格式不对"没法自救。"""
+    _stub_eps(monkeypatch, [_FakeEP("demo", "tests.test_providers:_Demo")])
+    monkeypatch.setenv("MARKET_PROVIDER", "dmeo")
+    assert isinstance(asyncio.run(registry.get_provider()), NullProvider)
+    assert "demo" in registry.load_error()
+
+
+def test_import_path_still_works_without_any_entry_point(monkeypatch):
+    """入口点只是便利, 不是新的必经之路: 没登记过的包照样能用全路径挂上。"""
+    _stub_eps(monkeypatch, [])
+    monkeypatch.setenv("MARKET_PROVIDER", "tests.test_providers:_Demo")
+    assert asyncio.run(registry.get_provider()).name == "demo"
+
+
 # ── 三种失败分得开 ──────────────────────────────────────
 
 class _Failing(MarketProvider):
@@ -231,6 +311,23 @@ def test_settings_reports_not_installed(monkeypatch):
     registry.reset_cache()
     j = _client().get("/api/settings/provider").json()
     assert j["spec"] == "" and j["capabilities"] == [] and j["fields"] == []
+    assert isinstance(j["discovered"], list)      # 没装任何 provider 时是空表, 不是缺字段
+
+
+def test_settings_offers_installed_providers_as_candidates(monkeypatch):
+    """装了包但还没选 —— 设置页要能把它列出来当候选, 省得用户手敲导入路径。"""
+    async def _cfg(_k):
+        return None
+    monkeypatch.setattr("database.get_config", _cfg)
+    monkeypatch.setattr("api.settings_routes.get_config", _cfg)
+    monkeypatch.setattr(registry, "_entry_points",
+                        lambda: [_FakeEP("demo", "tests.test_providers:_Demo",
+                                         _FakeDist("licai-provider-demo", "0.1"))])
+    registry.reset_cache()
+    j = _client().get("/api/settings/provider").json()
+    assert j["spec"] == ""                                    # 列出来 ≠ 自动启用
+    assert j["discovered"] == [{"name": "demo", "spec": "tests.test_providers:_Demo",
+                                "dist": "licai-provider-demo", "version": "0.1"}]
 
 
 def test_settings_never_echoes_secret_fields(monkeypatch):

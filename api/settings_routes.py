@@ -109,12 +109,15 @@ class ZsxqConfig(BaseModel):
 # 照着渲染 —— 不为任何一个 provider 写死表单, 换一个实现不用改后端也不用改前端。
 
 async def _provider_state() -> dict:
-    from services.providers import get_provider, load_error
+    from services.providers import discover, get_provider, load_error
     spec = (await get_config("market_provider")) or ""
     p = await get_provider()
     st = await p.status()
     return {
         "spec": spec,
+        # 已装包登记的候选, 给设置页当选项。只读包元数据、不 import 任何 provider ——
+        # 否则光是装上某个包, 它的代码就会在每次开设置页时被执行一遍。
+        "discovered": discover(),
         "provider": st.get("provider", p.name),
         "display_name": st.get("display_name", p.display_name),
         "capabilities": sorted(p.capabilities),
@@ -137,7 +140,7 @@ async def get_provider_config():
 
 
 class ProviderConfig(BaseModel):
-    spec: Optional[str] = None          # "包名:类名"; 传空串 = 卸掉, 退回 NullProvider
+    spec: Optional[str] = None          # "包名:类名" 或入口点名字; 传空串 = 卸掉, 退回 NullProvider
     values: Optional[dict] = None       # 凭证字段, 键为 provider 声明的 field.key
 
 
