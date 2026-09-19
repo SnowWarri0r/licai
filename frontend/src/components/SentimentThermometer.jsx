@@ -124,9 +124,10 @@ export default function SentimentThermometer() {
         {d.mood_desc && <div className="text-[11.5px] text-text-dim mt-1 leading-relaxed">{d.mood_desc}</div>}
       </div>
 
-      {/* 扩展数据源第二数据源: 跳水榜 / 多空风向标 / 官方市场评价 —— 东财没有的维度 */}
-      {d.kpl && (() => {
-        const k = d.kpl
+      {/* 第二数据源(可选扩展源): 跳水榜 / 多空风向标 / 官方市场评价 —— 东财没有的维度。
+          没接扩展源时后端根本不返回这个键, 整块自然不渲染。 */}
+      {d.provider_sentiment && (() => {
+        const k = d.provider_sentiment
         const bl = k['多空风向标']?.['量能较昨同期%']
         const sw = k['跳水榜']
         const verdict = k['连板梯队']?.['市场评价']
@@ -134,7 +135,7 @@ export default function SentimentThermometer() {
         return (
           <div className="mb-3 px-3 py-2 rounded-lg bg-surface-3/60 border border-border-subtle">
             <div className="flex items-baseline gap-1.5 mb-1">
-              <span className="text-[10.5px] text-text-muted">扩展数据源</span>
+              <span className="text-[10.5px] text-text-muted">{k['数据源'] || '扩展数据源'}</span>
               {verdict && <span className="text-[11.5px] text-text-bright">{verdict}</span>}
             </div>
             <div className="flex items-center gap-x-4 gap-y-1 flex-wrap text-[11px] text-text-dim">

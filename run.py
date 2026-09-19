@@ -16,7 +16,7 @@ for _k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY"
     os.environ.pop(_k, None)
 
 # 极简 .env 加载(不引第三方依赖): 只认 KEY=VALUE 行, 已在 os.environ 里的不覆盖。
-# 用于扩展数据源登录态等 secrets —— .env 被 .gitignore 挡着, 不进库。
+# 用于扩展数据源凭证等 secrets —— .env 被 .gitignore 挡着, 不进库。
 _envf = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 if os.path.exists(_envf):
     with open(_envf, encoding="utf-8") as _f:
@@ -129,6 +129,20 @@ async def lifespan(app: FastAPI):
     tdx_client.configure(tdx_url)
     if tdx_url:
         print(f"TDX 数据源已启用: {tdx_url}")
+
+    # 可插拔扩展数据源: provider 插件 (env MARKET_PROVIDER > DB config > config.py)
+    # registry 自己读 env 与 DB, 所以这里只在两者都空时把 config.py 那份塞进 env 兜底 ——
+    # 直接无条件写 env 会让 config.py 反过来盖掉设置页存的值, 优先级就倒过来了。
+    from services.providers import get_provider, load_error
+    if not os.environ.get("MARKET_PROVIDER") and not (await get_config("market_provider")):
+        _mp = getattr(config, "market_provider", "") or ""
+        if _mp:
+            os.environ["MARKET_PROVIDER"] = _mp
+    _prov = await get_provider()
+    if _prov.capabilities:
+        print(f"扩展数据源已启用: {_prov.display_name} ({'/'.join(sorted(_prov.capabilities))})")
+    elif load_error():
+        print(f"扩展数据源未启用 —— {load_error()}")
 
     # 知识星球(可选, 只读观点面): 选中的星球存在 app_config, token 由 CLI 放系统 Keychain
     from services import zsxq_client

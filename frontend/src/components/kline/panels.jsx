@@ -65,7 +65,7 @@ export function Ticks({ ticks, decimals = 2 }) {
 // ---------------------------------------------------------------------------
 // 主弹窗
 // ---------------------------------------------------------------------------
-// 扩展数据源深度龙虎榜: 折叠, 点开才拉(登录态接口, 别每次开K线都打)。席位带游资身份标签。
+// 深度龙虎榜(可选扩展数据源): 折叠, 点开才拉(要凭证的接口, 别每次开K线都打)。席位带游资身份标签。
 export function LhbPanel({ code }) {
   const [open, setOpen] = useState(false)
   const [d, setD] = useState(null)
@@ -77,9 +77,10 @@ export function LhbPanel({ code }) {
     if (!open || !code) return
     let alive = true
     setLoading(true); setErr(''); setD(null)
-    fetchJSON(`/api/market/kpl-lhb/${encodeURIComponent(code)}`)
+    fetchJSON(`/api/market/provider/stock-lhb/${encodeURIComponent(code)}`)
       .then(r => {
         if (!alive) return
+        if (r?.available === false) { setErr('unavailable'); return }
         if (r?.need_login) { setErr('need_login'); return }
         if (r?.error) { setErr(r.error); return }
         setD(r)
@@ -101,12 +102,17 @@ export function LhbPanel({ code }) {
       {open && (
         <div className="mt-2">
           {loading && <div className="text-[11px] text-text-dim">拉取中…</div>}
-          {err === 'need_login' && (
-            <div className="text-[11px] text-warn">
-              需要扩展数据源登录态 — 去 设置 → 扩展数据源登录态 填一次 Token(手机登录响应里的 UserID/Token)。
+          {err === 'unavailable' && (
+            <div className="text-[11px] text-text-muted">
+              这一层席位身份标签由可选的扩展数据源提供，当前未接入 — 上面的龙虎榜(东财口径)不受影响。
             </div>
           )}
-          {err && err !== 'need_login' && <div className="text-[11px] text-text-muted">{err}</div>}
+          {err === 'need_login' && (
+            <div className="text-[11px] text-warn">
+              扩展数据源凭证已失效 — 去 设置 → 扩展数据源 重新填一次。
+            </div>
+          )}
+          {err && err !== 'need_login' && err !== 'unavailable' && <div className="text-[11px] text-text-muted">{err}</div>}
           {d && !d.上榜 && <div className="text-[11px] text-text-muted">{d.note}</div>}
           {d && d.上榜 && (
             <div className="space-y-2">
@@ -141,7 +147,7 @@ export function LhbPanel({ code }) {
                   </div>
                 </div>
               ))}
-              <div className="text-[10px] text-text-muted">扩展数据源深度龙虎榜 · 标签为游资/机构身份识别 · 已披露数据不构成买卖建议</div>
+              <div className="text-[10px] text-text-muted">深度龙虎榜(扩展数据源) · 标签为游资/机构身份识别 · 已披露数据不构成买卖建议</div>
             </div>
           )}
         </div>
