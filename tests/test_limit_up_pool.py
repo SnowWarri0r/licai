@@ -3,9 +3,9 @@
 这块数据的意义在于把"涨停"从**只数**变成**质量**: 52 个涨停配 57 亿封单和配 20 亿封单
 是两个完全不同的盘, n_zt 一样看不出来。所以这里守的是三件事:
 
-1. 两个源的字段口径必须归一 —— 东财给整数 92500(不是 "09:25:00"), 扩展数据源给 unix 秒且
-   数组没有字段名, 任何一处错位, 后面所有结论都是错的。
-2. **东财可以盖扩展数据源, 扩展数据源不许盖东财**。扩展数据源那份没有炸板次数/换手/流通市值, 历史
+1. 两个源的字段口径必须归一 —— 东财给整数 92500(不是 "09:25:00")。扩展源那侧的列位映射
+   归 provider 自己管(见 docs/providers.md), 这里只认它返回的行结构。
+2. **东财可以盖扩展源, 扩展源不许盖东财**。扩展源那份没有炸板次数/换手/流通市值, 历史
    回填要是后跑就会把这些列刷成空。
 3. 没数据就说没数据。覆盖率不够时那张回测表要自己标 可用=false, 不能拿 30% 的样本讲全市场。
 """
@@ -15,6 +15,23 @@ import sqlite3
 import tempfile
 
 import pytest
+
+
+def _stub_themes(monkeypatch, fn):
+    """把 gateway.try_call 的 limit_up_themes 那一路换成 fn。
+
+    打在网关而不是某个 provider 上 —— 这里要守的是"接缝怎么用返回值", 跟谁在供数无关。
+    fn 抛异常时照 gateway.try_call 的真实语义吞成 None(它对旁路调用本就只认成功)。
+    """
+    async def _try_call(cap, *a, **k):
+        if cap != "limit_up_themes":
+            return None
+        try:
+            return fn(*a, **k) or None
+        except Exception:
+            return None
+    from services.providers import gateway
+    monkeypatch.setattr(gateway, "try_call", _try_call)
 
 
 @pytest.fixture
@@ -38,52 +55,10 @@ def test_em_time_is_an_int_and_needs_zero_padding():
     assert _hhmmss(0) is None and _hhmmss(None) is None and _hhmmss("-") is None
 
 
-def test_kpl_timestamp_is_fixed_to_east8_not_server_local():
-    """扩展数据源给 unix 秒。跟着服务器本地时区解, 换台机器时刻就整体平移了。"""
-    from services.limit_up_pool import _ts_hhmmss
-    assert _ts_hhmmss(1787189135) == "09:25:35"
-    assert _ts_hhmmss(0) is None
-
-
 def test_em_name_spaces_stripped():
     """东财会给 '英 力 特', 带空格的名字后面对不上任何东西。"""
     from services.limit_up_pool import _clean_name
     assert _clean_name("英 力 特") == "英力特"
-
-
-def test_kpl_row_field_positions():
-    """扩展数据源是裸数组, 下标是拿东财逐只比出来的(79/79)。这条把映射钉住。"""
-    from services.limit_up_pool import _fetch_kpl_sync  # noqa: F401  (只为确认模块可导)
-    from services.limit_up_pool import _clean_name, _ts_hhmmss
-    a = ["688356", "键凯科技", 0, "", 1787189135, "疫苗概念", 765440064, 2366925528,
-         29719454, 51599540, -21880086, 51894775, "疫苗概念、医药", 3151501651, 1.65,
-         1, 0, 0, "", "801020", 18, 89.45, 20]
-    row = {"stock_code": str(a[0]), "name": _clean_name(a[1]), "first_seal": _ts_hhmmss(a[4]),
-           "theme": a[5], "seal_amount": a[6], "amount": a[11], "lb_count": a[15], "pct": a[22]}
-    assert row["seal_amount"] == 765440064 or row["seal_amount"] == a[6]
-    assert row["lb_count"] == 1 and row["pct"] == 20
-    assert row["first_seal"] == "09:25:35"
-
-
-def test_kpl_short_array_is_dropped_not_misread(monkeypatch):
-    """数组变短 = 协议改了。宁可丢这条, 也不能按老下标错位读成别的字段。"""
-    import services.limit_up_pool as lup
-
-    class _R:
-        status_code = 200
-        def json(self):
-            return {"info": [[["600000", "浦发银行", 0, "", 1787189135]]], "errcode": "0"}
-
-    class _S:
-        trust_env = True
-        headers: dict = {}
-        def post(self, *a, **k):
-            return _R()
-
-    monkeypatch.setattr(lup, "_KPL_MAX_PID", 1)
-    import requests
-    monkeypatch.setattr(requests, "Session", lambda: _S())
-    assert lup._fetch_kpl_sync("2026-08-20") == []
 
 
 # ── 两源合并的方向 ──────────────────────────────────────
@@ -98,19 +73,19 @@ def _row(code, src, **kw):
     return base
 
 
-def test_em_overwrites_kpl(temp_db):
+def test_em_overwrites_provider(temp_db):
     from database import save_limit_up_pool, get_limit_up_pool
-    asyncio.run(save_limit_up_pool([_row("600000", "kpl")]))
+    asyncio.run(save_limit_up_pool([_row("600000", "provider")]))
     asyncio.run(save_limit_up_pool([_row("600000", "em", broken_times=2, turnover=8.5)]))
     got = asyncio.run(get_limit_up_pool("2026-08-20"))[0]
     assert got["source"] == "em" and got["broken_times"] == 2 and got["turnover"] == 8.5
 
 
-def test_kpl_must_not_overwrite_em(temp_db):
-    """回填晚于日常落库时的真实顺序。扩展数据源那份没有炸板次数, 让它盖就等于把数据擦掉。"""
+def test_provider_must_not_overwrite_em(temp_db):
+    """回填晚于日常落库时的真实顺序。扩展源那份没有炸板次数, 让它盖就等于把数据擦掉。"""
     from database import save_limit_up_pool, get_limit_up_pool
     asyncio.run(save_limit_up_pool([_row("600000", "em", broken_times=2, turnover=8.5)]))
-    asyncio.run(save_limit_up_pool([_row("600000", "kpl", seal_amount=999.0)]))
+    asyncio.run(save_limit_up_pool([_row("600000", "provider", seal_amount=999.0)]))
     got = asyncio.run(get_limit_up_pool("2026-08-20"))[0]
     assert got["source"] == "em"
     assert got["broken_times"] == 2 and got["turnover"] == 8.5
@@ -120,8 +95,8 @@ def test_kpl_must_not_overwrite_em(temp_db):
 def test_same_source_rerun_updates(temp_db):
     """同源重跑(补数/纠错)要能覆盖, 否则修不了错数据。"""
     from database import save_limit_up_pool, get_limit_up_pool
-    asyncio.run(save_limit_up_pool([_row("600000", "kpl", seal_amount=1.0)]))
-    asyncio.run(save_limit_up_pool([_row("600000", "kpl", seal_amount=2.0)]))
+    asyncio.run(save_limit_up_pool([_row("600000", "provider", seal_amount=1.0)]))
+    asyncio.run(save_limit_up_pool([_row("600000", "provider", seal_amount=2.0)]))
     assert asyncio.run(get_limit_up_pool("2026-08-20"))[0]["seal_amount"] == 2.0
 
 
@@ -156,10 +131,10 @@ def test_quality_counts_seal_timing(temp_db):
 
 
 def test_quality_hides_broken_count_when_archive_is_backfilled(temp_db):
-    """扩展数据源那份没有炸板次数, 也没有最后封板时刻 —— 这时候要留空而不是报 0 只开过板。"""
+    """扩展源那份没有炸板次数, 也没有最后封板时刻 —— 这时候要留空而不是报 0 只开过板。"""
     from database import save_limit_up_pool
     from services.limit_up_pool import quality
-    asyncio.run(save_limit_up_pool([_row("600001", "kpl"), _row("600002", "kpl")]))
+    asyncio.run(save_limit_up_pool([_row("600001", "provider"), _row("600002", "provider")]))
     q = asyncio.run(quality("2026-08-20"))
     assert q["开过板只数"] is None
 
@@ -301,64 +276,11 @@ def test_backtest_refuses_to_score_a_thin_bucket(temp_db):
     assert all("次日收盘涨跌%" not in b for b in thin)
 
 
-# ── 题材标签补全(东财只给行业, 题材从扩展数据源补) ──────────
-
-def _kpl_theme_resp(rows_by_pid):
-    """造一个按 PidType 返回不同行的假 Session, 行是扩展数据源的 23 列裸数组。"""
-    class _R:
-        def __init__(self, rows): self._rows = rows
-        def json(self): return {"info": [self._rows], "errcode": "0"}
-    class _S:
-        trust_env = True
-        def post(self, url, data=None, **k):
-            pid = int((data or {}).get("PidType", 0))
-            return _R(rows_by_pid.get(pid, []))
-    return _S
-
-
-def _kpl_row(code, theme_full="", theme_short=""):
-    a = [code, "名", 0, "", 1788485400, theme_short, 5e8, 1e9, 7e8, 9e8, -2e8,
-         1e9, theme_full, 5e9, 20.0, 1, 0, 1.0, "", "801584", 2, 21.0, 10]
-    return a
-
-
-def test_theme_fetch_prefers_full_then_short(monkeypatch):
-    """[12] 完整题材优先, 空则退 [5] 短题材; 两者都空的不进表(别塞空串当题材)。"""
-    import services.limit_up_pool as lup
-    import requests
-    rows = {1: [_kpl_row("600000", "数字货币、数字经济", "数字经济"),
-                _kpl_row("600001", "", "疫苗概念"),
-                _kpl_row("600002", "", "")]}
-    monkeypatch.setattr(lup, "_KPL_MAX_PID", 3)
-    monkeypatch.setattr(requests, "Session", _kpl_theme_resp(rows))
-    tmap = lup._fetch_kpl_themes("2026-09-04")
-    assert tmap["600000"] == "数字货币、数字经济"
-    assert tmap["600001"] == "疫苗概念"
-    assert "600002" not in tmap
-
-
-def test_theme_fetch_walks_pid_tiers_until_dry(monkeypatch):
-    """逐档取直到连续 _KPL_DRY 档为空 —— 连板会断档(3板可能0只), 不能一遇空就停。"""
-    import services.limit_up_pool as lup
-    import requests
-    rows = {1: [_kpl_row("600000", "甲")], 2: [], 3: [], 4: [_kpl_row("600003", "乙")]}
-    monkeypatch.setattr(lup, "_KPL_MAX_PID", 8)
-    monkeypatch.setattr(lup, "_KPL_DRY", 3)
-    monkeypatch.setattr(requests, "Session", _kpl_theme_resp(rows))
-    tmap = lup._fetch_kpl_themes("2026-09-04")
-    # pid2,3 空但没到 dry=3, pid4 还能取到; pid5,6,7 连空到 dry 才停
-    assert tmap.get("600003") == "乙" and tmap.get("600000") == "甲"
-
-
-def test_theme_fetch_drops_short_arrays(monkeypatch):
-    """协议变短(<13 列)时那一行不读 —— 题材在 [12], 读不到就别瞎取。"""
-    import services.limit_up_pool as lup
-    import requests
-    rows = {1: [["600000", "名", 0, "", 1788485400]]}   # 只有 5 列
-    monkeypatch.setattr(lup, "_KPL_MAX_PID", 1)
-    monkeypatch.setattr(requests, "Session", _kpl_theme_resp(rows))
-    assert lup._fetch_kpl_themes("2026-09-04") == {}
-
+# ── 题材标签补全(东财只给行业, 题材从可选的扩展数据源补) ──────
+#
+# 扩展源那侧怎么取、列位怎么映射, 归 provider 自己管(那侧有自己的测试)。这里守的是**接缝**:
+# 只填空的、不碰东财其它列、取不到/没接入时主流程照常。所以一律打桩 gateway.try_call,
+# 而不是打桩某个具体 provider —— 换个 provider 这些断言应当一字不改。
 
 def test_sync_day_fills_missing_theme_without_touching_em_fields(temp_db, monkeypatch):
     """东财行补题材: theme 填上, 但东财自带的 industry/封单/换手一列都不能动, source 仍是 em。"""
@@ -369,7 +291,7 @@ def test_sync_day_fills_missing_theme_without_touching_em_fields(temp_db, monkey
         return [_row("600000", "em", industry="通信设备", theme=None,
                      broken_times=2, turnover=8.5, snap_date=day)]
     monkeypatch.setattr(lup, "_fetch_em_sync", _em)
-    monkeypatch.setattr(lup, "_fetch_kpl_themes", lambda day: {"600000": "光模块、CPO/MPO"})
+    _stub_themes(monkeypatch, lambda day: {"600000": "光模块、CPO/MPO"})
     r = asyncio.run(lup.sync_day("2026-08-20", with_theme=True))
     assert r["source"] == "em" and r["themed"] == 1
     got = asyncio.run(get_limit_up_pool("2026-08-20"))[0]
@@ -385,18 +307,19 @@ def test_sync_day_does_not_overwrite_existing_theme(temp_db, monkeypatch):
     monkeypatch.setattr(lup, "_fetch_em_sync",
                         lambda day: [_row("600000", "em", theme="自带题材", snap_date=day)])
     called = {"n": 0}
+
     def _themes(day):
         called["n"] += 1
         return {"600000": "别的题材"}
-    monkeypatch.setattr(lup, "_fetch_kpl_themes", _themes)
+    _stub_themes(monkeypatch, _themes)
     r = asyncio.run(lup.sync_day("2026-08-20", with_theme=True))
-    # 全部行都已有 theme → 根本不该去打扩展数据源
+    # 全部行都已有 theme → 根本不该去打扩展源
     assert called["n"] == 0 and r["themed"] == 0
     assert asyncio.run(get_limit_up_pool("2026-08-20"))[0]["theme"] == "自带题材"
 
 
 def test_mixed_rows_only_fill_the_empty_ones(temp_db, monkeypatch):
-    """一行缺题材、一行已有: 进了补全循环, 但已有的那行不能被扩展数据源顶掉。
+    """一行缺题材、一行已有: 进了补全循环, 但已有的那行不能被扩展源顶掉。
 
     (上一版只测"全部已有→不打接口", 那条被外层 any() 短路, 没真正守住循环内的判断 ——
     去掉循环里的 not-empty 判断照样过。这条造一个混合行强制进循环, 把它钉死。)
@@ -406,8 +329,7 @@ def test_mixed_rows_only_fill_the_empty_ones(temp_db, monkeypatch):
     monkeypatch.setattr(lup, "_fetch_em_sync", lambda day: [
         _row("600000", "em", theme="自带题材", snap_date=day),
         _row("600001", "em", theme=None, snap_date=day)])
-    monkeypatch.setattr(lup, "_fetch_kpl_themes",
-                        lambda day: {"600000": "别的题材", "600001": "光模块、CPO/MPO"})
+    _stub_themes(monkeypatch, lambda day: {"600000": "别的题材", "600001": "光模块、CPO/MPO"})
     r = asyncio.run(lup.sync_day("2026-08-20", with_theme=True))
     assert r["themed"] == 1                    # 只补了缺的那一行
     by = {x["stock_code"]: x for x in asyncio.run(get_limit_up_pool("2026-08-20"))}
@@ -416,30 +338,48 @@ def test_mixed_rows_only_fill_the_empty_ones(temp_db, monkeypatch):
 
 
 def test_theme_fetch_failure_does_not_sink_the_pool(temp_db, monkeypatch):
-    """题材是增补项: 扩展数据源挂了, 东财那份照常落库, theme 留空。"""
+    """题材是增补项: 扩展源挂了, 东财那份照常落库, theme 留空。"""
     import services.limit_up_pool as lup
     from database import get_limit_up_pool
 
     def _boom(day):
-        raise RuntimeError("apphis 超时")
+        raise RuntimeError("扩展源超时")
     monkeypatch.setattr(lup, "_fetch_em_sync",
                         lambda day: [_row("600000", "em", theme=None, snap_date=day)])
-    monkeypatch.setattr(lup, "_fetch_kpl_themes", _boom)
+    _stub_themes(monkeypatch, _boom)
     r = asyncio.run(lup.sync_day("2026-08-20", with_theme=True))
     assert r["n"] == 1 and r["themed"] == 0 and r["source"] == "em"
     assert asyncio.run(get_limit_up_pool("2026-08-20"))[0]["theme"] is None
 
 
 def test_theme_off_by_default_for_backfill(temp_db, monkeypatch):
-    """默认不补题材 —— 历史回填每天多打好几次 apphis, 只该在收盘钩子(当日一次)开。"""
+    """默认不补题材 —— 历史回填每天要多打好几次对方接口, 只该在收盘钩子(当日一次)开。"""
     import services.limit_up_pool as lup
     monkeypatch.setattr(lup, "_fetch_em_sync",
                         lambda day: [_row("600000", "em", theme=None, snap_date=day)])
     called = {"n": 0}
-    monkeypatch.setattr(lup, "_fetch_kpl_themes",
-                        lambda day: called.__setitem__("n", called["n"] + 1) or {})
+    _stub_themes(monkeypatch, lambda day: called.__setitem__("n", called["n"] + 1) or {})
     asyncio.run(lup.sync_day("2026-08-20"))            # 不传 with_theme
     assert called["n"] == 0
+
+
+def test_no_provider_means_no_theme_not_a_failure(temp_db, monkeypatch):
+    """没接扩展数据源是常态(默认就没接): 东财那份照常落库, theme 留空, 不报错也不拦流程。"""
+    import services.limit_up_pool as lup
+    from database import get_limit_up_pool
+    monkeypatch.setattr(lup, "_fetch_em_sync",
+                        lambda day: [_row("600000", "em", theme=None, snap_date=day)])
+    r = asyncio.run(lup.sync_day("2026-08-20", with_theme=True))   # 真的没配 provider
+    assert r["n"] == 1 and r["themed"] == 0 and r["source"] == "em"
+    assert asyncio.run(get_limit_up_pool("2026-08-20"))[0]["theme"] is None
+
+
+def test_backfill_without_provider_reports_empty_day(temp_db, monkeypatch):
+    """东财够不着的老日子 + 没接扩展源 → 那天记 0 只并进 empty_days, 不是异常。"""
+    import services.limit_up_pool as lup
+    monkeypatch.setattr(lup, "_fetch_em_sync", lambda day: [])
+    r = asyncio.run(lup.sync_day("2024-07-01", allow_provider=True))
+    assert r["n"] == 0 and r["source"] is None
 
 
 # ── 题材扎堆(theme 维度, 区别于行业扎堆) ─────────────────
@@ -471,8 +411,8 @@ def test_quality_theme_cluster_null_when_no_theme(temp_db):
     """全是回填档案(没题材)时, 题材扎堆整块 null —— 不给一个装着'未归类'的空壳。"""
     from database import save_limit_up_pool
     from services.limit_up_pool import quality
-    asyncio.run(save_limit_up_pool([_row("600001", "kpl", theme=None),
-                                    _row("600002", "kpl", theme="")]))
+    asyncio.run(save_limit_up_pool([_row("600001", "provider", theme=None),
+                                    _row("600002", "provider", theme="")]))
     assert asyncio.run(quality("2026-08-20"))["题材扎堆"] is None
 
 

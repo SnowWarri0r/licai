@@ -283,26 +283,29 @@ async def lhb_daily_list():
     return await lhb_daily()
 
 
-@router.get("/kpl-bidding")
-async def kpl_bidding_api():
-    """扩展数据源板块竞价异动(登录态): 当日集合竞价被抢筹的板块+领涨个股, 三分组。
-    只有当日无历史, 数据仅在集合竞价前后(约9:15-9:31)产出; Token 失效返回 need_login。"""
-    from services.provider_ext_bidding import plate_bidding
-    return await plate_bidding()
+# 以下几个口径由**可选的扩展数据源(provider)**提供 —— 本项目自带的公开源(东财/新浪/腾讯)
+# 没有这些维度。没接 provider 时统一返回 {available: false}, 前端据此不渲染对应模块;
+# provider 凭证失效返回 {need_login: true}, 引导去设置页重填。两者不能混, 见 providers/gateway。
+
+@router.get("/provider/plate-bidding")
+async def provider_plate_bidding_api():
+    """板块竞价异动: 当日集合竞价被抢筹的板块+领涨个股, 三分组。只有当日无历史。"""
+    from services.providers import gateway
+    return await gateway.call("plate_bidding")
 
 
-@router.get("/kpl-hot-theme")
-async def kpl_hot_theme_api():
-    """扩展数据源本月热门题材榜(登录态): 本月资金最热题材, 按热度降序。Token 失效返回 need_login。"""
-    from services.provider_ext_theme import hot_themes
-    return await hot_themes()
+@router.get("/provider/hot-themes")
+async def provider_hot_themes_api():
+    """本月热门题材榜: 本月资金最热题材, 按热度降序。"""
+    from services.providers import gateway
+    return await gateway.call("hot_themes")
 
 
-@router.get("/kpl-inst-position")
-async def kpl_inst_position_api(date: str = ""):
-    """扩展数据源机构增仓/减仓榜(登录态, 季报口径, 行业板块): 增仓榜+减仓榜。Token 失效返回 need_login。"""
-    from services.provider_ext_inst_position import inst_position
-    return await inst_position(date or None)
+@router.get("/provider/inst-position")
+async def provider_inst_position_api(date: str = ""):
+    """机构增仓/减仓榜(季报口径, 行业板块): 增仓榜+减仓榜。"""
+    from services.providers import gateway
+    return await gateway.call("inst_position", date or None)
 
 
 @router.get("/changes")
@@ -983,16 +986,14 @@ async def market_sentiment():
             r["volume"]["markets_intraday"] = mv["intraday"]
         except Exception:
             pass
-        # 扩展数据源第二数据源: 东财没有的跳水榜/多空风向标/官方市场评价。失败不影响东财老口径。
-        try:
-            from services.provider_ext_sentiment import sentiment as _kpl_senti
-            d = str(r.get("date") or "")
-            iso = f"{d[:4]}-{d[4:6]}-{d[6:8]}" if len(d) == 8 and d.isdigit() else d
-            k = await _kpl_senti(iso or None)
-            if k:
-                r["kpl"] = k
-        except Exception:
-            pass
+        # 第二数据源(可选 provider): 东财没有的跳水榜/多空风向标/官方市场评价。
+        # 走 try_call —— 没接入/取不到就整块省掉, 不把提示混进东财这份主口径里。
+        from services.providers import gateway
+        d = str(r.get("date") or "")
+        iso = f"{d[:4]}-{d[4:6]}-{d[6:8]}" if len(d) == 8 and d.isdigit() else d
+        k = await gateway.try_call("sentiment", iso or None)
+        if k:
+            r["provider_sentiment"] = k
         _senti_cache["s"] = (r, _time.time())
         return r
     return {"date": None, "mood": "数据不足", "n_zt": 0}
@@ -1357,11 +1358,11 @@ async def market_quality_screen(code: str, name: str = ""):
     return await screen(code, name)
 
 
-@router.get("/kpl-lhb/{code}")
-async def market_kpl_lhb(code: str, date: str = ""):
-    """扩展数据源深度龙虎榜(登录态): 席位明细 + 游资身份标签。
+@router.get("/provider/stock-lhb/{code}")
+async def market_provider_stock_lhb(code: str, date: str = ""):
+    """深度龙虎榜: 席位明细 + 游资身份标签。由可选的扩展数据源提供。
 
-    未配扩展数据源登录态 / Token 失效时返回 need_login=true, 前端据此提示去设置页填 Token。
+    没接 provider 返回 available=false; 凭证失效返回 need_login=true, 前端据此提示去设置页重填。
     """
-    from services.provider_ext_lhb import stock_lhb
-    return await stock_lhb(code, date or None)
+    from services.providers import gateway
+    return await gateway.call("stock_lhb", code, date or None)

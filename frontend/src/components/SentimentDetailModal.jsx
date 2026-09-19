@@ -34,7 +34,7 @@ function VolBars({ series, intraday, unit }) {
   )
 }
 
-// 预测量能(全天外推式): 逐分钟"按当时节奏预测的全天量能", 画成相对昨日总量的 % 偏离曲线。
+// 预测量能(全天外推): 逐分钟"按当时节奏预测的全天量能", 画成相对昨日总量的 % 偏离曲线。
 // 橙线=预测量能, 蓝线(0轴)=昨日总量能; 早盘节奏快预测高, 随盘中修正收敛到收盘实际。
 function IntradayLine({ intra, metric, unit }) {
   // ⚠️ hook 必须在任何 early return 之前调。这两个原来写在下面两处 return null 之后,
