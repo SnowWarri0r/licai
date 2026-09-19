@@ -140,6 +140,47 @@ async def tdx_trade(stock_code: str, limit: int = 60):
     return {"enabled": True, "data": await _tdx.trade(bare, limit)}
 
 
+async def _my_price_volume(bare: str) -> list[dict]:
+    """我在各价位的成交(A股 position_actions / ETF external_asset_actions), 按价位聚合。
+    返回 [{price, buy_shares, sell_shares}]。"""
+    import re as _re
+    from database import get_db
+    is_etf = bool(_re.match(r"^(1[56]|5[0-8])\d{4}$", bare))
+    agg: dict[float, list[float]] = {}   # price -> [buy_shares, sell_shares]
+    db = await get_db()
+    try:
+        if is_etf:
+            cur = await db.execute(
+                "select ea.unit_price, ea.action_type, ea.shares from external_asset_actions ea "
+                "join external_assets a on a.id = ea.asset_id where a.code=? "
+                "and ea.action_type in ('BUY','ADD','REDEEM','SELL')", (bare,))
+        else:
+            cur = await db.execute(
+                "select price, action_type, shares from position_actions where stock_code=? "
+                "and action_type in ('BUY','ADD','REDEEM','SELL')", (bare,))
+        for price, act, shares in await cur.fetchall():
+            if not price or not shares:
+                continue
+            a = agg.setdefault(round(float(price), 3), [0.0, 0.0])
+            a[0 if act in ("BUY", "ADD") else 1] += float(shares)
+    finally:
+        await db.close()
+    return [{"price": p, "buy_shares": b, "sell_shares": s}
+            for p, (b, s) in sorted(agg.items(), reverse=True)]
+
+
+@router.get("/tdx/price-volume/{stock_code}")
+async def tdx_price_volume(stock_code: str, date: str = ""):
+    """分价表: 市场逐笔按价位聚合 + 我在各价位的成交叠加。"""
+    import services.tdx_client as _tdx
+    bare = _tdx_bare(stock_code)
+    if not bare:
+        return {"enabled": _tdx.is_enabled(), "market": None, "mine": []}
+    market = await _tdx.price_volume(bare, date) if _tdx.is_enabled() else None
+    mine = await _my_price_volume(bare)
+    return {"enabled": _tdx.is_enabled(), "market": market, "mine": mine}
+
+
 @router.get("/trading-day")
 async def trading_day_status():
     """Whether today (CST) is an A-share trading day. Excludes weekends + 法定假日.
