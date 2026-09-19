@@ -215,7 +215,7 @@ CREATE TABLE IF NOT EXISTS sentiment_history (
 -- 逐日逐只涨停档案。sentiment_history 只记「几个涨停」, 这里记「涨停的质量」:
 -- 封单额(买一挂单额, 真实盘口量) + 首次封板时刻 + 炸板次数。52 个涨停配 57 亿封单
 -- 和 52 个涨停配 20 亿封单是两个完全不同的盘, 只数一样看不出来。
--- seal_amount 已用新浪盘口买一逐只验过(东财 49 只零偏离; 扩展数据源历史 79 只与东财全等)。
+-- seal_amount 已用新浪盘口买一逐只验过(东财 49 只零偏离; 扩展源历史 79 只与东财全等)。
 CREATE TABLE IF NOT EXISTS limit_up_pool (
     snap_date TEXT NOT NULL,             -- YYYY-MM-DD
     stock_code TEXT NOT NULL,
@@ -224,14 +224,15 @@ CREATE TABLE IF NOT EXISTS limit_up_pool (
     first_seal TEXT,                     -- 首次封板 HH:MM:SS ('09:25:00'=集合竞价一字板)
     last_seal TEXT,                      -- 最后封板 HH:MM:SS (与首封不同 = 中间开过板)
     lb_count INTEGER,                    -- 连板数
-    broken_times INTEGER,                -- 炸板次数(仅东财有, 扩展数据源那份留空)
+    broken_times INTEGER,                -- 炸板次数(仅东财有, 扩展源那份留空)
     zt_days INTEGER, zt_ct INTEGER,      -- N 天 M 板(仅东财)
     industry TEXT, theme TEXT,
     amount REAL,                         -- 成交额(元)
     float_mv REAL,                       -- 流通市值(元, 仅东财)
     turnover REAL,                       -- 换手%(仅东财)
     pct REAL,                            -- 当日涨跌幅%
-    source TEXT,                         -- em(日常, 字段全) | kpl(一次性历史回填)
+    source TEXT,                         -- em(日常, 字段全) | provider(扩展源一次性历史回填;
+                                         --   provider 化之前的老库里这一列可能还是 'kpl')
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (snap_date, stock_code)
 );
@@ -2094,7 +2095,7 @@ _LUP_COLS = ("snap_date", "stock_code", "name", "seal_amount", "first_seal", "la
 async def save_limit_up_pool(rows: list[dict]) -> int:
     """写入逐只涨停档案。
 
-    **东财可以盖扩展数据源, 扩展数据源不许盖东财** —— 东财那份多了炸板次数/换手/流通市值/N天M板,
+    **东财可以盖扩展源, 扩展源不许盖东财** —— 东财那份多了炸板次数/换手/流通市值/N天M板,
     历史回填要是后跑就会把这些列刷成空。所以冲突时只在「同源」或「来源是 em」时才更新。
     """
     if not rows:

@@ -596,7 +596,7 @@ A股 / 港股 / 美股个股实时报价全部走 Sina 免费接口，无需 API
 **可选依赖**：pypdf + python-docx（只用于[知识星球](#zsxq)附件正文提取；不接这个功能可以不装）
 
 <details>
-<summary><b>数据源清单</b>（全部公开免费，点开看逐条来源）</summary>
+<summary><b>数据源清单</b>（自带的全部公开免费，点开看逐条来源）</summary>
 
 - A股 行情：Sina `hq.sinajs.cn`
 - A股 历史 K 线 + 行业：Sina money.finance + EastMoney emweb
@@ -618,6 +618,7 @@ A股 / 港股 / 美股个股实时报价全部走 Sina 免费接口，无需 API
 - 美股（agent）：Sina gb_ 报价（含盘前/盘后时段与各自时点）/ Yahoo 个股新闻（search + 逐票 RSS 合并）/ Yahoo 相关标的 / SEC EDGAR 公告（submissions API，8-K 按 Item 编号解释）
 - 网页全文（read_url）：Firecrawl 免 key `/v1/scrape` 主源 + Jina Reader（r.jina.ai）免 key 备用，配额用完自动切换
 - 观点面（可选）：知识星球官方 MCP 端点只读拉取（含附件研报正文，docx/pdf 本地抽文字），见[可选：知识星球](#zsxq)
+- 扩展数据源（可选，**不自带实现**）：上面列的源都是公开接口、不要凭证，缺的是深度龙虎榜席位身份标签、集合竞价异动、机构季度增减仓、三周以上的涨停历史这几样。它们由你自己安装的 provider 插件供数，本仓库只定义协议，见[扩展数据源](docs/providers.md)。什么都不配的话这几块直接不渲染，其余一切照常
 - LLM：Claude API（OAuth via Claude Code 或 ANTHROPIC_API_KEY），个股问答 agent 走 tool-calling + 服务端联网搜索 + 网页全文抓取。开了 **prompt 缓存**（工具定义 + system 那几万 token 命中缓存价，实测多轮问答缓存命中率 90%+，首字更快）；服务端过载（429/529）按指数退避重发，超时**不**重发（服务端还在算，再发一遍只是加倍负载）
 
 </details>
