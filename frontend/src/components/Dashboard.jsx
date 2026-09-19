@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { fetchJSON, MUTATED_EVENT } from '../hooks/useApi'
-import { fmtMoney, fmtPct, priceColor, isOnchainEtf } from '../helpers'
+import { fmtMoney, priceColor, isOnchainEtf } from '../helpers'
 import Tooltip from './Tooltip'
 import IndexTicker from './IndexTicker'
 
