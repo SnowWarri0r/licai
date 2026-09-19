@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
-import { createChart, CandlestickSeries, HistogramSeries, LineSeries, CrosshairMode, LineStyle } from 'lightweight-charts'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { createChart, CandlestickSeries, HistogramSeries, LineSeries, CrosshairMode, LineStyle, createSeriesMarkers } from 'lightweight-charts'
 import { prefetchJSON } from '../hooks/useApi'
 import { DayOverlay } from './kline/DayOverlay'
-import { fmt } from './kline/shared'
+import { fmt, ACQUIRE, BUY_COLOR, SELL_COLOR } from './kline/shared'
 
 const UP = '#cf5c5c', DOWN = '#5fa86c'   // A股 红涨绿跌
 const MA_DEFS = [
@@ -104,7 +104,10 @@ class GapPrimitive {
 }
 
 // 券商式可拖动/缩放 K线(TradingView lightweight-charts): 蜡烛 + 量能 + MA5/10/20, 滚轮缩放/拖动平移/十字光标。
-export default function ProKline({ code, days = 250, height = 460, fill = false, lhbDate = '' }) {
+// cost / actions: 持有该票时画成本线与买卖点(榜单里的票没持仓就都为空, 什么也不画)。
+// ⚠️ 两者走 ref + 独立 effect 重画, **不进主 effect 依赖** —— 否则改一下成本/流水
+// 就把整张 K 线重新拉一次网络(与下面 volMode 同一个坑)。
+export default function ProKline({ code, days = 250, height = 460, fill = false, lhbDate = '', cost = null, actions = null }) {
   const wrapRef = useRef(null)
   const volWrapRef = useRef(null)                  // 独立量/额副图容器
   const volChartRef = useRef(null)
@@ -117,6 +120,11 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
   const seriesRef = useRef({})
   const prevCloseLineRef = useRef(null)
   const barsRef = useRef([])
+  const costRef = useRef(cost)
+  const actionsRef = useRef(actions)
+  const costLineRef = useRef(null)
+  const markersRef = useRef(null)          // { candle, api } —— 换图后要重建
+  const overlayCandleRef = useRef(null)
   const [legend, setLegend] = useState(null)
   const [err, setErr] = useState('')
   const [loading, setLoading] = useState(true)
@@ -126,6 +134,58 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
   intradayRef.current = intraday
   const volModeRef = useRef(volMode)               // 建图 effect 里的回调要读当前口径
   volModeRef.current = volMode
+
+  // 成本线 + 买卖点: 从 ref 读, 可被主 effect(画完K线后)和下面的独立 effect(成本/流水变了)
+  // 各自调用。同日同方向多笔合成一个标记(B2/S3), 与持仓那张图口径一致。
+  const drawOverlay = useCallback(() => {
+    const candle = seriesRef.current?.candle
+    const bars = barsRef.current
+    if (!candle || !bars?.length) return
+    if (overlayCandleRef.current !== candle) {     // 换了图表实例 → 旧句柄作废
+      costLineRef.current = null; markersRef.current = null
+      overlayCandleRef.current = candle
+    }
+    if (costLineRef.current) {
+      try { candle.removePriceLine(costLineRef.current) } catch { /* 图已销毁 */ }
+      costLineRef.current = null
+    }
+    const c = costRef.current
+    if (c != null && c > 0) {
+      costLineRef.current = candle.createPriceLine({
+        price: c, color: '#c8a876', lineWidth: 1, lineStyle: LineStyle.Solid,
+        axisLabelVisible: true, title: '成本',
+      })
+    }
+    const times = new Set(bars.map(b => b.time))
+    const byDay = new Map()
+    for (const a of (actionsRef.current || [])) {
+      const td = (a.trade_date || '').slice(0, 10)
+      if (!times.has(td)) continue                 // 不在可见区间的流水不打点
+      const isBuy = ACQUIRE.has(a.action_type)
+      const k = `${isBuy ? 'B' : 'S'}@${td}`
+      const g = byDay.get(k)
+      if (g) g.n++
+      else byDay.set(k, { time: td, isBuy, n: 1 })
+    }
+    const markers = [...byDay.values()]
+      .sort((x, y) => (x.time < y.time ? -1 : 1))
+      .map(g => ({
+        time: g.time,
+        position: g.isBuy ? 'belowBar' : 'aboveBar',
+        color: g.isBuy ? BUY_COLOR : SELL_COLOR,
+        shape: g.isBuy ? 'arrowUp' : 'arrowDown',
+        text: (g.isBuy ? 'B' : 'S') + (g.n > 1 ? String(g.n) : ''),
+      }))
+    if (!markersRef.current) markersRef.current = createSeriesMarkers(candle, markers)
+    else markersRef.current.setMarkers(markers)
+  }, [])
+
+  // 成本/流水变了只重画覆盖层, 不动 K 线数据
+  useEffect(() => {
+    costRef.current = cost
+    actionsRef.current = actions
+    drawOverlay()
+  }, [cost, actions, drawOverlay])
   const xhairRef = useRef(false)                   // 两图光标互相同步时防回环
   const depthRef = useRef(days)                    // 当前已加载的K线深度(根数), 往左拖到头自动升档
   const moreBusyRef = useRef(false)
@@ -369,6 +429,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
           axisLabelVisible: true, title: '昨收',
         })
       }
+      drawOverlay()          // 成本线 + 买卖点(持有该票才有)
     }
 
     // 拖到最早处 → 升档拉更长历史(×3, 上限约十年), 保持当前视窗时间范围不跳
@@ -426,7 +487,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
       .catch(e => alive && setErr(e?.message || '加载失败'))
       .finally(() => alive && setLoading(false))
     return () => { alive = false; loadMoreRef.current = null; if (warmTimer) clearTimeout(warmTimer) }
-  }, [code, days, lhbDate])
+  }, [code, days, lhbDate, drawOverlay])
 
   return (
     <div className={fill ? 'relative flex flex-col h-full' : 'relative'}>

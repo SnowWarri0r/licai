@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react'
-import { prefetchJSON } from '../../hooks/useApi'
+import { prefetchJSON, fetchJSON } from '../../hooks/useApi'
 import ProKline from '../ProKline'
 import StockAskModal from '../StockAskModal'
 import GroupPicker from './GroupPicker'
 import { pctColor, boardOf, WL_DEFAULT } from './shared'
+import PriceVolumeTable from '../kline/PriceVolumeTable'
+import { OrderBook, Ticks, LhbPanel } from '../kline/panels'
 
 // 右侧面板: 选中股票看 K线(铺满); 想问就点"问 AI"或底部输入框 → 弹出式对话(与问问市场样式一致)
 export default function StockPanel({ stock, watched, onToggleWatch, groups, myGroups, onSetGroups }) {
@@ -13,9 +15,57 @@ export default function StockPanel({ stock, watched, onToggleWatch, groups, myGr
   const [co, setCo] = useState(null)          // 公司画像(细分行业/一句话主营/简介/主营构成)
   const [coOpen, setCoOpen] = useState(false)
   const [grpOpen, setGrpOpen] = useState(false)   // 分组下拉
+  const [view, setView] = useState('K线')          // K线 | 分价 | 盘口 —— 与持仓同一批组件
+  const [tdxOn, setTdxOn] = useState(false)
+  const [book, setBook] = useState(null)
+  const [ticks, setTicks] = useState([])
+  const [heldCost, setHeldCost] = useState(null)   // 持有该票才有 → K线画成本线
+  const [acts, setActs] = useState([])             // 我的买卖流水 → K线打 B/S 点
+
+  const code = stock?.code
+  const isA = code && /^\d{6}$/.test(String(code))
+  const decimals = /^[15]\d{5}$/.test(String(code)) ? 3 : 2
 
   // 切换股票: 关弹窗、清空草稿
   useEffect(() => { setAskOpen(false); setSeed(''); setDraft('') }, [stock])
+
+  // TDX 是否启用(决定显示 分价/盘口 页签)
+  useEffect(() => {
+    fetchJSON('/api/market/tdx/status').then(d => setTdxOn(!!d.enabled)).catch(() => setTdxOn(false))
+  }, [])
+
+  // 这只票我持有吗 → 有则给 K 线画成本线 + 买卖点(与持仓页同一口径)。
+  // 不持有就都是空, ProKline 什么也不画。
+  useEffect(() => {
+    if (!code) return
+    let alive = true
+    Promise.all([
+      prefetchJSON('/api/portfolio').catch(() => []),
+      prefetchJSON(`/api/portfolio/${encodeURIComponent(code)}/actions`).catch(() => []),
+    ]).then(([hs, a]) => {
+      if (!alive) return
+      const h = (Array.isArray(hs) ? hs : []).find(x => String(x.stock_code) === String(code))
+      setHeldCost(h && h.cost_price > 0 ? h.cost_price : null)
+      const raw = Array.isArray(a) ? a : (a?.actions || [])
+      setActs(raw.filter(x => x.action_type !== 'SPLIT'))
+    })
+    return () => { alive = false }
+  }, [code])
+
+  // 盘口 + 逐笔(盘口/分价 视图 + A股 + tdx; 5s 刷新), 复用持仓那套端点/组件。
+  // 分价视图也拉盘口 —— 拿 prev_close 给分价表的价格按涨跌上色。
+  useEffect(() => {
+    // 非盘口/分价视图不拉数据; 不清 state —— 渲染分支只在对应视图下用它, 清了反而多一次级联渲染
+    if ((view !== '盘口' && view !== '分价') || !tdxOn || !isA || !code) return
+    let alive = true
+    const pull = () => {
+      fetchJSON(`/api/market/tdx/orderbook/${encodeURIComponent(code)}`).then(d => alive && setBook(d?.data || null)).catch(() => {})
+      fetchJSON(`/api/market/tdx/trade/${encodeURIComponent(code)}?limit=40`).then(d => alive && setTicks(d?.data?.ticks || [])).catch(() => {})
+    }
+    pull()
+    const t = setInterval(pull, 5000)
+    return () => { alive = false; clearInterval(t) }
+  }, [view, code, tdxOn, isA])
 
   // 公司画像: 榜单只有粗板块(「半导体」), 这里补三级细分 + 做啥的。抓不到就静默不显示。
   useEffect(() => {
@@ -148,9 +198,35 @@ export default function StockPanel({ stock, watched, onToggleWatch, groups, myGr
         </div>
       )}
 
-      {/* K线铺满面板 */}
-      <div className="flex-1 min-h-0 px-3 py-2">
-        <ProKline code={stock.code} fill lhbDate={stock._lhbDate || ''} />
+      {/* 视图切换 + 内容: K线(ProKline) / 分价 / 盘口 —— 分价·盘口·深度龙虎榜 都直接复用
+          持仓弹窗那几个组件(PriceVolumeTable / OrderBook / Ticks / LhbPanel), 不另起一套。 */}
+      <div className="flex-1 min-h-0 px-3 py-2 flex flex-col">
+        {tdxOn && isA && (
+          <div className="flex gap-1 mb-1.5 shrink-0">
+            {['K线', '分价', '盘口'].map(v => (
+              <button key={v} onClick={() => setView(v)}
+                className="px-2.5 py-[3px] rounded text-[11px] cursor-pointer transition-colors"
+                style={{ border: '1px solid',
+                  borderColor: view === v ? 'var(--color-accent)' : 'var(--color-border-med)',
+                  color: view === v ? 'var(--color-accent)' : 'var(--color-text-dim)',
+                  background: view === v ? 'rgba(200,168,118,.1)' : 'transparent' }}>{v}</button>
+            ))}
+          </div>
+        )}
+        <div className="flex-1 min-h-0 overflow-y-auto">
+          {view === '分价' && tdxOn && isA
+            ? <PriceVolumeTable code={code} prevClose={book?.prev_close} decimals={decimals} />
+            : view === '盘口' && tdxOn && isA
+              ? (
+                <div className="flex gap-4 bg-surface-3 rounded-md p-2.5">
+                  <div className="w-[210px] shrink-0"><OrderBook data={book} prevClose={book?.prev_close} decimals={decimals} /></div>
+                  <div className="flex-1 min-w-0"><Ticks ticks={ticks} decimals={decimals} /></div>
+                </div>
+              )
+              : <ProKline code={code} fill lhbDate={stock._lhbDate || ''} cost={heldCost} actions={acts} />}
+        </div>
+        {/* 深度龙虎榜(自带折叠, 点开才拉数据) */}
+        {isA && <div className="shrink-0 mt-1.5"><LhbPanel code={code} /></div>}
       </div>
 
       {/* 底部快捷提问: 回车/点问 → 弹出对话 */}
