@@ -6,5 +6,5 @@ from services.providers.base import (  # noqa: F401
     ProviderAuthError, ProviderError,
 )
 from services.providers.registry import (  # noqa: F401
-    get_provider, load_error, reset_cache,
+    discover, get_provider, load_error, reset_cache,
 )
