@@ -18,6 +18,23 @@ export MARKET_PROVIDER='mypkg.myprovider:Provider'   # 或在 设置 → 扩展�
 
 配置双通道，与 tdx / 知识星球同模式：环境变量 `MARKET_PROVIDER` 优先，回落数据库 `config` 表的 `market_provider` 键。留空即卸载。
 
+### 让自己被列进候选
+
+装好的包可以在 `licai.providers` 这个 entry point 组里登记，设置页就会把它列成「已装可选」，点一下填进去，不用手敲导入路径：
+
+```toml
+# 你的 provider 包的 pyproject.toml
+[project.entry-points."licai.providers"]
+kpl = "licai_provider_kpl:Provider"
+```
+
+登记之后 `MARKET_PROVIDER=kpl` 也能用（等价于写全路径）。
+
+两点要说清楚：
+
+- **列出来 ≠ 启用。** 装了包仍然要显式选一次，`pip install` 本身不会让任何数据源生效——这是这一层存在的理由，有专门的测试钉住。
+- **列候选只读包元数据，不 import 任何 provider 模块。** 否则光是装上某个包，它的代码就会在每次打开设置页时被执行一遍，「没配就零 import」当场就破了。所以候选里只有名字、spec、包名和版本，没有 `display_name` 那种要实例化才拿得到的东西。
+
 加载失败（拼错、模块不存在、不是 `MarketProvider` 的实现）一律退回 `NullProvider` 并把原因记在 `registry.load_error()`，设置页会显示——一个配错的扩展源不该把整个服务带崩。
 
 ## 协议

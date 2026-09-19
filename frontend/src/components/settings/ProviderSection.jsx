@@ -39,6 +39,8 @@ export function ProviderSection() {
 
   const fields = st?.fields || []
   const installed = !!st?.spec
+  // 已装但还没选中的候选。列出来 ≠ 启用 —— 点一下只是把名字填进输入框, 还得按「装载」。
+  const candidates = (st?.discovered || []).filter(d => d.spec !== st?.spec && d.name !== st?.spec)
   const canSaveCreds = fields.length > 0 && fields.every(f => (vals[f.key] || '').trim())
 
   return (
@@ -72,6 +74,19 @@ export function ProviderSection() {
             className="px-3 py-1.5 rounded-md border border-border text-text-dim text-[12px] hover:text-text disabled:opacity-40 cursor-pointer">卸载</button>
         )}
       </div>
+
+      {!!candidates.length && (
+        <div className="flex items-baseline gap-2 flex-wrap mb-2">
+          <span className="text-[11px] text-text-muted shrink-0">已装可选：</span>
+          {candidates.map(d => (
+            <button key={d.spec} onClick={() => setSpec(d.name)} disabled={!!busy}
+              title={`${d.spec}${d.dist ? ` · ${d.dist} ${d.version}` : ''}`}
+              className="text-[11px] font-mono bg-surface-3 hover:bg-surface-2 border border-border-subtle rounded px-2 py-0.5 text-text-dim hover:text-text disabled:opacity-40 cursor-pointer">
+              {d.name}{d.version && <span className="text-text-muted ml-1">{d.version}</span>}
+            </button>
+          ))}
+        </div>
+      )}
 
       {st?.load_error && <div className="text-[11px] text-bear mb-2 break-all">{st.load_error}</div>}
 
