@@ -250,7 +250,7 @@ export default function App() {
 
     capital: () => (
       <div className={`${PAD} space-y-3 md:space-y-4`}>
-        <ProviderInstTheme />
+        <ProviderInstTheme standalone />
       </div>
     ),
 
