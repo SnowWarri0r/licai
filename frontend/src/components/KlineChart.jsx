@@ -17,6 +17,10 @@ const PERIODS = [
   { label: '1年', days: 250 },
 ]
 
+// 同 CandleChart: 纯常量提到模块级, 否则 P 每渲染新引用, useMemo 依赖数组两难。
+const W = 720, H = 320, P = { l: 64, r: 16, t: 16, b: 28 }
+const innerW = W - P.l - P.r
+
 export default function KlineChart({ fetchByDays, initialSeries = [], defaultDays = 60, fmtVal, renderStats, footerExtra }) {
   const [days, setDays] = useState(defaultDays)
   const [series, setSeries] = useState(initialSeries)
@@ -49,8 +53,6 @@ export default function KlineChart({ fetchByDays, initialSeries = [], defaultDay
   const end = closes[closes.length - 1]
   const periodPct = start && end ? ((end / start) - 1) * 100 : null
 
-  const W = 720, H = 320, P = { l: 64, r: 16, t: 16, b: 28 }
-  const innerW = W - P.l - P.r
   const innerH = H - P.t - P.b
   const yOf = (v) => P.t + innerH - ((v - min) / range) * innerH
 

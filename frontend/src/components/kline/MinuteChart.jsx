@@ -35,13 +35,17 @@ function _minuteSlot(t, s = SESSIONS.cn) {
 
 // session 可传预设名(cn/hk/us), 也可直接传 {am,pm,labels} —— 日经/伦敦的时段随夏令时漂,
 // 由后端按当天首个分时点算好传过来, 前端不硬编码。
+// 只有 W 和 P 是死的; H 跟着 height 这个 prop 走, 所以留在组件里。
+// P 提出来的理由同 CandleChart: 对象字面量每渲染一个新引用, 会让 useMemo 白做。
+const W = 720, P = { l: 64, r: 52, t: 30, b: 28 }
+
 export function MinuteChart({ points, prevClose, actions = [], day, height = 410,
                              session = 'cn', volUnit = '手' }) {
   const [hover, setHover] = useState(null)
   const svgRef = useRef(null)
   // t=30: 顶部预留图例专属条带(y≈17), 图从其下开始; volGap=24: 两图间隙容纳量图例行;
   // r=52: 右侧涨跌幅轴标专属条带——线画到 W-P.r 为止, 标签在条带里, 互不相压
-  const W = 720, H = height, P = { l: 64, r: 52, t: 30, b: 28 }
+  const H = height
   const innerW = W - P.l - P.r, innerH = H - P.t - P.b
   // volH/volGap 按可用高度给, 不能写死。调用方的 viewBox 高是 720*h/w 算出来的,
   // 容器越宽这个值越小 —— 宽屏 + 简介展开时实测 H 掉到 150, 而固定的
