@@ -40,7 +40,7 @@ function _minuteSlot(t, s = SESSIONS.cn) {
 const W = 720, P = { l: 64, r: 52, t: 30, b: 28 }
 
 export function MinuteChart({ points, prevClose, actions = [], day, height = 410,
-                             session = 'cn', volUnit = '手' }) {
+                             session = 'cn', volUnit = '手', tickMode = false }) {
   const [hover, setHover] = useState(null)
   const svgRef = useRef(null)
   // t=30: 顶部预留图例专属条带(y≈17), 图从其下开始; volGap=24: 两图间隙容纳量图例行;
@@ -69,21 +69,47 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
     const lo = Math.min(...prices, prevClose)
     const pad = Math.max((hi - lo) * 0.06, prevClose * 0.001)
     const rMin = lo - pad, rng = (hi - lo) + pad * 2 || 1
-    const vMax = Math.max(1, ...points.map(p => Number(p['手']) || 0))
+    const oneMin = innerW / slotMax
+    // 逐笔精绘时同一分钟有多笔: 按出现次序在该分钟宽度内铺开(分钟模式每分钟仅1笔→frac=0 不动),
+    // 让分钟内的秒级尖峰在 x 轴上散开成"闪电"而非叠在一条竖线上。
+    // 量按分钟归桶定 volMax, 免得单笔(集合竞价大单)把整张量图压平。
+    const cnt = new Map(), seen = new Map(), minVol = new Map()
+    for (const p of points) {
+      const s = _minuteSlot(p.time, sess)
+      cnt.set(s, (cnt.get(s) || 0) + 1)
+      minVol.set(s, (minVol.get(s) || 0) + (Number(p['手']) || 0))
+    }
+    const vMax = Math.max(1, ...minVol.values())
+    const yOf = (val) => P.t + priceH - ((val - rMin) / rng) * priceH
     let cumPV = 0, cumV = 0, prevPx = prevClose, lastUp = true
     const rs = points.map((p, i) => {
       const v = Number(p['手']) || 0
       cumPV += p.price * v; cumV += v
       const avg = cumV > 0 ? cumPV / cumV : p.price
-      const x = P.l + (_minuteSlot(p.time, sess) / slotMax) * innerW   // 按真实时刻落位, 非按索引铺满
-      const yOf = (val) => P.t + priceH - ((val - rMin) / rng) * priceH
-      // 量柱买卖方向: tick 规则 — 比上一分钟涨=主动买(红), 跌=主动卖(绿), 平=延续
+      const s = _minuteSlot(p.time, sess)
+      const xMin = P.l + (s / slotMax) * innerW                       // 该分钟基准 x(量柱按它归桶)
+      const k = seen.get(s) || 0; seen.set(s, k + 1)
+      const c = cnt.get(s) || 1
+      const x = xMin + (c > 1 ? (k / c) * oneMin : 0)                 // 分钟内按序铺开
+      // 量柱买卖方向: tick 规则 — 比上一笔涨=主动买(红), 跌=主动卖(绿), 平=延续
       const up = p.price > prevPx ? true : p.price < prevPx ? false : lastUp
       lastUp = up; prevPx = p.price
-      return { ...p, avg, vol: v, x, y: yOf(p.price), yAvg: yOf(avg), i, up }
+      return { ...p, avg, vol: v, x, xMin, y: yOf(p.price), yAvg: yOf(avg), i, up }
     })
     return { rows: rs, rangeMin: rMin, range: rng, volMax: vMax }
   }, [points, prevClose, priceH, innerW, sess, slotMax])
+
+  // 量柱按分钟归桶: 逐笔模式下几千笔会糊成一片, 归桶后仍是每分钟一根(与分钟模式一致)
+  const volBars = useMemo(() => {
+    if (!hasVol) return []
+    const m = new Map()
+    for (const r of rows) {
+      const g = m.get(r.xMin) || { x: r.xMin, vol: 0, up: r.up }
+      g.vol += r.vol; g.up = r.up   // 方向取该分钟末笔
+      m.set(r.xMin, g)
+    }
+    return [...m.values()]
+  }, [rows, hasVol])
 
   const yTicks = useMemo(() => {
     // 刻度条数按价格区高度给: 标签字号约 11 个 viewBox 单位, 至少留 22 单位间距,
@@ -174,9 +200,9 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
           <text x={W - 6} y={volTop - 7} fontSize="9" fill="var(--color-text-muted)" textAnchor="end" fontFamily="monospace">
             量 <tspan fill={UP}>红买</tspan>/<tspan fill={DOWN}>绿卖</tspan>
           </text>
-          {rows.map(r => {
-            const h = (r.vol / volMax) * volH
-            return <rect key={'mv' + r.i} x={r.x - 1} y={volTop + volH - h} width="1.6" height={Math.max(0.4, h)} fill={r.up ? UP : DOWN} opacity="0.8" />
+          {volBars.map((b, i) => {
+            const h = (b.vol / volMax) * volH
+            return <rect key={'mv' + i} x={b.x - 1} y={volTop + volH - h} width="1.6" height={Math.max(0.4, h)} fill={b.up ? UP : DOWN} opacity="0.8" />
           })}
           <line x1={P.l} y1={volTop + volH} x2={W - P.r} y2={volTop + volH} stroke="var(--color-border-subtle)" strokeWidth="1" />
         </>}
@@ -205,6 +231,7 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
           <text x={W - 6} y={17} fontSize="10" textAnchor="end" fontFamily="ui-monospace, monospace">
             <tspan fill={lineColor}>— 价格</tspan>
             {hasVol && <tspan dx="10" fill="#c8a876">— 均价</tspan>}
+            {tickMode && <tspan dx="10" fill="var(--color-accent)">· 逐笔</tspan>}
           </text>
         )}
       </svg>

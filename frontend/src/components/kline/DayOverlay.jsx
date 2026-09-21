@@ -15,6 +15,7 @@ import { fmt } from './shared'
 // 传函数就总能读到最新值, 不会因为 ref 身份不变而拿到旧数据。
 export function DayOverlay({ day, code, getBars, onClose, onJumpDay }) {
   const [ovTab, setOvTab] = useState('分时')        // 浮层页签: 分时 | 龙虎榜
+  const [tick, setTick] = useState(false)          // 分时: 逐笔精绘(还原分钟内秒级尖峰)
   const [minData, setMinData] = useState(null)
   const [minErr, setMinErr] = useState('')
   const [lhb, setLhb] = useState(null)             // 该日席位明细(懒加载)
@@ -27,7 +28,8 @@ export function DayOverlay({ day, code, getBars, onClose, onJumpDay }) {
     if (!day) return
     let alive = true
     setMinData(null); setMinErr(''); setLhb(null); setOvTab(day.tab || '分时')
-    fetchJSON(`/api/market/tdx/minute/${encodeURIComponent(code)}?date=${day.date}`)
+    const kind = tick ? 'minute-all' : 'minute'   // 逐笔精绘 vs 1分钟采样
+    fetchJSON(`/api/market/tdx/${kind}/${encodeURIComponent(code)}?date=${day.date}`)
       .then(d => {
         if (!alive) return
         if (!d?.enabled) setMinErr('分时需启用 TDX 数据源(设置→TDX)')
@@ -38,12 +40,13 @@ export function DayOverlay({ day, code, getBars, onClose, onJumpDay }) {
     const onEsc = (e) => { if (e.key === 'Escape') { onClose() } }
     window.addEventListener('keydown', onEsc)
     return () => { alive = false; window.removeEventListener('keydown', onEsc) }
+    // tick 进依赖: 切换逐笔精绘要重拉数据
     // 不列 onClose: 父组件每次渲染都新建一个 () => { setIntraday(null); setHint(null) },
     // 列进来这个 effect 就跟着重跑 —— 每次父渲染重拉一次分时。而 onClose 只做
     // setState, 拿到旧闭包也是对的, 所以省掉它安全。
     // (这里不加 eslint-disable: 那条注释会让 react-hooks 的编译器类规则对整个
     //  effect 放弃分析, 把同一处的 set-state-in-effect 错误一并吞掉。)
-  }, [day, code])
+  }, [day, code, tick])
 
   // 分时区实际宽高比 → viewBox 高度(svg 按 720:minH 缩放正好占满容器, 大屏不再上浮留白)
   useEffect(() => {
@@ -114,6 +117,13 @@ export function DayOverlay({ day, code, getBars, onClose, onJumpDay }) {
               {t}
             </button>
           ))}
+          {/* 逐笔精绘开关: 1分钟采样丢失分钟内秒级尖峰(盘口被打空的"闪电"), 逐笔用全天逐笔还原 */}
+          {ovTab === '分时' && (
+            <button onClick={() => setTick(v => !v)} title="用全天逐笔重画, 还原分钟内的秒级尖峰(闪电), 数据量更大"
+              className={`text-[10.5px] px-1.5 py-0.5 rounded cursor-pointer ${tick ? 'bg-accent/20 text-accent' : 'text-text-dim hover:text-text'}`}>
+              逐笔精绘
+            </button>
+          )}
           <span className="text-[9.5px] text-text-dim">{ovTab === '分时' ? `基准=${day?.prevIsOpen ? '开盘' : '前收'} ${fmt(adjPrev)}${adjusted ? `(除权校正·${adjusted})` : ''} · ` : ''}点K线空白处收起</span>
           <button onClick={onClose}
             className="ml-auto text-text-dim hover:text-text text-[15px] leading-none px-1 cursor-pointer">×</button>
@@ -124,7 +134,7 @@ export function DayOverlay({ day, code, getBars, onClose, onJumpDay }) {
             {!minErr && !minData && <div className="text-center py-6 text-[11.5px] text-text-dim">分时加载中…</div>}
             {minData && (
               <MinuteChart points={minData.points} prevClose={adjPrev}
-                day={minData.date || day.date} height={minH} />
+                day={minData.date || day.date} height={minH} tickMode={tick} />
             )}
           </div>
         )}
