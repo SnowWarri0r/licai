@@ -20,6 +20,42 @@ function maLine(bars, n) {
   return out
 }
 
+const _ema = (arr, p) => { const o = [], a = 2 / (p + 1); arr.forEach((v, i) => o.push(i === 0 ? v : o[i - 1] + a * (v - o[i - 1]))); return o }
+
+// MACD(12,26,9): 返回 {dif,dea,hist} 各为 [{time,value}] 与 bars 对齐
+function macdSeries(bars) {
+  const cl = bars.map(b => b.close)
+  const e12 = _ema(cl, 12), e26 = _ema(cl, 26)
+  const dif = cl.map((_, i) => e12[i] - e26[i])
+  const dea = _ema(dif, 9)
+  const t = i => bars[i].time
+  return {
+    dif: dif.map((v, i) => ({ time: t(i), value: +v.toFixed(4) })),
+    dea: dea.map((v, i) => ({ time: t(i), value: +v.toFixed(4) })),
+    hist: dif.map((v, i) => ({ time: t(i), value: +((v - dea[i]) * 2).toFixed(4) })),
+  }
+}
+
+// KDJ(9): 返回 {k,d,j} 各为 [{time,value}]
+function kdjSeries(bars) {
+  const n = bars.length, k = [], d = [], j = []
+  for (let i = 0; i < n; i++) {
+    const s = Math.max(0, i - 8)
+    let ll = Infinity, hh = -Infinity
+    for (let q = s; q <= i; q++) { ll = Math.min(ll, bars[q].low); hh = Math.max(hh, bars[q].high) }
+    const rsv = hh > ll ? (bars[i].close - ll) / (hh - ll) * 100 : 50
+    k[i] = i === 0 ? 50 : (2 / 3) * k[i - 1] + (1 / 3) * rsv
+    d[i] = i === 0 ? 50 : (2 / 3) * d[i - 1] + (1 / 3) * k[i]
+    j[i] = 3 * k[i] - 2 * d[i]
+  }
+  const t = i => bars[i].time
+  return {
+    k: k.map((v, i) => ({ time: t(i), value: +v.toFixed(2) })),
+    d: d.map((v, i) => ({ time: t(i), value: +v.toFixed(2) })),
+    j: j.map((v, i) => ({ time: t(i), value: +v.toFixed(2) })),
+  }
+}
+
 
 // 成交量(手) / 成交额(元) 的人读格式: 万/亿分档, 小数点后一位够看
 const fmtVol = (v) => v == null ? '--'
@@ -103,15 +139,68 @@ class GapPrimitive {
   setGaps(gaps) { this.gaps = gaps; this._req?.() }
 }
 
+// 买卖点"价位圆点 + 虚线连回成交价": lightweight-charts 的 marker 只有 above/below/inBar
+// 三种箭头, 画不出"圆点钉在真实成交价上、再一根虚线连到影线外箭头"这层信息(旧手绘K线有,
+// 见 CandleChart)。用自定义图元补上: 圆点落在该日成交均价 p, 虚线从圆点连到影线端(买=最低下方/
+// 卖=最高上方), 恰好接上 createSeriesMarkers 画的箭头。箭头与 B/S 文字仍交给 marker, 这里只补圆点+连线。
+const TRADE_BUY = '#8df0b4', TRADE_SELL = '#ff9a9a'   // 亮薄荷/亮珊瑚, 穿过同色蜡烛体也看得清
+class TradePaneRenderer {
+  constructor(items) { this._items = items }
+  draw(target) {
+    target.useBitmapCoordinateSpace(scope => {
+      const ctx = scope.context, hr = scope.horizontalPixelRatio, vr = scope.verticalPixelRatio
+      for (const it of this._items) {
+        if (it.x == null || it.yPrice == null || it.yAnchor == null) continue
+        const x = it.x * hr, yp = it.yPrice * vr, ya = it.yAnchor * vr
+        ctx.strokeStyle = it.color; ctx.lineWidth = Math.max(1, 1.4 * vr)
+        ctx.setLineDash([3 * vr, 2 * vr])
+        ctx.beginPath(); ctx.moveTo(x, yp); ctx.lineTo(x, ya); ctx.stroke()
+        ctx.setLineDash([])
+        ctx.beginPath(); ctx.arc(x, yp, 2.6 * vr, 0, Math.PI * 2)
+        ctx.fillStyle = it.color; ctx.fill()
+        ctx.lineWidth = Math.max(1, vr); ctx.strokeStyle = 'rgba(20,21,25,0.9)'; ctx.stroke()   // 描边, 别糊进蜡烛
+      }
+    })
+  }
+}
+class TradePaneView {
+  constructor(src) { this._src = src; this._items = [] }
+  update() {
+    const { chart, series, trades } = this._src
+    const ts = chart?.timeScale()
+    const GAP = 8   // 圆点连到影线外侧箭头处, 留一点空
+    this._items = (ts && series) ? trades.map(t => {
+      const yPrice = series.priceToCoordinate(t.price)
+      const yEdge = series.priceToCoordinate(t.anchor)
+      return {
+        x: ts.timeToCoordinate(t.time), yPrice, color: t.color,
+        yAnchor: yEdge == null ? null : (t.isBuy ? yEdge + GAP : yEdge - GAP),
+      }
+    }) : []
+  }
+  renderer() { return new TradePaneRenderer(this._items) }
+  zOrder() { return 'top' }   // 画在蜡烛之上, 圆点/连线不被挡
+}
+class TradePrimitive {
+  constructor() { this.trades = []; this.chart = null; this.series = null; this._view = new TradePaneView(this) }
+  attached(p) { this.chart = p.chart; this.series = p.series; this._req = p.requestUpdate }
+  detached() { this.chart = null; this.series = null }
+  updateAllViews() { this._view.update() }
+  paneViews() { return [this._view] }
+  setTrades(trades) { this.trades = trades; this._req?.() }
+}
+
 // 券商式可拖动/缩放 K线(TradingView lightweight-charts): 蜡烛 + 量能 + MA5/10/20, 滚轮缩放/拖动平移/十字光标。
 // cost / actions: 持有该票时画成本线与买卖点(榜单里的票没持仓就都为空, 什么也不画)。
 // ⚠️ 两者走 ref + 独立 effect 重画, **不进主 effect 依赖** —— 否则改一下成本/流水
 // 就把整张 K 线重新拉一次网络(与下面 volMode 同一个坑)。
-export default function ProKline({ code, days = 250, height = 460, fill = false, lhbDate = '', cost = null, actions = null }) {
+export default function ProKline({ code, days = 250, height = 460, fill = false, lhbDate = '', cost = null, actions = null, period = 'day' }) {
+  const isDay = period === 'day'   // 周/月: 走 TDX kline, 关掉"点蜡烛看分时"和续史加载(那是日K概念)
   const wrapRef = useRef(null)
   const volWrapRef = useRef(null)                  // 独立量/额副图容器
   const volChartRef = useRef(null)
   const volSeriesRef = useRef(null)
+  const subLinesRef = useRef(null)                 // 副图 3 条线(MACD DIF/DEA 或 KDJ K/D/J)
   const syncingRef = useRef(false)                 // 两图时间轴互相同步时防回环
   const alignScalesRef = useRef(null)              // 对齐两图价格轴宽度(否则柱子错位)
   const [volMode, setVolMode] = useState('量')     // 量 | 额
@@ -134,6 +223,8 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
   intradayRef.current = intraday
   const volModeRef = useRef(volMode)               // 建图 effect 里的回调要读当前口径
   volModeRef.current = volMode
+  const isDayRef = useRef(isDay)                    // 点蜡烛看分时仅日K; period 会变故用 ref
+  isDayRef.current = isDay
 
   // 成本线 + 买卖点: 从 ref 读, 可被主 effect(画完K线后)和下面的独立 effect(成本/流水变了)
   // 各自调用。同日同方向多笔合成一个标记(B2/S3), 与持仓那张图口径一致。
@@ -156,28 +247,37 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
         axisLabelVisible: true, title: '成本',
       })
     }
-    const times = new Set(bars.map(b => b.time))
+    const barByTime = new Map(bars.map(b => [b.time, b]))
     const byDay = new Map()
     for (const a of (actionsRef.current || [])) {
       const td = (a.trade_date || '').slice(0, 10)
-      if (!times.has(td)) continue                 // 不在可见区间的流水不打点
+      if (!barByTime.has(td)) continue             // 不在可见区间的流水不打点
       const isBuy = ACQUIRE.has(a.action_type)
       const k = `${isBuy ? 'B' : 'S'}@${td}`
+      const px = Number(a.price) || 0, sh = Number(a.shares) || 0
       const g = byDay.get(k)
-      if (g) g.n++
-      else byDay.set(k, { time: td, isBuy, n: 1 })
+      if (g) { g.n++; g.pv += px * sh; g.sh += sh }
+      else byDay.set(k, { time: td, isBuy, n: 1, pv: px * sh, sh })
     }
-    const markers = [...byDay.values()]
-      .sort((x, y) => (x.time < y.time ? -1 : 1))
-      .map(g => ({
-        time: g.time,
-        position: g.isBuy ? 'belowBar' : 'aboveBar',
-        color: g.isBuy ? BUY_COLOR : SELL_COLOR,
-        shape: g.isBuy ? 'arrowUp' : 'arrowDown',
-        text: (g.isBuy ? 'B' : 'S') + (g.n > 1 ? String(g.n) : ''),
-      }))
+    const groups = [...byDay.values()].sort((x, y) => (x.time < y.time ? -1 : 1))
+    const markers = groups.map(g => ({
+      time: g.time,
+      position: g.isBuy ? 'belowBar' : 'aboveBar',
+      color: g.isBuy ? BUY_COLOR : SELL_COLOR,
+      shape: g.isBuy ? 'arrowUp' : 'arrowDown',
+      text: (g.isBuy ? 'B' : 'S') + (g.n > 1 ? String(g.n) : ''),
+    }))
     if (!markersRef.current) markersRef.current = createSeriesMarkers(candle, markers)
     else markersRef.current.setMarkers(markers)
+    // 圆点钉在该日成交均价 + 虚线连到影线外的箭头(补 marker 只有箭头这层缺失)
+    const trades = groups.map(g => {
+      const bar = barByTime.get(g.time)
+      const price = g.sh > 0 ? g.pv / g.sh : bar.close
+      return { time: g.time, price, isBuy: g.isBuy,
+               anchor: g.isBuy ? bar.low : bar.high,
+               color: g.isBuy ? TRADE_BUY : TRADE_SELL }
+    })
+    seriesRef.current?.tradePrim?.setTrades(trades)
   }, [])
 
   // 成本/流水变了只重画覆盖层, 不动 K 线数据
@@ -192,20 +292,33 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
   const exhaustedRef = useRef(false)               // 服务端没有更早历史了(新股/次新)
   const loadMoreRef = useRef(null)                 // 数据 effect 里注入, 建图 effect 的订阅回调调用
 
-  // 切换 量/额: 用已有 bars 重绘副图, 不重新请求
+  // 副图统一绘制: 量/额=直方图, MACD=hist+DIF/DEA, KDJ=K/D/J 三线。用已有 bars, 不重新请求。
+  const paintSub = useCallback((mode) => {
+    const vol = volSeriesRef.current, lines = subLinesRef.current, bars = barsRef.current
+    if (!vol || !lines || !bars?.length) return
+    const EMPTY = []
+    if (mode === 'MACD') {
+      const m = macdSeries(bars)
+      vol.setData(m.hist.map(p => ({ ...p, color: p.value >= 0 ? 'rgba(207,92,92,0.55)' : 'rgba(95,168,108,0.55)' })))
+      lines[0].setData(m.dif); lines[1].setData(m.dea); lines[2].setData(EMPTY)
+    } else if (mode === 'KDJ') {
+      const k = kdjSeries(bars)
+      vol.setData(EMPTY)
+      lines[0].setData(k.k); lines[1].setData(k.d); lines[2].setData(k.j)
+    } else {
+      vol.setData(bars.map((b, i) => ({ time: b.time, value: mode === '额' ? (b.amount || 0) : (b.volume || 0), color: volColor(b, bars[i - 1]) })))
+      lines.forEach(l => l.setData(EMPTY))
+    }
+  }, [])
+
+  // 切换 量/额/MACD/KDJ: 用已有 bars 重绘副图, 不重新请求
   useEffect(() => {
-    const bars = barsRef.current
-    if (!volSeriesRef.current || !bars?.length) return
-    volSeriesRef.current.setData(bars.map((b, i) => ({
-      time: b.time,
-      value: volMode === '额' ? (b.amount || 0) : (b.volume || 0),
-      color: volColor(b, bars[i - 1]),
-    })))
-    // 量与额差着好几个量级(80万 vs 500亿): 在轴上拖过一下就退出自动量程, 之后换口径
-    // 量程不跟着走, 柱子被压成一条(或顶出画面)。每次换口径把自动量程重新打开。
+    if (!volSeriesRef.current || !barsRef.current?.length) return
+    paintSub(volMode)
+    // 各口径量级差很大(万/亿 vs ±小数): 每次换重开自动量程, 否则柱子被压平或顶出
     try { volChartRef.current?.priceScale('right').applyOptions({ autoScale: true }) } catch { /* 尺寸未就绪 */ }
-    requestAnimationFrame(() => alignScalesRef.current?.())   // 量↔额 刻度宽度不同, 重新对齐
-  }, [volMode])
+    requestAnimationFrame(() => alignScalesRef.current?.())   // 刻度宽度变, 重新对齐
+  }, [volMode, paintSub])
 
   // 建图(一次)
   useEffect(() => {
@@ -233,7 +346,9 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
     const mas = MA_DEFS.map(m => chart.addSeries(LineSeries, { color: m.c, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }))
     const gapPrim = new GapPrimitive()
     candle.attachPrimitive(gapPrim)
-    seriesRef.current = { candle, mas, gapPrim }
+    const tradePrim = new TradePrimitive()   // 买卖点圆点+虚线(补 marker 箭头之外的"钉在成交价")
+    candle.attachPrimitive(tradePrim)
+    seriesRef.current = { candle, mas, gapPrim, tradePrim }
 
     const timeKey = (t) => typeof t === 'string' ? t
       : `${t.year}-${String(t.month).padStart(2, '0')}-${String(t.day).padStart(2, '0')}`
@@ -289,16 +404,23 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
         handleScroll: true,
       })
       volChartRef.current = volChart
-      // 纵轴刻度自定义: 内置 volume 格式是英文 K/M/B(成交额会显示成 1.98B), 换成万/亿
+      // 纵轴刻度自适应: 量/额是万/亿大数, MACD/KDJ 是 ±小数——同一右轴, 格式化按量级切
       volSeriesRef.current = volChart.addSeries(HistogramSeries, {
         priceFormat: {
-          type: 'custom', minMove: 1,
-          formatter: (v) => !v ? '0'
-            : v >= 1e8 ? (v / 1e8).toFixed(v >= 1e9 ? 0 : 1) + '亿'
-            : v >= 1e4 ? (v / 1e4).toFixed(0) + '万'
-            : String(Math.round(v)),
+          type: 'custom', minMove: 0.01,
+          formatter: (v) => {
+            const a = Math.abs(v)
+            if (!v) return '0'
+            if (a >= 1e8) return (v / 1e8).toFixed(a >= 1e9 ? 0 : 1) + '亿'
+            if (a >= 1e4) return (v / 1e4).toFixed(0) + '万'
+            if (a < 100) return v.toFixed(2)          // MACD/KDJ
+            return String(Math.round(v))
+          },
         },
       })
+      // MACD DIF/DEA 或 KDJ K/D/J 复用这 3 条线(同右轴); 量/额模式下清空隐藏
+      const subLine = (c) => volChart.addSeries(LineSeries, { color: c, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false })
+      subLinesRef.current = [subLine('#e8b04a'), subLine('#4aa6e0'), subLine('#cf6bcf')]
 
       const syncFrom = (src, dst) => (range) => {
         if (!range || syncingRef.current) return
@@ -358,6 +480,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
     // 点蜡烛 → 出「分时›」tooltip; 浮层开着时点K线 → 收起浮层(同花顺式浮层交互)
     chart.subscribeClick(param => {
       if (intradayRef.current) { setIntraday(null); setHint(null); return }
+      if (!isDayRef.current) { setHint(null); return }   // 周/月不看当日分时
       const t = param.time
       if (!t || !param.point) { setHint(null); return }
       const key = typeof t === 'string' ? t
@@ -401,17 +524,9 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
         return { time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
                  color: col, borderColor: col, wickColor: col }
       }))
-      // 量/额画到独立副图(见下方 volChart): 叠在主图里读不出具体数字, 拆开后有独立刻度
-      // ⚠️ 这里读 volModeRef 而不是 volMode: 这个 effect 的依赖是 [code, days, lhbDate],
-      // 把 volMode 加进去会让"切一下 量/额"整张 K 线重新拉一次网络 —— 而上面那个
-      // [volMode] 的 effect 存在的意义正是"用已有 bars 重绘, 不重新请求"。
-      // 读 ref 还顺带修掉一个竞态: 请求在飞的时候切口径, 回来的 .then 会拿切换前的
-      // 闭包值把副图画成旧口径, 直到下次再切才恢复。
-      volSeriesRef.current?.setData(bars.map((b, i) => ({
-        time: b.time,
-        value: volModeRef.current === '额' ? (b.amount || 0) : (b.volume || 0),
-        color: volColor(b, bars[i - 1]),
-      })))
+      // 副图(量/额/MACD/KDJ)统一走 paintSub, 读 volModeRef 当前口径(不进本 effect 依赖,
+      // 免得切口径重拉整张 K 线; 也避开请求在飞时切口径的竞态)。
+      paintSub(volModeRef.current)
       mas.forEach((s, i) => s.setData(maLine(bars, MA_DEFS[i].n)))
       gapPrim?.setGaps(detectGaps(bars))
       // 换股票/周期是全新价位与量级: 之前在轴上拖出来的手工量程留着必然不合身, 一并复位
@@ -432,62 +547,60 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
       drawOverlay()          // 成本线 + 买卖点(持有该票才有)
     }
 
-    // 拖到最早处 → 升档拉更长历史(×3, 上限约十年), 保持当前视窗时间范围不跳
-    loadMoreRef.current = () => {
+    // 归一成 bars: 日→akshare history(数组, 前复权); 周/月→TDX kline(data.bars)
+    const fetchBars = async (want) => {
+      if (isDay) {
+        const k = await prefetchJSON(`/api/market/history/${encodeURIComponent(code)}?days=${want}`)
+        return Array.isArray(k) ? k.map(x => ({ time: x.time, open: x.open, high: x.high, low: x.low, close: x.close, volume: x.volume, amount: x.amount })) : null
+      }
+      const d = await prefetchJSON(`/api/market/tdx/kline/${encodeURIComponent(code)}?type=${period === 'week' ? 'week' : 'month'}&limit=${Math.min(want, 500)}`)
+      const bs = d?.data?.bars
+      return Array.isArray(bs) ? bs.map(b => ({ time: String(b.date).slice(0, 10), open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume, amount: b.amount })) : null
+    }
+
+    // 日K: 拖到最早处 → 升档拉更长历史(×3), 保持视窗不跳; 周/月一次拉够, 不续史
+    loadMoreRef.current = isDay ? () => {
       if (!alive || moreBusyRef.current || exhaustedRef.current) return
       const cur = depthRef.current
-      // 上次要 cur 根只回来更少 → 服务端没有更早的了(新股/次新), 别再打了
       if (barsRef.current.length + 30 < cur || cur >= 2400) { exhaustedRef.current = true; return }
       moreBusyRef.current = true
       const want = Math.min(cur * 3, 2400)
-      prefetchJSON(`/api/market/history/${encodeURIComponent(code)}?days=${want}`)
-        .then(k => {
-          if (!alive || !Array.isArray(k)) return
-          depthRef.current = want
-          if (k.length <= barsRef.current.length) { exhaustedRef.current = true; return }
-          const bars = k.map(x => ({ time: x.time, open: x.open, high: x.high, low: x.low, close: x.close, volume: x.volume, amount: x.amount }))
-          const ts = chartRef.current?.timeScale()
-          const vr = ts?.getVisibleRange()          // 时间坐标的视窗, 数据前插后原样恢复
-          paint(bars)
-          if (vr) ts?.setVisibleRange(vr)
-        })
-        .catch(() => {})
-        .finally(() => { moreBusyRef.current = false })
-    }
+      fetchBars(want).then(bars => {
+        if (!alive || !bars) return
+        depthRef.current = want
+        if (bars.length <= barsRef.current.length) { exhaustedRef.current = true; return }
+        const ts = chartRef.current?.timeScale()
+        const vr = ts?.getVisibleRange()
+        paint(bars)
+        if (vr) ts?.setVisibleRange(vr)
+      }).catch(() => {}).finally(() => { moreBusyRef.current = false })
+    } : null
 
     let warmTimer = null
-    // 走预取缓存: 榜单已顺序预取过光标附近个股, 方向键翻股直接命中不等网络
-    prefetchJSON(`/api/market/history/${encodeURIComponent(code)}?days=${days}`)
-      .then(k => {
+    fetchBars(days)
+      .then(bars => {
         if (!alive) return
-        if (!Array.isArray(k) || !k.length) { setErr('暂无 K 线数据'); return }
-        paint(k.map(x => ({ time: x.time, open: x.open, high: x.high, low: x.low, close: x.close, volume: x.volume, amount: x.amount })))
-        const bars = barsRef.current
-        // 初始视窗只看最近约3个月(70根), 更长的历史往左拖/滚轮缩放就有——
-        // fitContent 会把250根全塞进屏幕, 蜡烛细得看不清近期形态
+        if (!bars || !bars.length) { setErr('暂无 K 线数据'); return }
+        paint(bars)
+        const b = barsRef.current
+        // 初始视窗只看最近约70根, 更早往左拖/缩放就有(fitContent 会全塞进屏幕看不清近期)
         const ts = chartRef.current?.timeScale()
-        if (bars.length > 80) {
-          ts?.setVisibleLogicalRange({ from: bars.length - 70, to: bars.length + 3 })
-        } else {
-          ts?.fitContent()
+        if (b.length > 80) ts?.setVisibleLogicalRange({ from: b.length - 70, to: b.length + 3 })
+        else ts?.fitContent()
+        // 从龙虎榜榜单点进来直接弹席位浮层(仅日K)
+        if (isDay && lhbDate) {
+          const i = b.findIndex(x => x.time === lhbDate)
+          if (i >= 0) setIntraday({ date: lhbDate, prevClose: b[i - 1]?.close ?? b[i].open, prevIsOpen: !b[i - 1], tab: '龙虎榜' })
         }
-        // 从龙虎榜榜单点进来: 直接弹开该上榜日的席位浮层
-        if (lhbDate) {
-          const i = bars.findIndex(b => b.time === lhbDate)
-          if (i >= 0) setIntraday({ date: lhbDate, prevClose: bars[i - 1]?.close ?? bars[i].open, prevIsOpen: !bars[i - 1], tab: '龙虎榜' })
-        }
-        // 续史预热: 这只票停留 1.5s(不是方向键快速略过)且历史大概率更深时,
-        // 后台静默预取 750 根档——之后第一次拖到最早处直接命中缓存, 不用等
-        if (bars.length >= days && days * 3 <= 2400) {
-          warmTimer = setTimeout(() => {
-            if (alive) prefetchJSON(`/api/market/history/${encodeURIComponent(code)}?days=${days * 3}`).catch(() => {})
-          }, 1500)
+        // 续史预热(仅日K)
+        if (isDay && b.length >= days && days * 3 <= 2400) {
+          warmTimer = setTimeout(() => { if (alive) prefetchJSON(`/api/market/history/${encodeURIComponent(code)}?days=${days * 3}`).catch(() => {}) }, 1500)
         }
       })
       .catch(e => alive && setErr(e?.message || '加载失败'))
       .finally(() => alive && setLoading(false))
     return () => { alive = false; loadMoreRef.current = null; if (warmTimer) clearTimeout(warmTimer) }
-  }, [code, days, lhbDate, drawOverlay])
+  }, [code, days, lhbDate, drawOverlay, isDay, period, paintSub])
 
   return (
     <div className={fill ? 'relative flex flex-col h-full' : 'relative'}>
@@ -542,14 +655,15 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
       {/* 量/额 独立副图: 自己的纵轴刻度 + hover 出具体数字; 与主图时间轴双向同步 */}
       <div className="shrink-0 mt-0.5">
         <div className="flex items-center gap-2 px-0.5 h-4 text-[10px]">
-          {['量', '额'].map(m => (
+          {[['量', '成交量'], ['额', '成交额'], ['MACD', 'MACD'], ['KDJ', 'KDJ']].map(([m, lbl]) => (
             <button key={m} onClick={() => setVolMode(m)}
-              title={m === '量' ? '成交量(手)' : '成交额(元)'}
               className={`px-1.5 rounded leading-4 ${volMode === m ? 'bg-accent/20 text-accent' : 'text-text-dim hover:text-text'}`}>
-              {m === '量' ? '成交量' : '成交额'}
+              {lbl}
             </button>
           ))}
-          {volLegend && (
+          {volMode === 'MACD' && <span className="font-mono text-text-dim"><span style={{ color: '#e8b04a' }}>DIF</span> <span style={{ color: '#4aa6e0' }}>DEA</span> <span className="text-text-muted">柱=MACD</span></span>}
+          {volMode === 'KDJ' && <span className="font-mono text-text-dim"><span style={{ color: '#e8b04a' }}>K</span> <span style={{ color: '#4aa6e0' }}>D</span> <span style={{ color: '#cf6bcf' }}>J</span></span>}
+          {(volMode === '量' || volMode === '额') && volLegend && (
             <span className="font-mono text-text-dim">
               <span className="text-text-muted mr-1.5">{volLegend.time}</span>
               量 <span className="text-text">{fmtVol(volLegend.volume)}</span>

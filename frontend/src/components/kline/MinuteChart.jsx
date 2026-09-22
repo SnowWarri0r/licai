@@ -55,11 +55,13 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
       if (g) g.n++
       else byKey.set(k, { idx, isBuy, n: 1 })
     }
+    // 买卖点: 圆点落在成交那一刻的价格线上(inBar+circle), 带 B/S 与笔数(B2/S3);
+    // 旧 arrowUp/Down 只是柱子上下的箭头, 丢了"点在成交价上"这层信息。
     const markers = [...byKey.values()].sort((x, y) => x.idx - y.idx).map(g => ({
       time: g.idx,
-      position: g.isBuy ? 'belowBar' : 'aboveBar',
+      position: 'inBar',
       color: g.isBuy ? BUY_COLOR : SELL_COLOR,
-      shape: g.isBuy ? 'arrowUp' : 'arrowDown',
+      shape: 'circle',
       text: (g.isBuy ? 'B' : 'S') + (g.n > 1 ? String(g.n) : ''),
     }))
     if (!markersRef.current) markersRef.current = createSeriesMarkers(price, markers)
