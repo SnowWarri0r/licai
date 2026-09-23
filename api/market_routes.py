@@ -38,6 +38,35 @@ async def eod_review():
     return await build_market_review()
 
 
+@router.get("/analyzers/{stock_code}")
+async def analyzers(stock_code: str):
+    """已安装的分析插件(entry point `licai.analyzers`)对该股日K的解读。没装插件 = 空数组。"""
+    from services import analyzers as _az
+    from services.market_data import _cst_now, _is_a_share_trading_day
+    if not _az.get_analyzers():
+        return {"results": [], "installed": _az.status()}
+    bare = normalize_stock_code(stock_code).split(".")[-1]
+    if len(bare) != 6 or not bare.isdigit():
+        return {"results": [], "error": "仅支持 A 股 6 位代码"}
+    df = await get_historical_data(bare, _az.bars_needed(250) + 20)
+    if df is None or df.empty:
+        return {"results": [], "error": "日线数据不足"}
+    bars = [{"date": str(r["日期"])[:10], "open": float(r["开盘"]), "high": float(r["最高"]),
+             "low": float(r["最低"]), "close": float(r["收盘"]), "volume": float(r["成交量"])}
+            for _, r in df.iterrows()]
+    # 末根是今天且还没收盘 → 成交量只走了一部分, 告诉插件别拿它算量比
+    cst = _cst_now()
+    live_last = (bars[-1]["date"] == cst.strftime("%Y-%m-%d") and _is_a_share_trading_day(cst.date())
+                 and cst.hour * 60 + cst.minute < 15 * 60 + 5)
+    name = ""
+    try:
+        name = ((await get_realtime_quotes([bare])).get(bare) or {}).get("name") or ""
+    except Exception:
+        pass
+    results = await asyncio.to_thread(_az.run_all, bare, bars, name, live_last)
+    return {"results": results, "live_last": live_last}
+
+
 @router.get("/inst-accum/{stock_code}")
 async def inst_accum(stock_code: str):
     """机构进货标记(滞后硬数据): 近30天龙虎榜机构专用席位净买。上榜才披露=抽样,非买卖信号。"""
