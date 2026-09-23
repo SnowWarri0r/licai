@@ -13,12 +13,13 @@ const toneColor = (t) => TONE[t] || 'var(--color-text)'
 
 // 头部小标签(与恐慌/机构并列)
 export function AnalyzerChips({ results }) {
-  return (results || []).filter(r => r.available && r.headline).map(r => (
-    <span key={r.analyzer} className="text-[10.5px] font-mono px-1.5 py-0.5 rounded"
-      style={{ border: '1px solid var(--color-border-med)' }} title={r.headline.title}>
-      {r.headline.label} <span style={{ color: toneColor(r.headline.tone) }}>{r.headline.value}</span>
-    </span>
-  ))
+  return (results || []).filter(r => r.available && (r.chips || r.headline)).flatMap(r =>
+    (r.chips || [r.headline]).map((h, i) => (
+      <span key={`${r.analyzer}-${i}`} className="text-[10.5px] font-mono px-1.5 py-0.5 rounded"
+        style={{ border: '1px solid var(--color-border-med)' }} title={h.title}>
+        {h.label} <span style={{ color: toneColor(h.tone) }}>{h.value}</span>
+      </span>
+    )))
 }
 
 // 图下方的说明条: 当前命中条目 + 状态 + 近期出现过的日子

@@ -63,7 +63,15 @@ async def analyzers(stock_code: str):
         name = ((await get_realtime_quotes([bare])).get(bare) or {}).get("name") or ""
     except Exception:
         pass
-    results = await asyncio.to_thread(_az.run_all, bare, bars, name, live_last)
+    # 插件声明需要的指数日K(相对大盘特征), 与 K 线弹窗的大盘数据同源
+    from services.market_data import _kline_for_symbol
+    context = {}
+    for sym in _az.context_symbols():
+        try:
+            context[sym] = await asyncio.to_thread(_kline_for_symbol, sym, len(bars) + 20)
+        except Exception:
+            context[sym] = []
+    results = await asyncio.to_thread(_az.run_all, bare, bars, name, live_last, context)
     return {"results": results, "live_last": live_last}
 
 
