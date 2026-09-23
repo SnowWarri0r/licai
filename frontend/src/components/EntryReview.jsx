@@ -139,7 +139,11 @@ export default function EntryReview() {
               {d.has_analyzer ? (
                 <>
                   <GroupTable title="个股: 买入前一日的暴跌风险档(相对中证1000超额)" groups={d.risk_groups}
-                    compare={{ head: '全市场同档历史', cell: g => g.base ? <span>60日暴跌 <span className="font-mono">{(g.base.crash_rate * 100).toFixed(1)}%</span> <span className="text-text-muted">(平时 {(g.base.base_crash * 100).toFixed(1)}%)</span> · 中位 <span className={`font-mono ${pctCls(g.base.median_excess_pct)}`}>{pct(g.base.median_excess_pct)}</span></span> : '--' }} />
+                    compare={{ head: '全市场同档历史(样本外)', cell: g => g.base ? (
+                      <div className="text-right leading-snug">
+                        {g.base.median20_pct != null && <div>20日中位 <span className={`font-mono ${pctCls(g.base.median20_pct)}`}>{pct(g.base.median20_pct)}</span> · 跑赢 <span className="font-mono">{rate(g.base.win20)}</span></div>}
+                        <div className="text-[10px] text-text-muted">60日内跑输大盘≥30%的概率 <span className="font-mono text-text-dim">{(g.base.crash_rate * 100).toFixed(1)}%</span>(平时 {(g.base.base_crash * 100).toFixed(1)}%)</div>
+                      </div>) : '--' }} />
                   <GroupTable title="个股: 买入前一日的量价形态(相对中证1000超额)" groups={d.pattern_groups}
                     compare={{ head: '全市场同形态 20日', cell: g => g.base ? <span><span className={`font-mono ${TONE[g.base.tone] || ''}`}>{pct(g.base.excess20_pct, 2)}</span> <span className="text-text-muted">跑赢 {rate(g.base.win20)}</span></span> : <span className="text-text-muted">--</span> }} />
                 </>

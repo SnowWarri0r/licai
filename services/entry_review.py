@@ -279,9 +279,11 @@ async def build(force: bool = False) -> dict:
                 if not hit:
                     continue
                 ds = [dec[k] for k in range(lo, hi + 1) if k in dec]
+                avg = lambda k, nd: (round(statistics.mean(x[k] for x in ds), nd)  # noqa: E731
+                                     if all(x.get(k) is not None for x in ds) else None)
                 risk_groups.append(_group(lab, hit, key_ex=True, base={
-                    "crash_rate": round(statistics.mean(x["crash_rate"] for x in ds), 4),
-                    "median_excess_pct": round(statistics.mean(x["median_excess_pct"] for x in ds), 2),
+                    "crash_rate": avg("crash_rate", 4), "median_excess_pct": avg("median_excess_pct", 2),
+                    "median20_pct": avg("median_excess_20d_pct", 2), "win20": avg("win_rate_20d", 3),
                     "base_crash": rk.get("base_crash")}))
 
     names = {f"{n}:{k}": v["name"] for n, cat in catalog.items() for k, v in (cat.get("patterns") or {}).items()}
