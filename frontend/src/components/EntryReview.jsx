@@ -18,7 +18,7 @@ function GroupTable({ title, groups, compare }) {
         <thead>
           <tr className="text-[10px] text-text-muted text-right">
             <th className="text-left font-normal py-0.5">分组</th>
-            <th className="font-normal">次数</th>
+            <th className="font-normal" title="斜杠后 = 其中已满 20 个交易日的次数(20 日各列只按这些算); 相同时只显示一个">次数<span className="text-text-muted">/满20日</span></th>
             <th className="font-normal">5日平均</th>
             <th className="font-normal">20日平均</th>
             <th className="font-normal">中位</th>
