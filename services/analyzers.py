@@ -20,6 +20,13 @@
     timeline:  [{date, labels: [str], tones: [str]}]                                近期出现过的日子
     state_text / pending_note / footnote: str                                       状态行 / 盘中提示 / 脚注
 
+可选的复盘接口(买点回看 services/entry_review.py 用; 没实现的插件不参与):
+    def review_points(self, code, bars, days, stock_name="", context=None) -> dict
+        对每个买入日 D 给出 D 前一交易日收盘时的判定: {D: {signal_date, patterns: [形态id], risk_decile: int|None}}
+    def review_catalog(self) -> dict
+        {patterns: {形态id: {name, definition, grade, n, excess_20d_pct, win_rate_20d, adj_excess_20d_pct, tone}},
+         risk: {deciles: [{decile, crash_rate, median_excess_pct, ...}], base_crash, base_rally} | None, note}
+
 没装任何 analyzer = 列表为空, 路由返回空数组, 前端不渲染任何东西。
 设 env LICAI_ANALYZERS=off 可整体关闭(排查问题时用)。单个插件报错只影响它自己。
 """
@@ -99,3 +106,32 @@ def run_all(code: str, bars: list[dict], stock_name: str = "", live_last: bool =
         r.setdefault("display_name", getattr(a, "display_name", name))
         results.append(r)
     return results
+
+
+def review_all(code: str, bars: list[dict], days: list[str], stock_name: str = "",
+               context: dict | None = None) -> dict:
+    """{插件名: review_points 的结果}。没实现复盘接口或出错的插件跳过。"""
+    out = {}
+    for name, a in get_analyzers().items():
+        fn = getattr(a, "review_points", None)
+        if not fn:
+            continue
+        try:
+            out[name] = fn(code, bars, days, stock_name=stock_name, context=context or {}) or {}
+        except Exception as e:  # noqa: BLE001
+            log.warning("analyzer %s review_points(%s) 出错: %s", name, code, e)
+    return out
+
+
+def review_catalogs() -> dict:
+    """{插件名: review_catalog()}。"""
+    out = {}
+    for name, a in get_analyzers().items():
+        fn = getattr(a, "review_catalog", None)
+        if not fn:
+            continue
+        try:
+            out[name] = fn()
+        except Exception as e:  # noqa: BLE001
+            log.warning("analyzer %s review_catalog 出错: %s", name, e)
+    return out

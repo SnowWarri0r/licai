@@ -300,6 +300,13 @@ async def realized_pnl():
     }
 
 
+@router.get("/entry-review")
+async def entry_review(force: int = 0):
+    """买点回看: 每笔主动买入按买入前一日的状态分组(价格位置 / 量价形态 / 暴跌风险档), 统计之后 5/20 日的实际结果。"""
+    from services.entry_review import build
+    return await build(force=bool(force))
+
+
 @router.get("/trade-review")
 async def trade_review():
     """A 股交易复盘报告 (纯客观, 不给建议): 用 position_actions 算每只的
