@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createChart, CandlestickSeries, HistogramSeries, LineSeries, CrosshairMode, LineStyle, createSeriesMarkers } from 'lightweight-charts'
-import { prefetchJSON } from '../hooks/useApi'
+import { fetchJSON, prefetchJSON } from '../hooks/useApi'
 import { DayOverlay } from './kline/DayOverlay'
 import { fmt, ACQUIRE, BUY_COLOR, SELL_COLOR } from './kline/shared'
+
+import { ChipPrimitive, chipDist, turnoverFor } from './kline/chips'
 
 const UP = '#cf5c5c', DOWN = '#5fa86c'   // A股 红涨绿跌
 const MA_DEFS = [
@@ -225,6 +227,27 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
   volModeRef.current = volMode
   const isDayRef = useRef(isDay)                    // 点蜡烛看分时仅日K; period 会变故用 ref
   isDayRef.current = isDay
+  // 筹码分布(仅日K + A股个股): 流通股本变动表 → 每根换手率 → 悬停日/最新一日收盘时的筹码
+  const [showChips, setShowChips] = useState(() => { try { return localStorage.getItem('licai.kline.chips') !== '0' } catch { return true } })
+  const showChipsRef = useRef(showChips)
+  showChipsRef.current = showChips
+  const [chipInfo, setChipInfo] = useState(null)
+  const [chipAvail, setChipAvail] = useState(false)
+  const scheduleRef = useRef(null)
+  const turnRef = useRef(null)
+  const chipKeyRef = useRef(null)                   // 当前悬停日(null = 最新一根)
+  const updateChips = useCallback((key) => {
+    chipKeyRef.current = key
+    const prim = seriesRef.current?.chipPrim
+    const bars = barsRef.current
+    if (!prim) return
+    if (!showChipsRef.current || !isDayRef.current || !turnRef.current || !bars?.length) { prim.setDist(null); setChipInfo(null); return }
+    let t = bars.length - 1
+    if (key) { const i = bars.findIndex(b => b.time === key); if (i >= 0) t = i }
+    const d = chipDist(bars, turnRef.current, t)
+    prim.setDist(d)
+    setChipInfo(d && { time: d.time, winner: d.winner, avg: d.avg, p5: d.p5, p95: d.p95, cover: d.cover, hover: !!key })
+  }, [])
 
   // 成本线 + 买卖点: 从 ref 读, 可被主 effect(画完K线后)和下面的独立 effect(成本/流水变了)
   // 各自调用。同日同方向多笔合成一个标记(B2/S3), 与持仓那张图口径一致。
@@ -320,6 +343,27 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
     requestAnimationFrame(() => alignScalesRef.current?.())   // 刻度宽度变, 重新对齐
   }, [volMode, paintSub])
 
+  // 流通股本变动表: 换股票拉一次(ETF/非A股个股没有, 筹码开关不出现)
+  useEffect(() => {
+    scheduleRef.current = null; turnRef.current = null; setChipAvail(false); updateChips(null)
+    const bare = String(code || '').replace(/\D/g, '').slice(-6)
+    if (!isDay || bare.length !== 6 || /^(1[56]|5[0-8])/.test(bare)) return
+    let alive = true
+    fetchJSON(`/api/market/float-shares/${bare}`).then(d => {
+      if (!alive || !d?.schedule?.length) return
+      scheduleRef.current = d.schedule
+      turnRef.current = turnoverFor(barsRef.current, d.schedule)
+      setChipAvail(true)
+      updateChips(chipKeyRef.current)
+    }).catch(() => {})
+    return () => { alive = false }
+  }, [code, isDay, updateChips])
+
+  useEffect(() => {
+    try { localStorage.setItem('licai.kline.chips', showChips ? '1' : '0') } catch { /* 隐私模式 */ }
+    updateChips(chipKeyRef.current)
+  }, [showChips, updateChips])
+
   // 建图(一次)
   useEffect(() => {
     if (!wrapRef.current) return
@@ -348,7 +392,9 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
     candle.attachPrimitive(gapPrim)
     const tradePrim = new TradePrimitive()   // 买卖点圆点+虚线(补 marker 箭头之外的"钉在成交价")
     candle.attachPrimitive(tradePrim)
-    seriesRef.current = { candle, mas, gapPrim, tradePrim }
+    const chipPrim = new ChipPrimitive()     // 筹码分布(右侧横向柱, 垫在蜡烛下)
+    candle.attachPrimitive(chipPrim)
+    seriesRef.current = { candle, mas, gapPrim, tradePrim, chipPrim }
 
     const timeKey = (t) => typeof t === 'string' ? t
       : `${t.year}-${String(t.month).padStart(2, '0')}-${String(t.day).padStart(2, '0')}`
@@ -453,8 +499,9 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
       requestAnimationFrame(alignScales)
 
       volChart.subscribeCrosshairMove(param => {
-        if (!param.time) { setVolLegend(null); syncXhair(chart, candle, null); return }
+        if (!param.time) { setVolLegend(null); syncXhair(chart, candle, null); updateChips(null); return }
         const key = timeKey(param.time)
+        updateChips(key)
         const bar = barsRef.current.find(b => b.time === key)
         setVolLegend({ time: key, volume: bar?.volume, amount: bar?.amount })
         fillPriceLegend(key)                              // 上图那行也给出这天的 OHLC
@@ -467,9 +514,11 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
       if (!param.time) {
         setLegend(null); setVolLegend(null)
         syncXhair(volChart, volSeriesRef.current, null)
+        updateChips(null)
         return
       }
       const key = timeKey(param.time)
+      updateChips(key)
       const bar = barsRef.current.find(b => b.time === key)
       fillPriceLegend(key)
       setVolLegend({ time: key, volume: bar?.volume, amount: bar?.amount })
@@ -545,6 +594,8 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
         })
       }
       drawOverlay()          // 成本线 + 买卖点(持有该票才有)
+      turnRef.current = turnoverFor(bars, scheduleRef.current)
+      updateChips(null)
     }
 
     // 归一成 bars: 日→akshare history(数组, 前复权); 周/月→TDX kline(data.bars)
@@ -633,6 +684,21 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
               <span style={{ color: '#c8a876' }}>┄ 昨收</span>
               <span>滚轮缩放 · 点蜡烛看当日分时</span>
             </span>}
+        {chipAvail && (
+          <span className="ml-auto flex items-center gap-2 shrink-0 font-mono">
+            {showChips && chipInfo && (
+              <span className="text-text-dim" title={`按换手率推算的筹码分布(每天的成交被之后的换手逐步换走); 只统计已加载的 K 线${chipInfo.cover < 0.9 ? `, 窗口内筹码只覆盖 ${Math.round(chipInfo.cover * 100)}%, 往左拖加载更早的历史会更准` : ''}。描述持仓成本分布, 不预示涨跌。`}>
+                <span className="text-text-muted">{chipInfo.hover ? chipInfo.time.slice(5) : '最新'}</span>
+                {' '}获利 <span className="text-bear">{Math.round(chipInfo.winner * 100)}%</span>
+                {' '}· 平均成本 <span style={{ color: '#e8c77a' }}>{fmt(chipInfo.avg)}</span>
+                {chipInfo.p5 != null && <> · 90%筹码 {fmt(chipInfo.p5)}~{fmt(chipInfo.p95)}</>}
+                {chipInfo.cover < 0.9 && <span className="text-text-muted"> · 覆盖{Math.round(chipInfo.cover * 100)}%</span>}
+              </span>
+            )}
+            <button onClick={() => setShowChips(v => !v)}
+              className={`px-1.5 rounded leading-4 ${showChips ? 'bg-accent/20 text-accent' : 'text-text-dim hover:text-text'}`}>筹码</button>
+          </span>
+        )}
       </div>
       <div className={`relative ${fill ? 'flex-1 min-h-0' : ''}`} style={fill ? { width: '100%' } : { width: '100%', height: Math.max(120, height - 156) /* 156 = 副图132 + 切换条与间距 */ }}>
         <div ref={wrapRef} className="absolute inset-0" />
