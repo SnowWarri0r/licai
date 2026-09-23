@@ -761,7 +761,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
           onJumpDay: 席位页签里"最近的上榜日"按钮换一天看, 仍由这里持有 intraday。 */}
       {intraday && (
         <DayOverlay
-          day={intraday} code={code}
+          day={intraday} code={code} actions={actions}
           getBars={() => barsRef.current}
           onClose={() => { setIntraday(null); setHint(null) }}
           onJumpDay={setIntraday} />

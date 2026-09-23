@@ -13,7 +13,7 @@ import { fmt } from './shared'
 //
 // getBars 传函数不传数组: bars 在父组件是 ref(K线按需增量加载, 不进 state)。
 // 传函数就总能读到最新值, 不会因为 ref 身份不变而拿到旧数据。
-export function DayOverlay({ day, code, getBars, onClose, onJumpDay }) {
+export function DayOverlay({ day, code, getBars, onClose, onJumpDay, actions = null }) {
   const [ovTab, setOvTab] = useState('分时')        // 浮层页签: 分时 | 龙虎榜
   const [tick, setTick] = useState(false)          // 分时: 逐笔精绘(还原分钟内秒级尖峰)
   const [minData, setMinData] = useState(null)
@@ -114,7 +114,7 @@ export function DayOverlay({ day, code, getBars, onClose, onJumpDay }) {
             {minErr && <div className="text-center py-6 text-[11.5px] text-text-dim">{minErr}</div>}
             {!minErr && !minData && <div className="text-center py-6 text-[11.5px] text-text-dim">分时加载中…</div>}
             {minData && (
-              <MinuteChart points={minData.points} prevClose={adjPrev}
+              <MinuteChart points={minData.points} prevClose={adjPrev} actions={actions || []}
                 day={minData.date || day.date} height="100%" tickMode={tick} />
             )}
           </div>
