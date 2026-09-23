@@ -4,8 +4,9 @@ import { fetchJSON, prefetchJSON } from '../hooks/useApi'
 import { DayOverlay } from './kline/DayOverlay'
 import { fmt, ACQUIRE, BUY_COLOR, SELL_COLOR } from './kline/shared'
 
-import { ChipPrimitive, chipDist, turnoverFor } from './kline/chips'
+import { CHIP_AVG, CHIP_W, ChipPrimitive, chipDist, drawChipCanvas, turnoverFor } from './kline/chips'
 
+const PREV_CLOSE_COLOR = '#8a9bb5'   // 昨收: 灰蓝虚线(成本线是金色实线, 两者别撞色)
 const UP = '#cf5c5c', DOWN = '#5fa86c'   // A股 红涨绿跌
 const MA_DEFS = [
   { n: 5, c: '#e8b04a' }, { n: 10, c: '#4aa6e0' }, { n: 20, c: '#cf6bcf' },
@@ -236,6 +237,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
   const scheduleRef = useRef(null)
   const turnRef = useRef(null)
   const chipKeyRef = useRef(null)                   // 当前悬停日(null = 最新一根)
+  const chipCanvasRef = useRef(null)                // 独立筹码栏画布(主图右侧, 不叠在 K 线上)
   const updateChips = useCallback((key) => {
     chipKeyRef.current = key
     const prim = seriesRef.current?.chipPrim
@@ -392,7 +394,8 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
     candle.attachPrimitive(gapPrim)
     const tradePrim = new TradePrimitive()   // 买卖点圆点+虚线(补 marker 箭头之外的"钉在成交价")
     candle.attachPrimitive(tradePrim)
-    const chipPrim = new ChipPrimitive()     // 筹码分布(右侧横向柱, 垫在蜡烛下)
+    const chipPrim = new ChipPrimitive()     // 筹码分布: 主图每次重绘时算坐标, 画进右侧独立画布
+    chipPrim.onFrame = (d) => drawChipCanvas(chipCanvasRef.current, wrapRef.current?.clientHeight || 0, d)
     candle.attachPrimitive(chipPrim)
     seriesRef.current = { candle, mas, gapPrim, tradePrim, chipPrim }
 
@@ -589,7 +592,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
       const prevClose = bars.length >= 2 ? bars[bars.length - 2].close : null
       if (prevClose != null) {
         prevCloseLineRef.current = candle.createPriceLine({
-          price: prevClose, color: '#c8a876', lineWidth: 1, lineStyle: LineStyle.Dashed,
+          price: prevClose, color: PREV_CLOSE_COLOR, lineWidth: 1, lineStyle: LineStyle.Dashed,
           axisLabelVisible: true, title: '昨收',
         })
       }
@@ -657,7 +660,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
     <div className={fill ? 'relative flex flex-col h-full' : 'relative'}>
       <div className="flex items-center gap-3 mb-1 text-[10.5px] h-4 shrink-0">
         {legend
-          ? <span className="font-mono text-text-dim flex gap-2.5 flex-wrap">
+          ? <span className="font-mono text-text-dim flex gap-2.5 min-w-0 overflow-hidden whitespace-nowrap">
               <span className="text-text-muted">{legend.time}</span>
               {/* 四个价都跟**昨收**比着上色(通达信口径), 不是跟开盘价比 —— 跌停那天
                   开=收=最低, 按"收>=开"整行都是红的, 而它们全都低于昨收。
@@ -679,9 +682,10 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
                 </span>
               )}
             </span>
-          : <span className="text-text-muted flex gap-2 flex-wrap items-baseline">
+          : <span className="text-text-muted flex gap-2 items-baseline min-w-0 overflow-hidden whitespace-nowrap">
               {MA_DEFS.map(m => <span key={m.n} style={{ color: m.c }}>— MA{m.n}</span>)}
-              <span style={{ color: '#c8a876' }}>┄ 昨收</span>
+              <span style={{ color: PREV_CLOSE_COLOR }}>┄ 昨收</span>
+              {cost != null && cost > 0 && <span style={{ color: '#c8a876' }}>— 成本</span>}
               <span>滚轮缩放 · 点蜡烛看当日分时</span>
             </span>}
         {chipAvail && (
@@ -690,7 +694,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
               <span className="text-text-dim" title={`按换手率推算的筹码分布(每天的成交被之后的换手逐步换走); 只统计已加载的 K 线${chipInfo.cover < 0.9 ? `, 窗口内筹码只覆盖 ${Math.round(chipInfo.cover * 100)}%, 往左拖加载更早的历史会更准` : ''}。描述持仓成本分布, 不预示涨跌。`}>
                 <span className="text-text-muted">{chipInfo.hover ? chipInfo.time.slice(5) : '最新'}</span>
                 {' '}获利 <span className="text-bear">{Math.round(chipInfo.winner * 100)}%</span>
-                {' '}· 平均成本 <span style={{ color: '#e8c77a' }}>{fmt(chipInfo.avg)}</span>
+                {' '}· 平均成本 <span style={{ color: CHIP_AVG }}>{fmt(chipInfo.avg)}</span>
                 {chipInfo.p5 != null && <> · 90%筹码 {fmt(chipInfo.p5)}~{fmt(chipInfo.p95)}</>}
                 {chipInfo.cover < 0.9 && <span className="text-text-muted"> · 覆盖{Math.round(chipInfo.cover * 100)}%</span>}
               </span>
@@ -700,6 +704,9 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
           </span>
         )}
       </div>
+      {/* 主图+副图 | 独立筹码栏: 筹码栏只和主图等高, 副图那段留空; 两图宽度一起收窄, 上下 K 线仍对齐 */}
+      <div className={`flex ${fill ? 'flex-1 min-h-0' : ''}`}>
+      <div className={`flex-1 min-w-0 ${fill ? 'flex flex-col min-h-0' : ''}`}>
       <div className={`relative ${fill ? 'flex-1 min-h-0' : ''}`} style={fill ? { width: '100%' } : { width: '100%', height: Math.max(120, height - 156) /* 156 = 副图132 + 切换条与间距 */ }}>
         <div ref={wrapRef} className="absolute inset-0" />
 
@@ -739,6 +746,14 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
           )}
         </div>
         <div ref={volWrapRef} style={{ width: '100%', height: 132 }} />
+      </div>
+
+      </div>
+      {chipAvail && showChips && isDay && (
+        <div className="relative shrink-0 border-l border-white/5 ml-1" style={{ width: CHIP_W }}>
+          <canvas ref={chipCanvasRef} className="absolute left-0 top-0" style={{ width: '100%', height: 0 }} />
+        </div>
+      )}
       </div>
 
       {/* 点某根蜡烛 → 看那一天(分时 / 该日席位)。挂在根层而非主图容器内, 否则它的
