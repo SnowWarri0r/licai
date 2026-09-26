@@ -38,6 +38,7 @@ import AllocationAdvisor from './components/AllocationAdvisor'
 import AShareSectorGap from './components/AShareSectorGap'
 // 我的·复盘
 import AITradeReview from './components/AITradeReview'
+import EntryReview from './components/EntryReview'
 
 // 合法 view key。setView 与 hash 初始化共用 —— 只在初始化校验的话,
 // 运行时传入非法 key(历史上有已删视图的残留调用)会让内容区渲染成空白。
@@ -211,6 +212,7 @@ export default function App() {
     review: () => (
       <div className={`${PAD} space-y-3 md:space-y-4`}>
         <AITradeReview />
+        <EntryReview />
       </div>
     ),
 
