@@ -412,7 +412,7 @@ def _em_secid(stock_code: str) -> str:
 
 def _kline_tencent_a(stock_code: str, datalen: int = 120) -> pd.DataFrame:
     """腾讯 gtimg A股/ETF 前复权日K(不同提供商, 抗东财 push2his 抽风; ETF 同样支持)。
-    数组: [日期, 开, 收, 高, 低, 量(手), {}, 振幅, 额(万元), '']。
+    数组: [日期, 开, 收, 高, 低, 量(手; 科创板是股), {}, 振幅, 额(万元), '']。
 
     走 newfqkline 而非 fqkline: 后者每行只有 6 个字段(到"量"为止), 拿不到成交额,
     副图切「成交额」会全是 0。newfqkline 同样是前复权, 多给振幅与成交额。"""
@@ -430,6 +430,9 @@ def _kline_tencent_a(stock_code: str, datalen: int = 120) -> pd.DataFrame:
     payload = _json.loads(txt[eq + 1:])
     sym_data = (payload.get("data") or {}).get(sym) or {}
     rows = sym_data.get("qfqday") or sym_data.get("day") or []
+    # 科创板(688/689)腾讯给的「量」是股, 其余板块是手 —— 不换算的话兜底这一路的科创板量大 100 倍,
+    # 写回 SQLite 后东财恢复也不会覆盖旧日子。按 额/(量×价) 判: ≈1 是股, ≈100 是手; 没有额时按板块。
+    star = code[:3] in ("688", "689")
     out = []
     for p in rows:
         if len(p) < 6:
@@ -442,8 +445,10 @@ def _kline_tencent_a(stock_code: str, datalen: int = 120) -> pd.DataFrame:
                     amt = float(p[8]) * 1e4
                 except (TypeError, ValueError):
                     amt = 0.0
-            out.append({"日期": str(p[0]), "开盘": float(p[1]), "收盘": float(p[2]),
-                        "最高": float(p[3]), "最低": float(p[4]), "成交量": float(p[5]),
+            vol, close = float(p[5]), float(p[2])
+            in_shares = (amt / (vol * close) < 10) if (amt > 0 and vol > 0 and close > 0) else star
+            out.append({"日期": str(p[0]), "开盘": float(p[1]), "收盘": close,
+                        "最高": float(p[3]), "最低": float(p[4]), "成交量": vol / 100 if in_shares else vol,
                         "成交额": amt, "振幅": 0, "涨跌幅": 0, "涨跌额": 0, "换手率": 0})
         except (TypeError, ValueError):
             continue
