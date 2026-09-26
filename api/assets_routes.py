@@ -1005,8 +1005,10 @@ async def settle_pending_dca():
 
     申购(ADD/BUY)和赎回(REDEEM/SELL)都要处理 —— 只管申购的话 pending 赎回会永久卡住,
     账本继续算已经赎掉的份额, 市值虚高(实测卡了两条 6 周)。
+    净值日按提交时刻定(nav_date_for): 15:00 及以后 / 非交易日提交 → 下一个交易日的净值
+    (实测 017731 周二 18:14 赎回, 该按周三净值 4.2105, 按当天 4.2205 会多算到账金额)。
     """
-    from services.external_assets import get_fund_nav_on_date
+    from services.external_assets import get_fund_nav_on_date, nav_date_for
     from database import update_external_action
 
     assets = await list_external_assets()
@@ -1031,9 +1033,10 @@ async def settle_pending_dca():
             if not td:
                 skipped += 1
                 continue
-            navinfo = await get_fund_nav_on_date(code, td)
+            nd = nav_date_for(td, a.get("trade_time"))
+            navinfo = await get_fund_nav_on_date(code, nd)
             if not navinfo or not navinfo.get("nav"):
-                skipped += 1  # 当日净值未公布 → 留 pending
+                skipped += 1  # 确认日净值未公布 → 留 pending
                 continue
             nav = float(navinfo["nav"])
             amount = float(a.get("amount") or 0)
@@ -1054,7 +1057,7 @@ async def settle_pending_dca():
                 )
                 settled += 1
                 changed = True
-                details.append({"asset": asset.get("name"), "date": td, "nav": round(nav, 4),
+                details.append({"asset": asset.get("name"), "date": td, "nav_date": nd, "nav": round(nav, 4),
                                 "shares": -shares, "amount": final_amount, "fee": 0})
                 continue
             # 申购费内扣: 净申购额 = 申购金额 / (1+费率), 申购费 = 金额 - 净额, 份额 = 净额/净值。
@@ -1079,7 +1082,7 @@ async def settle_pending_dca():
             )
             settled += 1
             changed = True
-            details.append({"asset": asset.get("name"), "date": td,
+            details.append({"asset": asset.get("name"), "date": td, "nav_date": nd,
                             "nav": round(nav, 4), "shares": shares, "amount": final_amount, "fee": fee})
         if changed:
             acts2 = await list_external_actions(asset["id"])
@@ -1095,7 +1098,7 @@ async def recompute_dca_fees():
     按每条 trade_date 重新拉当日净值, 用当前费率内扣重算 shares + fee。
     净值拉不到的跳过 (不动)。C 类 / 没设费率的基金完全不碰, 避免覆盖手动确认的值。
     """
-    from services.external_assets import get_fund_nav_on_date
+    from services.external_assets import get_fund_nav_on_date, nav_date_for
     from database import update_external_action
 
     assets = await list_external_assets()
@@ -1125,7 +1128,7 @@ async def recompute_dca_fees():
             if not td or amount <= 0:
                 skipped += 1
                 continue
-            navinfo = await get_fund_nav_on_date(code, td)
+            navinfo = await get_fund_nav_on_date(code, nav_date_for(td, a.get("trade_time")))
             if not navinfo or not navinfo.get("nav"):
                 skipped += 1
                 continue
