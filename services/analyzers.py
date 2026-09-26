@@ -8,12 +8,14 @@
         name: str            # 唯一标识
         display_name: str    # 界面上的标题
         min_bars: int        # 至少需要多少根日K
-        def analyze(self, code, bars, stock_name="", live_last=False) -> dict: ...
+        context_symbols: list[str]   # 可选: 还需要哪些指数日K(如 "sh000852"), 路由取好经 context 传入
+        def analyze(self, code, bars, stock_name="", live_last=False, context=None) -> dict: ...
   bars = [{date, open, high, low, close, volume}] 按日期升序;
   live_last = 末根是盘中未收盘的 bar(成交量只走了一部分, 插件应自行决定是否参与计算)。
   返回 dict 至少含 available: bool; 其余字段路由原样透传。前端只认下面这套**通用展示结构**
   (插件想怎么解读都行, 但要翻译成这几个字段才会被渲染; 插件自有字段前端忽略):
     headline:  {label, value, tone, title}      头部小标签(tone: pos|neg|muted|accent; A股 pos=红 neg=绿)
+    chips:     [headline 同结构, ...]            可选, 多个头部标签(有则替代 headline)
     items:     [{title, desc, badge, badge_tone, stats: [[名称, 值, tone], ...]}]   当前命中的条目
     timeline:  [{date, labels: [str], tones: [str]}]                                近期出现过的日子
     state_text / pending_note / footnote: str                                       状态行 / 盘中提示 / 脚注
@@ -72,11 +74,25 @@ def bars_needed(default: int = 0) -> int:
     return max([int(getattr(a, "min_bars", 0) or 0) for a in get_analyzers().values()] + [default])
 
 
-def run_all(code: str, bars: list[dict], stock_name: str = "", live_last: bool = False) -> list[dict]:
+def context_symbols() -> list[str]:
+    """所有已装插件声明需要的指数代码(去重)。"""
+    out = []
+    for a in get_analyzers().values():
+        for s in getattr(a, "context_symbols", None) or []:
+            if s not in out:
+                out.append(s)
+    return out
+
+
+def run_all(code: str, bars: list[dict], stock_name: str = "", live_last: bool = False,
+            context: dict | None = None) -> list[dict]:
     results = []
     for name, a in get_analyzers().items():
         try:
-            r = a.analyze(code, bars, stock_name=stock_name, live_last=live_last)
+            if getattr(a, "context_symbols", None):
+                r = a.analyze(code, bars, stock_name=stock_name, live_last=live_last, context=context or {})
+            else:
+                r = a.analyze(code, bars, stock_name=stock_name, live_last=live_last)
         except Exception as e:  # noqa: BLE001
             r = {"available": False, "note": f"计算出错: {type(e).__name__}: {e}"}
         r.setdefault("analyzer", name)
