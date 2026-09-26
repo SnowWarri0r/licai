@@ -83,6 +83,25 @@ def _fetch_fund_nav_on_date_sync(code: str, date_str: str) -> dict | None:
         return None
 
 
+def nav_date_for(trade_date: str, trade_time: str | None = None) -> str:
+    """场外基金申购/赎回按哪一天的净值确认: 交易日 15:00 前提交 → 当日净值; 15:00 及以后、
+    或提交在非交易日(周末/节假日) → 顺延到下一个交易日的净值。没有提交时间的(定投/老记录)按当日。
+    交易日历与 A 股相同(QDII 也按国内交易日受理)。"""
+    from datetime import date, timedelta
+    from services.market_data import _is_a_share_trading_day
+    d = date.fromisoformat(str(trade_date)[:10])
+    t = str(trade_time or "").strip()
+    late = bool(t) and t[:5] >= "15:00"
+    if _is_a_share_trading_day(d) and not late:
+        return d.isoformat()
+    d += timedelta(days=1)
+    for _ in range(30):
+        if _is_a_share_trading_day(d):
+            return d.isoformat()
+        d += timedelta(days=1)
+    return d.isoformat()
+
+
 async def get_fund_nav_on_date(code: str, date_str: str) -> dict | None:
     """异步: 取 code 在 date_str (YYYY-MM-DD) 的已确认净值, 无则 None。"""
     return await asyncio.to_thread(_fetch_fund_nav_on_date_sync, code, date_str)
