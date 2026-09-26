@@ -116,7 +116,7 @@ export default function StockKlineModal({ holding, onClose }) {
             {panic && (
               <span className="text-[10.5px] font-mono px-1.5 py-0.5 rounded"
                 style={{ border: '1px solid var(--color-border-med)' }}
-                title={`恐慌逃离指数 ${panic.score}/100(${panic.level})· 今天卖压比该股过去${panic.sample_days}日里 ${panic.percentile}% 的日子更急。跌${panic.drop_pct}% 收盘位置${panic.close_pos} 量比${panic.vol_ratio}${panic.limit_down ? ' 跌停' : ''}${panic.new_low ? ' 破新低' : ''}。客观卖压强度,非买卖信号。`}>
+                title={`恐慌逃离指数 ${panic.score}/100(${panic.level})· 今天卖压比该股过去${panic.sample_days}日里 ${panic.percentile}% 的日子更急。跌${panic.drop_pct}% 收盘位置${panic.close_pos} 量比${panic.vol_ratio}${panic.limit_down ? ' 跌停' : ''}${panic.new_low ? ' 破新低' : ''}。${panic.history ? `\n历史上「${panic.history.band}」档之后(全市场 2019~2026, ${panic.history.n}次): 次日开盘相对大盘 ${panic.history.next_open > 0 ? '+' : ''}${panic.history.next_open}%, 20日超额 ${panic.history.ex20 > 0 ? '+' : ''}${panic.history.ex20}%, 跑赢 ${Math.round(panic.history.win20 * 100)}%${panic.history.band === '跌停' ? '(跌停之后持续偏弱, 是各档里唯一明显的)' : '(高分之后没有明显的继续跌或反弹, 扣掉跌幅本身后差异只有零点几个百分点)'}。` : ''}\n客观卖压强度, 不预示反弹, 非买卖信号。`}>
                 恐慌 <span style={{ color: panic.score >= 50 ? 'var(--color-bull-bright)' : 'var(--color-text)' }}>{panic.score}</span>
                 <span className="text-text-muted"> {panic.level}{panic.percentile != null ? ` · ${panic.percentile}%位` : ''}</span>
               </span>
