@@ -166,10 +166,11 @@ export default function StockKlineModal({ holding, onClose }) {
 
           {/* 侧栏: 五档 + 逐笔 (TDX) */}
           {hasSide && (
-            <div className="w-[200px] shrink-0 bg-surface-3 rounded-md p-2.5 space-y-3">
+            <div className="w-[200px] shrink-0 bg-surface-3 rounded-md p-2.5 flex flex-col gap-3">
               <OrderBook data={book} prevClose={prevClose} decimals={/^[15]\d{5}$/.test(String(code)) ? 3 : 2} />
               <div className="border-t border-border-subtle" />
-              <Ticks ticks={ticks} decimals={/^[15]\d{5}$/.test(String(code)) ? 3 : 2} />
+              {/* 逐笔占满侧栏剩余高度: 左侧主图下方加了说明条后侧栏被拉高, 固定 150px 会留一大块空 */}
+              <Ticks ticks={ticks} fill decimals={/^[15]\d{5}$/.test(String(code)) ? 3 : 2} />
             </div>
           )}
         </div>
