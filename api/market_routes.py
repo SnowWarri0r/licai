@@ -75,6 +75,17 @@ async def tdx_minute(stock_code: str, date: str = ""):
     return {"enabled": True, "data": data}
 
 
+@router.get("/tdx/minute-all/{stock_code}")
+async def tdx_minute_all(stock_code: str, date: str = ""):
+    """逐笔精绘分时(TDX 全天逐笔, 时间序)。date=YYYY-MM-DD 取历史某日, 空=今日。
+    比 /tdx/minute 的 1 分钟采样多出分钟内的秒级尖峰(盘口被打空的"闪电")。"""
+    import services.tdx_client as _tdx
+    bare = _tdx_bare(stock_code)
+    if not _tdx.is_enabled() or not bare:
+        return {"enabled": _tdx.is_enabled(), "data": None}
+    return {"enabled": True, "data": await _tdx.minute_all(bare, date=date)}
+
+
 def _agg_bars(daily: list, period: str) -> list:
     """日线 → 周/月线: 桶内 开=首根开, 高=最高, 低=最低, 收=末根收, 量=求和。
     周按 ISO 周(年,周号)分桶, 月按 年-月。daily 需按日期升序。"""
