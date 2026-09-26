@@ -81,6 +81,19 @@ def _day_score(bars: list[dict], i: int, limit: float,
     }
 
 
+# 各档之后的历史表现(全市场 A 股 2019-01 ~ 2026-08, 每 3 个交易日抽样, 约 263 万个股票日; 次日开盘入场,
+# 相对全市场等权超额; 次日一字跌停开盘买不进的剔除)。「扣对照」= 扣掉当天跌幅、前 5/20 日涨跌、波动、流动性、
+# 异常换手之后的残差 —— 高分(非跌停)之后原始略有反弹, 但比同等跌幅通常的反弹更弱, 幅度零点几个百分点;
+# 唯一明显的是跌停: 之后 5/20 日持续偏弱, 2023 前后两段同向。离线统计, 不随行情更新。
+HISTORY = {
+    "平静": {"n": 1649420, "next_open": -0.01, "ex5": -0.05, "ex20": -0.06, "win20": 0.444, "adj20": 0.05},
+    "温和": {"n": 853213, "next_open": 0.03, "ex5": 0.09, "ex20": 0.19, "win20": 0.454, "adj20": -0.05},
+    "明显": {"n": 115031, "next_open": 0.03, "ex5": 0.14, "ex20": 0.34, "win20": 0.462, "adj20": -0.18},
+    "剧烈": {"n": 2569, "next_open": -0.09, "ex5": 0.53, "ex20": 1.07, "win20": 0.495, "adj20": -0.69},
+    "跌停": {"n": 8841, "next_open": -1.79, "ex5": -0.19, "ex20": -0.90, "win20": 0.425, "adj20": -1.00},
+}
+
+
 def compute(bars: list[dict], limit: float = 0.10, window: int = 120) -> dict | None:
     """bars: 日线升序 [{date,open,close,high,low,volume}], 末根=最新交易日。
     limit: 该股涨跌停幅度(主板0.10/创业科创0.20/北交0.30)。
@@ -102,8 +115,10 @@ def compute(bars: list[dict], limit: float = 0.10, window: int = 120) -> dict | 
         pct = round(below / len(hist) * 100)
     lvl = ("剧烈" if today["score"] >= 75 else "明显" if today["score"] >= 50
            else "温和" if today["score"] >= 25 else "平静")
+    hist_key = "跌停" if today["limit_down"] else lvl
     return {
         **today,
+        "history": {"band": hist_key, **HISTORY[hist_key]},   # 同档历史上之后的表现(离线统计)
         "percentile": pct,               # 今天卖压 > 过去 window 日里 pct% 的日子
         "level": lvl,
         "sample_days": len(hist),
