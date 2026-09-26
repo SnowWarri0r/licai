@@ -2411,7 +2411,8 @@ async def _tool_get_holdings() -> dict:
         except Exception:
             pass
         return {"A股": a_shares, "其他持仓": other,
-                "note": "我的全部在持: A股(holdings) + 其他持仓(场内ETF/场外基金/理财/现金/加密/机器人, 来自资产看板)。已清仓/已赎回的不在此列。"
+                "note": "我的全部在持: A股(holdings) + 其他持仓(场内ETF/场外基金/理财/现金/加密/机器人, 来自资产看板)。已清仓/已赎回的不在此列"
+                        "(今天刚清仓的票与今天的盈亏看 get_today_pnl)。"
                         "A股: 综合成本=含手续费+分红摊薄(对齐券商); 持有天数=资金加权(0=今天才开仓); 开仓日已带星期照抄。"
                         "分类按交易场所据实表述: 场内ETF(代码 5xxxxx/1xxxxx)在交易所按市价+券商佣金成交, "
                         "场外基金(支付宝/天天基金等)按 T+1 净值申赎, 两类各按自己的名字说。"
@@ -2419,6 +2420,71 @@ async def _tool_get_holdings() -> dict:
                         "浮动盈亏=(现价−摊薄成本)×份额, 成本一律以本字段为准。现金/理财/机器人给金额(元)。"
                         "带 定投计划 字段的资产在自动定投(频率+每期金额, 已暂停会标注)——这类持仓的规律小额买入是策略性定投, 不是主观追高。"
                         "要各大类占比/现金理财结构分析用 get_asset_allocation。"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+async def _tool_today_pnl() -> dict:
+    """今天的盈亏与操作: 全账户当日盈亏(现金流口径, 含今日清仓) + 今天卖出的每只算本次卖出的已实现盈亏(相对持仓成本)。"""
+    try:
+        from services.today_pnl import today_pnl, _today_cst
+        from database import get_position_actions, list_external_assets, list_external_actions
+        from services.position_ledger import compute_position_state, RELEASE
+        from services.external_ledger import compute_external_state
+        r = await today_pnl()
+        day = _today_cst()
+        ext = {str(a.get("code") or ""): a for a in await list_external_assets()}
+        rows, closed_sum = [], 0.0
+        for it in r.get("items") or []:
+            row = {"name": it.get("name"), "code": it.get("code"), "类型": "A股" if it.get("type") == "A" else it.get("type"),
+                   "今日盈亏": it.get("today_pnl"), "现持有": it.get("shares"),
+                   "今日买入": it.get("bought"), "今日卖出": it.get("sold")}
+            if it.get("closed_today"):
+                row["今日清仓"] = True
+                closed_sum += it.get("today_pnl") or 0
+            if it.get("opened_today"):
+                row["今日新建仓"] = True
+            if it.get("estimated"):
+                row["估算"] = True
+            if (it.get("sold") or 0) > 0:
+                try:
+                    if it.get("type") == "A":
+                        acts = await get_position_actions(it["code"], limit=1000)
+                        before = [a for a in acts if (a.get("trade_date") or "")[:10] < day]
+                        sa, sb = compute_position_state(acts, stock_code=it["code"]), compute_position_state(before, stock_code=it["code"])
+                        sells = [a for a in acts if (a.get("trade_date") or "")[:10] == day
+                                 and (a.get("action_type") or "").upper() in RELEASE]
+                        cost_before = sb.get("cost_price")
+                    else:
+                        a0 = ext.get(str(it.get("code")))
+                        acts = [x for x in await list_external_actions(a0["id"]) if (x.get("status") or "confirmed") == "confirmed"]
+                        before = [x for x in acts if str(x.get("trade_date") or "")[:10] < day]
+                        sa = compute_external_state(acts, a0.get("asset_type"))
+                        sb = compute_external_state(before, a0.get("asset_type"))
+                        sells = [x for x in acts if str(x.get("trade_date") or "")[:10] == day
+                                 and (x.get("action_type") or "").upper() in ("REDEEM", "SELL", "REDUCE")]
+                        sh_b = sb.get("shares") or 0
+                        cost_before = round((sb.get("diluted_cost") or sb.get("cost_amount") or 0) / sh_b, 4) if sh_b else None
+                    px = [float(a.get("price") or a.get("unit_price") or 0) for a in sells]
+                    qty = [abs(float(a.get("shares") or 0)) for a in sells]
+                    if sum(qty) > 0:
+                        row["卖出均价"] = round(sum(p * q for p, q in zip(px, qty)) / sum(qty), 4)
+                    row["卖出前持仓成本"] = cost_before
+                    if it.get("type") == "A" and sb.get("fifo_cost_price"):
+                        row["这批股票的买入均价(FIFO)"] = round(float(sb["fifo_cost_price"]), 4)
+                    row["本次卖出已实现"] = round(float(sa.get("realized_pnl") or 0) - float(sb.get("realized_pnl") or 0), 2)
+                except Exception as e:  # noqa: BLE001
+                    row["已实现_错误"] = str(e)
+            rows.append(row)
+        return {"日期": r.get("date"), "全账户今日盈亏": r.get("total"), "其中今日清仓部分": round(closed_sum, 2),
+                "其中估算部分(场外基金净值未出)": r.get("estimated_part"), "未能计算": r.get("unknown"), "明细": rows,
+                "note": "今日盈亏 = 现市值 + 今日卖出所得 − 昨收市值 − 今日买入成本(现金流口径, 含手续费), "
+                        "**今天清仓的票也在明细里**(今日清仓=true, 现持有=0) —— 回答今天的盈亏/操作/'今天怎么样'时必须把它们算进去, "
+                        "别只看 get_holdings(那里只有还在手里的)。"
+                        "今日盈亏是相对昨收的当天变动; 本次卖出已实现 = 今天这笔卖出新增的已实现盈亏, 两者口径不同, 分开说。"
+                        "A股的 卖出前持仓成本 是综合成本(之前做T/减仓的盈亏已摊进去, 那部分当时已计入已实现), 所以 本次卖出已实现 ≠ (卖价−综合成本)×股数;"
+                        "讲'这批股票买在多少、卖在多少'用 这批股票的买入均价(FIFO)。"
+                        "标 估算 的是场外基金按底层代理估的当日盈亏, 净值公布后会修正。"}
     except Exception as e:
         return {"error": str(e)}
 
@@ -3048,6 +3114,8 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"keyword": {"type": "string", "description": "搜索词, 如 股票名/题材词"}}, "required": ["keyword"]}},
     {"name": "read_zsxq_file", "description": "读知识星球某个附件的正文(券商研报/会议记录 docx·pdf)。get_zsxq_digest 返回的帖子里带 附件列表(file_id + 名称), 想看某份研报讲了什么就用它取正文。内容是第三方研报, 只按要点提炼转述(讲了什么/关键数字/结论), 不整篇复述; 扫描件取不到文字会如实说明。",
      "input_schema": {"type": "object", "properties": {"file_id": {"type": "string", "description": "附件 id, 从 附件列表 取"}, "name": {"type": "string", "description": "文件名(可选, 用于判断格式)"}}, "required": ["file_id"]}},
+    {"name": "get_today_pnl", "description": "查用户**今天**的盈亏与操作: 全账户当日盈亏(券商口径, 含今天清仓/新建的仓) + 逐只明细(今日盈亏、今日买卖股数、是否今日清仓/新建) + 今天卖出的每只的卖出均价、卖出前持仓成本、本次卖出已实现盈亏。回答'今天怎么样/今天赚了亏了多少/今天我做了什么/今天的操作对不对/复盘今天'时必用 —— 今天清仓的票不在 get_holdings 里, 只有这里有。",
+     "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_holdings", "description": "查用户当前**全部**在持: A股(代码/名称/股数/综合成本/持有天数) + 其他持仓(场内ETF/场外基金/理财/现金/加密/机器人, 含份额或金额; 有定投计划的基金带 定投计划 字段——频率+每期金额)。回答'我的持仓/我有什么/我持有啥/哪些在定投/跟我持仓的关系'时用——持仓不止A股, 用户还有基金/ETF/现金/理财/机器人。要各大类占比或现金理财结构分析则用 get_asset_allocation。",
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_thesis", "description": "读用户当初记录的买入逻辑(为什么买这只)+ **逻辑漂移**。回答'我当初为什么买X、X的逻辑还成立吗、帮我复盘X'时用: 拿到 thesis 后对照现价/基本面/消息/红线, 客观说每条理由还成不成立。传 code 时另带漂移分析: 这段逻辑改过几版、每一版是跟着基本面改的还是**只跟着股价**改的(后者=事后合理化的迹象, 带当时的浮亏)、末版之后事实又变了什么、以及逐句 diff(改写/删除/新增)。复盘改过的逻辑必须先说它被改过 —— 拿照着股价改过的说法去对现状, 必然自洽。不传 code 看全部持仓的逻辑(不含漂移)。仅当用户记过才有。",
@@ -3138,6 +3206,7 @@ _EXECUTORS = {
     "get_peers": lambda a: _tool_peers(a.get("code", "")),
     "get_shareholders": lambda a: _tool_shareholders(a.get("code", "")),
     "get_holdings": lambda a: _tool_get_holdings(),
+    "get_today_pnl": lambda a: _tool_today_pnl(),
     "get_zsxq_digest": lambda a: _tool_zsxq_digest(a.get("days", 1), a.get("all_authors")),
     "search_zsxq": lambda a: _tool_zsxq_search(a.get("keyword", "")),
     "read_zsxq_file": lambda a: _tool_zsxq_file(a.get("file_id", ""), a.get("name", "")),
@@ -3257,7 +3326,7 @@ _SYSTEM = (
     "工具: resolve_stock(名字转代码)、get_quote(个股实时行情)、get_trend(个股近N日走势)、get_news(个股新闻)、"
     "get_fund_flow(个股主力资金流:谁在买卖)、get_lhb(龙虎榜:游资/机构席位)、get_stock_concepts(个股所属概念板块)、"
     "get_fundamentals(基本面+估值:营收净利/ROE/PE/PB)、get_commodity(关联金属期货价)、"
-    "get_holdings(用户持仓)、get_market_sentiment(大盘打板情绪)、get_sector_momentum(板块趋势矩阵:动量/退潮/资金流)、"
+    "get_holdings(用户持仓)、get_today_pnl(今天的盈亏与操作, 含今天清仓的票)、get_market_sentiment(大盘打板情绪)、get_sector_momentum(板块趋势矩阵:动量/退潮/资金流)、"
     "get_hot_concepts(热门概念榜)、get_hot_rank(资金人气榜)、get_market_news(政策面)。\n"
     "【名称→代码一律实解析】用户口中的任何标的称呼(全名/简称/行业词, 如'通信''半导体''创新药')映射到代码这一步, 一律以 resolve_stock 的返回为准——"
     "它优先命中用户在持标的(含场内ETF), 与用户语境天然对齐: 持有通信ETF的用户说'通信', 指的就是那只ETF。"
@@ -3492,7 +3561,7 @@ _TOOL_CN = {
     "get_news": "查新闻", "get_intraday": "查分时", "get_announcements": "查公告", "get_fund_flow": "查资金流", "get_lhb": "查龙虎榜", "get_seat_history": "查席位历史", "get_deep_lhb": "查深度龙虎榜",
     "get_company_profile": "查公司主营", "get_red_flags": "查红线风险", "screen_quality": "跑去劣筛选", "get_capital_allocation": "查资本配置", "get_stock_concepts": "查所属概念", "get_fundamentals": "查基本面", "get_commodity": "查商品价",
     "get_peers": "同行对比", "get_shareholders": "查股东解禁",
-    "get_holdings": "看持仓", "get_zsxq_digest": "读星球", "search_zsxq": "搜星球", "read_zsxq_file": "读星球附件", "get_thesis": "看买入逻辑", "get_asset_allocation": "看资产配置", "get_trades": "查成交记录", "get_market_sentiment": "看大盘情绪", "get_market_review": "复盘强势股", "get_inst_flow": "查机构动向", "get_earnings": "查业绩预告",
+    "get_holdings": "看持仓", "get_today_pnl": "看今日盈亏", "get_zsxq_digest": "读星球", "search_zsxq": "搜星球", "read_zsxq_file": "读星球附件", "get_thesis": "看买入逻辑", "get_asset_allocation": "看资产配置", "get_trades": "查成交记录", "get_market_sentiment": "看大盘情绪", "get_market_review": "复盘强势股", "get_inst_flow": "查机构动向", "get_earnings": "查业绩预告",
     "get_sector_momentum": "看板块动量", "get_hot_rank": "看资金热度",
     "get_hot_concepts": "看热门概念", "get_board_stocks": "查板块龙头", "get_market_news": "看政策快讯", "web_search": "联网搜索",
     "get_chain_quote": "产业链量价", "read_url": "读网页全文", "get_global_indices": "看全球指数", "get_coiled_stocks": "扫横盘蓄势",
