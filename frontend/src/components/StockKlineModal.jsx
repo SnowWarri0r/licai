@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { fetchJSON } from '../hooks/useApi'
 import ProKline from './ProKline'
+import { AnalyzerChips, AnalyzerPanel } from './AnalyzerPanel'
 import { MinuteChart } from './kline/MinuteChart'
 import { LhbPanel, OrderBook, Ticks } from './kline/panels'
 import PriceVolumeTable from './kline/PriceVolumeTable'
@@ -16,6 +17,7 @@ export default function StockKlineModal({ holding, onClose }) {
   const [tickMode, setTickMode] = useState(false)   // 分时: 逐笔精绘(还原分钟内秒级尖峰)
   const [panic, setPanic] = useState(null)          // 恐慌逃离指数(客观卖压强度)
   const [inst, setInst] = useState(null)            // 机构进货标记(龙虎榜机构净买, 滞后硬数据)
+  const [analyzers, setAnalyzers] = useState([])    // 已装分析插件(licai.analyzers)的解读, 没装为空
   const [book, setBook] = useState(null)
   const [ticks, setTicks] = useState([])
   const [loading, setLoading] = useState(true)
@@ -75,9 +77,10 @@ export default function StockKlineModal({ holding, onClose }) {
 
   // 恐慌逃离指数 + 机构进货标记(仅 A 股, 盘后/滞后硬数据, 客观非信号)
   useEffect(() => {
-    if (!isA || !code) { setPanic(null); setInst(null); return }
+    if (!isA || !code) { setPanic(null); setInst(null); setAnalyzers([]); return }
     let alive = true
-    setPanic(null); setInst(null)
+    setPanic(null); setInst(null); setAnalyzers([])
+    fetchJSON(`/api/market/analyzers/${encodeURIComponent(code)}`).then(d => alive && setAnalyzers(d?.results || [])).catch(() => {})
     fetchJSON(`/api/market/panic/${encodeURIComponent(code)}`).then(d => alive && setPanic(d?.error ? null : d)).catch(() => {})
     fetchJSON(`/api/market/inst-accum/${encodeURIComponent(code)}`).then(d => alive && setInst(d?.error ? null : d)).catch(() => {})
     return () => { alive = false }
@@ -126,6 +129,7 @@ export default function StockKlineModal({ holding, onClose }) {
                   : <span className="text-text-muted">无上榜</span>}
               </span>
             )}
+            <AnalyzerChips results={analyzers} />
           </div>
           <div className="flex gap-1 items-center">
             {showTabs.map(t => (
@@ -157,6 +161,7 @@ export default function StockKlineModal({ holding, onClose }) {
                 : <ProKline code={code} period={tab === '周' ? 'week' : tab === '月' ? 'month' : 'day'}
                     days={250} cost={cost} actions={actions} height={460} />}
             </div>
+            <AnalyzerPanel results={analyzers} />
           </div>
 
           {/* 侧栏: 五档 + 逐笔 (TDX) */}
