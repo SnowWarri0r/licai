@@ -166,6 +166,15 @@ async def minute(code: str, date: str = "") -> dict | None:
     return {"date": data.get("date"), "points": pts}
 
 
+def _hist_date(date: str) -> str:
+    """全天逐笔(/api/minute-trade-all)取 date 的规则: 只有**过去的交易日**才传 date(走历史库);
+    当日盘中历史库还没有今天的数据, 传 date=今天会查历史库返回空——必须**不传 date** 走当日实时。
+    返回应当作为 date 参数下发的字符串(过去日=YYYYMMDD), 当日/空返回空串(=不下发)。"""
+    import time as _tm
+    d = str(date or "").replace("-", "")
+    return d if (d and d < _tm.strftime("%Y%m%d")) else ""
+
+
 async def minute_all(code: str, date: str = "") -> dict | None:
     """逐笔精绘分时: 全天逐笔(时间序), 保留每一笔成交 —— 能还原秒级脉冲(盘口被打空的
     "闪电"尖峰), 而 minute() 的 1 分钟采样会把这种分钟内瞬时高/低点丢掉。
@@ -174,8 +183,9 @@ async def minute_all(code: str, date: str = "") -> dict | None:
     if not _BASE_URL:
         return None
     params = {"code": _mkcode(code)}
-    if date:
-        params["date"] = str(date).replace("-", "")
+    hd = _hist_date(date)                       # 过去日才传 date; 当日盘中不传(否则查历史库空)
+    if hd:
+        params["date"] = hd
     data = await asyncio.to_thread(_get_sync, "/api/minute-trade-all", params)
     rows = (data or {}).get("List") if isinstance(data, dict) else None
     if not rows:   # 兜底: 全天接口无数据时退回近笔逐笔(仍时间序)
@@ -263,8 +273,9 @@ async def price_volume(code: str, date: str = "") -> dict | None:
     if not _BASE_URL:
         return None
     params = {"code": _mkcode(code)}
-    if date:
-        params["date"] = date
+    hd = _hist_date(date)                       # 过去日才传 date; 当日盘中不传(否则查历史库空)
+    if hd:
+        params["date"] = hd
     # 全天分时成交(含集合竞价), 比 /api/trade 的近1800笔完整
     data = await asyncio.to_thread(_get_sync, "/api/minute-trade-all", params)
     rows = (data or {}).get("List") if isinstance(data, dict) else None
