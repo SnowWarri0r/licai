@@ -75,6 +75,13 @@ async def analyzers(stock_code: str):
     return {"results": results, "live_last": live_last}
 
 
+@router.get("/holiday-context")
+async def holiday_context():
+    """临近长假(前 7 / 后 5 个交易日)时, 同一假期历年的指数表现; 其余时间 active=false。"""
+    from services.holiday_context import build
+    return await build()
+
+
 @router.get("/float-shares/{stock_code}")
 async def float_shares(stock_code: str):
     """流通股本变动表(K 线筹码分布算换手率用)。ETF/非 A 股返回空 schedule。"""
