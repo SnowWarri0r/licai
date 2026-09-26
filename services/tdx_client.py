@@ -232,6 +232,21 @@ async def kline(code: str, ktype: str = "day", limit: int = 200) -> dict | None:
     return {"type": kt, "bars": bars} if bars else None
 
 
+async def raw_daily_close(code: str) -> dict:
+    """不复权日收盘 {YYYY-MM-DD: close}(TDX /api/kline-all, 全历史)。
+    ⚠️ /api/kline-history 对个股和 ETF 都是前复权(与同花顺一致), 要真实成交价标度只能用这个。"""
+    if not _BASE_URL:
+        return {}
+    data = await asyncio.to_thread(_get_sync, "/api/kline-all", {"code": _mkcode(code), "type": "day"})
+    rows = (data or {}).get("list") if isinstance(data, dict) else None
+    out = {}
+    for k in rows or []:
+        c = _f(k.get("Close"))
+        if c:
+            out[str(k.get("Time") or "")[:10]] = c
+    return out
+
+
 async def trade(code: str, limit: int = 60) -> dict | None:
     """当日逐笔成交(TDX /api/trade)。返回 {ticks:[{time, price, 手, dir}]}(最近在前) 或 None。
     dir: 买/卖/中性 (Status 0/1/2)。"""
