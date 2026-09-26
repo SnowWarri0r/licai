@@ -242,6 +242,23 @@ async def _enrich(asset: dict) -> dict:
                     quote["proxy_details"] = proxy["proxies"]
             except Exception as e:
                 print(f"[fund-proxy] {asset['code']} failed: {e}")
+            # 回归估算(每只基金按自己历史净值拟合, 离线评估误差约为 top10 加权的 1/2~1/8): 有模型就替换, 没有就后台拟合
+            try:
+                from services.fund_nav_model import ensure_fit, estimate
+                nm = asset.get("name") or ""
+                await ensure_fit(asset["code"], nm)
+                bond = ("债" in nm or "固收" in nm)
+                top = None
+                if quote.get("proxy_details") is not None:
+                    top = proxy.get("abs_weighted_change_pct") if bond else proxy.get("weighted_change_pct")
+                est = estimate(asset["code"], quote.get("nav_date") or "", top)
+                if est is not None:
+                    quote["proxy_change_pct"] = est["pct"]
+                    quote["proxy_label"] = (f"回归估算(按该基金近期净值拟合, 历史日均误差约 {est['mae']:.2f}%)"
+                                            + (f", 含 {est['days']} 个待公布日至 {est['through'][5:]}" if est["days"] > 1 else ""))
+                    quote["model_est"] = est
+            except Exception as e:
+                print(f"[fund-nav-model] {asset['code']} failed: {e}")
         # 今日涨跌口径: 场外基金净值是 T+1, change_pct 常是 1-2 天前的旧净值,
         # 拿来当"今日"会把昨天的涨幅冒充成今天。折算规则:
         #   - nav_date 为空 (场内 ETF 实时市价) 或 == 今天 → change_pct 就是今天
