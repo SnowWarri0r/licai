@@ -174,6 +174,13 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
     return () => { alive = false }
   }, [])
   const famIdx = useMemo(() => buildFamilyIndex(expo), [expo])
+  // 组合风险: 下一交易日 / 5 日 95% 最坏亏损(EWMA 协方差, 附回测突破率)
+  const [risk, setRisk] = useState(null)
+  useEffect(() => {
+    let alive = true
+    fetchJSON('/api/portfolio/risk').then(d => alive && setRisk(d?.available ? d : null)).catch(() => {})
+    return () => { alive = false }
+  }, [])
 
   // Risk insights: concentration warnings + cross-type overlap families.
   // Always computed from ALL rows (not filtered) so toggling filter doesn't change advice.
@@ -387,8 +394,23 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
       })()}
 
       {/* Risk insights strip */}
-      {!isEmpty && (insights.warnings.length > 0 || (expo?.warnings || []).length > 0) && (
+      {!isEmpty && (risk || insights.warnings.length > 0 || (expo?.warnings || []).length > 0) && (
         <div className="px-3 md:px-6 py-2.5 border-b border-border bg-surface-2/60 flex flex-col gap-1.5">
+          {risk && (
+            <div className="flex items-baseline gap-2 text-[11.5px] flex-wrap" title={risk.note + (risk.excluded?.length ? ` 未纳入: ${risk.excluded.map(e => `${e.name} ${Math.round(e.mv)}元`).join('、')}。` : '')}>
+              <span className="inline-flex items-center justify-center w-4 h-4 rounded-full text-[10px] font-bold shrink-0"
+                style={{ background: '#85a0b41f', color: '#85a0b4', border: '1px solid #85a0b460' }}>σ</span>
+              <span className="text-text">
+                组合波动: 下一个交易日 95% 的情况下最多亏 <b className="font-mono text-bull">¥{Math.round(risk.var1).toLocaleString()}</b>
+                <span className="text-text-muted">(波动资产 ¥{Math.round(risk.risky_value / 1000)}k 的 {(risk.var1 / risk.risky_value * 100).toFixed(1)}%)</span>
+                {' '}· 5 个交易日 <b className="font-mono text-bull">¥{Math.round(risk.var5).toLocaleString()}</b>
+              </span>
+              <span className="text-text-dim">主要来自 {risk.contrib.slice(0, 3).map(c => `${c.name.replace(/\(.*$/, '').slice(0, 8)} ${Math.round(c.share * 100)}%`).join(' · ')}</span>
+              {risk.backtest?.rate != null && (
+                <span className="text-text-muted text-[10.5px]">回测 {risk.backtest.days} 天超出 {risk.backtest.breaches} 次({(risk.backtest.rate * 100).toFixed(1)}%, 应≈5%)</span>
+              )}
+            </div>
+          )}
           {/* low 级的不进这条提示带: 穿透会挖出一堆"某只票占 0.8%、来自 5 只基金"的细项,
               全铺出来会把真正该看的两三条(行业过半、两只基金同一注)压下去。细项在
               「问问市场」问一句就有(get_exposure 工具), 或直接看 /api/portfolio/exposure */}
