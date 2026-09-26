@@ -31,6 +31,61 @@ async def tdx_status():
     return {"enabled": _tdx.is_enabled()}
 
 
+@router.get("/eod-review")
+async def eod_review():
+    """每日收盘 · 大盘全景复盘(情绪广度+主线+领涨吸金+机构龙虎榜)。客观呈现,非买卖信号。"""
+    from services.eod_market_review import build_market_review
+    return await build_market_review()
+
+
+@router.get("/inst-accum/{stock_code}")
+async def inst_accum(stock_code: str):
+    """机构进货标记(滞后硬数据): 近30天龙虎榜机构专用席位净买。上榜才披露=抽样,非买卖信号。"""
+    from services.inst_flow import inst_flow_for
+    bare = normalize_stock_code(stock_code).split(".")[-1]
+    if len(bare) != 6 or not bare.isdigit():
+        return {"error": "仅支持 A 股 6 位代码"}
+    r = await inst_flow_for(bare)
+    if r.get("error"):
+        return r
+    evs = r.get("events") or []
+    net = round(sum(e.get("净买亿") or 0 for e in evs), 2)
+    return {
+        "code": bare,
+        "net_buy_yi": net,                                  # 近30天机构净买(亿), 正=净进货
+        "appearances": len(evs),                            # 机构席位上榜次数
+        "direction": "买入" if net > 0 else "卖出" if net < 0 else "无",
+        "last_date": r.get("最近上榜"),
+        "since_last_pct": r.get("距最近上榜%"),              # 现价较最近上榜日
+        "events": evs,
+        "note": r.get("note") or "近30天龙虎榜机构席位记录(上榜才披露, 抽样非全量, 非买卖建议)。",
+    }
+
+
+@router.get("/panic/{stock_code}")
+async def panic(stock_code: str):
+    """恐慌逃离指数(0-100, 盘后硬数据): 当日卖压强度 + 自身历史分位。客观描述非买卖信号。"""
+    from services.panic_index import compute as _panic
+    from services.market_review import _limit_pct
+    bare = normalize_stock_code(stock_code).split(".")[-1]
+    if len(bare) != 6 or not bare.isdigit():
+        return {"error": "仅支持 A 股 6 位代码"}
+    df = await get_historical_data(bare, 160)
+    if df is None or len(df) < 6:
+        return {"error": "日线数据不足"}
+    name = ""
+    try:
+        q = (await get_realtime_quotes([bare])).get(bare) or {}
+        name = q.get("name") or ""
+    except Exception:
+        pass
+    bars = [{"date": str(r["日期"])[:10], "open": r["开盘"], "close": r["收盘"],
+             "high": r["最高"], "low": r["最低"], "volume": r["成交量"]}
+            for _, r in df.iterrows()]
+    out = _panic(bars, limit=_limit_pct(bare, name))
+    return out or {"error": "计算失败(数据不足)"}
+
+
 @router.get("/tdx/orderbook/{stock_code}")
 async def tdx_orderbook(stock_code: str):
     """五档盘口 + 内外盘(TDX)。"""

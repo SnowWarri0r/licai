@@ -1,22 +1,21 @@
 import { useEffect, useState } from 'react'
 import { fetchJSON } from '../hooks/useApi'
-import { CandleChart } from './kline/CandleChart'
+import ProKline from './ProKline'
 import { MinuteChart } from './kline/MinuteChart'
 import { LhbPanel, OrderBook, Ticks } from './kline/panels'
 import PriceVolumeTable from './kline/PriceVolumeTable'
-import { BUY_COLOR, MA_WARMUP, SELL_COLOR, colorPct, fmtPct, fmtVal } from './kline/shared'
+import { BUY_COLOR, SELL_COLOR, colorPct, fmtPct, fmtVal } from './kline/shared'
 import { createPortal } from 'react-dom'
 
 
 export default function StockKlineModal({ holding, onClose }) {
   const [tdxOn, setTdxOn] = useState(false)
   const [tab, setTab] = useState('日')            // 分时 | 日 | 周 | 月
-  const [days, setDays] = useState(60)
-  const [series, setSeries] = useState([])
-  const [warmup, setWarmup] = useState([])        // MA 预热: 可见窗口前的 close 序列(不显示)
   const [actions, setActions] = useState([])
   const [minute, setMinute] = useState(null)
   const [tickMode, setTickMode] = useState(false)   // 分时: 逐笔精绘(还原分钟内秒级尖峰)
+  const [panic, setPanic] = useState(null)          // 恐慌逃离指数(客观卖压强度)
+  const [inst, setInst] = useState(null)            // 机构进货标记(龙虎榜机构净买, 滞后硬数据)
   const [book, setBook] = useState(null)
   const [ticks, setTicks] = useState([])
   const [loading, setLoading] = useState(true)
@@ -43,43 +42,23 @@ export default function StockKlineModal({ holding, onClose }) {
         : `/api/market/tdx/minute/${encodeURIComponent(code)}`       // 1分钟采样: 快, 240点
       fetchJSON(murl)
         .then(d => setMinute(d?.data || null)).catch(e => setErr(e?.message || '加载失败')).finally(done)
-    } else if ((tab === '周' || tab === '月') && tdxOn) {
-      setWarmup([])
-      fetchJSON(`/api/market/tdx/kline/${encodeURIComponent(code)}?type=${tab === '周' ? 'week' : 'month'}&limit=200`)
-        .then(d => {
-          const bars = d?.data?.bars || []
-          if (!bars.length) { setErr('暂无K线'); setSeries([]) }
-          else setSeries(bars.map(b => ({ date: (b.date || '').slice(0, 10), open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume })))
-        }).catch(e => setErr(e?.message || '加载失败')).finally(done)
     } else {
-      // 日K (akshare, 带成本线 + 自己买卖标记). 多取 MA_WARMUP 根做均线预热, 让 MA 从首根可见
-      // 蜡烛就连续, 不在左侧错位断头. 场内 ETF 走 /api/assets/{id}/actions 取 BS 流水.
+      // 日/周/月 K 线交给 ProKline 自取(可缩放, 与榜单同源)。这里只取买卖点流水传给它。
+      // 场内 ETF 走 /api/assets/{id}/actions; A股走 portfolio actions。
       const actUrl = assetId
         ? `/api/assets/${assetId}/actions`
         : `/api/portfolio/${encodeURIComponent(code)}/actions`
-      Promise.all([
-        fetchJSON(`/api/market/history/${encodeURIComponent(code)}?days=${days + MA_WARMUP}`),
-        fetchJSON(actUrl).catch(() => []),
-      ]).then(([k, a]) => {
-        if (!Array.isArray(k) || !k.length) { setErr('暂无 K 线数据'); setSeries([]); setWarmup([]) }
-        else {
-          const all = k.map(x => ({ date: x.time, open: x.open, high: x.high, low: x.low, close: x.close, volume: x.volume }))
-          const cut = Math.max(0, all.length - days)        // 前 cut 根仅作 MA 预热, 不显示
-          setWarmup(all.slice(0, cut).map(b => b.close))
-          setSeries(all.slice(cut))
-        }
-        // 场外 asset 流水: {actions:[{unit_price,...}]} → 归一成 BS 标记要的 {price,...}
-        // 份额拆分后 K 线是前复权标度: 标记优先用后端算的 adj_price/adj_shares(拆分调整),
-        // 原始成交价留在流水列表里; SPLIT 记录本身不是买卖, 不打点
+      fetchJSON(actUrl).catch(() => []).then(a => {
+        // 份额拆分后 K 线是前复权标度: 标记优先用后端算的 adj_price/adj_shares; SPLIT 不打点
         const raw = Array.isArray(a) ? a : (a?.actions || [])
         setActions(raw.filter(x => x.action_type !== 'SPLIT').map(x => ({
           ...x,
           price: x.adj_price ?? x.price ?? x.unit_price,
           shares: x.adj_shares ?? x.shares,
         })))
-      }).catch(e => setErr(e?.message || '加载失败')).finally(done)
+      }).finally(done)
     }
-  }, [code, tab, days, tdxOn, assetId, tickMode])
+  }, [code, tab, tdxOn, assetId, tickMode])
 
   // 五档 + 逐笔 (TDX, 仅 A 股; 5s 刷新)
   useEffect(() => {
@@ -94,6 +73,16 @@ export default function StockKlineModal({ holding, onClose }) {
     return () => { alive = false; clearInterval(t) }
   }, [code, tdxOn, isA])
 
+  // 恐慌逃离指数 + 机构进货标记(仅 A 股, 盘后/滞后硬数据, 客观非信号)
+  useEffect(() => {
+    if (!isA || !code) { setPanic(null); setInst(null); return }
+    let alive = true
+    setPanic(null); setInst(null)
+    fetchJSON(`/api/market/panic/${encodeURIComponent(code)}`).then(d => alive && setPanic(d?.error ? null : d)).catch(() => {})
+    fetchJSON(`/api/market/inst-accum/${encodeURIComponent(code)}`).then(d => alive && setInst(d?.error ? null : d)).catch(() => {})
+    return () => { alive = false }
+  }, [code, isA])
+
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose() }
     window.addEventListener('keydown', onKey)
@@ -102,9 +91,9 @@ export default function StockKlineModal({ holding, onClose }) {
 
   if (!holding) return null
   const cost = holding.cost_price > 0 ? holding.cost_price : null
-  const prevClose = book?.prev_close || (series.length ? series[series.length - 1].close : holding.current_price) || holding.current_price
-  const closes = series.map(d => d.close).filter(c => c > 0)
-  const vsCostPct = cost && (book?.price || closes[closes.length - 1]) ? (((book?.price || closes[closes.length - 1]) / cost) - 1) * 100 : null
+  const prevClose = book?.prev_close || holding.current_price   // 分时基准: TDX盘口昨收, 退回现价
+  const px = book?.price || holding.current_price
+  const vsCostPct = cost && px ? ((px / cost) - 1) * 100 : null
   const showTabs = tdxOn ? ['分时', '日', '周', '月', ...(isA ? ['分价'] : [])] : ['日']
   const hasSide = tdxOn && isA
 
@@ -120,6 +109,23 @@ export default function StockKlineModal({ holding, onClose }) {
             <span className={`text-[12px] font-mono ${colorPct(holding.price_change_pct)}`}>{fmtPct(holding.price_change_pct)}</span>
             {cost != null && <span className={`text-[11px] font-mono ${colorPct(vsCostPct)}`} title="相对持仓成本">vs 成本 {fmtPct(vsCostPct)}</span>}
             {book?.['盘口'] && <span className="text-[10.5px] text-accent">· {book['盘口']}</span>}
+            {panic && (
+              <span className="text-[10.5px] font-mono px-1.5 py-0.5 rounded"
+                style={{ border: '1px solid var(--color-border-med)' }}
+                title={`恐慌逃离指数 ${panic.score}/100(${panic.level})· 今天卖压比该股过去${panic.sample_days}日里 ${panic.percentile}% 的日子更急。跌${panic.drop_pct}% 收盘位置${panic.close_pos} 量比${panic.vol_ratio}${panic.limit_down ? ' 跌停' : ''}${panic.new_low ? ' 破新低' : ''}。客观卖压强度,非买卖信号。`}>
+                恐慌 <span style={{ color: panic.score >= 50 ? 'var(--color-bull-bright)' : 'var(--color-text)' }}>{panic.score}</span>
+                <span className="text-text-muted"> {panic.level}{panic.percentile != null ? ` · ${panic.percentile}%位` : ''}</span>
+              </span>
+            )}
+            {inst && (
+              <span className="text-[10.5px] font-mono px-1.5 py-0.5 rounded"
+                style={{ border: '1px solid var(--color-border-med)' }}
+                title={inst.appearances ? `近30天龙虎榜机构专用席位: ${inst.direction} 净额 ${inst.net_buy_yi}亿, ${inst.appearances}次上榜, 最近 ${inst.last_date}(现价较上榜${inst.since_last_pct}%)。上榜日才披露=抽样滞后,非全量、非买卖信号。` : '近30天该股无龙虎榜机构席位披露(上榜才披露,不代表机构没动作)'}>
+                机构 {inst.appearances
+                  ? <span style={{ color: inst.net_buy_yi > 0 ? 'var(--color-bear-bright)' : 'var(--color-bull-bright)' }}>{inst.direction}{inst.net_buy_yi}亿</span>
+                  : <span className="text-text-muted">无上榜</span>}
+              </span>
+            )}
           </div>
           <div className="flex gap-1 items-center">
             {showTabs.map(t => (
@@ -133,15 +139,6 @@ export default function StockKlineModal({ holding, onClose }) {
         <div className={hasSide ? 'flex gap-3' : ''}>
           {/* 主图 */}
           <div className="flex-1 min-w-0">
-            {/* 日K 才显示天数切换 */}
-            {tab === '日' && (
-              <div className="flex gap-1 mb-2">
-                {[30, 60, 120, 250].map(d => (
-                  <button key={d} onClick={() => setDays(d)} className="px-2 py-[2px] rounded text-[10px] cursor-pointer"
-                    style={{ border: '1px solid', borderColor: days === d ? 'var(--color-accent)' : 'var(--color-border-med)', color: days === d ? 'var(--color-accent)' : 'var(--color-text-dim)' }}>{d}日</button>
-                ))}
-              </div>
-            )}
             {/* 分时: 逐笔精绘开关. 1分钟采样丢失分钟内秒级尖峰(盘口被打空的"闪电"), 逐笔精绘用全天逐笔还原 */}
             {tab === '分时' && (
               <div className="flex gap-1 mb-2 items-center">
@@ -154,10 +151,11 @@ export default function StockKlineModal({ holding, onClose }) {
             )}
             <div className="bg-surface-3 rounded-md p-2">
               {tab === '分价' ? <PriceVolumeTable code={code} prevClose={prevClose} decimals={/^[15]\d{5}$/.test(String(code)) ? 3 : 2} />
-                : loading ? <div className="h-[360px] flex items-center justify-center text-text-dim text-[12px]">加载中…</div>
-                : err ? <div className="h-[360px] flex items-center justify-center text-text-dim text-[12px]">{err}</div>
-                : tab === '分时' ? <MinuteChart points={minute?.points || []} prevClose={prevClose} actions={actions} day={minute?.date} tickMode={tickMode} />
-                : <CandleChart series={series} cost={tab === '日' ? cost : null} actions={tab === '日' ? actions : []} warmup={tab === '日' ? warmup : []} />}
+                : tab === '分时' ? (loading ? <div className="h-[360px] flex items-center justify-center text-text-dim text-[12px]">加载中…</div>
+                    : err ? <div className="h-[360px] flex items-center justify-center text-text-dim text-[12px]">{err}</div>
+                    : <MinuteChart points={minute?.points || []} prevClose={prevClose} actions={actions} day={minute?.date} tickMode={tickMode} />)
+                : <ProKline code={code} period={tab === '周' ? 'week' : tab === '月' ? 'month' : 'day'}
+                    days={250} cost={cost} actions={actions} height={460} />}
             </div>
           </div>
 
