@@ -10,6 +10,57 @@ const pctColor = (s) => {
 }
 
 // 大盘全景: 今天全市场客观定格(情绪广度 + 主线 + 机构龙虎榜)。客观呈现,非买卖信号。
+const hpct = (v) => v == null ? '--' : `${v > 0 ? '+' : ''}${v.toFixed(2)}%`
+const hcls = (v) => v == null ? 'text-text-muted' : v > 0 ? 'text-bear' : v < 0 ? 'text-bull' : 'text-text-dim'
+
+// 长假前后: 同一假期历年的指数表现(只在节前 7 / 节后 5 个交易日内出现)
+function HolidayContext() {
+  const [h, setH] = useState(null)
+  const [open, setOpen] = useState(false)
+  useEffect(() => {
+    let alive = true
+    fetchJSON('/api/market/holiday-context').then(d => alive && setH(d)).catch(() => {})
+    return () => { alive = false }
+  }, [])
+  if (!h?.active || !h.indexes?.length) return null
+  const when = h.phase === 'pre'
+    ? `距${h.name}休市还有 ${h.trading_days_left} 个交易日(${h.last_day.slice(5)} 收盘后休市 ${h.closed_days} 天, ${h.resume.slice(5)} 开市)`
+    : `${h.name}节后第 ${h.day_after} 个交易日`
+  const S = ({ s, k, label }) => s?.[k] ? (
+    <span className="text-text-dim">{label} <span className="text-text-muted">涨{s[k].up}/{s[k].n}次</span> 中位 <span className={`font-mono ${hcls(s[k].median)}`}>{hpct(s[k].median)}</span></span>
+  ) : null
+  return (
+    <div className="bg-surface-3 rounded-lg px-3 py-2.5 mb-2" title={h.note}>
+      <div className="flex items-baseline justify-between gap-2 flex-wrap">
+        <div className="text-[11px] text-text-muted tracking-wider">{when} · 历年{h.name}前后</div>
+        <button onClick={() => setOpen(v => !v)} className="text-[10.5px] text-text-dim hover:text-text">{open ? '收起逐年' : '看逐年'}</button>
+      </div>
+      {h.indexes.map(ix => (
+        <div key={ix.symbol} className="mt-1">
+          <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11.5px]">
+            <span className="text-text min-w-[64px]">{ix.label}<span className="text-text-muted text-[10px]"> {ix.since}起</span></span>
+            <S s={ix.summary} k="pre5_pct" label="节前5日" />
+            <S s={ix.summary} k="last_day_pct" label="节前最后一天" />
+            <S s={ix.summary} k="post5_pct" label="节后5日" />
+            <S s={ix.summary} k="post2_4_pct" label="节后第2~4日" />
+          </div>
+          {open && (
+            <table className="mt-1 text-[10.5px] font-mono">
+              <thead><tr className="text-text-muted text-right"><th className="text-left font-normal pr-3">年份</th><th className="font-normal px-2">节前5日</th><th className="font-normal px-2">最后一天</th><th className="font-normal px-2">节后5日</th><th className="font-normal px-2">节后2~4日</th></tr></thead>
+              <tbody>{[...ix.rows].reverse().map(r => (
+                <tr key={r.last_day} className="text-right">
+                  <td className="text-left text-text-dim pr-3">{r.year}</td>
+                  {['pre5_pct', 'last_day_pct', 'post5_pct', 'post2_4_pct'].map(k => <td key={k} className={`px-2 ${hcls(r[k])}`}>{hpct(r[k])}</td>)}
+                </tr>))}</tbody>
+            </table>
+          )}
+        </div>
+      ))}
+      <div className="text-[9.5px] text-text-muted mt-1">每年一次, 样本只有十来个; 只是历史分布, 不代表这一次, 不构成买卖建议</div>
+    </div>
+  )
+}
+
 function MarketPanorama() {
   const [m, setM] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -113,7 +164,7 @@ export default function DailyReview({ bare = false }) {
       </div>
 
       {/* 大盘全景: 今天全市场发生了什么(独立取数, 不随 AI 复盘的成败) */}
-      <div className="mb-3.5"><MarketPanorama /></div>
+      <div className="mb-3.5"><HolidayContext /><MarketPanorama /></div>
 
       {loading && !data && <SkeletonCard bare rows={5} label="AI 复盘生成中" />}
       {err && <div className="text-center py-4 text-bear text-[12px]">{err}</div>}
