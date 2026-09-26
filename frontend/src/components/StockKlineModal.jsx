@@ -103,7 +103,7 @@ export default function StockKlineModal({ holding, onClose }) {
 
   return createPortal(
     <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
-      <div className={`bg-surface-2 border border-border rounded-xl p-4 md:p-5 ${hasSide ? 'w-[1040px]' : 'w-[820px]'} max-w-[96vw]`} onClick={e => e.stopPropagation()}>
+      <div className={`bg-surface-2 border border-border rounded-xl p-4 md:p-5 ${hasSide ? 'w-[1040px]' : 'w-[820px]'} max-w-[96vw] max-h-[94vh] overflow-y-auto`} onClick={e => e.stopPropagation()}>
         {/* header */}
         <div className="flex items-start justify-between gap-3 mb-3">
           <div className="flex items-baseline gap-x-2 gap-y-1 flex-wrap min-w-0 flex-1">
