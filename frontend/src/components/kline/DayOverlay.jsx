@@ -21,7 +21,6 @@ export function DayOverlay({ day, code, getBars, onClose, onJumpDay }) {
   const [lhb, setLhb] = useState(null)             // 该日席位明细(懒加载)
   const [seatQ, setSeatQ] = useState('')           // 点席位名 → 该席位历史弹窗
   const ovBodyRef = useRef(null)
-  const [minH, setMinH] = useState(200)            // 分时 viewBox 高: 按浮层实际宽高比算, 铺满不留白
 
   // 浮层: 拉该日分钟数据; ESC 关闭; 龙虎榜页签懒加载
   useEffect(() => {
@@ -47,24 +46,6 @@ export function DayOverlay({ day, code, getBars, onClose, onJumpDay }) {
     // (这里不加 eslint-disable: 那条注释会让 react-hooks 的编译器类规则对整个
     //  effect 放弃分析, 把同一处的 set-state-in-effect 错误一并吞掉。)
   }, [day, code, tick])
-
-  // 分时区实际宽高比 → viewBox 高度(svg 按 720:minH 缩放正好占满容器, 大屏不再上浮留白)
-  useEffect(() => {
-    if (!day || ovTab !== '分时') return
-    const el = ovBodyRef.current
-    if (!el) return
-    const compute = () => {
-      const w = el.clientWidth || 720, h = el.clientHeight || 200
-      // 下限 170: 容器越宽 720*h/w 越小, 宽屏下会压到 140 出头, 价格区所剩无几。
-      // 抬到 170 后即使触底, MinuteChart 按比例分配也还能留出 ~60 单位画价格。
-      // 代价是极宽屏下 svg 按高度贴合、左右留一点白, 好过刻度糊成一片。
-      setMinH(Math.max(170, Math.round(720 * h / w)))
-    }
-    compute()
-    const ro = new ResizeObserver(compute)
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [day, ovTab, minData])
 
   // 基准昨收的复权错位校正: K线昨收是前复权价, TDX 历史分时是当日真实成交价——
   // 除权日前后两个标度错位, 会算出"主板+13%"的假涨跌。同一天(分时收盘 vs 该日前复权收盘)
@@ -134,7 +115,7 @@ export function DayOverlay({ day, code, getBars, onClose, onJumpDay }) {
             {!minErr && !minData && <div className="text-center py-6 text-[11.5px] text-text-dim">分时加载中…</div>}
             {minData && (
               <MinuteChart points={minData.points} prevClose={adjPrev}
-                day={minData.date || day.date} height={minH} tickMode={tick} />
+                day={minData.date || day.date} height="100%" tickMode={tick} />
             )}
           </div>
         )}
