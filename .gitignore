@@ -69,3 +69,6 @@ portfolio.db.*
 
 # 本地脚本与中间产物(不进仓)
 scripts/broker_import/
+
+# 场外基金回归估算模型缓存(含自己持有的基金代码, 本机生成)
+data/fund_nav_model.json
