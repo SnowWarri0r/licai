@@ -166,6 +166,36 @@ async def minute(code: str, date: str = "") -> dict | None:
     return {"date": data.get("date"), "points": pts}
 
 
+async def minute_all(code: str, date: str = "") -> dict | None:
+    """逐笔精绘分时: 全天逐笔(时间序), 保留每一笔成交 —— 能还原秒级脉冲(盘口被打空的
+    "闪电"尖峰), 而 minute() 的 1 分钟采样会把这种分钟内瞬时高/低点丢掉。
+    数据源同 price_volume(/api/minute-trade-all, 含集合竞价), 但**不按价位聚合、按时间顺序返回**。
+    返回 {date, points:[{time(HH:MM), price, 手, dir(买/卖/中性)}]} 或 None。date 空=当日。"""
+    if not _BASE_URL:
+        return None
+    params = {"code": _mkcode(code)}
+    if date:
+        params["date"] = str(date).replace("-", "")
+    data = await asyncio.to_thread(_get_sync, "/api/minute-trade-all", params)
+    rows = (data or {}).get("List") if isinstance(data, dict) else None
+    if not rows:   # 兜底: 全天接口无数据时退回近笔逐笔(仍时间序)
+        data = await asyncio.to_thread(_get_sync, "/api/trade", params)
+        rows = (data or {}).get("List") if isinstance(data, dict) else None
+    if not rows:
+        return None
+    div = _price_div([x.get("Price") for x in rows], await _ref_price(code), code)
+    dirs = {0: "买", 1: "卖", 2: "中性"}
+    pts = []
+    for x in rows:                              # List 为时间升序, 原样保留
+        p = _f(x.get("Price"), div)
+        if p is None:
+            continue
+        t = str(x.get("Time") or "")
+        pts.append({"time": t[11:19] if "T" in t else t, "price": p,
+                    "手": x.get("Volume") or 0, "dir": dirs.get(x.get("Status"), "")})
+    return {"date": (data or {}).get("date"), "points": pts} if pts else None
+
+
 _KTYPES = {"minute1", "minute5", "minute15", "minute30", "hour", "day", "week", "month"}
 
 

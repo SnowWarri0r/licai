@@ -16,6 +16,7 @@ export default function StockKlineModal({ holding, onClose }) {
   const [warmup, setWarmup] = useState([])        // MA 预热: 可见窗口前的 close 序列(不显示)
   const [actions, setActions] = useState([])
   const [minute, setMinute] = useState(null)
+  const [tickMode, setTickMode] = useState(false)   // 分时: 逐笔精绘(还原分钟内秒级尖峰)
   const [book, setBook] = useState(null)
   const [ticks, setTicks] = useState([])
   const [loading, setLoading] = useState(true)
@@ -37,7 +38,10 @@ export default function StockKlineModal({ holding, onClose }) {
     setLoading(true); setErr('')
     const done = () => setLoading(false)
     if (tab === '分时' && tdxOn) {
-      fetchJSON(`/api/market/tdx/minute/${encodeURIComponent(code)}`)
+      const murl = tickMode
+        ? `/api/market/tdx/minute-all/${encodeURIComponent(code)}`   // 逐笔精绘: 全天逐笔, 有秒级尖峰
+        : `/api/market/tdx/minute/${encodeURIComponent(code)}`       // 1分钟采样: 快, 240点
+      fetchJSON(murl)
         .then(d => setMinute(d?.data || null)).catch(e => setErr(e?.message || '加载失败')).finally(done)
     } else if ((tab === '周' || tab === '月') && tdxOn) {
       setWarmup([])
@@ -75,7 +79,7 @@ export default function StockKlineModal({ holding, onClose }) {
         })))
       }).catch(e => setErr(e?.message || '加载失败')).finally(done)
     }
-  }, [code, tab, days, tdxOn, assetId])
+  }, [code, tab, days, tdxOn, assetId, tickMode])
 
   // 五档 + 逐笔 (TDX, 仅 A 股; 5s 刷新)
   useEffect(() => {
@@ -138,11 +142,21 @@ export default function StockKlineModal({ holding, onClose }) {
                 ))}
               </div>
             )}
+            {/* 分时: 逐笔精绘开关. 1分钟采样丢失分钟内秒级尖峰(盘口被打空的"闪电"), 逐笔精绘用全天逐笔还原 */}
+            {tab === '分时' && (
+              <div className="flex gap-1 mb-2 items-center">
+                <button onClick={() => setTickMode(false)} className="px-2 py-[2px] rounded text-[10px] cursor-pointer"
+                  style={{ border: '1px solid', borderColor: !tickMode ? 'var(--color-accent)' : 'var(--color-border-med)', color: !tickMode ? 'var(--color-accent)' : 'var(--color-text-dim)' }}>1分钟</button>
+                <button onClick={() => setTickMode(true)} className="px-2 py-[2px] rounded text-[10px] cursor-pointer"
+                  style={{ border: '1px solid', borderColor: tickMode ? 'var(--color-accent)' : 'var(--color-border-med)', color: tickMode ? 'var(--color-accent)' : 'var(--color-text-dim)' }}
+                  title="用全天逐笔重画, 还原分钟内的秒级尖峰(盘口被打空的闪电), 数据量更大">逐笔精绘</button>
+              </div>
+            )}
             <div className="bg-surface-3 rounded-md p-2">
               {tab === '分价' ? <PriceVolumeTable code={code} prevClose={prevClose} decimals={/^[15]\d{5}$/.test(String(code)) ? 3 : 2} />
                 : loading ? <div className="h-[360px] flex items-center justify-center text-text-dim text-[12px]">加载中…</div>
                 : err ? <div className="h-[360px] flex items-center justify-center text-text-dim text-[12px]">{err}</div>
-                : tab === '分时' ? <MinuteChart points={minute?.points || []} prevClose={prevClose} actions={actions} day={minute?.date} />
+                : tab === '分时' ? <MinuteChart points={minute?.points || []} prevClose={prevClose} actions={actions} day={minute?.date} tickMode={tickMode} />
                 : <CandleChart series={series} cost={tab === '日' ? cost : null} actions={tab === '日' ? actions : []} warmup={tab === '日' ? warmup : []} />}
             </div>
           </div>
