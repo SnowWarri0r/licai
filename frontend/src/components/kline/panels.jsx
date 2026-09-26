@@ -35,29 +35,39 @@ export function OrderBook({ data, prevClose, decimals = 2 }) {
 // ---------------------------------------------------------------------------
 // 逐笔成交
 // ---------------------------------------------------------------------------
-export function Ticks({ ticks, decimals = 2 }) {
+// fill: 占满父容器剩余高度(父级须是纵向 flex)。列表绝对定位, 不参与撑高 —— 否则 40 笔的内容高度
+// 会反过来把侧栏和左侧主图一起拉长; 保底 150px, 与不 fill 时一致。
+export function Ticks({ ticks, decimals = 2, fill = false }) {
   if (!ticks?.length) return null
   const vols = ticks.map(t => Number(t['手']) || 0)
   const avg = vols.reduce((a, b) => a + b, 0) / (vols.length || 1)
   const bigThresh = Math.max(avg * 3, 100)   // 大单: ≥均量3倍且≥100手
+  const rows = ticks.map((t, i) => {
+    const v = Math.round(Number(t['手']) || 0)
+    const big = v >= bigThresh
+    const dc = t.dir === '买' ? UP : t.dir === '卖' ? DOWN : 'var(--color-text-muted)'
+    return (
+      <div key={i} className="flex justify-between items-center text-[10.5px] font-mono py-[2px]"
+        style={big ? { background: t.dir === '买' ? 'rgba(207,92,92,.12)' : t.dir === '卖' ? 'rgba(95,168,108,.12)' : 'transparent', borderRadius: 3 } : undefined}>
+        <span className="text-text-muted px-1">{t.time}</span>
+        <span className={big ? 'text-text-bright' : 'text-text'}>{t.price.toFixed(decimals)}</span>
+        <span className="px-1" style={{ color: dc, fontWeight: big ? 700 : 400 }}>{v}{t.dir === '买' ? '↑' : t.dir === '卖' ? '↓' : ''}</span>
+      </div>
+    )
+  })
+  const head = <div className="text-[10.5px] text-text-muted mb-1 flex justify-between"><span>逐笔成交</span><span className="text-text-muted/70">大单加亮</span></div>
+  if (fill) return (
+    <div className="flex flex-col flex-1 min-h-0">
+      {head}
+      <div className="relative flex-1 min-h-[150px]">
+        <div className="absolute inset-0 overflow-y-auto pr-1">{rows}</div>
+      </div>
+    </div>
+  )
   return (
     <div>
-      <div className="text-[10.5px] text-text-muted mb-1 flex justify-between"><span>逐笔成交</span><span className="text-text-muted/70">大单加亮</span></div>
-      <div className="max-h-[150px] overflow-y-auto pr-1">
-        {ticks.map((t, i) => {
-          const v = Math.round(Number(t['手']) || 0)
-          const big = v >= bigThresh
-          const dc = t.dir === '买' ? UP : t.dir === '卖' ? DOWN : 'var(--color-text-muted)'
-          return (
-            <div key={i} className="flex justify-between items-center text-[10.5px] font-mono py-[2px]"
-              style={big ? { background: t.dir === '买' ? 'rgba(207,92,92,.12)' : t.dir === '卖' ? 'rgba(95,168,108,.12)' : 'transparent', borderRadius: 3 } : undefined}>
-              <span className="text-text-muted px-1">{t.time}</span>
-              <span className={big ? 'text-text-bright' : 'text-text'}>{t.price.toFixed(decimals)}</span>
-              <span className="px-1" style={{ color: dc, fontWeight: big ? 700 : 400 }}>{v}{t.dir === '买' ? '↑' : t.dir === '卖' ? '↓' : ''}</span>
-            </div>
-          )
-        })}
-      </div>
+      {head}
+      <div className="max-h-[150px] overflow-y-auto pr-1">{rows}</div>
     </div>
   )
 }
