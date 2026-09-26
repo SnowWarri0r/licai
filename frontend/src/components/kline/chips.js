@@ -5,7 +5,9 @@
 // (cover = 窗口内筹码占比, 低换手的票可能偏低)。
 // 全市场检验(私有研究): 浮盈/获利比例扣掉前期涨跌后对之后涨跌没有预测力 —— 这里只做事实展示。
 
-const PROFIT = 'rgba(207,92,92,0.42)', LOSS = 'rgba(95,168,108,0.42)', AVG = '#e8c77a'
+const PROFIT = 'rgba(207,92,92,0.55)', LOSS = 'rgba(95,168,108,0.55)'
+export const CHIP_AVG = '#b39ddb'     // 平均成本: 淡紫, 与成本线(金)/昨收(灰蓝)区分
+export const CHIP_W = 110             // 独立筹码栏宽度(px)
 
 // 流通股本变动表 [[YYYY-MM-DD, 股], ...] → 每根 bar 的换手率(取不到为 null)
 export function turnoverFor(bars, schedule) {
@@ -64,52 +66,65 @@ export function chipDist(bars, turn, t, nb = 90) {
   }
 }
 
-class ChipRenderer {
-  constructor(d) { this._d = d }
-  draw(target) {
-    const d = this._d
-    if (!d?.rows?.length) return
-    target.useBitmapCoordinateSpace(scope => {
-      const ctx = scope.context, hr = scope.horizontalPixelRatio, vr = scope.verticalPixelRatio
-      const W = scope.mediaSize.width
-      const maxLen = W * 0.2, right = W - 2
-      const mx = Math.max(...d.rows.map(r => r.w)) || 1
-      for (const r of d.rows) {
-        if (r.y1 == null || r.y2 == null) continue
-        const len = (r.w / mx) * maxLen
-        const top = Math.min(r.y1, r.y2), h = Math.max(1, Math.abs(r.y2 - r.y1) - 0.5)
-        ctx.fillStyle = r.profit ? PROFIT : LOSS
-        ctx.fillRect((right - len) * hr, top * vr, len * hr, h * vr)
-      }
-      if (d.yAvg != null) {
-        ctx.strokeStyle = AVG; ctx.lineWidth = Math.max(1, vr)
-        ctx.setLineDash([4 * hr, 3 * hr])
-        ctx.beginPath(); ctx.moveTo((right - maxLen) * hr, d.yAvg * vr); ctx.lineTo(right * hr, d.yAvg * vr); ctx.stroke()
-        ctx.setLineDash([])
-      }
-    })
+// 画进主图右侧的独立画布(不叠在 K 线上)。纵坐标用主图 series.priceToCoordinate, 与主图价格刻度逐像素对齐。
+export function drawChipCanvas(canvas, height, d) {
+  if (!canvas) return
+  const dpr = window.devicePixelRatio || 1
+  const W = canvas.clientWidth || CHIP_W
+  if (height > 0 && canvas.style.height !== `${height}px`) canvas.style.height = `${height}px`
+  const H = height || canvas.clientHeight
+  if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) {
+    canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr)
+  }
+  const ctx = canvas.getContext('2d')
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+  ctx.clearRect(0, 0, W, H)
+  if (!d?.rows?.length) return
+  const left = 4, maxLen = W - 10
+  const mx = Math.max(...d.rows.map(r => r.w)) || 1
+  for (const r of d.rows) {
+    if (r.y1 == null || r.y2 == null) continue
+    const top = Math.min(r.y1, r.y2), h = Math.max(1, Math.abs(r.y2 - r.y1) - 0.6)
+    ctx.fillStyle = r.profit ? PROFIT : LOSS
+    ctx.fillRect(left, top, (r.w / mx) * maxLen, h)
+  }
+  if (d.yPrice != null) {                        // 当日收盘价: 细实线
+    ctx.strokeStyle = 'rgba(230,230,235,0.55)'; ctx.lineWidth = 1
+    ctx.beginPath(); ctx.moveTo(0, d.yPrice + 0.5); ctx.lineTo(W, d.yPrice + 0.5); ctx.stroke()
+  }
+  if (d.yAvg != null) {                          // 平均成本: 淡紫虚线 + 标注
+    ctx.strokeStyle = CHIP_AVG; ctx.lineWidth = 1.2; ctx.setLineDash([4, 3])
+    ctx.beginPath(); ctx.moveTo(0, d.yAvg + 0.5); ctx.lineTo(W, d.yAvg + 0.5); ctx.stroke()
+    ctx.setLineDash([])
+    ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace'
+    ctx.fillStyle = CHIP_AVG; ctx.textAlign = 'right'
+    const ty = d.yAvg < 14 ? d.yAvg + 12 : d.yAvg - 3
+    ctx.fillText(`均 ${d.avg >= 100 ? d.avg.toFixed(1) : d.avg.toFixed(2)}`, W - 3, ty)
   }
 }
+
+class NoopRenderer { draw() {} }
 class ChipView {
-  constructor(src) { this._src = src; this._d = null }
+  constructor(src) { this._src = src }
+  // 主图每次重绘(缩放/拖动/改量程)都会调 update: 这里重算坐标, 交给外部画布
   update() {
-    const { series, dist } = this._src
-    if (!series || !dist) { this._d = null; return }
+    const { series, dist, onFrame } = this._src
+    if (!onFrame) return
+    if (!series || !dist) { onFrame(null); return }
     const rows = dist.bins.map((w, k) => {
       const p0 = dist.lo + k * dist.step
       return { w, profit: p0 + dist.step / 2 <= dist.price,
                y1: series.priceToCoordinate(p0 + dist.step), y2: series.priceToCoordinate(p0) }
     }).filter(r => r.w > 0)
-    this._d = { rows, yAvg: series.priceToCoordinate(dist.avg) }
+    onFrame({ rows, avg: dist.avg, yAvg: series.priceToCoordinate(dist.avg), yPrice: series.priceToCoordinate(dist.price) })
   }
-  renderer() { return new ChipRenderer(this._d) }
-  zOrder() { return 'bottom' }     // 垫在蜡烛下面, 最近几根蜡烛照样看得清
+  renderer() { return new NoopRenderer() }
 }
 export class ChipPrimitive {
-  constructor() { this.dist = null; this.series = null; this._view = new ChipView(this) }
+  constructor() { this.dist = null; this.series = null; this.onFrame = null; this._view = new ChipView(this) }
   attached(p) { this.series = p.series; this._req = p.requestUpdate }
   detached() { this.series = null }
   updateAllViews() { this._view.update() }
   paneViews() { return [this._view] }
-  setDist(d) { this.dist = d; this._req?.() }
+  setDist(d) { this.dist = d; this._req?.(); if (!d) this.onFrame?.(null) }
 }
