@@ -307,6 +307,13 @@ async def entry_review(force: int = 0):
     return await build(force=bool(force))
 
 
+@router.get("/risk")
+async def portfolio_risk(force: int = 0):
+    """组合风险: 下一个交易日 / 5 个交易日 95% 最坏亏损(元) + 各持仓贡献 + 回测突破率。"""
+    from services.portfolio_risk import build
+    return await build(force=bool(force))
+
+
 @router.get("/entry-mirror/{stock_code}")
 async def entry_mirror(stock_code: str):
     """买入前的镜子: 这只票现在的状态下, 你历史上同类买入之后的实际结果。"""
