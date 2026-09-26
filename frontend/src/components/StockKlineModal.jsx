@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { fetchJSON } from '../hooks/useApi'
 import ProKline from './ProKline'
 import { AnalyzerChips, AnalyzerPanel } from './AnalyzerPanel'
+import EntryMirror from './EntryMirror'
 import { MinuteChart } from './kline/MinuteChart'
 import { LhbPanel, OrderBook, Ticks } from './kline/panels'
 import PriceVolumeTable from './kline/PriceVolumeTable'
@@ -104,8 +105,8 @@ export default function StockKlineModal({ holding, onClose }) {
     <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
       <div className={`bg-surface-2 border border-border rounded-xl p-4 md:p-5 ${hasSide ? 'w-[1040px]' : 'w-[820px]'} max-w-[96vw]`} onClick={e => e.stopPropagation()}>
         {/* header */}
-        <div className="flex items-baseline justify-between gap-3 mb-3 flex-wrap">
-          <div className="flex items-baseline gap-2 flex-wrap">
+        <div className="flex items-start justify-between gap-3 mb-3">
+          <div className="flex items-baseline gap-x-2 gap-y-1 flex-wrap min-w-0 flex-1">
             <h3 className="text-[15px] font-semibold text-text-bright m-0">{holding.stock_name}</h3>
             <span className="text-[11px] font-mono text-text-dim">{holding.stock_code}</span>
             <span className="text-[14px] font-mono text-text-bright">{fmtVal(book?.price || holding.current_price)}</span>
@@ -131,7 +132,7 @@ export default function StockKlineModal({ holding, onClose }) {
             )}
             <AnalyzerChips results={analyzers} />
           </div>
-          <div className="flex gap-1 items-center">
+          <div className="flex gap-1 items-center shrink-0">
             {showTabs.map(t => (
               <button key={t} onClick={() => setTab(t)} className="px-2.5 py-[3px] rounded text-[11px] cursor-pointer transition-colors"
                 style={{ border: '1px solid', borderColor: tab === t ? 'var(--color-accent)' : 'var(--color-border-med)', color: tab === t ? 'var(--color-accent)' : 'var(--color-text-dim)', background: tab === t ? 'rgba(200,168,118,.1)' : 'transparent' }}>{t}{(t !== '分时' && t !== '分价') ? 'K' : ''}</button>
@@ -139,6 +140,8 @@ export default function StockKlineModal({ holding, onClose }) {
             <button onClick={onClose} className="text-text-dim hover:text-text text-[18px] leading-none px-2 ml-1 cursor-pointer">×</button>
           </div>
         </div>
+
+        <EntryMirror code={code} />
 
         <div className={hasSide ? 'flex gap-3' : ''}>
           {/* 主图 */}

@@ -22,7 +22,26 @@ from datetime import date as _date
 
 _cache: dict = {}
 _TTL = 3600
+_lock = asyncio.Lock()          # 复盘页与 K 线弹窗的镜子可能同时触发首次计算, 只算一次
 MARKET = "sh000852"          # 中证1000: 个股超额的对照基准
+RISK_BANDS = (("第 9~10 档(高)", 9, 10), ("第 4~8 档", 4, 8), ("第 1~3 档(低)", 1, 3))
+# 价格状态分组: (标题, 字段, [(标签, 下界含, 上界不含, 说明)]) —— 复盘页与「买入前的镜子」共用同一份口径
+PRICE_BUCKETS = (
+    ("买入价相对前一日收盘", "chg_at_buy", (("涨 ≥5% 时买", 0.05, 9, "盘中已经大涨"), ("涨 2%~5% 时买", 0.02, 0.05, ""),
+                                         ("±2% 以内买", -0.02, 0.02, ""), ("跌 ≥2% 时买", -9, -0.02, "盘中下跌"))),
+    ("买入前一日在近 120 日区间的位置", "pos120", (("高位(≥80%)", 0.8, 9, ""), ("中间", 0.2, 0.8, ""), ("低位(≤20%)", -9, 0.2, ""))),
+    ("买入前 20 个交易日的涨跌", "ret20_before", (("已涨 ≥20%", 0.20, 99, ""), ("-15% ~ +20%", -0.15, 0.20, ""),
+                                              ("已跌 ≥15%", -9, -0.15, ""))),
+)
+
+
+def bucket_of(key: str, value) -> str | None:
+    if value is None:
+        return None
+    for _t, k, buckets in PRICE_BUCKETS:
+        if k == key:
+            return next((lab for lab, lo, hi, _d in buckets if lo <= value < hi), None)
+    return None
 
 
 async def _decisions() -> list[dict]:
@@ -174,6 +193,14 @@ async def build(force: bool = False) -> dict:
     c = _cache.get(ck)
     if c and not force and time.time() - c[1] < _TTL:
         return c[0]
+    async with _lock:
+        c = _cache.get(ck)
+        if c and not force and time.time() - c[1] < _TTL:
+            return c[0]
+        return await _build(ck)
+
+
+async def _build(ck: str) -> dict:
     from services import analyzers as _az
     from services.market_data import _kline_for_symbol
 
@@ -235,27 +262,10 @@ async def build(force: bool = False) -> dict:
         catalog = _az.review_catalogs()
 
     # ---- 分组一: 价格状态(个股 + ETF) ----
-    chg = lambda lo, hi: [r for r in rows if r["chg_at_buy"] is not None and lo <= r["chg_at_buy"] < hi]  # noqa: E731
-    pos = lambda lo, hi: [r for r in rows if r["pos120"] is not None and lo <= r["pos120"] < hi]  # noqa: E731
-    run = lambda lo, hi: [r for r in rows if r["ret20_before"] is not None and lo <= r["ret20_before"] < hi]  # noqa: E731
     price_groups = [
-        {"title": "买入价相对前一日收盘", "groups": [
-            _group("涨 ≥5% 时买", chg(0.05, 9), "盘中已经大涨"),
-            _group("涨 2%~5% 时买", chg(0.02, 0.05)),
-            _group("±2% 以内买", chg(-0.02, 0.02)),
-            _group("跌 ≥2% 时买", chg(-9, -0.02), "盘中下跌"),
-        ]},
-        {"title": "买入前一日在近 120 日区间的位置", "groups": [
-            _group("高位(≥80%)", pos(0.8, 9)),
-            _group("中间", pos(0.2, 0.8)),
-            _group("低位(≤20%)", pos(-9, 0.2)),
-        ]},
-        {"title": "买入前 20 个交易日的涨跌", "groups": [
-            _group("已涨 ≥20%", run(0.20, 99)),
-            _group("-15% ~ +20%", run(-0.15, 0.20)),
-            _group("已跌 ≥15%", run(-9, -0.15)),
-        ]},
-    ]
+        {"title": title, "key": key, "groups": [
+            _group(lab, [r for r in rows if r[key] is not None and lo <= r[key] < hi], desc) for lab, lo, hi, desc in buckets]}
+        for title, key, buckets in PRICE_BUCKETS]
 
     # ---- 分组二: 量价形态 / 暴跌风险(仅个股) ----
     stock_rows = [r for r in rows if r["kind"] == "stock"]
@@ -274,7 +284,7 @@ async def build(force: bool = False) -> dict:
         rk = cat.get("risk")
         if rk:
             dec = {x["decile"]: x for x in rk["deciles"]}
-            for lab, lo, hi in (("第 9~10 档(高)", 9, 10), ("第 4~8 档", 4, 8), ("第 1~3 档(低)", 1, 3)):
+            for lab, lo, hi in RISK_BANDS:
                 hit = [r for r in stock_rows if r["risk_decile"] is not None and lo <= r["risk_decile"] <= hi]
                 if not hit:
                     continue
@@ -318,3 +328,53 @@ async def build(force: bool = False) -> dict:
     }
     _cache[ck] = (out, time.time())
     return out
+
+
+async def mirror(code: str) -> dict:
+    """买入前的镜子: 这只票「现在」的状态落在哪些分组, 你历史上在同一分组里买入之后的实际结果。
+    状态按最新收盘计(= 若今天买, 买入前一日的状态); 较前收涨跌用实时价(盘中才有意义)。"""
+    from services import analyzers as _az
+    from services.market_data import _kline_for_symbol, get_realtime_quotes, is_a_share, _is_etf_lof
+    rv = await build()
+    if rv.get("empty"):
+        return {"available": False}
+    bare = code[-6:]
+    bars = await _bars(bare, max(_az.bars_needed(280), 280) + 20)
+    if len(bars) < 130:
+        return {"available": False}
+    last = bars[-1]
+    lo = min(b["low"] for b in bars[-120:]); hi = max(b["high"] for b in bars[-120:])
+    state = {"date": last["date"],
+             "pos120": (last["close"] - lo) / (hi - lo) if hi > lo else None,
+             "ret20_before": last["close"] / bars[-21]["close"] - 1 if len(bars) > 21 else None,
+             "chg_at_buy": None}
+    try:
+        q = (await get_realtime_quotes([bare])).get(bare) or {}
+        if q.get("price") and q.get("prev_close"):
+            state["chg_at_buy"] = q["price"] / q["prev_close"] - 1
+    except Exception:  # noqa: BLE001
+        pass
+    matches = []
+    for pg in rv["price_groups"]:
+        lab = bucket_of(pg["key"], state[pg["key"]])
+        g = next((x for x in pg["groups"] if x["label"] == lab), None)
+        if g and g["n"]:
+            matches.append({"dim": pg["title"], **{k: g[k] for k in ("label", "n", "n_done", "mean20_pct", "median20_pct", "win20", "metric")}})
+    is_stock = is_a_share(bare) and not _is_etf_lof(bare)
+    if is_stock and _az.get_analyzers() and rv.get("risk_groups"):
+        try:
+            idx = await asyncio.to_thread(_kline_for_symbol, MARKET, len(bars) + 20)
+            ctx = {s: idx for s in _az.context_symbols()}
+            res = await asyncio.to_thread(_az.review_all, bare, bars, ["9999-12-31"], "", ctx)
+            dec = next((p.get("risk_decile") for r in res.values() for p in r.values() if p.get("risk_decile")), None)
+        except Exception:  # noqa: BLE001
+            dec = None
+        state["risk_decile"] = dec
+        lab = next((lab for lab, a, b in RISK_BANDS if dec is not None and a <= dec <= b), None)
+        g = next((x for x in rv["risk_groups"] if x["label"] == lab), None)
+        if g:
+            matches.append({"dim": "个股买入前一日的暴跌风险档", **{k: g[k] for k in ("label", "n", "n_done", "mean20_pct", "median20_pct", "win20", "metric")}})
+    t = rv["total"]
+    return {"available": bool(matches), "state": state, "matches": matches,
+            "total": {k: t[k] for k in ("n", "n_done", "mean20_pct", "win20")},
+            "note": "按这只票现在的状态, 找你历史上在同一状态下的买入(复盘页「买点回看」同一口径), 列出之后 20 个交易日的实际结果。只回顾你自己的过去, 不预测这一次。"}

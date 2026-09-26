@@ -307,6 +307,13 @@ async def entry_review(force: int = 0):
     return await build(force=bool(force))
 
 
+@router.get("/entry-mirror/{stock_code}")
+async def entry_mirror(stock_code: str):
+    """买入前的镜子: 这只票现在的状态下, 你历史上同类买入之后的实际结果。"""
+    from services.entry_review import mirror
+    return await mirror(normalize_stock_code(stock_code).split(".")[-1])
+
+
 @router.get("/trade-review")
 async def trade_review():
     """A 股交易复盘报告 (纯客观, 不给建议): 用 position_actions 算每只的
