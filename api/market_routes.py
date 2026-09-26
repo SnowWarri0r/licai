@@ -75,6 +75,15 @@ async def analyzers(stock_code: str):
     return {"results": results, "live_last": live_last}
 
 
+@router.get("/float-shares/{stock_code}")
+async def float_shares(stock_code: str):
+    """流通股本变动表(K 线筹码分布算换手率用)。ETF/非 A 股返回空 schedule。"""
+    from services.float_shares import schedule
+    bare = normalize_stock_code(stock_code).split(".")[-1]
+    rows = await schedule(bare)
+    return {"code": bare, "schedule": rows, "source": "东财股本结构 · 已上市流通A股(股)"}
+
+
 @router.get("/inst-accum/{stock_code}")
 async def inst_accum(stock_code: str):
     """机构进货标记(滞后硬数据): 近30天龙虎榜机构专用席位净买。上榜才披露=抽样,非买卖信号。"""
