@@ -38,6 +38,34 @@ async def eod_review():
     return await build_market_review()
 
 
+@router.get("/analyzer-lists")
+async def analyzer_lists():
+    """分析插件的每日清单(插件离线生成, 这里只读), 按代码补名称/行业/市值。没装插件或插件没提供 = 空数组。"""
+    from services import analyzers as _az
+    lists = await asyncio.to_thread(_az.daily_lists_all)
+    if not lists:
+        return {"lists": []}
+    try:
+        from services.etf_xray import industry_map
+        imap = await asyncio.to_thread(industry_map)
+    except Exception:  # noqa: BLE001  名称/行业补不上不影响清单本身
+        imap = {}
+    try:                                     # 东财全表偶尔限流拿不到: 名称再用搜股底表兜一次(行业/市值就空着)
+        from services.stock_agent import _code_name_maps
+        _, c2n = await _code_name_maps()
+    except Exception:  # noqa: BLE001
+        c2n = {}
+    for lst in lists:
+        for r in lst.get("rows") or []:
+            name, ind, cap = imap.get(str(r.get("code") or ""), ("", "", 0))
+            r.setdefault("name", name or c2n.get(str(r.get("code") or ""), ""))
+            r.setdefault("industry", ind)
+            r.setdefault("cap_yi", cap)
+        if lst.get("exclude_st"):            # 插件要求剔除 ST(按补上的名称判断)
+            lst["rows"] = [r for r in lst.get("rows") or [] if "ST" not in str(r.get("name") or "").upper()]
+    return {"lists": lists}
+
+
 @router.get("/analyzers/{stock_code}")
 async def analyzers(stock_code: str):
     """已安装的分析插件(entry point `licai.analyzers`)对该股日K的解读。没装插件 = 空数组。"""

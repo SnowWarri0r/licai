@@ -27,6 +27,13 @@
         {patterns: {形态id: {name, definition, grade, n, excess_20d_pct, win_rate_20d, adj_excess_20d_pct, tone}},
          risk: {deciles: [{decile, crash_rate, median_excess_pct, ...}], base_crash, base_rally} | None, note}
 
+可选的每日清单接口(市场页「插件清单」用; 没实现的插件不参与):
+    def daily_lists(self) -> list[dict]
+        [{id, title, date, note, columns: [{key, label, fmt}], rows: [{code(6 位), ...列对应字段, _tone?}]}]
+        fmt: text | int | num2 | pct1 | pct2 | share(0~1 显示成百分比) | decile(整数档位, 按行的 _tone 上色)。
+        路由按 code 补 名称 / 行业 / 市值; exclude_st=True 时路由按名称剔除 ST; 标题后的只数由前端按行数显示。
+        前端点一行打开这只票的 K 线。清单由插件自己离线生成, 路由只读。
+
 没装任何 analyzer = 列表为空, 路由返回空数组, 前端不渲染任何东西。
 设 env LICAI_ANALYZERS=off 可整体关闭(排查问题时用)。单个插件报错只影响它自己。
 """
@@ -134,4 +141,19 @@ def review_catalogs() -> dict:
             out[name] = fn()
         except Exception as e:  # noqa: BLE001
             log.warning("analyzer %s review_catalog 出错: %s", name, e)
+    return out
+
+
+def daily_lists_all() -> list[dict]:
+    """所有插件的每日清单, 每张带上来源插件名。没实现 daily_lists 或出错的插件跳过。"""
+    out = []
+    for name, a in get_analyzers().items():
+        fn = getattr(a, "daily_lists", None)
+        if not fn:
+            continue
+        try:
+            for lst in fn() or []:
+                out.append({**lst, "analyzer": name, "display_name": getattr(a, "display_name", name)})
+        except Exception as e:  # noqa: BLE001
+            log.warning("analyzer %s daily_lists 出错: %s", name, e)
     return out
