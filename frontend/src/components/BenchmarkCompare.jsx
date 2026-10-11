@@ -8,6 +8,9 @@ const SYMBOLS = [
   { v: 'sh000001', label: '上证指数' },
   { v: 'sz399006', label: '创业板指' },
   { v: 'sh000688', label: '科创 50' },
+  { v: 'hkHSI',    label: '恒生指数' },
+  { v: 'gb_inx',   label: '标普 500' },
+  { v: 'gb_ixic',  label: '纳斯达克' },
 ]
 const WINDOWS = [
   { v: 0,    label: '全部' },
@@ -179,8 +182,12 @@ export default function BenchmarkCompare() {
         模型: dollar-matched 等额对比. 你每次买/卖, 假设同金额同日期在基准上同向操作.
         手续费已含 (你的: 万1.854+5起+印花税, 按费率估算非实录; 基准默认 0).
         范围: A 股个股 {data.scope?.a_share_actions ?? 0} 笔
+        {data.scope?.fx_actions > 0 && <> + 港美股 {data.scope.fx_actions} 笔（按成交汇率折人民币，现值按实时汇率）</>}
         {data.scope?.etf_actions > 0 && <> + 场内 ETF {data.scope.etf_actions} 笔（{data.scope.etf_codes?.length} 只）</>}
-        ；不含港美股与场外基金 / 理财 / 现金 / 机器人.
+        ；不含场外基金 / 理财 / 现金 / 机器人.
+        {b.currency && b.currency !== 'CNY' && (
+          <> 基准以{b.currency === 'HKD' ? '港币' : '美元'}计价: 人民币按买入当日汇率换汇买指数，现值按实时汇率折回，两边都含汇率涨跌.</>
+        )}
         {data.opening?.mv > 0 && (
           <> 窗口起点已持有的仓位按当日收盘 ¥{fmtMoney(data.opening.mv)} 计为期初投入
             {data.opening.priced_all ? '' : '（有个股取不到历史价，该部分未计入）'}.
