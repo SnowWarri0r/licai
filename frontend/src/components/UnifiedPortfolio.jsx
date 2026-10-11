@@ -9,6 +9,7 @@ import { buildFamilyIndex, formatCurrencyMoney, riskFamiliesOf } from './portfol
 import { aggregate, normalizeAsset, normalizeHolding } from './portfolio/model'
 import { HoldingRow } from './portfolio/HoldingRow'
 import { PortfolioModals } from './portfolio/PortfolioModals'
+import { PendingDividends } from './portfolio/PendingDividends'
 import { ClosedPositionsBlock, SummaryStrip } from './portfolio/summary'
 import { usePortfolioModals } from './portfolio/useModals'
 
@@ -368,6 +369,9 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
         </div>
         {!isEmpty && <AllocationDonut groups={agg.groups} totalMv={agg.totalMv} />}
       </div>
+
+      {/* 港美股分红待确认: 识别出的现金分红, 一键记入或忽略 */}
+      <PendingDividends dataVersion={dataVersion} />
 
       {/* 定投待确认 banner: 一键按当日净值自动结算所有 pending 申购 */}
       {(() => {

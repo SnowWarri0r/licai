@@ -12,6 +12,13 @@
 - TWR: r_t = (V_t − V_{t−1} − F_t) / (V_{t−1} + F_t); F=当日净外部投入
   (买入/申购/转入为正, 卖出/赎回/转出为负; 利息/分红是收益不是流入)
 - 基准: 沪深300, 与 TWR 同起点归一到 100
+- 日期轴: A 股交易日 ∪ 当天持有(或有买卖)的港/美股所在市场的交易日。A 股休市而港美股开市的
+  日子(如国庆长假)单独成点, 港美股的涨跌落在自己那天, 不再挤到节后第一个 A 股交易日;
+  休市市场的价格、沪深300 向前填充。纯 A 股组合不加点, 曲线与原来逐位一致
+- 美股日期 = 美东交易日 D, 直接落在轴上的 D(不挪到北京 D+1): 成交流水的 trade_date 记的就是
+  美东日, today_pnl 的 session_day 也是美东日, 同一天的买卖与那一场的涨跌必须落在同一个点,
+  否则当天买入的流量和它带来的市值会被拆到两天, TWR 当天收益失真。代价是轴上 D 这一点的
+  A 股收盘(北京 15:00)早于美股收盘(北京 D+1 凌晨), 日收益相关性那边单独处理这个时差
 
 TWR 消除了出入金对收益率的干扰——中途加仓不会被当成"赚了", 减仓不会被当成"亏了"。
 纯客观展示, 不构成任何买卖建议。
@@ -276,6 +283,27 @@ def stock_split_rows(actions: list[dict]) -> list[dict]:
     return out
 
 
+def foreign_market(kind: str, code: str) -> str | None:
+    """个股账本里的港/美股返回 "HK"/"US", 其余(A股/基金/现金)返回 None。"""
+    if kind != "stock":
+        return None
+    c = (code or "").upper()
+    return "HK" if c.startswith("HK.") else "US" if c.startswith("US.") else None
+
+
+def held_session_days(actions: list[dict], session_dates, lo: str, hi: str) -> set[str]:
+    """外盘标的在 [lo, hi] 内的交易日(取自它自己的价史日期)中, 当天收盘仍持有或当天有买卖的那些。
+    这些日子要进日期轴 —— 否则 A 股休市期间的涨跌和成交会被挤到下一个 A 股交易日。"""
+    ds = sorted(d for d in session_dates if lo <= d <= hi)
+    if not ds:
+        return set()
+    bal = share_balance_series(actions, ds)
+    traded = {_d(a.get("trade_date")) for a in actions
+              if (a.get("status") or "confirmed") == "confirmed"
+              and (a.get("action_type") or "").upper() in (_IN | _OUT)}
+    return {d for d, b in zip(ds, bal) if b > 1e-9 or d in traded}
+
+
 def fx_series(hist: dict, dates: list[str], now_rate: float, today: str) -> list[float]:
     """每个轴日的汇率: 历史中间价向前填充, 今天用实时汇率; 历史缺失的日子用实时汇率。"""
     vals = _ffill(hist, dates) if hist else [None] * len(dates)
@@ -373,6 +401,26 @@ async def build_curve(days: int = 120) -> dict:
         snaps = await snapshot_map()          # {date: {key: value}} 真实市值快照
     except Exception:
         snaps = {}
+
+    # 日期轴补上港美股自己的交易日(只补当天持有/有买卖的), 见模块说明
+    extra: set = set()
+    fx_kinds = [(cd, ac) for k, cd, ac in tasks if foreign_market(k, cd)]
+    if fx_kinds:
+        async def _sess(cd, ac):
+            async with sem:
+                h = await _price_hist("stock", cd, days + 60)
+            return held_session_days(stock_split_rows(ac), h.keys(), axis[0], date.today().isoformat())
+        for got in await asyncio.gather(*[_sess(cd, ac) for cd, ac in fx_kinds], return_exceptions=True):
+            if isinstance(got, set):
+                extra |= got
+    off_days = sorted(extra - set(axis))
+    if off_days:
+        axis = sorted(set(axis) | extra)
+        try:                                    # 提示里只数 A 股真休市的(今天指数日线未出也会补点)
+            from services.market_data import _is_a_share_trading_day
+            off_days = [d for d in off_days if not _is_a_share_trading_day(date.fromisoformat(d))]
+        except Exception:
+            pass
 
     inferred: set = set()      # 被判为"无流水转账"的日期(现金/理财桶), 只为透出提示
 
@@ -473,6 +521,8 @@ async def build_curve(days: int = 120) -> dict:
                 + (f" 现金/理财桶有 {len(inferred)} 天的市值跳变没有对应流水, "
                    f"已按转账处理(不计入收益): {'、'.join(sorted(inferred)[:4])}"
                    f"{'…' if len(inferred) > 4 else ''}。" if inferred else "")
+                + (f" 日期轴含 {len(off_days)} 个 A 股休市而港美股开市的日子, 港美股涨跌落在当天,"
+                   "A 股价格与沪深300 沿用前值; 美股按美东交易日记。" if off_days else "")
                 + (f" {skipped}项资产异常已跳过。" if skipped else "")
                 + (f" 价史暂缺按成本基线近似: {'、'.join(degraded[:5])}。" if degraded else "")
                 + " 纯客观展示, 不构成任何买卖建议。",
@@ -481,9 +531,48 @@ async def build_curve(days: int = 120) -> dict:
     return out
 
 
+def observed_dates(px: dict, code: str) -> dict:
+    """价格序列的日期换成「北京时间哪天收盘后能看到这个价」。美股美东 D 的收盘在北京 D+1 凌晨,
+    记到 D+1; 其余(A股/港股/场外净值)就是当天。相关性按观测时刻对齐才不错位一天。"""
+    if not str(code or "").upper().startswith("US."):
+        return px
+    from datetime import timedelta
+    out = {}
+    for d_, v in px.items():
+        try:
+            out[(date.fromisoformat(d_[:10]) + timedelta(days=1)).isoformat()] = v
+        except ValueError:
+            continue
+    return out
+
+
+def paired_returns(a: dict, b: dict) -> tuple[list[float], list[float]]:
+    """两条价格序列(观测日 → 价)按共同的时间段配成对的收益。
+
+    只在两边自上个配对点以来都有新价、且至少一边当天有价的日子落一个配对点, 两边收益都是
+    "上个配对点 → 这个配对点"的累计涨跌。于是一边休市(国庆、港股假期)时, 另一边那几天的涨跌
+    累计到复市那天与之配对, 而不是拿节后一天的单日收益去配 A 股跨假期的累计收益;
+    两边日期完全一致时就是逐日收益。"""
+    xs, ys = [], []
+    pa = pb = ka = kb = None
+    na = nb = False
+    for t in sorted(set(a) | set(b)):
+        if t in a:
+            pa, na = a[t], True
+        if t in b:
+            pb, nb = b[t], True
+        if na and nb:
+            if ka and kb:
+                xs.append(pa / ka - 1)
+                ys.append(pb / kb - 1)
+            ka, kb, na, nb = pa, pb, False, False
+    return xs, ys
+
+
 async def correlation_matrix(days: int = 60) -> dict:
     """在持标的两两日收益相关性(价格口径, 与买卖流水无关) + 与沪深300 的相关。
-    覆盖: A股直持 + 场内ETF + 场外基金(官方净值); 现金/理财/机器人无价格序列不参与。
+    覆盖: A股/港美股直持 + 场内ETF + 场外基金(官方净值); 现金/理财/机器人无价格序列不参与。
+    日期对齐见 observed_dates / paired_returns: 美股按北京观测日, 休市差按累计收益配对。
     量化"同源风险": 名字不同的持仓若相关性>0.8, 涨跌基本是一回事。纯客观, 不构成建议。"""
     days = max(20, min(int(days or 60), 250))
     ck = f"corr_{days}"
@@ -513,35 +602,33 @@ async def correlation_matrix(days: int = 60) -> dict:
 
     sem = asyncio.Semaphore(4)
 
-    async def _rets(kind, code):
+    async def _px(kind, code):
         async with sem:
             hist = await _price_hist(kind, code, days + 40)
         ks = sorted(hist.keys())[-(days + 1):]
-        return {ks[i]: hist[ks[i]] / hist[ks[i - 1]] - 1
-                for i in range(1, len(ks)) if hist[ks[i - 1]]}
+        px = {k: hist[k] for k in ks}
+        return observed_dates(px, code)
 
-    rets = await asyncio.gather(*[_rets(k, cd) for k, cd, _ in inst], return_exceptions=True)
-    series = []
-    for (kind, code, name), r in zip(inst, rets):
-        if isinstance(r, dict) and len(r) >= 15:
+    pxs = await asyncio.gather(*[_px(k, cd) for k, cd, _ in inst], return_exceptions=True)
+    series = []                                   # (名称, {北京观测日: 收盘})
+    for (kind, code, name), r in zip(inst, pxs):
+        if isinstance(r, dict) and len(r) >= 16:
             series.append((name, r))
     # 基准列
     try:
         from services.market_data import _fetch_benchmark_history
         bdf = await asyncio.to_thread(_fetch_benchmark_history, "sh000300", days + 10)
         closes = [(_d(r["date"]), float(r["close"])) for _, r in bdf.iterrows()]
-        series.append(("沪深300", {closes[i][0]: closes[i][1] / closes[i - 1][1] - 1
-                                   for i in range(1, len(closes))}))
+        series.append(("沪深300", dict(closes)))
     except Exception:
         pass
     if len(series) < 2:
         return {"error": "价格历史不足, 算不了相关性"}
 
     def _corr(a: dict, b: dict) -> float | None:
-        common = sorted(set(a) & set(b))
-        if len(common) < 15:
+        xs, ys = paired_returns(a, b)
+        if len(xs) < 15:
             return None
-        xs = [a[d_] for d_ in common]; ys = [b[d_] for d_ in common]
         n = len(xs)
         mx, my = sum(xs) / n, sum(ys) / n
         sx = (sum((v - mx) ** 2 for v in xs)) ** 0.5

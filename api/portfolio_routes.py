@@ -1093,7 +1093,7 @@ async def _close_on_or_before(code: str, day: str) -> float | None:
 
 @router.get("/benchmark")
 async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
-    """跑赢基准对照: 假设你 A 股的每次买卖, 同金额同日期都买在基准上 (默认沪深300).
+    """跑赢基准对照: 假设你个股(A股/港美股)与场内 ETF 的每次买卖, 同金额同日期都买在基准上 (默认沪深300).
 
     模型: dollar-matched 等额对比 (避免 IRR 复杂度).
       - 你每次 BUY/ADD (含手续费):  bench_shares += amount/bench_close_当日
@@ -1106,15 +1106,20 @@ async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
     用 price × shares + estimate_fee 累入 buy_total, 跟综合成本口径一致).
 
     days=0 全部历史; 否则只看最近 N 天的 action.
-    支持 symbol: sh000300 / sh000001 / sz399006 / sh000688 等.
+    支持 symbol: sh000300 / sh000001 / sz399006 / sh000688; hkHSI(恒生) / gb_inx(标普500) / gb_ixic(纳指).
+
+    一律按人民币对照: 港美股的金额按每笔成交汇率(fx_rate, 没记用当前)折人民币, 期初持仓按截止日汇率,
+    现值按实时汇率 —— 与净值曲线同口径。港美股指数基准同理: 人民币按买入那天的汇率换成港币/美元
+    买指数, 现值按实时汇率折回, 两边都吃到汇率涨跌。纯 A 股 + A 股指数时汇率恒为 1, 结果不变。
     """
     import asyncio as _asyncio
     from datetime import date, timedelta
-    from services.market_data import _fetch_benchmark_history
+    from services.market_data import (code_currency, code_fx, fetch_index_history, fx_rate_on,
+                                      get_fx_rate, index_currency)
     from services.position_ledger import ACQUIRE, RELEASE
 
     # 1) 拿基准价格序列 (近 1200 个交易日, ~5 年)
-    df = await _asyncio.to_thread(_fetch_benchmark_history, symbol, 1200)
+    df = await _asyncio.to_thread(fetch_index_history, symbol, 1200)
     if df is None or df.empty:
         raise HTTPException(503, f"基准 {symbol} 数据加载失败")
     bench_by_date = {row["date"]: float(row["close"]) for _, row in df.iterrows()}
@@ -1132,7 +1137,41 @@ async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
         # 否则这几天的买卖会被整笔跳过, 导致"已收回/投入"漏算出现假的巨额盈亏。
         return bench_by_date[bench_dates_sorted[-1]] if bench_dates_sorted else None
 
-    # 2) 收集所有 A 股 actions (跳过 HK./US.)
+    # 外盘指数: 每份指数折人民币 = 收盘 × 那天汇率; A 股指数汇率恒 1
+    bench_cur = index_currency(symbol)
+
+    def bench_cny_on_or_after(d: str) -> float | None:
+        c = bench_close_on_or_after(d)
+        if c is None or bench_cur == "CNY":
+            return c
+        bd = next((x for x in bench_dates_sorted if x >= d), bench_dates_sorted[-1])
+        return c * fx_rate_on(bench_cur, bd)
+
+    bench_fx_now = 1.0 if bench_cur == "CNY" else get_fx_rate(bench_cur)
+
+    def _is_fx(c: str) -> bool:
+        return code_currency(c) != "CNY"
+
+    def _shares(a: dict) -> float:
+        # A 股按整股(与原口径一致), 港美股可能有碎股
+        v = a.get("shares") or 0
+        return float(v) if _is_fx(a.get("stock_code") or "") else int(v)
+
+    _now_fx: dict[str, float] = {}
+
+    def _trade_fx(a: dict) -> float:
+        """港美股这笔折人民币的汇率: 记了用记的, 没记用当前(与净值曲线 day_flows 一致); A 股 1。"""
+        c = a.get("stock_code") or ""
+        if not _is_fx(c):
+            return 1.0
+        r = float(a.get("fx_rate") or 0)
+        if r > 0:
+            return r
+        if c not in _now_fx:
+            _now_fx[c] = code_fx(c)
+        return _now_fx[c]
+
+    # 2) 收集个股 actions(A股 + 港美股)
     from database import get_db
     db = await get_db()
     try:
@@ -1140,7 +1179,7 @@ async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
         codes = [r[0] for r in await cursor.fetchall()]
     finally:
         await db.close()
-    a_codes = [c for c in codes if c and not c.upper().startswith(("HK.", "US."))]
+    a_codes = [c for c in codes if c]
 
     all_actions: list[dict] = []
     for code in a_codes:
@@ -1195,19 +1234,34 @@ async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
         prior = [a for a in all_actions if (a.get("trade_date") or "") < cutoff]
         all_actions = [a for a in all_actions if (a.get("trade_date") or "") >= cutoff]
         pos: dict[str, int] = {}
+        from services.position_ledger import split_ratio
+        fx_split_after: dict[str, float] = {}   # 港美股截止日之后的拆合股: 份额折到前复权价的现行标度
+        for a in all_actions:
+            c0 = a.get("stock_code") or ""
+            if (a.get("action_type") or "") == "SPLIT" and _is_fx(c0) and split_ratio(a) > 0 \
+                    and (a.get("trade_date") or "") >= cutoff:
+                fx_split_after[c0] = fx_split_after.get(c0, 1.0) * split_ratio(a)
         for a in prior:
             t0 = a.get("action_type", "")
-            s0 = int(a.get("shares") or 0)
+            s0 = _shares(a)
             c0 = a.get("stock_code") or ""
             if t0 in ACQUIRE:
                 pos[c0] = pos.get(c0, 0) + s0
             elif t0 in RELEASE:
                 pos[c0] = pos.get(c0, 0) - s0
+            elif t0 == "SPLIT" and _is_fx(c0) and split_ratio(a) > 0:
+                pos[c0] = pos.get(c0, 0) * split_ratio(a)
         for c0, sh0 in pos.items():
             if sh0 <= 0:
                 continue
             px0 = await _close_on_or_before(c0, cutoff)
-            if px0:
+            if px0 and _is_fx(c0):
+                sh0 = round(sh0 * fx_split_after.get(c0, 1.0), 4)
+                fx0 = fx_rate_on(code_currency(c0), cutoff)
+                opening_mv += sh0 * px0 * fx0
+                opening_detail.append({"code": c0, "shares": sh0, "close": round(px0, 3),
+                                       "fx_rate": round(fx0, 6)})
+            elif px0:
                 opening_mv += sh0 * px0
                 opening_detail.append({"code": c0, "shares": sh0, "close": round(px0, 3)})
             else:
@@ -1256,7 +1310,7 @@ async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
     # 期初持仓 = 窗口起点就压在场上的钱, 两边同额起步
     if opening_mv > 0:
         buy_total += opening_mv
-        c_cut = bench_close_on_or_after(cutoff)
+        c_cut = bench_cny_on_or_after(cutoff)
         if c_cut and c_cut > 0:
             bench_shares_total += opening_mv / c_cut
     for _ai, a in enumerate(all_actions):
@@ -1267,7 +1321,7 @@ async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
             first_action_date = td
         t = a.get("action_type", "")
         price = float(a.get("price") or 0)
-        shares_i = int(a.get("shares") or 0)
+        shares_i = _shares(a)
         amount = price * shares_i
         if amount <= 0:
             continue
@@ -1276,7 +1330,10 @@ async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
         code = a.get("stock_code") or ""
         fee = float(fee_override) if fee_override is not None else (
             _bench_fees[_ai] if _ai < len(_bench_fees) else 0.0)
-        close = bench_close_on_or_after(td)
+        if _is_fx(code):                # 港美股: 原币金额与费用按成交汇率折人民币
+            tfx = _trade_fx(a)
+            amount, fee = amount * tfx, fee * tfx
+        close = bench_cny_on_or_after(td)
         if close is None or close <= 0:
             skipped += 1; continue
         if t in ACQUIRE:
@@ -1294,7 +1351,7 @@ async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
         td = f["trade_date"]
         if first_action_date is None or td < first_action_date:
             first_action_date = td
-        close = bench_close_on_or_after(td)
+        close = bench_cny_on_or_after(td)
         if close is None or close <= 0:
             skipped += 1; continue
         if f["sign"] > 0:
@@ -1304,11 +1361,11 @@ async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
             sell_total += f["cash"]
             bench_shares_total -= f["cash"] / close
 
-    # 4) 用户当前 A 股市值
+    # 4) 用户当前个股市值(港美股按实时汇率折人民币)
     holdings = await get_all_holdings()
-    a_holdings = [h for h in holdings
-                  if not str(h.get("stock_code", "")).upper().startswith(("HK.", "US."))]
+    a_holdings = [h for h in holdings if h.get("stock_code")]
     user_cur_mv = 0.0
+    fx_cur_mv = 0.0
     if a_holdings:
         codes_now = [h["stock_code"] for h in a_holdings]
         try:
@@ -1316,9 +1373,14 @@ async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
         except Exception:
             quotes = {}
         for h in a_holdings:
-            q = quotes.get(h["stock_code"])
+            c = h["stock_code"]
+            q = quotes.get(c)
             price = float(q["price"]) if q and q.get("price") else 0.0
-            if price > 0:
+            if price > 0 and _is_fx(c):
+                v = price * float(h.get("shares") or 0) * (float(q.get("fx_rate") or 0) or code_fx(c))
+                user_cur_mv += v
+                fx_cur_mv += v
+            elif price > 0:
                 user_cur_mv += price * int(h.get("shares") or 0)
     # 4b) 场内 ETF 现值。走看板同一套 enrich(份额已含 SPLIT 折算), 不自己再算一遍份额。
     etf_cur_mv = 0.0
@@ -1339,7 +1401,7 @@ async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
     # 净卖出超过基准仓位价值时份额会转负。以前直接 max(0,·) 抹平, 数字静默失真;
     # 现在保留真值参与计算, 只把「穿仓」透出去让前端提示。
     bench_underwater = bench_shares_total < 0
-    bench_cur_mv = bench_shares_total * bench_today
+    bench_cur_mv = bench_shares_total * bench_today * bench_fx_now
     bench_pnl = bench_cur_mv + sell_total - buy_total
     alpha_pnl = user_pnl - bench_pnl
 
@@ -1365,7 +1427,10 @@ async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
         # 覆盖范围: A股个股 + 场内 ETF。场外基金/理财/现金/机器人不在内 —— 前端据此说明,
         # 免得再出现「顶栏 -3万 而这里只有 -6千」对不上的困惑。
         "scope": {
-            "a_share_actions": len(all_actions),
+            "a_share_actions": sum(1 for a in all_actions if not _is_fx(a.get("stock_code") or "")),
+            "fx_actions": sum(1 for a in all_actions if _is_fx(a.get("stock_code") or "")
+                              and (a.get("action_type") or "") in ACQUIRE | RELEASE),
+            "fx_current_mv": round(fx_cur_mv, 2),
             "etf_actions": len(etf_flows),
             "etf_codes": sorted({f["code"] for f in etf_flows}),
             "etf_current_mv": round(etf_cur_mv, 2),
@@ -1380,6 +1445,8 @@ async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
         "benchmark": {
             "shares": round(bench_shares_total, 4),
             "today_close": round(bench_today, 2),
+            "currency": bench_cur,
+            "fx_rate": round(bench_fx_now, 6),
             "current_mv": round(bench_cur_mv, 2),
             "pnl": round(bench_pnl, 2),
             "return_pct": round(bench_ret_pct, 2),
@@ -1670,6 +1737,50 @@ async def remove_action(action_id: int):
     if row:
         await _recompute_holding(row["stock_code"])
     return {"message": "已删除"}
+
+
+# ── 港美股分红识别: 只出待确认建议, 用户一键记入(可改金额/税)或忽略; 结单为准, 不自动写流水 ──
+class DividendConfirm(BaseModel):
+    ex_date: str
+    per_share: Optional[float] = None   # 不填用识别值(原币: 港股港元、美股美元)
+    shares: Optional[int] = None        # 不填用除净前一日收盘持股
+    fee: Optional[float] = None         # 预扣税; 不填按收费方案默认税率估
+    trade_date: Optional[str] = None    # 到账日; 不填用派息日(没有则除净日)
+    fx_rate: Optional[float] = None
+
+
+@router.get("/dividends/pending")
+async def pending_dividends(code: str = ""):
+    """港美股持仓里除净日已过、还没记 DIVIDEND 的现金分红建议。"""
+    from services.dividends import scan_pending
+    return await scan_pending(normalize_stock_code(code) if code else None)
+
+
+@router.post("/{stock_code}/dividends/confirm")
+async def confirm_dividend(stock_code: str, data: DividendConfirm):
+    """把一条分红建议记成 DIVIDEND 流水(走 create_action, 汇率按到账日取)。已记过/不在建议里 → 409。"""
+    from services.dividends import scan_pending
+    stock_code = normalize_stock_code(stock_code)
+    items = (await scan_pending(stock_code))["items"]
+    it = next((x for x in items if x["ex_date"] == str(data.ex_date)[:10]), None)
+    if not it:
+        raise HTTPException(409, "这笔分红已记过, 或不在待确认列表里")
+    ps = data.per_share if data.per_share is not None else it["per_share"]
+    if not ps or ps <= 0:
+        raise HTTPException(400, "缺每股金额, 请按结单填写")
+    note = " ".join(x for x in ("分红识别", f"除净{it['ex_date']}", it.get("kind"), it.get("declared")) if x)
+    await create_action(stock_code, ActionCreate(
+        action_type="DIVIDEND", price=ps, shares=data.shares or it["shares"],
+        trade_date=data.trade_date or it["trade_date"], note=note[:200], fee=data.fee, fx_rate=data.fx_rate))
+    return {"message": "分红已记入"}
+
+
+@router.post("/{stock_code}/dividends/dismiss")
+async def dismiss_dividend(stock_code: str, data: DividendConfirm):
+    """忽略一条分红建议(如结单确认没收到 / 选了以股代息)。"""
+    from services.dividends import dismiss
+    await dismiss(normalize_stock_code(stock_code), data.ex_date)
+    return {"message": "已忽略"}
 
 
 # ── 持仓逻辑 (thesis-tracker) ──

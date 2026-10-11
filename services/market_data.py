@@ -509,6 +509,27 @@ def _fetch_benchmark_history(symbol: str = "sh000300", days: int = 400) -> pd.Da
     return pd.DataFrame(rows)
 
 
+def index_currency(symbol: str) -> str:
+    """基准指数的计价币种: hk* 港币, gb_*/us* 美元, 其余(sh/sz)人民币。"""
+    s = (symbol or "").lower()
+    if s.startswith("hk"):
+        return "HKD"
+    if s.startswith(("gb_", "us")):
+        return "USD"
+    return "CNY"
+
+
+def fetch_index_history(symbol: str = "sh000300", days: int = 400) -> pd.DataFrame:
+    """指数日线 date/close, 按代码分市场: sh/sz 新浪 A 股指数; hkHSI 等腾讯港股指数;
+    gb_inx(标普500)/gb_ixic(纳指)新浪美股指数 —— 日期是各交易所当地日期(美股=美东)。"""
+    cur = index_currency(symbol)
+    if cur == "CNY":
+        return _fetch_benchmark_history(symbol, days)
+    rows = _kline_tencent_hk(symbol, days) if cur == "HKD" else _kline_sina_us(symbol, days)
+    rows = [{"date": str(r["date"])[:10], "close": float(r["close"])} for r in rows if r.get("close")]
+    return pd.DataFrame(rows)
+
+
 async def get_benchmark_return(start_date: str, symbol: str = "sh000300") -> dict:
     """Compute realized return of an index from start_date to today.
 
