@@ -36,7 +36,7 @@ async def _broker_stock_fee(broker_name):
 class ActionCreate(BaseModel):
     action_type: str  # BUY / SELL / ADD / REDUCE / DIVIDEND / BONUS / SPLIT(港美股拆合股: price=比例, shares=0)
     price: float
-    shares: int
+    shares: float   # 美股可碎股; A 股/港股由 _check_shares 校验为整数
     trade_date: Optional[str] = None  # YYYY-MM-DD
     trade_time: Optional[str] = None  # HH:MM 成交时刻(可选, 留空则用录入时间)
     note: Optional[str] = ""
@@ -48,7 +48,7 @@ class ActionCreate(BaseModel):
 class ActionUpdate(BaseModel):
     action_type: Optional[str] = None
     price: Optional[float] = None
-    shares: Optional[int] = None
+    shares: Optional[float] = None
     trade_date: Optional[str] = None
     trade_time: Optional[str] = None   # 成交时刻 HH:MM; None=不动, ""=清空, "HH:MM"=设值
     note: Optional[str] = None
@@ -100,13 +100,13 @@ def _current_segment_brokers(actions: list, default_broker) -> list:
     for i, a in enumerate(sa):
         t = a.get("action_type")
         if t in acq:
-            sh += int(a.get("shares") or 0)
+            sh += float(a.get("shares") or 0)
         elif t == "SPLIT":
             from services.position_ledger import split_ratio
-            sh = int(sh * (split_ratio(a) or 1) + 1e-6)
+            sh = sh * (split_ratio(a) or 1)
         elif t in red:
-            sh -= int(a.get("shares") or 0)
-            if sh <= 0:
+            sh -= float(a.get("shares") or 0)
+            if sh <= 1e-9:
                 sh = 0
                 seg_start = i + 1
     out = []
@@ -899,7 +899,7 @@ async def trade_review_ai(period: str = "all", force: int = 0):
             falling = ts[-1]["price"] < ts[0]["price"]
             growing = amts[-1] > amts[0] * 1.2
             nm = ts[0]["name"]
-            seq = " → ".join(f"@{t['price']}×{int(t['shares'])}={round(t['price']*t['shares'])}" for t in ts)
+            seq = " → ".join(f"@{t['price']}×{t['shares']:g}={round(t['price']*t['shares'])}" for t in ts)
             flag = " [越跌越加码!]" if (falling and growing) else (" [越买越高]" if ts[-1]["price"] > ts[0]["price"] else "")
             escalation.append({"name": nm, "seq": seq, "flag": flag, "martingale": falling and growing})
             break
@@ -1381,7 +1381,7 @@ async def benchmark_compare(symbol: str = "sh000300", days: int = 0):
                 user_cur_mv += v
                 fx_cur_mv += v
             elif price > 0:
-                user_cur_mv += price * int(h.get("shares") or 0)
+                user_cur_mv += price * float(h.get("shares") or 0)
     # 4b) 场内 ETF 现值。走看板同一套 enrich(份额已含 SPLIT 折算), 不自己再算一遍份额。
     etf_cur_mv = 0.0
     if etf_assets:
@@ -1538,9 +1538,23 @@ async def sector_concentration():
     }
 
 
+def _check_shares(stock_code: str, shares) -> None:
+    """股数校验: 美股可碎股(最多 4 位小数); A 股、港股只能是整数。"""
+    if shares is None:
+        return
+    if shares < 0:
+        raise HTTPException(400, "股数不能为负")
+    if split_stock_code(stock_code)[0] == "US":
+        if abs(shares * 10000 - round(shares * 10000)) > 1e-6:
+            raise HTTPException(400, "美股碎股最多 4 位小数")
+    elif abs(shares - round(shares)) > 1e-9:
+        raise HTTPException(400, "A 股和港股的股数必须是整数, 只有美股支持碎股")
+
+
 @router.post("")
 async def create_holding(data: HoldingCreate):
     stock_code = normalize_stock_code(data.stock_code)
+    _check_shares(stock_code, data.shares)
     existing = await get_holding(stock_code)
     # 还有持仓 → 真重复, 让用户走「加仓」。shares=0 的已清仓标的允许从这里重新建仓,
     # 复用原有交易历史 (FIFO 续上, 之前的已实现盈亏保留)。
@@ -1579,6 +1593,7 @@ async def modify_holding(stock_code: str, data: HoldingUpdate):
     if not existing:
         raise HTTPException(404, f"持仓 {stock_code} 不存在")
 
+    _check_shares(stock_code, data.shares)
     kwargs = {}
     if data.stock_name is not None:
         kwargs["stock_name"] = data.stock_name
@@ -1664,6 +1679,7 @@ async def create_action(stock_code: str, data: ActionCreate):
     holding = await get_holding(stock_code)
     if not holding:
         raise HTTPException(404, f"持仓 {stock_code} 不存在")
+    _check_shares(stock_code, data.shares)
     is_split = (data.action_type or "").upper() == "SPLIT"
     if is_split and not (data.price and data.price > 0):
         raise HTTPException(400, "拆合股请在价格栏填比例(新股数/旧股数): 1 拆 4 填 4, 10 合 1 填 0.1")
@@ -1697,6 +1713,8 @@ async def modify_action(action_id: int, data: ActionUpdate):
     finally:
         await db.close()
     old = dict(old) if old else {}
+    if old:
+        _check_shares(old.get("stock_code") or "", data.shares)
     fx_new = None
     if old and (data.action_type or old.get("action_type") or "").upper() != "SPLIT":
         day = data.trade_date or old.get("trade_date") or str(old.get("created_at") or "")[:10]
@@ -1743,7 +1761,7 @@ async def remove_action(action_id: int):
 class DividendConfirm(BaseModel):
     ex_date: str
     per_share: Optional[float] = None   # 不填用识别值(原币: 港股港元、美股美元)
-    shares: Optional[int] = None        # 不填用除净前一日收盘持股
+    shares: Optional[float] = None      # 不填用除净前一日收盘持股
     fee: Optional[float] = None         # 预扣税; 不填按收费方案默认税率估
     trade_date: Optional[str] = None    # 到账日; 不填用派息日(没有则除净日)
     fx_rate: Optional[float] = None

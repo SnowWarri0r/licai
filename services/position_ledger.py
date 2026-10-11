@@ -38,7 +38,7 @@ _EXCHANGE_HANDLE_RATE = 0.0000341  # 经手费 万0.341 (2025-07-01 起下调)
 _REGULATORY_FEE_RATE  = 0.00002    # 证管费 万0.2 (证监会)
 
 
-def estimate_trade_fee(action_type: str, price: float, shares: int, stock_code: str = "",
+def estimate_trade_fee(action_type: str, price: float, shares: float, stock_code: str = "",
                        commission_rate: float | None = None,
                        commission_min: float | None = None,
                        trade_date: str | None = None, broker: str | None = None,
@@ -142,7 +142,7 @@ def allocate_trade_fees(actions: list[dict], commission_rate: float | None = Non
             continue
         for cl in clusters:
             idxs = [coarse[j] for j in cl]
-            amts = [float(actions[i].get("price") or 0) * int(actions[i].get("shares") or 0)
+            amts = [float(actions[i].get("price") or 0) * float(actions[i].get("shares") or 0)
                     for i in idxs]
             total = sum(amts)
             if total <= 0:
@@ -273,7 +273,7 @@ def compute_position_state(
     for _i, a in enumerate(sorted_actions):
         t = a.get("action_type", "")
         price = float(a.get("price", 0))
-        shares = int(a.get("shares", 0))
+        shares = float(a.get("shares") or 0)
         ad = _parse_date(a.get("trade_date") or a.get("created_at"))
 
         if t in ACQUIRE and shares > 0:
@@ -327,7 +327,7 @@ def compute_position_state(
             ep_fees_c += f * fx
             total_fees += f
             running_shares -= shares
-            if running_shares <= 0:
+            if running_shares <= 1e-9:   # 碎股卖光时浮点会剩极小的尾数
                 # 卖光了: 先只记下平仓日, 本段累计留着 —— 当天买回就接着算同一段,
                 # 隔夜没买回才在下次买入(或收尾)时结算进 carry。
                 running_shares = 0
@@ -345,7 +345,8 @@ def compute_position_state(
                 ep_buy_shares *= r
                 ep_matched *= r
                 total = sum(l["shares"] for l in lots)
-                whole = int(total + 1e-6)
+                # 美股券商支持碎股, 合股后的零头留在账上; 其余市场零头折现金
+                whole = total if _foreign_market(a.get("stock_code") or stock_code) == "US" else int(total + 1e-6)
                 frac, moved = total - whole, 0.0
                 for lot in reversed(lots):
                     if frac <= 1e-9:
@@ -358,14 +359,14 @@ def compute_position_state(
                 if lots and moved:
                     lots[-1]["price"] += moved / lots[-1]["shares"]
                 running_shares = whole
-                if whole == 0:
+                if whole <= 1e-9:
                     lots = []
                     flat_date = ad
         elif t in INCOME:
             # 现金分红: 显式 amount, 或 price(每股股息) × shares(持股数) —— 都是税前
             amt = float(a.get("amount") or 0)
             if amt <= 0:
-                amt = float(a.get("price") or 0) * int(a.get("shares") or 0)
+                amt = float(a.get("price") or 0) * float(a.get("shares") or 0)
             # 预扣税: 港美股的分红行用 fee 字段记税(手填为准); 没填按收费方案的默认税率估(美股 W-8BEN 10%, 港股 0)
             tax = 0.0
             mkt = _foreign_market(a.get("stock_code") or stock_code)

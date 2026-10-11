@@ -131,13 +131,14 @@ def test_forward_split():
 
 
 def test_reverse_split_drops_fraction_keeps_cost():
-    acts = [_a("BUY", 2.0, 15, "2026-01-05", fx=7.0),
+    # 港股不支持碎股: 合股零头折现金(美股碎股留在账上, 见 test_fractional_shares)
+    acts = [_a("BUY", 2.0, 15, "2026-01-05", fx=0.9),
             {"action_type": "SPLIT", "price": 0.1, "shares": 0, "trade_date": "2026-03-01"}]
-    st = compute_position_state(acts, stock_code="US.XYZ", fx_now=7.0)
+    st = compute_position_state(acts, stock_code="HK.09999", fx_now=0.9)
     assert st["shares"] == 1                       # 1.5 股 → 1 股, 零头券商折现金
-    assert st["cost_price"] == 30.0                # 总成本 30 美元留在剩下这 1 股上
-    acts.append(_a("SELL", 40.0, 1, "2026-04-01", fx=7.0))
-    st = compute_position_state(acts, stock_code="US.XYZ", fx_now=7.0)
+    assert st["cost_price"] == 30.0                # 总成本 30 港元留在剩下这 1 股上
+    acts.append(_a("SELL", 40.0, 1, "2026-04-01", fx=0.9))
+    st = compute_position_state(acts, stock_code="HK.09999", fx_now=0.9)
     assert st["shares"] == 0 and st["realized_pnl"] == 10.0
 
 

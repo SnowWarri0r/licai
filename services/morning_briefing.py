@@ -335,7 +335,7 @@ async def generate_all_briefings() -> list[dict]:
             cur = e["cost_price"]
         try:
             briefing = await generate_briefing_for_stock(
-                code, e["name"], cost_price=e["cost_price"], shares=int(e["shares"]),
+                code, e["name"], cost_price=e["cost_price"], shares=float(e["shares"]),
                 current_price=cur, sector_hint=e["theme"])
             briefing["briefing_date"] = today
             briefing["asset_class"] = "etf"

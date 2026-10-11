@@ -45,13 +45,13 @@ export function AddAShareForm({ initialMarket = 'A', onDone, onCancel, brokers =
     if (market === 'A' && !/^\d{6}$/.test(stockCode)) return alert('请输入6位A股代码')
     if (market === 'HK' && !/^HK\.\d{5}$/.test(stockCode)) return alert('请输入港股5位代码')
     if (market === 'US' && !/^US\.[A-Z.]+$/.test(stockCode)) return alert('请输入美股Ticker')
-    if (!form.shares || parseInt(form.shares) < meta.minShares) return alert(`持仓数量至少${meta.minShares}`)
+    if (!form.shares || parseFloat(form.shares) < meta.minShares) return alert(`持仓数量至少${meta.minShares}`)
     if (!form.cost || parseFloat(form.cost) <= 0) return alert('请输入成本价')
     setSubmitting(true)
     try {
       const res = await api.addHolding({
         stock_code: stockCode, stock_name: form.name,
-        shares: parseInt(form.shares), cost_price: parseFloat(form.cost),
+        shares: parseFloat(form.shares), cost_price: parseFloat(form.cost),
         trade_date: form.tradeDate || undefined,
         // 成交时刻后端统一存北京时间: 美股按美东录入, 这里换算(港股与北京同时区)
         trade_time: form.tradeTime
