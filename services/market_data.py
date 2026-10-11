@@ -2436,3 +2436,21 @@ def is_trading_day_active() -> bool:
         return False
     t = cst.hour * 60 + cst.minute
     return 555 <= t <= 900  # 9:15 ~ 15:00
+
+
+def fx_cross_rate(frm: str, to: str) -> dict | None:
+    """任意两币种间的即期汇率(1 frm = rate to), 经人民币交叉: frm→CNY ÷ to→CNY。
+    只支持 CNY/HKD/USD(get_fx_info 能取到的三种); 其余返回 None, 由调用方另找口径。
+    返回 {rate, source}, source 标出两条腿的来路(实时/上次成功/写死近似)。"""
+    frm, to = (frm or "").upper(), (to or "").upper()
+    ok = ("CNY", "HKD", "USD")
+    if frm not in ok or to not in ok:
+        return None
+    if frm == to:
+        return {"rate": 1.0, "source": "same"}
+    a, b = get_fx_info(frm), get_fx_info(to)
+    ra, rb = float(a.get("rate") or 0), float(b.get("rate") or 0)
+    if ra <= 0 or rb <= 0:
+        return None
+    srcs = sorted({s for s in (a.get("source"), b.get("source")) if s and s != "CNY"})
+    return {"rate": round(ra / rb, 6), "source": "+".join(srcs) or "CNY"}
