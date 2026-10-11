@@ -242,7 +242,7 @@ async def migration(day: str, prev: str | None = None) -> dict:
 
 
 async def pools(day: str | None = None, *, with_quotes: bool = True) -> dict:
-    """股池: 上一个归类日各格子里的票, 今天怎么样了。
+    """股池: 最近一个归类日各格子里的票(盘中 = 昨天那批今天怎么样; 收盘落档后默认今天那批, 可切回)。
 
     这是归类层的第一个出口。给的是**真实成分**(代码/名称/封单/连板)加今日实时涨幅, 不是
     "情绪偏强"这种词 —— 池子里有哪几只、今天走成什么样, 自己看得见, 才可能被证伪。
@@ -254,9 +254,11 @@ async def pools(day: str | None = None, *, with_quotes: bool = True) -> dict:
     if not dates:
         return {"可用": False, "note": "还没有归类数据"}
     today = datetime.now(tz=_CST).strftime("%Y-%m-%d")
+    prev = next((d for d in reversed(dates) if d < today), None)     # 今天之前最近一个归类日
     if day is None:
-        # 今天若已落档, 锚点取今天之前那一天(池子问的是"昨天那批今天如何")
-        day = dates[-2] if dates[-1] == today and len(dates) > 1 else dates[-1]
+        # 盘中问的是「昨天那批今天如何」; 收盘落档后今天那批已定格, 默认换成今天的池子(明天的观察名单),
+        # 前端可以切回昨天那批(day=上一锚点)
+        day = dates[-1]
     if day not in dates:
         return {"可用": False, "note": f"{day} 没有归类数据"}
     rows = [r for r in await get_stock_tags(day) if r["lb_count"]]
@@ -283,11 +285,12 @@ async def pools(day: str | None = None, *, with_quotes: bool = True) -> dict:
                 "现价": q.get("price"),
                 "今日涨幅": q.get("change_pct")}
 
+    pfx = "今日" if day == today else "昨日"
     groups = [
-        ("昨日首板", [r for r in rows if (r["jj_boards"] or 0) == 1]),
-        ("昨日连板", [r for r in rows if (r["lb_count"] or 0) >= 2]),
-        ("昨日反复板", [r for r in rows if (r["lb_count"] or 0) == 1
-                        and (r["jj_boards"] or 0) > 1]),
+        (f"{pfx}首板", [r for r in rows if (r["jj_boards"] or 0) == 1]),
+        (f"{pfx}连板", [r for r in rows if (r["lb_count"] or 0) >= 2]),
+        (f"{pfx}反复板", [r for r in rows if (r["lb_count"] or 0) == 1
+                         and (r["jj_boards"] or 0) > 1]),
     ]
     out = []
     for name, sub in groups:
@@ -303,8 +306,10 @@ async def pools(day: str | None = None, *, with_quotes: bool = True) -> dict:
                     "成分": sorted(items, key=lambda x: (x["今日涨幅"] is None,
                                                          -(x["今日涨幅"] or 0)))})
     return {"可用": True, "锚点日": day, "取数时刻": datetime.now(tz=_CST).strftime("%H:%M"),
+            "锚点是今天": day == today, "上一锚点": prev if day == today else None,
+            "今天已落档": dates[-1] == today and day != today,
             "池": out,
-            "口径": ("锚点日=上一个有归类的交易日; 今日涨幅取实时报价(盘中即盘中实况)。"
+            "口径": ("锚点日=最近一个有归类的交易日(盘中是上一个交易日, 收盘落档后是今天, 可切回上一个); 今日涨幅取实时报价(盘中即盘中实况)。"
                      "「昨日首板」按自算的 进 轴判(这波第一次涨停), 不是只看连板数=1 —— "
                      "后者会把'连板数=1 但已经 9天5板'的高位老票混进来(9-02 那天 39 只里混了 8 只)。"
                      "「昨日反复板」就是那批: 昨天不连板, 但这一波已经涨停过几次。"
