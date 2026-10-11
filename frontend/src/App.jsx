@@ -22,6 +22,7 @@ import SectorOpportunities from './components/SectorOpportunities'
 import EtfXray from './components/EtfXray'
 // 市场·大盘股池
 import MarketPools from './components/MarketPools'
+import AnalyzerLists from './components/AnalyzerLists'
 // 市场·资金机构 / 宏观 / 资讯
 import ProviderInstTheme from './components/ProviderInstTheme'
 import MacroDashboard from './components/MacroDashboard'
@@ -247,6 +248,7 @@ export default function App() {
     pools: () => (
       <div className={`${PAD} space-y-3 md:space-y-4`}>
         <MarketPools />
+        <AnalyzerLists />
       </div>
     ),
 
