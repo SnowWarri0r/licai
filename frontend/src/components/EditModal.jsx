@@ -6,6 +6,9 @@ export default function EditModal({ holding, onClose, onChange }) {
   const [shares, setShares] = useState(holding.shares)
   const [cost, setCost] = useState(holding.cost_price)
   const [saving, setSaving] = useState(false)
+  // 港美股没有 100 股一手的规则(港股每手股数因股而异), 按 1 股步进; 成本价按原币
+  const mkt = /^HK\.?/i.test(code.trim()) ? 'HK' : /^US\./i.test(code.trim()) ? 'US' : 'A'
+  const ccy = mkt === 'HK' ? 'HKD' : mkt === 'US' ? 'USD' : null
 
   const handleSave = async () => {
     if (!code || !code.trim()) return alert('请输入股票代码')
@@ -51,10 +54,10 @@ export default function EditModal({ holding, onClose, onChange }) {
           <div>
             <label className="text-[12px] text-text-dim block mb-1">持仓数量</label>
             <input type="number" className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] text-text font-mono outline-none focus:border-accent"
-              min={100} step={100} value={shares} onChange={e => setShares(e.target.value)} />
+              min={mkt === 'A' ? 100 : 1} step={mkt === 'A' ? 100 : 1} value={shares} onChange={e => setShares(e.target.value)} />
           </div>
           <div>
-            <label className="text-[12px] text-text-dim block mb-1">成本价</label>
+            <label className="text-[12px] text-text-dim block mb-1">成本价{ccy && <span className="text-text-muted text-[11px] ml-1">{ccy}</span>}</label>
             <input type="number" className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] text-text font-mono outline-none focus:border-accent"
               step={0.0001} value={cost} onChange={e => setCost(e.target.value)} />
           </div>

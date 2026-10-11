@@ -436,6 +436,9 @@ async def init_db():
         if "broker" not in cols:
             # 本笔成交的券商 (可选); NULL → 用持仓默认券商。支持同股跨券商, 手续费按各自费率
             await db.execute("ALTER TABLE position_actions ADD COLUMN broker TEXT")
+        if "fx_rate" not in cols:
+            # 港美股成交日汇率(每 1 原币折人民币); NULL → 按当前汇率折算(A 股不用)
+            await db.execute("ALTER TABLE position_actions ADD COLUMN fx_rate REAL")
         # Migration: kline_cache 加成交额列(老库只有 volume)
         cursor = await db.execute("PRAGMA table_info(kline_cache)")
         kc_cols = {row[1] for row in await cursor.fetchall()}
@@ -1449,15 +1452,17 @@ async def get_position_actions(stock_code: str = None, limit: int = 200) -> list
 async def add_position_action(stock_code: str, action_type: str, price: float, shares: int,
                                trade_date: str = None, note: str = "", tranche_id: int = None,
                                fee: float | None = None, trade_time: str | None = None,
-                               broker: str | None = None) -> int:
-    """Insert a new action. Returns the new action id."""
+                               broker: str | None = None, fx_rate: float | None = None) -> int:
+    """Insert a new action. Returns the new action id. fx_rate: 港美股成交日汇率(每 1 原币折人民币)。"""
     db = await get_db()
     try:
         cursor = await db.execute(
             """INSERT INTO position_actions
-               (stock_code, action_type, price, shares, trade_date, note, tranche_id, fee, trade_time, broker)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (stock_code, action_type, price, shares, trade_date, note, tranche_id, fee, trade_time, broker),
+               (stock_code, action_type, price, shares, trade_date, note, tranche_id, fee, trade_time, broker,
+                fx_rate)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (stock_code, action_type, price, shares, trade_date, note, tranche_id, fee, trade_time, broker,
+             fx_rate),
         )
         await db.commit()
         return cursor.lastrowid
@@ -1468,9 +1473,11 @@ async def add_position_action(stock_code: str, action_type: str, price: float, s
 async def update_position_action(action_id: int, action_type: str = None, price: float = None,
                                   shares: int = None, trade_date: str = None, note: str = None,
                                   fee: float | None = None, fee_explicit: bool = False,
-                                  trade_time: str = None, broker: str = None):
+                                  trade_time: str = None, broker: str = None,
+                                  fx_rate: float | None = None):
     """Update fields. fee_explicit=True 表示明确想改 fee (即使传 None 也写入 NULL).
-    fee 默认 None + fee_explicit=False 不动 fee 列。trade_time/broker 传空串 "" 可清空。"""
+    fee 默认 None + fee_explicit=False 不动 fee 列。trade_time/broker 传空串 "" 可清空。
+    fx_rate: None 不动; 正数设值; 0 清空(回退按当前汇率)。"""
     db = await get_db()
     try:
         sets, vals = [], []
@@ -1488,6 +1495,9 @@ async def update_position_action(action_id: int, action_type: str = None, price:
         if fee_explicit:
             sets.append("fee = ?")
             vals.append(fee)
+        if fx_rate is not None:
+            sets.append("fx_rate = ?")
+            vals.append(fx_rate if fx_rate > 0 else None)
         if not sets:
             return
         vals.append(action_id)

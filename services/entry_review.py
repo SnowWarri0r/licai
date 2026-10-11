@@ -1,7 +1,7 @@
 """买点回看(复盘): 每一笔主动买入放回当时的 K 线, 按「买入前能看到的状态」分组, 统计你之后的实际结果。
 
 纯客观回顾已发生的交易, 不对未来操作下结论。
-- 覆盖: A股个股(position_actions) + 场内 ETF/LOF(external_asset_actions)。场外基金是定投/申购, 没有盘中
+- 覆盖: A股个股(position_actions, 港美股不纳入) + 场内 ETF/LOF(external_asset_actions)。场外基金是定投/申购, 没有盘中
   决策时点, 也没有 K 线, 不纳入。
 - 一只票同一天的多笔买入 = 一次决策(按成交量加权均价)。
 - 口径: 信号日 = 买入日的前一交易日(收盘可见的状态); 结果 = 买入价 → 买入日起第 5/20 个交易日收盘
@@ -47,12 +47,15 @@ def bucket_of(key: str, value) -> str | None:
 async def _decisions() -> list[dict]:
     """[{code, name, kind: stock|etf, date, price, shares}] 按日期升序。"""
     from database import get_all_holdings, get_position_actions, list_external_actions
-    from services.market_data import _is_etf_lof
+    from services.market_data import _is_etf_lof, split_stock_code
     from services.position_ledger import ACQUIRE
 
     names = {h["stock_code"]: h.get("stock_name") or "" for h in await get_all_holdings()}
     raw = []
     for a in await get_position_actions(None, limit=100000):
+        # 港美股同在这本账里, 但结果以中证1000为基准算超额、形态统计也是 A 股校准的, 只收 A 股
+        if split_stock_code(a.get("stock_code") or "")[0] != "A":
+            continue
         at = (a.get("action_type") or "").upper()
         px, sh = float(a.get("price") or 0), float(a.get("shares") or 0)
         if at in ACQUIRE and px > 0 and sh > 0:
@@ -334,11 +337,15 @@ async def mirror(code: str) -> dict:
     """买入前的镜子: 这只票「现在」的状态落在哪些分组, 你历史上在同一分组里买入之后的实际结果。
     状态按最新收盘计(= 若今天买, 买入前一日的状态); 较前收涨跌用实时价(盘中才有意义)。"""
     from services import analyzers as _az
-    from services.market_data import _kline_for_symbol, get_realtime_quotes, is_a_share, _is_etf_lof
+    from services.market_data import (_kline_for_symbol, get_realtime_quotes, is_a_share, _is_etf_lof,
+                                      normalize_stock_code, split_stock_code)
+    mkt, sym = split_stock_code(normalize_stock_code(code))
+    if mkt != "A":
+        return {"available": False, "reason": "买点回看只统计 A 股个股与场内 ETF(以中证1000为基准), 港美股不在统计口径内"}
     rv = await build()
     if rv.get("empty"):
         return {"available": False}
-    bare = code[-6:]
+    bare = sym[-6:]
     bars = await _bars(bare, max(_az.bars_needed(280), 280) + 20)
     if len(bars) < 130:
         return {"available": False}

@@ -51,11 +51,13 @@ def _us_session_day(q: dict, fallback: str) -> str:
 
 def _flow(actions: list, day: str) -> dict:
     """当日已确认流水 → {bought_shares, bought_amount, sold_shares, sold_amount}。
-    SPLIT 只改份额不产生现金流, 但会让"昨日份额"口径失真, 单独标出交给调用方。
+    SPLIT 只改份额不产生现金流, 但会让"昨日份额"口径失真, 单独标出交给调用方
+    (比例: 场外账本记在 shares, 个股/港美股账本记在 price, 见 position_ledger.split_ratio)。
 
     金额口径: 场外账本(external_asset_actions)有 amount 列直接用(已含手续费);
     A股账本(position_actions)只有 price/shares/fee, 需自己算 —— 买入现金流出
-    = price×shares+fee, 卖出现金流入 = price×shares−fee。缺了这层换算, 卖出所得
+    = price×shares+fee, 卖出现金流入 = price×shares−fee。fee 没手填时用调用方挂上的
+    _auto_fee(position_ledger.attach_auto_fees, 与看板同一套估费)。缺了这层换算, 卖出所得
     会被当成 0, 清仓票的当日盈亏直接等于负的昨收市值。
     """
     out = {"bought_shares": 0.0, "bought_amount": 0.0,
@@ -68,10 +70,12 @@ def _flow(actions: list, day: str) -> dict:
         act = str(a.get("action_type") or "").upper()
         sh = float(a.get("shares") or 0)
         amt = float(a.get("amount") or 0)
-        fee = float(a.get("fee") or 0)
+        fee = float(a.get("fee") if a.get("fee") is not None else (a.get("_auto_fee") or 0))
         px = float(a.get("price") or a.get("unit_price") or 0)
-        if act == "SPLIT" and sh > 0:
-            out["split"] = sh
+        if act == "SPLIT":
+            from services.position_ledger import split_ratio
+            if split_ratio(a) > 0:
+                out["split"] = split_ratio(a)
         elif act in BUY_ACTS and sh > 0:
             out["bought_shares"] += sh
             out["bought_amount"] += amt if amt > 0 else (px * sh + fee)
@@ -138,7 +142,14 @@ async def _compute() -> dict:
     a_codes = set(holdings) | {c for c, arr in by_code.items()
                                if any(_flow(arr, d)["bought_shares"] or _flow(arr, d)["sold_shares"] for d in (day, yday))}
     quotes = await get_realtime_quotes(list(a_codes)) if a_codes else {}
+    from database import get_config
+    from services.position_ledger import attach_auto_fees, broker_fee_resolver
+    resolve = await broker_fee_resolver()
+    fee_overrides = await get_config("fee_schedules")
     for code in sorted(a_codes):
+        if by_code.get(code):          # 没手填 fee 的流水按看板同一口径估费(每笔券商, 港美股收费方案)
+            await attach_auto_fees(by_code[code], code, (holdings.get(code) or {}).get("broker"),
+                                   resolve, fee_overrides)
         q = quotes.get(code) or quotes.get(normalize_stock_code(code)) or {}
         mkt = split_stock_code(code)[0]
         d = _us_session_day(q, day) if mkt == "US" else day

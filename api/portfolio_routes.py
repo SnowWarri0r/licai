@@ -17,7 +17,7 @@ from services.market_data import (
     get_realtime_quotes, get_stock_name, get_stock_sector, get_stock_sector_detail,
     normalize_stock_code, split_stock_code, get_fx_info, is_a_share,
 )
-from services.position_ledger import compute_position_state
+from services.position_ledger import compute_position_state, ledger_state
 
 router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
 
@@ -34,7 +34,7 @@ async def _broker_stock_fee(broker_name):
 
 
 class ActionCreate(BaseModel):
-    action_type: str  # BUY / SELL / ADD / REDUCE / DIVIDEND / BONUS
+    action_type: str  # BUY / SELL / ADD / REDUCE / DIVIDEND / BONUS / SPLIT(港美股拆合股: price=比例, shares=0)
     price: float
     shares: int
     trade_date: Optional[str] = None  # YYYY-MM-DD
@@ -42,6 +42,7 @@ class ActionCreate(BaseModel):
     note: Optional[str] = ""
     fee: Optional[float] = None    # 手续费覆盖(原币: A 股人民币、港股港元、美股美元); None 让后端按券商费率自动算
     broker: Optional[str] = None   # 本笔券商(可选, 留空用持仓默认)
+    fx_rate: Optional[float] = None  # 港美股成交日汇率(每 1 原币折人民币), 按结单填; 不填按成交日自动取
 
 
 class ActionUpdate(BaseModel):
@@ -54,6 +55,7 @@ class ActionUpdate(BaseModel):
     fee: Optional[float] = None
     fee_set: bool = False           # 显式标记"我要改 fee" (用于区分 fee=None=清空 还是 不动)
     broker: Optional[str] = None    # 本笔券商; None=不动, ""=清空(回退持仓默认), 名称=设值
+    fx_rate: Optional[float] = None  # 港美股成交日汇率; None=不动(改了日期则按新日期重取), 0=按日期重取, 正数=设值
 
 
 async def _default_broker_name():
@@ -64,40 +66,29 @@ async def _default_broker_name():
 
 
 async def _broker_fee_resolver():
-    """一次性读券商表, 返回 (name)->(rate,min) 解析器(找不到→默认券商), 避免每笔查库。"""
-    brokers = await list_brokers()
-    default = next((x for x in brokers if x.get("is_default")), None) or (brokers[0] if brokers else None)
-    bymap = {x["name"]: (x["stock_rate"], x["stock_min"]) for x in brokers}
-
-    def resolve(name):
-        if name and name in bymap:
-            return bymap[name]
-        return (default["stock_rate"], default["stock_min"]) if default else (None, None)
-    return resolve
+    """一次性读券商表, 返回 (name)->(rate,min) 解析器。实现在 position_ledger.broker_fee_resolver。"""
+    from services.position_ledger import broker_fee_resolver
+    return await broker_fee_resolver()
 
 
-async def _attach_auto_fees(actions: list, stock_code: str, holding_broker, resolve=None):
-    """给每笔流水按自己的 broker(没有则用持仓默认)预算自动手续费 → a['_auto_fee']。
+async def _attach_auto_fees(actions: list, stock_code: str, holding_broker, resolve=None, fee_overrides=None):
+    """给每笔流水按自己的 broker(没有则用持仓券商)预算自动手续费 → a['_auto_fee']。
+    实现在 position_ledger.attach_auto_fees(按委托合并最低佣金、港美股按券商收费方案)。"""
+    from services.position_ledger import attach_auto_fees
+    if fee_overrides is None:
+        return await attach_auto_fees(actions, stock_code, holding_broker, resolve)
+    return await attach_auto_fees(actions, stock_code, holding_broker, resolve, fee_overrides)
 
-    佣金最低值(5 元起)按「委托单」收一次, 不是按成交笔 —— 一张单分几个价位成交时
-    逐笔各取一次最低值会重复收费(实测这份流水多收 101.22 元)。所以先按券商分组,
-    组内交给 allocate_trade_fees 合并同一委托再分摊。
-    """
-    from services.position_ledger import allocate_trade_fees
-    from database import get_config
-    if resolve is None:
-        resolve = await _broker_fee_resolver()
-    fee_overrides = await get_config("fee_schedules")       # 港美股收费方案的覆盖(JSON), 见 services/market_fees.py
-    by_broker: dict = {}
-    for a in actions:
-        r, m = resolve(a.get("broker") or holding_broker)
-        by_broker.setdefault((r, m), []).append(a)
-    for (r, m), group in by_broker.items():
-        fees = allocate_trade_fees(
-            [dict(a, stock_code=a.get("stock_code") or stock_code) for a in group], r, m, fee_overrides)
-        for a, f in zip(group, fees):
-            a["_auto_fee"] = f
-    return resolve
+
+async def _trade_fx(stock_code: str, trade_date, given=None):
+    """港美股流水要记的成交日汇率: 手填为准, 否则按成交日取(今天=实时, 过去=当日中间价)。A 股返回 None。"""
+    if not str(stock_code or "").upper().startswith(("HK.", "US.")):
+        return None
+    if given is not None and given > 0:
+        return float(given)
+    from services.market_data import code_fx_on
+    from datetime import date as _date
+    return await asyncio.to_thread(code_fx_on, stock_code, str(trade_date or "")[:10] or _date.today().isoformat())
 
 
 def _current_segment_brokers(actions: list, default_broker) -> list:
@@ -110,6 +101,9 @@ def _current_segment_brokers(actions: list, default_broker) -> list:
         t = a.get("action_type")
         if t in acq:
             sh += int(a.get("shares") or 0)
+        elif t == "SPLIT":
+            from services.position_ledger import split_ratio
+            sh = int(sh * (split_ratio(a) or 1) + 1e-6)
         elif t in red:
             sh -= int(a.get("shares") or 0)
             if sh <= 0:
@@ -129,10 +123,7 @@ async def _recompute_holding(stock_code: str):
     actions = await get_position_actions(stock_code, limit=500)
     h = await get_holding(stock_code)
     hb = (h or {}).get("broker")
-    resolve = await _attach_auto_fees(actions, stock_code, hb)   # 每笔按各自券商费率
-    c_rate, c_min = resolve(hb)
-    state = compute_position_state(actions, stock_code=stock_code,
-                                   commission_rate=c_rate, commission_min=c_min)
+    state = await ledger_state(stock_code, actions, hb, dilute=False)   # 每笔按各自券商费率
     if state["shares"] > 0:
         await update_holding(stock_code, shares=state["shares"], cost_price=state["cost_price"])
     else:
@@ -160,6 +151,8 @@ async def list_holdings() -> list[HoldingResponse]:
 
     fee_resolve = await _broker_fee_resolver()       # 券商费率解析器(一次性, 全持仓共用)
     default_broker_name = await _default_broker_name()
+    from database import get_config
+    fee_overrides = await get_config("fee_schedules")
 
     result = []
     for h in holdings:
@@ -168,25 +161,6 @@ async def list_holdings() -> list[HoldingResponse]:
         # 计算, 清仓后复活会重置成本, 存量值可能是旧算法写的, 现算保证一致。
         hb = h.get("broker") or default_broker_name   # 持仓未设则回退配置默认, 让"默认券商"也有 tag
         broker_display = hb
-        try:
-            _acts = await get_position_actions(code, limit=500)
-            if _acts:
-                await _attach_auto_fees(_acts, code, hb, resolve=fee_resolve)  # 每笔按各自券商费率
-                c_rate, c_min = fee_resolve(hb)
-                _st = compute_position_state(_acts, stock_code=code,
-                                             commission_rate=c_rate, commission_min=c_min)
-                from services.dividends import dilute_state
-                _st = await dilute_state(code, _st)   # 分红摊薄成本(对齐券商)
-                h["shares"] = _st["shares"]
-                h["cost_price"] = _st["cost_price"]
-                if _st.get("div_per_share"):
-                    h["div_per_share"] = _st["div_per_share"]
-                # 主行券商: 显示当前持仓段实际用的(单一→该券商, 多个→"多券商")
-                brs = _current_segment_brokers(_acts, hb)
-                if brs:
-                    broker_display = brs[0] if len(brs) == 1 else "多券商"
-        except Exception:
-            pass
         q = quotes.get(code)
         current_price = q["price"] if q else None
         change_pct = q["change_pct"] if q else None
@@ -200,6 +174,24 @@ async def list_holdings() -> list[HoldingResponse]:
         if currency != "CNY" and not (q or {}).get("fx_rate"):
             fx_info = get_fx_info(currency)
         fx_rate = float(fx_info.get("rate") or 1.0)
+        cost_value_cny = None      # 港美股: 按各笔成交日汇率折的人民币成本(含本金汇兑)
+        try:
+            _acts = await get_position_actions(code, limit=500)
+            if _acts:
+                _st = await ledger_state(code, _acts, hb, resolve=fee_resolve, fee_overrides=fee_overrides,
+                                         fx_now=fx_rate if currency != "CNY" else None)
+                h["shares"] = _st["shares"]
+                h["cost_price"] = _st["cost_price"]
+                if currency != "CNY":
+                    cost_value_cny = _st.get("cost_value_cny")
+                if _st.get("div_per_share"):
+                    h["div_per_share"] = _st["div_per_share"]
+                # 主行券商: 显示当前持仓段实际用的(单一→该券商, 多个→"多券商")
+                brs = _current_segment_brokers(_acts, hb)
+                if brs:
+                    broker_display = brs[0] if len(brs) == 1 else "多券商"
+        except Exception:
+            pass
 
         # Auto-fix empty stock name
         if not h["stock_name"] and q and q.get("stock_name"):
@@ -212,10 +204,16 @@ async def list_holdings() -> list[HoldingResponse]:
         original_cost_value = round(h["cost_price"] * h["shares"], 2)
         original_market_value = None
         cost_value = round(original_cost_value * fx_rate, 2)
+        fx_pnl = None
+        if cost_value_cny is not None and h["shares"]:
+            # 成本按成交日汇率: 浮动盈亏 = 现市值(现汇率) − 人民币成本, 其中本金汇兑 = 原币成本 × 现汇率 − 人民币成本
+            fx_pnl = round(cost_value - cost_value_cny, 2)
+            cost_value = round(cost_value_cny, 2)
         if current_price and current_price > 0:
             original_market_value = round(current_price * h["shares"], 2)
             market_value = round(original_market_value * fx_rate, 2)
-            unrealized_pnl = round((original_market_value - original_cost_value) * fx_rate, 2)
+            unrealized_pnl = (round(market_value - cost_value, 2) if cost_value_cny is not None
+                              else round((original_market_value - original_cost_value) * fx_rate, 2))
             if h["cost_price"] > 0:
                 pnl_pct = round((current_price - h["cost_price"]) / h["cost_price"] * 100, 2)
 
@@ -237,6 +235,7 @@ async def list_holdings() -> list[HoldingResponse]:
             original_market_value=original_market_value,
             cost_value=cost_value,
             market_value=market_value,
+            fx_pnl=fx_pnl,
             sector=sector_map.get(code),
             broker=broker_display,
             div_per_share=h.get("div_per_share"),
@@ -265,6 +264,10 @@ async def realized_pnl():
         await db.close()
 
     holdings_map = {h["stock_code"]: h for h in await get_all_holdings()}
+    from database import get_config
+    from services.market_data import code_currency, code_fx
+    resolve = await _broker_fee_resolver()
+    fee_overrides = await get_config("fee_schedules")
     items: list[dict] = []
     total = 0.0
     total_carry = 0.0
@@ -272,17 +275,18 @@ async def realized_pnl():
         actions = await get_position_actions(code, limit=500)
         if not actions:
             continue
-        c_rate, c_min = await _broker_stock_fee((holdings_map.get(code) or {}).get("broker"))
-        state = compute_position_state(actions, stock_code=code,
-                                       commission_rate=c_rate, commission_min=c_min)
-        # 账本按原币记(港股 HKD、美股 USD), 汇总前折人民币; 暂按当前汇率(流水里没有成交时的汇率)
-        from services.market_data import code_currency, code_fx
-        fx = await asyncio.to_thread(code_fx, code)
+        # 账本按原币记(港股 HKD、美股 USD); 人民币口径每笔按自己的成交日汇率(fx_rate, 没记的按当前汇率),
+        # 所以已实现里含本金的汇兑损益(fx_pnl 单列)。费用与看板同一口径(每笔券商 + fee_schedules 覆盖)。
+        foreign = code_currency(code) != "CNY"
+        fx = await asyncio.to_thread(code_fx, code) if foreign else 1.0
+        state = await ledger_state(code, actions, (holdings_map.get(code) or {}).get("broker"),
+                                   resolve=resolve, fee_overrides=fee_overrides, dilute=False,
+                                   fx_now=fx if foreign else None)
         rp_native = float(state.get("realized_pnl") or 0)
-        rp = rp_native * fx
+        rp = float(state.get("realized_pnl_cny") or 0) if foreign else rp_native
         # carry = 不在当前浮动里的已实现 (已平仓段 + 分红). 当前持仓段的已实现已被
         # 综合成本法摊进浮动盈亏, 顶部总盈亏只能加 carry, 否则重复算。
-        carry = float(state.get("realized_carry") or 0) * fx
+        carry = float(state.get("realized_carry_cny") or 0) if foreign else float(state.get("realized_carry") or 0)
         total += rp
         total_carry += carry
         h = holdings_map.get(code) or {}
@@ -299,6 +303,7 @@ async def realized_pnl():
             "realized_pnl": rp,
             "realized_carry": round(carry, 2),
             "currency": code_currency(code), "realized_pnl_native": rp_native, "fx_rate": fx,
+            "fx_pnl": float(state.get("realized_fx_pnl") or 0),
             "still_holding": (state.get("shares") or 0) > 0,
         })
     items.sort(key=lambda x: x["realized_pnl"])
@@ -347,13 +352,18 @@ async def trade_review():
         await db.close()
 
     holdings_map = {h["stock_code"]: h for h in await get_all_holdings()}
+    from database import get_config
+    from services.market_data import code_currency as _code_cur
+    resolve = await _broker_fee_resolver()
+    fee_overrides = await get_config("fee_schedules")
     stats = []
     for code in codes:
         actions = await get_position_actions(code, limit=500)
         if not actions:
             continue
-        c_rate, c_min = await _broker_stock_fee((holdings_map.get(code) or {}).get("broker"))
-        state = compute_position_state(actions, stock_code=code, commission_rate=c_rate, commission_min=c_min)
+        state = await ledger_state(code, actions, (holdings_map.get(code) or {}).get("broker"),
+                                   resolve=resolve, fee_overrides=fee_overrides, dilute=False)
+        foreign = _code_cur(code) != "CNY"
         # 买卖次数按"决策"数而不是成交笔数: 一次委托分两笔成交(实测紫光股份 200@34.93 +
         # 100@34.94, 同一分钟)会把做T频率凭空翻倍, 复盘就据此说人家"反复操作"
         from services.trade_fills import merge_fills
@@ -377,11 +387,13 @@ async def trade_review():
                 name = code
         stats.append({
             "code": code, "name": name,
-            "realized": round(float(state.get("realized_pnl") or 0), 2),
+            # 港美股已实现直接用人民币口径(各笔成交日汇率), 浮动用人民币成本 —— 下面不再乘当前汇率
+            "realized": round(float(state.get("realized_pnl_cny" if foreign else "realized_pnl") or 0), 2),
             "shares": float(state.get("shares") or 0),
             "cost_price": float(state.get("cost_price") or 0),
             "hold_days": int(state.get("weighted_days") or 0),
             "n_buy": n_buy, "n_sell": n_sell,
+            "_cost_cny": float(state.get("cost_value_cny") or 0) if foreign else None,
         })
 
     # 浮动 (在持仓的): 实时价 - 成本
@@ -390,14 +402,15 @@ async def trade_review():
     from services.market_data import code_fx as _code_fx
     for s in stats:
         floating = 0.0
+        cost_cny = s.pop("_cost_cny", None)
         if s["shares"] > 0:
             price = (quotes.get(s["code"]) or {}).get("price") or 0
             if price:
-                floating = (price - s["cost_price"]) * s["shares"]
-        fx = await asyncio.to_thread(_code_fx, s["code"])     # 港美股原币 → 人民币(A 股为 1)
-        if fx != 1.0:
-            s["realized"] = round(s["realized"] * fx, 2)
-            floating *= fx
+                if cost_cny is not None:      # 港美股: 现市值(当前汇率) − 人民币成本(成交日汇率)
+                    fx = await asyncio.to_thread(_code_fx, s["code"])
+                    floating = price * s["shares"] * fx - cost_cny
+                else:
+                    floating = (price - s["cost_price"]) * s["shares"]
         s["floating"] = round(floating, 2)
         s["total_pnl"] = round(s["realized"] + floating, 2)
 
@@ -510,17 +523,27 @@ async def trade_journal(limit: int = 80):
             except Exception:
                 name = code
             name_cache[code] = name
-        for a in await get_position_actions(code, limit=500):
+        _acts = await get_position_actions(code, limit=500)
+        # 港美股拆合股: 拆分前的成交价÷比例、股数×比例, 与现价同标度(否则 1 拆 4 前的买入显示 -75%)
+        from services.position_ledger import split_ratio
+        _splits = [((x.get("trade_date") or "")[:10], split_ratio(x)) for x in _acts
+                   if (x.get("action_type") or "").upper() == "SPLIT" and split_ratio(x) > 0]
+        for a in _acts:
             t = (a.get("action_type") or "").upper()
             kind = "buy" if t in ACQUIRE else ("sell" if t in RELEASE else None)
             price = float(a.get("price") or 0)
             if not kind or price <= 0:
                 continue
+            fac = 1.0
+            for sd, sf in _splits:
+                if (a.get("trade_date") or "")[:10] < sd:
+                    fac *= sf
+            price /= fac
             pct = round((cur - price) / price * 100, 2)   # 买/卖后股价至今涨跌
             hit = (cur > price) if kind == "buy" else (cur < price)
             trades.append({
                 "date": (a.get("trade_date") or "")[:10], "code": code, "name": name,
-                "kind": kind, "price": round(price, 3), "shares": float(a.get("shares") or 0),
+                "kind": kind, "price": round(price, 3), "shares": float(a.get("shares") or 0) * fac,
                 "current": round(cur, 3), "pct": pct, "hit": hit, "asset_class": "stock",
                 "time": (a.get("trade_time") or None),   # 合并分笔成交要用它判"是不是连着的"
             })
@@ -1476,6 +1499,7 @@ async def create_holding(data: HoldingCreate):
         trade_date=data.trade_date,
         trade_time=(data.trade_time or None),
         broker=(data.broker or None),
+        fx_rate=await _trade_fx(stock_code, data.trade_date, data.fx_rate),
     )
     await _recompute_holding(stock_code)
     return {"message": "添加成功", "stock_code": stock_code, "stock_name": name}
@@ -1573,17 +1597,21 @@ async def create_action(stock_code: str, data: ActionCreate):
     holding = await get_holding(stock_code)
     if not holding:
         raise HTTPException(404, f"持仓 {stock_code} 不存在")
+    is_split = (data.action_type or "").upper() == "SPLIT"
+    if is_split and not (data.price and data.price > 0):
+        raise HTTPException(400, "拆合股请在价格栏填比例(新股数/旧股数): 1 拆 4 填 4, 10 合 1 填 0.1")
     await add_position_action(
         stock_code=stock_code,
         action_type=data.action_type,
         price=data.price,
-        shares=data.shares,
+        shares=0 if is_split else data.shares,
         trade_date=data.trade_date,
         note=data.note or "",
         tranche_id=None,
         fee=data.fee,
         trade_time=(data.trade_time or None),
         broker=(data.broker or None),
+        fx_rate=None if is_split else await _trade_fx(stock_code, data.trade_date, data.fx_rate),
     )
     await _recompute_holding(stock_code)
     return {"message": "记录已添加"}
@@ -1592,7 +1620,24 @@ async def create_action(stock_code: str, data: ActionCreate):
 @router.put("/actions/{action_id}")
 async def modify_action(action_id: int, data: ActionUpdate):
     """Edit an existing action. Recomputes holding aggregate.
-    fee_set=true 时显式写 fee (None 表示清空覆盖, 回退自动估算)."""
+    fee_set=true 时显式写 fee (None 表示清空覆盖, 回退自动估算).
+    港美股: fx_rate 给正数按它; 改了成交日 / 给 0 / 原来没记汇率 → 按(新)成交日重取。"""
+    from database import get_db
+    db = await get_db()
+    try:
+        cursor = await db.execute("SELECT * FROM position_actions WHERE id = ?", (action_id,))
+        old = await cursor.fetchone()
+    finally:
+        await db.close()
+    old = dict(old) if old else {}
+    fx_new = None
+    if old and (data.action_type or old.get("action_type") or "").upper() != "SPLIT":
+        day = data.trade_date or old.get("trade_date") or str(old.get("created_at") or "")[:10]
+        if data.fx_rate is not None and data.fx_rate > 0:
+            fx_new = data.fx_rate
+        elif (data.fx_rate is not None or not old.get("fx_rate")
+              or (data.trade_date and data.trade_date[:10] != str(old.get("trade_date") or "")[:10])):
+            fx_new = await _trade_fx(old.get("stock_code"), day)
     await update_position_action(
         action_id,
         action_type=data.action_type,
@@ -1604,17 +1649,10 @@ async def modify_action(action_id: int, data: ActionUpdate):
         fee_explicit=data.fee_set,
         trade_time=data.trade_time,
         broker=data.broker,
+        fx_rate=fx_new,
     )
-    # Find the stock_code for recomputation
-    from database import get_db
-    db = await get_db()
-    try:
-        cursor = await db.execute("SELECT stock_code FROM position_actions WHERE id = ?", (action_id,))
-        row = await cursor.fetchone()
-    finally:
-        await db.close()
-    if row:
-        await _recompute_holding(row["stock_code"])
+    if old:
+        await _recompute_holding(old["stock_code"])
     return {"message": "已更新"}
 
 

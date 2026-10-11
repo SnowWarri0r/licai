@@ -30,19 +30,62 @@ def _day_change(mv: float | None, pct: float | None) -> float | None:
     return round(mv * pct / (100 + pct))
 
 
+def _hk_closed(now: datetime.datetime | None = None) -> bool:
+    """港股今日是否已收盘(16:00 港时之后)。收盘小结 15:10 北京时间跑, 那时港股还在交易。"""
+    from zoneinfo import ZoneInfo
+    hk = (now or datetime.datetime.now(datetime.timezone.utc)).astimezone(ZoneInfo("Asia/Hong_Kong"))
+    return hk.hour * 60 + hk.minute >= 16 * 60
+
+
+def _skip_reason(code: str, today_valid: bool | None, hk_closed: bool) -> str | None:
+    """这只持仓的涨跌今天不该计入的原因; 计入返回 None。
+    today_valid=False: 港股今日休市 / 美股那场收盘已超过 20 小时(行情不属于今天)。"""
+    from services.market_data import split_stock_code
+    m = split_stock_code(code)[0]
+    if m == "A":
+        return None
+    if today_valid is False:
+        return "港股今日休市" if m == "HK" else "美股行情非最近一场"
+    if m == "HK" and not hk_closed:
+        return "港股未收盘(16:00 港时收)"
+    return None
+
+
 async def build_eod_summary() -> dict:
     from database import list_watchlist
     from services.market_data import get_realtime_quotes
     from api.portfolio_routes import list_holdings   # 持仓口径与看板一致(流水现算, 已剔清仓)
 
+    from services.market_data import quote_session_date, split_stock_code
     holdings = await list_holdings()
     pos = {}                                    # code -> name(A股在持, 事件匹配用)
     rows = []                                   # 全组合逐资产: {name, 类别, pct, 今日浮动}
+    skipped: dict[str, list[str]] = {}          # 原因 -> [名称]: 港美股涨跌不属于今天/港股未收盘, 不计入
+    us_days: set[str] = set()                   # 计入的美股属于美东哪一天那场
+    hk_closed = _hk_closed()
+    us_quotes = {}
+    us_codes = [h.stock_code for h in holdings if h.shares and split_stock_code(h.stock_code)[0] == "US"]
+    if us_codes:
+        try:
+            us_quotes = await get_realtime_quotes(us_codes)
+        except Exception:
+            us_quotes = {}
     for h in holdings:
         if not h.shares:
             continue
         pos[h.stock_code] = h.stock_name
-        rows.append({"code": h.stock_code, "name": h.stock_name, "类别": "股票",
+        why = _skip_reason(h.stock_code, h.today_valid, hk_closed)
+        if why:
+            skipped.setdefault(why, []).append(h.stock_name or h.stock_code)
+            continue
+        mkt = split_stock_code(h.stock_code)[0]
+        cls = {"HK": "港股", "US": "美股"}.get(mkt, "股票")
+        if mkt == "US":
+            d = quote_session_date("US", us_quotes.get(h.stock_code))
+            if d:
+                us_days.add(d)
+                cls = f"美股(美东{d[5:]})"
+        rows.append({"code": h.stock_code, "name": h.stock_name, "类别": cls,
                      "pct": h.price_change_pct,
                      "今日浮动": _day_change(h.market_value, h.price_change_pct),
                      "limit": _limit_hit(h.stock_code, h.price_change_pct)})
@@ -153,6 +196,10 @@ async def build_eod_summary() -> dict:
         lines.append(f"- 其余{len(rows) - 12}项合计 {rest:+,.0f}")
     if no_gauge:
         lines.append(f"(净值滞后且无底层估的基金未计入: {'、'.join(no_gauge[:4])})")
+    for why, names in skipped.items():
+        lines.append(f"({why}, 未计入: {'、'.join(names[:4])}{' 等' if len(names) > 4 else ''})")
+    if us_days:
+        lines.append(f"(美股计入的是美东 {'/'.join(sorted(us_days))} 那一场的涨跌)")
     if events:
         lines.append("— 事件 —")
         lines += [f"- {e}" for e in events[:8]]
@@ -161,7 +208,7 @@ async def build_eod_summary() -> dict:
     lines.append("纯客观数据, 不构成任何买卖建议")
     return {"date": datetime.date.today().isoformat(), "text": "\n".join(lines),
             "total_change": total_chg, "by_class": {k: round(v) for k, v in by_cls.items()},
-            "rows": rows, "events": events}
+            "rows": rows, "events": events, "skipped": skipped}
 
 
 async def push_eod_summary() -> dict:

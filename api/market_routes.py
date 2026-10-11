@@ -184,6 +184,13 @@ async def tdx_minute(stock_code: str, date: str = ""):
     历史日附 prev_close_raw: 真实(不复权)昨收——前复权昨收经分红送配事件表
     逐事件逆变换, 除权错位精确归零; 事件表拉不到则不带, 前端回退近似校正。"""
     import services.tdx_client as _tdx
+    from services.market_data import split_stock_code, stock_minute_foreign
+    if split_stock_code(normalize_stock_code(stock_code))[0] in ("HK", "US"):
+        # 港美股不走 TDX: 腾讯只有最近一个交易日的分时, 问别的日子就返回空
+        data = await asyncio.to_thread(stock_minute_foreign, normalize_stock_code(stock_code))
+        if data and date and data["date"].replace("-", "") != date.replace("-", ""):
+            data = None
+        return {"enabled": True, "data": data}
     bare = _tdx_bare(stock_code)
     if not _tdx.is_enabled() or not bare:
         return {"enabled": _tdx.is_enabled(), "data": None}
@@ -633,11 +640,19 @@ async def watchlist_get(lite: bool = False):
     return await watchlist_view()
 
 
+def _wl_code(stock_code: str) -> str:
+    """自选表的代码键: 港美股保留市场前缀(HK.00700 / US.AAPL), 剥掉就和 A 股混成一类;
+    A 股沿用裸 6 位。"""
+    from services.market_data import normalize_stock_code, split_stock_code
+    code = normalize_stock_code(stock_code)
+    return code if split_stock_code(code)[0] in ("HK", "US") else code.split(".")[-1]
+
+
 @router.post("/watchlist/{stock_code}")
 async def watchlist_add(stock_code: str):
     from database import add_watchlist
-    from services.market_data import get_realtime_quotes, normalize_stock_code
-    code = normalize_stock_code(stock_code).split(".")[-1]
+    from services.market_data import get_realtime_quotes
+    code = _wl_code(stock_code)
     q = (await get_realtime_quotes([code])).get(code) or {}
     await add_watchlist(code, q.get("stock_name") or code, q.get("price"))
     return {"ok": True, "code": code, "name": q.get("stock_name"), "added_price": q.get("price")}
@@ -646,7 +661,7 @@ async def watchlist_add(stock_code: str):
 @router.delete("/watchlist/{stock_code}")
 async def watchlist_del(stock_code: str):
     from database import remove_watchlist
-    await remove_watchlist(stock_code.split(".")[-1])
+    await remove_watchlist(_wl_code(stock_code))
     return {"ok": True}
 
 
@@ -676,7 +691,7 @@ async def watchlist_set_groups(stock_code: str, body: WatchGroupsReq):
         g = (str(g) or "").strip()[:20]
         if g and g not in names:
             names.append(g)
-    saved = await set_watchlist_groups(stock_code.split(".")[-1],
+    saved = await set_watchlist_groups(_wl_code(stock_code),
                                        names[:_MAX_GROUPS_PER_STOCK])
     return {"ok": True, "groups": saved}
 
@@ -691,7 +706,7 @@ async def watchlist_reorder(body: WatchReorderReq):
     """
     from database import reorder_watchlist
     scope = "group" if body.scope == "group" else "global"
-    await reorder_watchlist([str(c).split(".")[-1] for c in (body.codes or [])][:500],
+    await reorder_watchlist([_wl_code(str(c)) for c in (body.codes or [])][:500],
                             scope=scope, group=(body.group or "").strip()[:20])
     return {"ok": True}
 

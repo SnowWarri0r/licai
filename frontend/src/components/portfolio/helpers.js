@@ -8,6 +8,12 @@ export function stockMarketOfCode(code = '') {
   return 'A'
 }
 
+// 按代码推原币(接口没带 currency 时兜底)
+export function currencyOfCode(code = '') {
+  const m = stockMarketOfCode(code)
+  return m === 'HK' ? 'HKD' : m === 'US' ? 'USD' : 'CNY'
+}
+
 export function stockCodeForMarket(market, code) {
   const raw = String(code || '').trim().toUpperCase()
   if (market === 'HK') return `HK.${raw.replace(/^HK\.?/, '').padStart(5, '0')}`
@@ -16,7 +22,7 @@ export function stockCodeForMarket(market, code) {
 }
 
 export function currencySymbol(currency = 'CNY') {
-  if (currency === 'USD') return '$'
+  if (currency === 'USD') return 'US$'
   if (currency === 'HKD') return 'HK$'
   return '¥'
 }
@@ -28,6 +34,7 @@ export function formatCurrencyMoney(currency, value) {
 export function fxSourceLabel(source) {
   if (source === 'sina_bid_ask_mid') return '新浪外汇买卖价中间价'
   if (source === 'fallback') return '备用汇率'
+  if (source === 'last_known') return '上次成功汇率'
   if (source === 'CNY') return '人民币'
   return source || '汇率'
 }

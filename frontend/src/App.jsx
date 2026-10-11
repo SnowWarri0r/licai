@@ -127,6 +127,15 @@ export default function App() {
     try { setHoldings(await api.getPortfolio()) } catch {}
   }, [])
   useEffect(() => { loadPortfolio() }, [loadPortfolio])
+  // 港美股的 today_valid(今日涨跌算不算今天)只在 /api/portfolio 里按「港交所交易日 / 美股那场收盘距今」
+  // 判, WebSocket 推价不带它(带了就直接用, 见下)。它只在开收盘/跨日这类时段边界翻转, 所以有港美股
+  // 持仓时每 10 分钟整体重拉一次就够, 不在前端复刻两地交易日历。
+  const hasForeign = holdings.some(h => /^(HK|US)\./i.test(String(h.stock_code || '')))
+  useEffect(() => {
+    if (!hasForeign) return
+    const t = setInterval(loadPortfolio, 10 * 60 * 1000)
+    return () => clearInterval(t)
+  }, [hasForeign, loadPortfolio])
 
   const handleWsMessage = useCallback((msg) => {
     if (msg.type === 'price_update') {
@@ -149,6 +158,7 @@ export default function App() {
           fx_time: q.fx_time || h.fx_time || '',
           fx_source: q.fx_source || h.fx_source || '',
           price_change_pct: q.change_pct,
+          today_valid: q.today_valid !== undefined ? q.today_valid : h.today_valid,
           unrealized_pnl: Math.round(pnl * 100) / 100,
           pnl_pct: Math.round(pnlPct * 100) / 100,
           original_cost_value: Math.round(originalCostValue * 100) / 100,

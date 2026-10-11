@@ -215,27 +215,34 @@ export default function UnifiedPortfolio({ holdings, onEdit, onHistory, onAdd, d
     // 2. Sub-category single-track within FUND / A股
     for (const t of ['A', 'F']) {
       const g = allAgg.groups[t]
-      if (!g || g.items.length < 2) continue
+      // 股票桶里港股/美股的分类是「市场」不是行业板块, 不参与板块分散判断(只看 A 股行业)
+      const items = t === 'A'
+        ? (g?.items || []).filter(it => (it.extra?.market || 'A') === 'A')
+        : (g?.items || [])
+      if (items.length < 2) continue
+      const itemsMv = items.reduce((s, it) => s + (it.mv || 0), 0)
+      if (itemsMv <= 0) continue
       const subs = {}
-      for (const it of g.items) {
+      for (const it of items) {
         const cid = it.category?.id || 'other'
         subs[cid] = (subs[cid] || 0) + (it.mv || 0)
       }
       const entries = Object.entries(subs)
+      const scope = t === 'A' && items.length < g.items.length ? 'A股' : TYPE_META[t].label
       if (entries.length === 1) {
-        const cat = g.items[0].category?.label || '同一类'
+        const cat = items[0].category?.label || '同一类'
         warnings.push({
           level: 'high',
-          text: `${TYPE_META[t].label}全押「${cat}」，板块未分散`,
+          text: `${scope}全押「${cat}」，板块未分散`,
         })
       } else {
         const top = entries.sort((a, b) => b[1] - a[1])[0]
-        const topPct = top[1] / g.mv * 100
+        const topPct = top[1] / itemsMv * 100
         if (topPct >= 70) {
-          const cat = g.items.find(it => (it.category?.id || 'other') === top[0])?.category?.label || '某类'
+          const cat = items.find(it => (it.category?.id || 'other') === top[0])?.category?.label || '某类'
           warnings.push({
             level: 'med',
-            text: `${TYPE_META[t].label}内「${cat}」占 ${topPct.toFixed(0)}%，板块过度集中`,
+            text: `${scope}内「${cat}」占 ${topPct.toFixed(0)}%，板块过度集中`,
           })
         }
       }

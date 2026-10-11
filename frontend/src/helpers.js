@@ -1,6 +1,74 @@
-export function fmtPrice(v) {
+// 价格小数位按市场最小报价单位: A 股 2 位不变; 港股 10 元以下档位 0.001-0.01 → 3 位;
+// 美股 1 美元以下报价到 0.0001 → 4 位。code 可空(按 A 股处理)。
+export function fmtPrice(v, code) {
   if (v == null || v === 0) return '--'
-  return parseFloat(v).toFixed(2)
+  const n = parseFloat(v)
+  const c = String(code || '').toUpperCase()
+  if (c.startsWith('HK.') && Math.abs(n) < 10) return n.toFixed(3)
+  if (c.startsWith('US.') && Math.abs(n) < 1) return n.toFixed(4)
+  return n.toFixed(2)
+}
+
+// ---------------------------------------------------------------------------
+// 时区换算(走 Intl, 夏令时自动对)。成交时刻 trade_time / at_time 在后端统一存北京时间;
+// 美股界面按美东录入/展示, 日期则一律是美东交易日(券商成交记录上的那天)。
+// ---------------------------------------------------------------------------
+export const US_TZ = 'America/New_York'
+const BJ_TZ = 'Asia/Shanghai'
+const _dtf = {}
+function _parts(ms, tz) {
+  const f = _dtf[tz] || (_dtf[tz] = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }))
+  const o = {}
+  for (const p of f.formatToParts(new Date(ms))) o[p.type] = p.value
+  return o
+}
+// 某时区的墙上时间 → UTC 毫秒
+function _wallToUtc(date, time, tz) {
+  const [y, mo, d] = String(date).slice(0, 10).split('-').map(Number)
+  const [h = 0, mi = 0, s = 0] = String(time).split(":").map(x => Number(x) || 0)
+  const guess = Date.UTC(y, mo - 1, d, h, mi, s)
+  const off = (ms) => {
+    const p = _parts(ms, tz)
+    return Date.UTC(+p.year, +p.month - 1, +p.day, +p.hour, +p.minute, +p.second) - ms
+  }
+  let utc = guess - off(guess)
+  utc = guess - off(utc)        // 跨夏令时切换点再校一次
+  return utc
+}
+function _fmt(ms, tz, withSec) {
+  const p = _parts(ms, tz)
+  return { date: `${p.year}-${p.month}-${p.day}`, time: `${p.hour}:${p.minute}${withSec ? ':' + p.second : ''}` }
+}
+function _shiftDate(date, days) {
+  const [y, mo, d] = String(date).slice(0, 10).split('-').map(Number)
+  return new Date(Date.UTC(y, mo - 1, d + days)).toISOString().slice(0, 10)
+}
+
+// 美东交易日 + 美东时刻 → 北京时间 HH:MM(存库用)。参数缺失返回原值。
+export function etToBjTime(usDate, etTime) {
+  if (!usDate || !etTime) return etTime
+  return _fmt(_wallToUtc(usDate, etTime, US_TZ), BJ_TZ, String(etTime).length > 5).time
+}
+
+// 北京时间 HH:MM[:SS](库里的) + 美东交易日 → 美东时刻。北京时间凌晨的成交属于前一个美东日,
+// 所以按"换算后美东日期 == 交易日"在前后三天里挑那个北京日期。对不上返回 null。
+export function bjToEtTime(usDate, bjTime) {
+  if (!usDate || !bjTime) return null
+  const withSec = String(bjTime).length > 5
+  const day = String(usDate).slice(0, 10)
+  for (const k of [0, 1, -1]) {
+    const r = _fmt(_wallToUtc(_shiftDate(day, k), bjTime, BJ_TZ), US_TZ, withSec)
+    if (r.date === day) return r.time
+  }
+  return null
+}
+
+// 美东今天(YYYY-MM-DD), 美股表单默认日期用
+export function usTodayDate() {
+  return _fmt(Date.now(), US_TZ, false).date
 }
 
 export function fmtCost(v) {
