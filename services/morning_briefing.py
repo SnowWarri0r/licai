@@ -20,8 +20,9 @@ from datetime import datetime, timezone, timedelta
 from typing import Any
 
 
-SYSTEM_PROMPT = """你是 A 股持仓盘前信息助手。每天开盘前，基于某只持仓近期的新闻 / 公告 / K 线 / 基本面健康度，做一份**客观信息摘要 + 风险提示**。
+SYSTEM_PROMPT = """你是持仓盘前信息助手，覆盖 A 股、港股、美股。每天 A 股开盘前，基于某只持仓近期的新闻 / 公告 / K 线 / 基本面健康度，做一份**客观信息摘要 + 风险提示**。
 标的可能是个股，也可能是行业/主题 ETF——ETF 的要点侧重其跟踪主题的板块消息、资金动向与指数位置，基本面/公告缺失属正常。
+港股、美股标的：价格与成本按输入里标注的币种（港元/美元）表述；输入里的「最近一个交易时段」是该市场已收盘的那一场，美股那一场在北京时间昨夜至今晨交易，是最新信息，要点里按所注日期表述。港美股没有 A 股公告与基本面健康度输入，属正常。
 
 **最重要的规则：只做信息汇总和风险提示，绝不给出买入 / 卖出 / 加仓 / 减仓 / 调档位 / 抄底 / 止盈止损等任何操作建议或价位指令。** 用户自己做决策，你只负责把今天该知道的事讲清楚。
 
@@ -72,15 +73,43 @@ def _kline_summary(df) -> dict:
     }
 
 
+_CCY = {"CNY": ("¥", "人民币"), "HKD": ("HK$", "港元"), "USD": ("US$", "美元")}
+
+
+def _session_line(stock_code: str, q: dict | None) -> str:
+    """港美股: 最近一个交易时段的收盘与涨跌(带交易所当地日期), 美股另带盘前/盘后。A 股返回空串。"""
+    from services.market_data import quote_session_date, split_stock_code
+    mkt = split_stock_code(stock_code)[0]
+    q = q or {}
+    if mkt not in ("HK", "US") or not q.get("price"):
+        return ""
+    unit = "港元" if mkt == "HK" else "美元"
+    d = quote_session_date(mkt, q) or "日期未知"
+    pct = q.get("change_pct")
+    where = "美东" if mkt == "US" else "港股"
+    line = (f"最近一个交易时段({where} {d}): 收 {q['price']} {unit}"
+            + (f", 涨跌 {pct:+.2f}%" if isinstance(pct, (int, float)) else ""))
+    ext = q.get("ext_hours") or {}
+    if mkt == "US" and ext.get("price"):
+        line += (f"; {ext.get('label', '盘外')} {ext['price']} {unit}"
+                 f"({ext.get('change_pct', 0):+.2f}%, {ext.get('as_of', '')})")
+    return line
+
+
 def _build_user_prompt(*, stock_code: str, stock_name: str, current_price: float,
                        cost_price: float, shares: int, pnl_pct: float, sector: str,
                        kline_stats: dict, news: list[dict], sector_news: list[dict],
-                       announcements: list[dict], health: dict | None) -> str:
+                       announcements: list[dict], health: dict | None,
+                       currency: str = "CNY", session_line: str = "") -> str:
+    sym, unit = _CCY.get(currency, ("", currency))
+    unit_note = "" if currency == "CNY" else f"(单位: {unit})"
     parts = [
         f"## 标的\n{stock_name}({stock_code}) · 行业: {sector or '未知'}",
-        f"\n## 当前持仓\n成本 ¥{cost_price:.2f} × {shares} 股 = ¥{cost_price*shares:,.0f}\n"
-        f"现价 ¥{current_price:.2f} | 浮动盈亏 {pnl_pct:+.2f}%",
+        f"\n## 当前持仓{unit_note}\n成本 {sym}{cost_price:.2f} × {shares} 股 = {sym}{cost_price*shares:,.0f}\n"
+        f"现价 {sym}{current_price:.2f} | 浮动盈亏 {pnl_pct:+.2f}%",
     ]
+    if session_line:
+        parts.append(f"\n## 行情\n{session_line}")
     if kline_stats:
         parts.append(f"\n## K线摘要\n" + "\n".join(f"- {k}: {v}" for k, v in kline_stats.items()))
     if health:
@@ -124,12 +153,17 @@ def _strip_to_json(text: str) -> str:
 async def generate_briefing_for_stock(stock_code: str, stock_name: str,
                                       cost_price: float, shares: int,
                                       current_price: float,
-                                      sector_hint: str = "") -> dict:
-    """Build briefing for one stock/场内ETF. sector_hint: ETF 传主题词(半导体设备/通信…)当行业。"""
-    from services.market_data import get_historical_data, get_stock_sector
+                                      sector_hint: str = "",
+                                      quote: dict | None = None) -> dict:
+    """Build briefing for one stock/场内ETF. sector_hint: ETF 传主题词(半导体设备/通信…)当行业。
+    港美股: 新闻按市场选源(港股东财/美股 Yahoo), 不取 A 股公告/健康度/板块新闻; quote 用来写最近一场的涨跌。"""
+    from services.market_data import get_historical_data, get_stock_sector, split_stock_code
     from services.news import get_stock_news, get_sector_news, get_stock_announcements
     from services.fundamental_score import fetch_health_snapshot
     from services.llm_client import call_claude
+
+    if split_stock_code(stock_code)[0] in ("HK", "US"):
+        return await _briefing_foreign(stock_code, stock_name, cost_price, shares, current_price, quote)
 
     # 先拿真实行业(修掉硬编码"有色金属"), 再据此拉对应行业新闻; ETF 直接用主题词
     sector = sector_hint
@@ -202,15 +236,56 @@ async def generate_briefing_for_stock(stock_code: str, stock_name: str,
     }
 
 
+async def _ask(user_prompt: str) -> dict:
+    from services.llm_client import call_claude
+    raw = await asyncio.to_thread(call_claude, user_prompt, SYSTEM_PROMPT, "claude-sonnet-5", 1200)
+    return json.loads(_strip_to_json(raw))
+
+
+async def _briefing_foreign(stock_code: str, stock_name: str, cost_price: float, shares: int,
+                            current_price: float, quote: dict | None) -> dict:
+    """港股/美股持仓的盘前简报: K 线 + 个股新闻 + 最近一场涨跌(美股含盘前/盘后)。"""
+    from services.market_data import get_historical_data, split_stock_code, code_currency
+    from api.news_routes import _fetch_holding_news_sync
+    mkt = split_stock_code(stock_code)[0]
+    sector = "港股" if mkt == "HK" else "美股"
+    hist_df, news = await asyncio.gather(
+        get_historical_data(stock_code), asyncio.to_thread(_fetch_holding_news_sync, stock_code),
+        return_exceptions=True)
+    if isinstance(hist_df, Exception): hist_df = None
+    if isinstance(news, Exception): news = []
+    pnl_pct = (current_price - cost_price) / cost_price * 100 if cost_price > 0 else 0
+    kline_stats = _kline_summary(hist_df)
+    session_line = _session_line(stock_code, quote)
+    user_prompt = _build_user_prompt(
+        stock_code=stock_code, stock_name=stock_name, sector=sector,
+        current_price=current_price, cost_price=cost_price, shares=shares,
+        pnl_pct=pnl_pct, kline_stats=kline_stats, news=news or [], sector_news=[],
+        announcements=[], health=None, currency=code_currency(stock_code), session_line=session_line)
+    base = {"stock_code": stock_code, "stock_name": stock_name, "currency": code_currency(stock_code)}
+    try:
+        parsed = await _ask(user_prompt)
+    except Exception as e:
+        return {**base, "error": f"生成失败: {type(e).__name__}: {str(e)[:100]}", "signal": "中性",
+                "summary": "LLM 调用失败", "points": [], "risk": "", "confidence": "low"}
+    return {**base, "current_price": current_price, "cost_price": cost_price,
+            "pnl_pct": round(pnl_pct, 2), "sector": sector, "session": session_line,
+            "signal": parsed.get("signal", "中性"), "summary": parsed.get("summary", ""),
+            "points": parsed.get("points", []), "risk": parsed.get("risk", ""),
+            "confidence": parsed.get("confidence", "med"), "kline_stats": kline_stats,
+            "health_level": None}
+
+
 async def generate_all_briefings() -> list[dict]:
-    """Generate briefings for every A-share holding + 场内 ETF 持仓. Saves each to DB."""
+    """Generate briefings for every 个股持仓(A股/港股/美股) + 场内 ETF 持仓. Saves each to DB."""
     from database import get_all_holdings, save_briefing, list_external_assets, list_external_actions
-    from services.market_data import get_realtime_quotes, is_a_share
+    from services.market_data import get_realtime_quotes, is_a_share, split_stock_code
     from services.external_assets import _is_onchain_etf, fund_theme_word
     from services.external_ledger import compute_external_state
 
     holdings = [h for h in await get_all_holdings()
-                if is_a_share(h["stock_code"]) and (h.get("shares") or 0) > 0]
+                if (is_a_share(h["stock_code"]) or split_stock_code(h["stock_code"])[0] in ("HK", "US"))
+                and (h.get("shares") or 0) > 0]
     # 场内 ETF 持仓(双账本): 成本用摊薄口径(与券商一致), 主题词当行业拉板块新闻
     etfs = []
     try:
@@ -245,7 +320,7 @@ async def generate_all_briefings() -> list[dict]:
             briefing = await generate_briefing_for_stock(
                 code, h.get("stock_name", "") or q.get("stock_name", ""),
                 cost_price=h["cost_price"], shares=h["shares"],
-                current_price=cur,
+                current_price=cur, quote=q,
             )
             briefing["briefing_date"] = today
             await save_briefing(code, today, json.dumps(briefing, ensure_ascii=False))

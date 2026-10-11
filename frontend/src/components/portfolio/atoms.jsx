@@ -68,12 +68,26 @@ export function WeightBar({ weight, color, width = 48 }) {
   )
 }
 
-export function TodayPulse({ change, width = 44 }) {
+// stale: 港美股今日没开盘(today_valid===false), 这个涨跌是上一交易日的 —— 置灰并标注,
+// 与总计里不计入它的口径一致
+export function TodayPulse({ change, width = 44, stale = false }) {
   if (change == null) return <span className="text-text-muted text-[11px]">--</span>
   const abs = Math.abs(change)
   const clamped = Math.min(abs, 5) / 5
   const isUp = change > 0
   const color = isUp ? 'var(--color-bear-bright)' : change < 0 ? 'var(--color-bull-bright)' : 'var(--color-text-dim)'
+  if (stale) {
+    return (
+      <Tooltip content="该市场今天还没开盘(或休市), 这是上一交易日的涨跌, 不计入今日盈亏">
+        <div className="inline-flex flex-col items-end cursor-help opacity-45">
+          <span className="font-mono text-[11px] tabular-nums md:min-w-[46px] text-right" style={{ color }}>
+            {change === 0 ? '0.00%' : (change > 0 ? '+' : '') + change.toFixed(2) + '%'}
+          </span>
+          <span className="text-[9px] text-text-muted leading-none">上一交易日</span>
+        </div>
+      </Tooltip>
+    )
+  }
   return (
     <div className="inline-flex items-center gap-1.5">
       <span className="font-mono text-[11.5px] font-semibold tabular-nums md:min-w-[46px] text-right"
@@ -187,9 +201,9 @@ export function TypeMiniInfo({ row }) {
   if (type === 'A') {
     return (
       <span className="text-[10.5px] text-text-muted font-mono">
-        {extra.shares} 股 · {currencySymbol(extra.currency)}{fmtPrice(extra.avgCost)}
+        {extra.shares} 股 · {currencySymbol(extra.currency)}{fmtPrice(extra.avgCost, row.code)}
         {extra.divPerShare > 0 && (
-          <span className="text-accent/80 ml-1" title={`持有期已收每股现金分红 ¥${extra.divPerShare}，已按券商摊薄成本口径从成本中扣减`}>
+          <span className="text-accent/80 ml-1" title={`持有期已收每股现金分红 ${currencySymbol(extra.currency)}${extra.divPerShare}，已按券商摊薄成本口径从成本中扣减`}>
             含红{currencySymbol(extra.currency)}{extra.divPerShare}
           </span>
         )}

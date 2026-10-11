@@ -5,7 +5,7 @@ import Tooltip from './Tooltip'
 import IndexTicker from './IndexTicker'
 
 function currencySymbol(currency = 'CNY') {
-  if (currency === 'USD') return '$'
+  if (currency === 'USD') return 'US$'
   if (currency === 'HKD') return 'HK$'
   return '¥'
 }
@@ -17,6 +17,7 @@ function formatCurrencyMoney(currency, value) {
 function fxSourceLabel(source) {
   if (source === 'sina_bid_ask_mid') return '新浪外汇买卖价中间价'
   if (source === 'fallback') return '备用汇率'
+  if (source === 'last_known') return '上次成功汇率'
   if (source === 'CNY') return '人民币'
   return source || '汇率'
 }

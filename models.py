@@ -11,6 +11,7 @@ class HoldingCreate(BaseModel):
     trade_date: Optional[str] = None  # 首次买入日期 YYYY-MM-DD; 不填默认 today
     trade_time: Optional[str] = None  # 成交时刻 HH:MM (可选, 供分时图打点)
     broker: Optional[str] = None
+    fx_rate: Optional[float] = None   # 港美股成交日汇率(每 1 原币折人民币), 按结单填; 不填按成交日自动取
 
 
 class HoldingUpdate(BaseModel):
@@ -38,6 +39,7 @@ class HoldingResponse(BaseModel):
     original_market_value: Optional[float] = None
     cost_value: Optional[float] = None
     market_value: Optional[float] = None
+    fx_pnl: Optional[float] = None      # 港美股: 浮动盈亏里本金的汇兑部分(原币成本×现汇率 − 按成交日汇率的人民币成本)
     sector: Optional[str] = None  # 顶级行业, e.g. "有色金属" / "汽车" — 用于前端分组
     broker: Optional[str] = None
     div_per_share: Optional[float] = None  # 持有期累计每股现金分红(已摊进 cost_price, 对齐券商摊薄成本)

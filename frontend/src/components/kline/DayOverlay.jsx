@@ -115,7 +115,8 @@ export function DayOverlay({ day, code, getBars, onClose, onJumpDay, actions = n
             {!minErr && !minData && <div className="text-center py-6 text-[11.5px] text-text-dim">分时加载中…</div>}
             {minData && (
               <MinuteChart points={minData.points} prevClose={adjPrev} actions={actions || []}
-                day={minData.date || day.date} height="100%" tickMode={tick} />
+                day={minData.date || day.date} height="100%" tickMode={tick}
+                tz={/^US\./i.test(String(code)) ? 'America/New_York' : null} />
             )}
           </div>
         )}

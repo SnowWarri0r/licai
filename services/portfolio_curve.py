@@ -232,8 +232,9 @@ def cost_basis_series(actions: list[dict], dates: list[str],
     return out
 
 
-def day_flows(actions: list[dict], dates: list[str], stock: bool = False) -> dict:
-    """当日净外部投入 F_t(按轴日期; 非交易日的流水滚到下一个轴日)。"""
+def day_flows(actions: list[dict], dates: list[str], stock: bool = False, fx=None) -> dict:
+    """当日净外部投入 F_t(按轴日期; 非交易日的流水滚到下一个轴日)。
+    fx: 港美股每笔折人民币的汇率函数(action → 汇率), 按成交日汇率入账; 不传 = 1。"""
     flows: dict[str, float] = defaultdict(float)
     for a in actions:
         if (a.get("status") or "confirmed") != "confirmed":
@@ -246,6 +247,8 @@ def day_flows(actions: list[dict], dates: list[str], stock: bool = False) -> dic
             amt = sh * px + (fee if at in ("BUY", "ADD") else -fee)
         else:
             amt = float(a.get("amount") or 0)
+        if fx is not None:
+            amt *= fx(a)
         if at in _IN:
             f = amt
         elif at in _OUT:
@@ -258,6 +261,25 @@ def day_flows(actions: list[dict], dates: list[str], stock: bool = False) -> dic
             continue
         flows[dates[i]] += f
     return flows
+
+
+def stock_split_rows(actions: list[dict]) -> list[dict]:
+    """个股账本的 SPLIT 行比例记在 price(shares=0); 份额时间线按场外账本的约定读 shares,
+    这里换成 shares=比例 的副本, 其余行原样。"""
+    from services.position_ledger import split_ratio
+    out = []
+    for a in actions:
+        if (a.get("action_type") or "").upper() == "SPLIT":
+            out.append(dict(a, shares=split_ratio(a)))
+        else:
+            out.append(a)
+    return out
+
+
+def fx_series(hist: dict, dates: list[str], now_rate: float, today: str) -> list[float]:
+    """每个轴日的汇率: 历史中间价向前填充, 今天用实时汇率; 历史缺失的日子用实时汇率。"""
+    vals = _ffill(hist, dates) if hist else [None] * len(dates)
+    return [now_rate if (dt >= today or v is None) else v for dt, v in zip(dates, vals)]
 
 
 CASH_DAILY_BAND = 0.003   # 现金/理财单日收益上限 0.3%(≈年化110%), 超出必然是存取转账
@@ -372,14 +394,20 @@ async def build_curve(days: int = 120) -> dict:
             return vals, fl, None
         async with sem:
             hist = await _price_hist(kind, code, days + 60)
-        fl = day_flows(acts, axis, stock=(kind == "stock"))
-        # 港美股账本是原币: 市值和外部流量都乘同一个(当前)汇率折人民币, 收益率不受影响、金额与其它资产可加
-        fx = 1.0
+        # 港美股账本是原币: 外部流量按每笔成交日汇率(fx_rate, 没记用当前)折人民币, 市值按当天汇率
+        # (外管局中间价, 今天用实时) —— 汇率变动带来的本金涨跌计入收益, 与已实现口径一致
+        fxs = [1.0] * len(axis)
+        fx_of = None
         if kind == "stock":
-            from services.market_data import code_fx, split_stock_code
-            if split_stock_code(code)[0] in ("HK", "US"):
-                fx = await asyncio.to_thread(code_fx, code)
-                fl = {k: v * fx for k, v in fl.items()}
+            from services.market_data import code_currency, code_fx, fx_history
+            cur = code_currency(code)
+            if cur != "CNY":
+                now = await asyncio.to_thread(code_fx, code)
+                hist_fx = await asyncio.to_thread(fx_history, cur)
+                fxs = fx_series(hist_fx, axis, now, date.today().isoformat())
+                fx_of = lambda a: float(a.get("fx_rate") or 0) or now  # noqa: E731
+            acts = stock_split_rows(acts)
+        fl = day_flows(acts, axis, stock=(kind == "stock"), fx=fx_of)
         if not hist:
             # 价史拉空: 该资产退回成本基线(市值=累计净投入), 保证与流量口径一致——
             # 否则"钱进来了市值恒0"会制造±20%级的假日收益
@@ -389,10 +417,11 @@ async def build_curve(days: int = 120) -> dict:
                 cum.append(max(run, 0.0))
             return cum, fl, code
         bal = share_balance_series(acts, axis)
-        if kind == "px":
-            bal = adjust_to_final_scale(acts, axis, bal)   # 与前复权价同标度
+        if kind in ("px", "stock"):
+            # 与前复权价同标度(场内 ETF 份额拆分; 港美股拆合股 —— 日K是前复权, 不折算会在拆分日跳一下)
+            bal = adjust_to_final_scale(acts, axis, bal)
         px = _ffill(hist, axis)
-        vals = [(b * p * fx) if (p is not None and b > 0) else 0.0 for b, p in zip(bal, px)]
+        vals = [(b * p * f) if (p is not None and b > 0) else 0.0 for b, p, f in zip(bal, px, fxs)]
         return vals, fl, None
 
     parts = await asyncio.gather(*[_one(k, cd, ac) for k, cd, ac in tasks], return_exceptions=True)

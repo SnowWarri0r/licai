@@ -150,9 +150,9 @@ async def _positions_as_of(day: str) -> tuple[list, list, float, dict]:
             nm = ((await get_holding(code)) or {}).get("stock_name") or code
         except Exception:
             nm = code
-        from services.market_data import code_fx, split_stock_code
+        from services.market_data import code_fx, code_fx_on, split_stock_code
         mkt = split_stock_code(code)[0]
-        fx = await asyncio.to_thread(code_fx, code) if mkt in ("HK", "US") else 1.0   # 回看也按当前汇率近似
+        fx = ((await asyncio.to_thread(code_fx_on, code, day)) or await asyncio.to_thread(code_fx, code)) if mkt in ("HK", "US") else 1.0   # 回看按当天的历史汇率
         stocks.append({"code": code, "name": nm, "market": "CN" if mkt == "A" else mkt, "mv": sh * px * fx})
 
     snap = await get_snapshot_on_or_before(day)

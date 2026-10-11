@@ -1,5 +1,5 @@
 import { ASSET_TYPE_TO_KEY } from './constants'
-import { fundCategoryOf, stockCategoryOf, stockMarketOfCode } from './helpers'
+import { currencyOfCode, fundCategoryOf, stockCategoryOf, stockMarketOfCode } from './helpers'
 
 // Normalize raw A-share holding → unified row
 export function normalizeHolding(h) {
@@ -22,7 +22,7 @@ export function normalizeHolding(h) {
     _raw: h,
     extra: {
       market: h.market || stockMarketOfCode(h.stock_code),
-      currency: h.currency || 'CNY',
+      currency: h.currency || currencyOfCode(h.stock_code),
       fxRate: h.fx_rate || 1,
       fxTime: h.fx_time || '',
       fxSource: h.fx_source || '',

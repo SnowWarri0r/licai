@@ -201,9 +201,7 @@ async def _active_holdings() -> list[dict]:
     """真实在持的持仓: 按 ledger(综合成本法)现算 shares, 只留 shares>0。
     holdings 表的 shares 列对已清仓的票可能是陈旧非0值, 不能直接信; 这里跟 /api/portfolio 口径一致。"""
     from database import get_all_holdings, get_position_actions
-    from services.position_ledger import compute_position_state
-    from services.dividends import dilute_state
-    from api.portfolio_routes import _broker_stock_fee
+    from services.position_ledger import ledger_state
     out = []
     for h in await get_all_holdings():
         code = h.get("stock_code")
@@ -212,9 +210,7 @@ async def _active_holdings() -> list[dict]:
         try:
             acts = await get_position_actions(code, limit=500)
             if acts:
-                rate, mn = await _broker_stock_fee(h.get("broker"))
-                st = compute_position_state(acts, stock_code=code, commission_rate=rate, commission_min=mn)
-                st = await dilute_state(code, st)   # 分红摊薄成本(对齐券商)
+                st = await ledger_state(code, acts, h.get("broker"))   # 费用/汇率口径同持仓列表, 含分红摊薄
                 shares = float(st.get("shares") or 0)
                 hold_days = st.get("weighted_days")
                 cost = st.get("cost_price")
@@ -350,6 +346,18 @@ async def _tool_resolve_stock(query: str) -> dict:
                 return {"code": cd, "name": nm, "in_holdings": False, "note": "已清仓, 不在当前持仓"}
     except Exception:
         pass
+    # 1c) 港股代码: 5 位数字(A 股是 6 位, 不会撞)或 HK./hk 前缀 → 先按港股解析
+    from services.market_data import normalize_stock_code, search_hk_stocks
+    hk_code = None
+    if q.isdigit() and len(q) == 5:
+        hk_code = f"HK.{q}"
+    elif _re.fullmatch(r"(?i)hk\.?\d{1,5}", q):
+        hk_code = normalize_stock_code(q)
+    if hk_code:
+        hits = await asyncio.to_thread(search_hk_stocks, hk_code[3:])
+        hit = next((h for h in hits if h["code"] == hk_code), None)
+        if hit:
+            return {"code": hit["code"], "name": hit["name"], "market": "HK", "in_holdings": False}
     # 2) A 股全表 —— 精确名/代码直接命中(唯一, 置顶)
     n2c, c2n = await _code_name_maps()
     if q in c2n:
@@ -391,6 +399,15 @@ async def _tool_resolve_stock(query: str) -> dict:
                 _add(cd, nm, 3)
         if len(qpy) >= 4 and (qpy in full or (len(qpy) >= 6 and full in qpy)):
             _add(cd, nm, 4)
+    # 港股按中文名补进同一个池(腾讯/美团/小米这类只在港股上市的, A 股全表里没有):
+    # 名称前缀 tier0、子串 tier1、其余(拼音/简称命中) tier3, 与 A 股候选同一套排序
+    if has_cjk:
+        try:
+            for h in await asyncio.to_thread(search_hk_stocks, q, 5):
+                nm = h["name"]
+                _add(h["code"], nm, 0 if nm.startswith(q) else 1 if q in nm else 3)
+        except Exception:
+            pass
     # 编辑距离近似仅中文输入且池仍空/很小时补(免误伤英文 ticker, 也省算力)
     if has_cjk and len(qpy) >= 4 and len(pool) < 3:
         cap = 1 if len(qpy) <= 6 else 2
@@ -468,7 +485,8 @@ async def _tool_get_quote(code: str) -> dict:
     }
     # 美股: 带上"这个价是什么时候的"和盘前/盘后。亚洲白天问美股时, price 是上一个交易
     # 时段的收盘, 不标时刻的话模型会当成"现在", 把昨天的涨跌说成今天的。
-    for k in ("price_as_of", "session", "ext_hours"):
+    # 港股同理带 quote_time(港交所当地时刻, 有它才分得清是实时还是上一交易日)。
+    for k in ("price_as_of", "session", "ext_hours", "quote_time", "currency"):
         if q.get(k):
             out[k] = q[k]
     # 涨停/跌停 + 封板/炸板/冲高回落 判断 (仅 A 股)
@@ -1184,16 +1202,8 @@ async def _tool_get_news(code: str) -> dict:
     最新 8-16 且一半跟本股无关。港股反过来 —— 东财又准又是中文当天的, 而 Yahoo 对
     0700.HK 返回的是整片市场的泛新闻, 换过去是变差。
     """
-    from api.news_routes import _fetch_stock_news_em_sync, _fetch_overseas_news_yahoo_sync
-    from services.market_data import normalize_stock_code
-    raw = normalize_stock_code(_norm_code(code))
-    bare = raw.split(".")[-1] if "." in raw else raw
-    if raw.upper().startswith("US."):
-        items = await asyncio.to_thread(_fetch_overseas_news_yahoo_sync, raw)
-        if not items:                      # Yahoo 打不通时退回东财, 有一条算一条
-            items = await asyncio.to_thread(_fetch_stock_news_em_sync, bare)
-    else:
-        items = await asyncio.to_thread(_fetch_stock_news_em_sync, bare)
+    from api.news_routes import _fetch_holding_news_sync   # 按市场选源, 持仓新闻聚合同一份逻辑
+    items = await asyncio.to_thread(_fetch_holding_news_sync, _norm_code(code))
     if not items:
         return {"news": [], "note": "暂无个股新闻"}
     news = [{"title": it["title"], "summary": (it.get("content") or "")[:140],
@@ -2062,8 +2072,6 @@ async def _tool_trades(code: str = "", start: str = "", end: str = "") -> dict:
     """成交记录(含个股/场内ETF/场外基金): 传 code→该标的流水 + (A股)持仓状态(综合成本/已实现盈亏/持有天数);
     不传→最近全部成交(三类合并)。start/end (YYYY-MM-DD) 按成交日期筛选区间。"""
     from database import get_position_actions, get_all_holdings
-    from services.position_ledger import compute_position_state
-    from api.portfolio_routes import _broker_stock_fee
 
     s, e = (start or "").strip()[:10], (end or "").strip()[:10]
 
@@ -2079,17 +2087,39 @@ async def _tool_trades(code: str = "", start: str = "", end: str = "") -> dict:
         # trade_date 缺失时回退 created_at(同步/导入生成的 initial/add-lot 只有 created_at), 对齐前端口径
         return (x.get("trade_date") or str(x.get("created_at") or ""))[:10]
 
+    from services.market_data import code_currency, code_fx, normalize_stock_code, split_stock_code
+    _fx_memo: dict = {}
+
+    def _fx(c: str) -> float:
+        if c not in _fx_memo:
+            _fx_memo[c] = code_fx(c)
+        return _fx_memo[c]
+
+    def _ccy_fields(c: str, amt: float | None) -> dict:
+        """港美股: 金额是原币, 补 币种 + 金额(人民币, 按当前汇率折算)。A 股不加字段。"""
+        if split_stock_code(c or "")[0] not in ("HK", "US"):
+            return {}
+        out = {"币种": code_currency(c)}
+        if amt:
+            out["金额(人民币,现汇率)"] = round(amt * _fx(c), 2)
+        return out
+
     def fmt(a: dict) -> dict:
         amt = float(a.get("price") or 0) * float(a.get("shares") or 0)
         return {"date": (a.get("trade_date") or str(a.get("created_at") or ""))[:10],
                 "动作": _ACTION_CN.get(a.get("action_type"), a.get("action_type")),
                 "price": a.get("price"), "shares": a.get("shares"),
                 "金额": round(amt, 2) if amt else None,
+                **_ccy_fields(a.get("stock_code") or "", amt),
                 "fee": a.get("fee"), "note": a.get("note") or ""}
 
     if code:
         bare = _norm_code(code)
         acts = await get_position_actions(bare, limit=500)
+        if not acts and normalize_stock_code(bare) != bare:      # hk00700 / 0700 写法 → 账本键 HK.00700
+            acts = await get_position_actions(normalize_stock_code(bare), limit=500)
+            if acts:
+                bare = normalize_stock_code(bare)
         if not acts:
             # 不在个股账本 → 可能是基金/ETF(外部资产账本)
             try:
@@ -2200,21 +2230,26 @@ async def _tool_trades(code: str = "", start: str = "", end: str = "") -> dict:
                       key=lambda x: x["date"])
         summary = {}
         try:
-            rate, mn = await _broker_stock_fee(None)
-            st = compute_position_state(acts, stock_code=bare, commission_rate=rate, commission_min=mn)
-            from services.dividends import dilute_state
-            st = await dilute_state(bare, st)   # 分红摊薄成本(对齐券商)
+            from services.position_ledger import ledger_state
+            st = await ledger_state(bare, acts)   # 券商读持仓行; 费用/汇率口径同持仓列表, 含分红摊薄
             # 已实现盈亏用 realized_carry(已平仓段+分红, 不含浮动)。注意 realized_pnl 与 carry
             # 在清仓后是同一笔, 不能相加; 当前持仓段的浮盈在 综合成本 里体现, 不算"已实现"。
             summary = {"当前持股": st.get("shares"), "综合成本": st.get("cost_price"),
                        "成本未摊薄分红前": st.get("cost_price_raw"), "每股已收分红": st.get("div_per_share"),
                        "已实现盈亏": round(float(st.get("realized_carry") or 0), 2),
                        "加权持有天数": st.get("weighted_days"), "累计手续费": st.get("total_fees")}
+            if split_stock_code(bare)[0] in ("HK", "US"):
+                summary["币种"] = code_currency(bare)
+                summary["已实现盈亏(人民币,成交日汇率)"] = round(float(st.get("realized_carry_cny") or 0), 2)
+                summary["其中汇率损益(人民币)"] = round(float(st.get("realized_fx_pnl") or 0), 2)
         except Exception:
             pass
+        note = "trades=区间内成交流水(含手续费,按日期升序); position=按全历史算的当前状态(不受区间影响)。同日有买有卖=做T。已实现盈亏含已平仓段+分红。"
+        if split_stock_code(bare)[0] in ("HK", "US"):
+            note += ("价格/金额/已实现盈亏均为原币(见 币种); 与人民币资产相加或比较时用带(人民币,…)的字段; "
+                     "已实现盈亏的人民币值按每笔成交当日汇率折算, 汇率损益单列。")
         return {"code": bare, "name": name, "trades": recs, "position": summary,
-                "range": {"start": s or None, "end": e or None},
-                "note": "trades=区间内成交流水(含手续费,按日期升序); position=按全历史算的当前状态(不受区间影响)。同日有买有卖=做T。已实现盈亏含已平仓段+分红。"}
+                "range": {"start": s or None, "end": e or None}, "note": note}
 
     # 无 code: 最近全部成交 —— 自己组装(个股 + 场内ETF + 场外基金), 含 pending(T+1待确认)申购, 标出来
     try:
@@ -2226,9 +2261,12 @@ async def _tool_trades(code: str = "", start: str = "", end: str = "") -> dict:
             if not in_range(d):
                 continue
             amt = float(a.get("price") or 0) * float(a.get("shares") or 0)
-            merged.append({"date": d, "code": a.get("stock_code"), "name": name_by.get(a.get("stock_code"), ""),
-                           "动作": _ACTION_CN.get(a.get("action_type"), a.get("action_type")), "类型": "个股",
-                           "price": a.get("price"), "shares": a.get("shares"), "金额": round(amt, 2) if amt else None})
+            sc = a.get("stock_code") or ""
+            merged.append({"date": d, "code": sc, "name": name_by.get(sc, ""),
+                           "动作": _ACTION_CN.get(a.get("action_type"), a.get("action_type")),
+                           "类型": {"HK": "港股", "US": "美股"}.get(split_stock_code(sc)[0], "个股"),
+                           "price": a.get("price"), "shares": a.get("shares"), "金额": round(amt, 2) if amt else None,
+                           **_ccy_fields(sc, amt)})
         # 场内ETF / 场外基金 (含待确认)
         from database import list_external_assets, list_external_actions
         from services.external_assets import _is_onchain_etf
@@ -2253,7 +2291,8 @@ async def _tool_trades(code: str = "", start: str = "", end: str = "") -> dict:
                 merged.append(rec)
         merged.sort(key=lambda x: x["date"], reverse=True)
         return {"recent_trades": merged[:80], "range": {"start": s or None, "end": e or None},
-                "note": "成交(时间倒序), 含个股/场内ETF/场外基金三类; 含待确认申购(状态=待确认)。日期缺失的成交按录入时间(created_at)归日。"
+                "note": "成交(时间倒序), 含个股(A股/港股/美股)/场内ETF/场外基金; 含待确认申购(状态=待确认)。日期缺失的成交按录入时间(created_at)归日。"
+                        "港股/美股行的 price/金额 是原币(见 币种), 汇总时用 金额(人民币,现汇率)。"
                         "来源=定投 的行是定投计划自动买入(策略性规律买入, 不是主观追高); 没这个标记的才是手动操作。"}
     except Exception:
         acts = await get_position_actions(None, limit=40)
@@ -2297,7 +2336,8 @@ async def _tool_get_thesis(code: str) -> dict:
         return {"theses": ts, "note": "用户记录的各持仓买入逻辑; 复盘时对照现状看逻辑是否还成立。"}
     raw = normalize_stock_code(_norm_code(code))
     bare = raw.split(".")[-1] if "." in raw else raw
-    t = await get_thesis(bare)
+    # 先按完整代码(HK.00700)查, 再退回裸码(保存端历史上按裸码存)
+    t = (await get_thesis(raw) if raw != bare else None) or await get_thesis(bare)
     if not t:
         return {"code": bare, "thesis": None, "note": "用户没记这只的买入逻辑。可提示他在持仓里补一句, 以后好复盘。"}
     # 算"记于多久之前", 让复盘能锚定时间(几个月前的逻辑 vs 昨天刚记的, 复盘意义不同)
@@ -2315,7 +2355,7 @@ async def _tool_get_thesis(code: str) -> dict:
     dr = {}
     try:
         from services.thesis_drift import drift as _drift
-        d = await _drift(bare)
+        d = await _drift(raw)
         if d.get("有记录") and int(d.get("修订次数") or 0) > 1:
             dr = {"逻辑漂移": {k: d.get(k) for k in
                              ("修订次数", "首版日期", "末版日期", "逐次改写", "改写时浮亏轨迹",
@@ -2368,12 +2408,28 @@ async def _dca_plan_map() -> dict:
 
 async def _tool_get_holdings() -> dict:
     try:
+        from services.market_data import code_currency, code_fx, split_stock_code
         hs = await _active_holdings()
         dca_by_asset = await _dca_plan_map()
-        a_shares = [{"code": h.get("stock_code"), "name": h.get("stock_name"),
-                     "shares": h.get("shares"), "综合成本": h.get("cost_price"),
-                     "每股已收分红": h.get("每股已收分红"),
-                     "持有天数": h.get("hold_days"), "开仓日": h.get("open_date")} for h in hs]
+        # 个股按市场分组: 港股成本是港元、美股是美元, 混进 "A股" 一组会被当成人民币直接相加。
+        # 港美股额外给 币种/汇率/成本金额(人民币), 合计一律用人民币那一列。
+        stocks: dict[str, list] = {"A股": [], "港股": [], "美股": []}
+        for h in hs:
+            code = h.get("stock_code") or ""
+            mkt = split_stock_code(code)[0]
+            row = {"code": code, "name": h.get("stock_name"),
+                   "shares": h.get("shares"), "综合成本": h.get("cost_price"),
+                   "每股已收分红": h.get("每股已收分红"),
+                   "持有天数": h.get("hold_days"), "开仓日": h.get("open_date")}
+            if mkt in ("HK", "US"):
+                fx = code_fx(code)
+                row["币种"] = code_currency(code)
+                row["汇率(人民币/原币)"] = round(fx, 4)
+                try:
+                    row["成本金额(人民币)"] = round(float(h.get("cost_price") or 0) * float(h.get("shares") or 0) * fx, 2)
+                except (TypeError, ValueError):
+                    pass
+            stocks[{"HK": "港股", "US": "美股"}.get(mkt, "A股")].append(row)
         # 其他持仓: 场内ETF/场外基金/理财/现金/加密/机器人 —— 持仓不止 A 股, 一并读出来
         other = {}
         try:
@@ -2410,10 +2466,12 @@ async def _tool_get_holdings() -> dict:
                 other.setdefault(cls, []).append(row)
         except Exception:
             pass
-        return {"A股": a_shares, "其他持仓": other,
-                "note": "我的全部在持: A股(holdings) + 其他持仓(场内ETF/场外基金/理财/现金/加密/机器人, 来自资产看板)。已清仓/已赎回的不在此列"
+        return {"A股": stocks["A股"], **{k: v for k, v in stocks.items() if k != "A股" and v},
+                "其他持仓": other,
+                "note": "我的全部在持: A股/港股/美股个股(holdings) + 其他持仓(场内ETF/场外基金/理财/现金/加密/机器人, 来自资产看板)。已清仓/已赎回的不在此列"
                         "(今天刚清仓的票与今天的盈亏看 get_today_pnl)。"
-                        "A股: 综合成本=含手续费+分红摊薄(对齐券商); 持有天数=资金加权(0=今天才开仓); 开仓日已带星期照抄。"
+                        "个股: 综合成本=含手续费+分红摊薄(对齐券商); 持有天数=资金加权(0=今天才开仓); 开仓日已带星期照抄。"
+                        "港股/美股的 综合成本 是原币单价(港元/美元, 见 币种), 跨市场合计与占比一律用 成本金额(人民币)。"
                         "分类按交易场所据实表述: 场内ETF(代码 5xxxxx/1xxxxx)在交易所按市价+券商佣金成交, "
                         "场外基金(支付宝/天天基金等)按 T+1 净值申赎, 两类各按自己的名字说。"
                         "基金/ETF 给份额+摊薄成本(单价, 份额拆分与减仓已实现均已折算, 与现价同标度, 对齐券商口径);"
@@ -2429,16 +2487,25 @@ async def _tool_today_pnl() -> dict:
     try:
         from services.today_pnl import today_pnl, _today_cst
         from database import get_position_actions, list_external_assets, list_external_actions
-        from services.position_ledger import compute_position_state, RELEASE
+        from services.position_ledger import ledger_state, RELEASE
         from services.external_ledger import compute_external_state
         r = await today_pnl()
         day = _today_cst()
         ext = {str(a.get("code") or ""): a for a in await list_external_assets()}
         rows, closed_sum = [], 0.0
         for it in r.get("items") or []:
-            row = {"name": it.get("name"), "code": it.get("code"), "类型": "A股" if it.get("type") == "A" else it.get("type"),
+            mkt = it.get("market") or "A"
+            foreign = it.get("type") == "A" and mkt in ("HK", "US")
+            typ = ({"HK": "港股", "US": "美股"}.get(mkt, "A股") if it.get("type") == "A" else it.get("type"))
+            row = {"name": it.get("name"), "code": it.get("code"), "类型": typ,
                    "今日盈亏": it.get("today_pnl"), "现持有": it.get("shares"),
                    "今日买入": it.get("bought"), "今日卖出": it.get("sold")}
+            if foreign:
+                # today_pnl 已按行情汇率折成人民币; 卖出均价/成本/已实现是原币, 单独标币种
+                row["币种"] = it.get("currency") or ("HKD" if mkt == "HK" else "USD")
+                row["汇率(人民币/原币)"] = it.get("fx_rate")
+                if mkt == "US" and it.get("session_day"):
+                    row["对应美东交易日"] = it["session_day"]
             if it.get("closed_today"):
                 row["今日清仓"] = True
                 closed_sum += it.get("today_pnl") or 0
@@ -2451,7 +2518,8 @@ async def _tool_today_pnl() -> dict:
                     if it.get("type") == "A":
                         acts = await get_position_actions(it["code"], limit=1000)
                         before = [a for a in acts if (a.get("trade_date") or "")[:10] < day]
-                        sa, sb = compute_position_state(acts, stock_code=it["code"]), compute_position_state(before, stock_code=it["code"])
+                        sa = await ledger_state(it["code"], acts, dilute=False)
+                        sb = await ledger_state(it["code"], before, dilute=False)
                         sells = [a for a in acts if (a.get("trade_date") or "")[:10] == day
                                  and (a.get("action_type") or "").upper() in RELEASE]
                         cost_before = sb.get("cost_price")
@@ -2473,6 +2541,8 @@ async def _tool_today_pnl() -> dict:
                     if it.get("type") == "A" and sb.get("fifo_cost_price"):
                         row["这批股票的买入均价(FIFO)"] = round(float(sb["fifo_cost_price"]), 4)
                     row["本次卖出已实现"] = round(float(sa.get("realized_pnl") or 0) - float(sb.get("realized_pnl") or 0), 2)
+                    if foreign:
+                        row["本次卖出已实现(人民币)"] = round(row["本次卖出已实现"] * float(it.get("fx_rate") or 1.0), 2)
                 except Exception as e:  # noqa: BLE001
                     row["已实现_错误"] = str(e)
             rows.append(row)
@@ -2484,7 +2554,9 @@ async def _tool_today_pnl() -> dict:
                         "今日盈亏是相对昨收的当天变动; 本次卖出已实现 = 今天这笔卖出新增的已实现盈亏, 两者口径不同, 分开说。"
                         "A股的 卖出前持仓成本 是综合成本(之前做T/减仓的盈亏已摊进去, 那部分当时已计入已实现), 所以 本次卖出已实现 ≠ (卖价−综合成本)×股数;"
                         "讲'这批股票买在多少、卖在多少'用 这批股票的买入均价(FIFO)。"
-                        "标 估算 的是场外基金按底层代理估的当日盈亏, 净值公布后会修正。"}
+                        "标 估算 的是场外基金按底层代理估的当日盈亏, 净值公布后会修正。"
+                        "今日盈亏与全账户合计都是人民币; 港股/美股行的 卖出均价/卖出前持仓成本/本次卖出已实现 是原币(见 币种),"
+                        "与人民币相加时用 本次卖出已实现(人民币)。美股的'今日'是 对应美东交易日 那一场。"}
     except Exception as e:
         return {"error": str(e)}
 

@@ -6,7 +6,8 @@ import time
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from database import get_all_holdings
-from services.market_data import get_realtime_quotes, is_market_hours, is_trading_day_active
+from services.market_data import (get_realtime_quotes, is_trading_day_active, markets_open,
+                                  split_stock_code)
 from services import feishu_notify
 from config import config
 
@@ -49,6 +50,14 @@ async def websocket_endpoint(ws: WebSocket):
         _clients.discard(ws)
 
 
+def _push_interval(opened: dict, holdings: list[dict]) -> int:
+    """持仓所在的任一市场正在交易 → 快刷新; 否则慢刷新。A 股不论持仓与否都按 A 股时段快刷(沿用原口径)。"""
+    held = {split_stock_code(h.get("stock_code") or "")[0] for h in holdings or []}
+    if opened.get("A") or any(opened.get(m) for m in held & {"HK", "US"}):
+        return config.refresh_interval
+    return config.idle_interval
+
+
 async def price_monitor_loop():
     """Background task: push prices every cycle, recompute suggestions every 5min."""
     while True:
@@ -57,9 +66,9 @@ async def price_monitor_loop():
                 await asyncio.sleep(5)
                 continue
 
-            interval = config.refresh_interval if is_market_hours() else config.idle_interval
-
             holdings = await get_all_holdings()
+            opened = markets_open()
+            interval = _push_interval(opened, holdings)
             if not holdings:
                 await asyncio.sleep(interval)
                 continue
@@ -74,7 +83,8 @@ async def price_monitor_loop():
             await broadcast({
                 "type": "price_update",
                 "data": quotes,
-                "market_open": is_trading_day_active(),
+                "market_open": is_trading_day_active(),    # A 股口径(含午休), 前端沿用
+                "markets_open": opened,                    # {A, HK, US} 各自是否在连续交易时段
             })
 
             await asyncio.sleep(interval)

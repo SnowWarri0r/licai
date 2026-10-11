@@ -60,15 +60,15 @@ function kdjSeries(bars) {
 }
 
 
-// 成交量(手) / 成交额(元) 的人读格式: 万/亿分档, 小数点后一位够看
-const fmtVol = (v) => v == null ? '--'
-  : v >= 1e8 ? (v / 1e8).toFixed(2) + '亿手'
-  : v >= 1e4 ? (v / 1e4).toFixed(1) + '万手'
-  : Math.round(v).toLocaleString() + '手'
-const fmtAmt = (v) => !v ? '--'
-  : v >= 1e8 ? (v / 1e8).toFixed(2) + '亿'
-  : v >= 1e4 ? (v / 1e4).toFixed(1) + '万'
-  : Math.round(v).toLocaleString() + '元'
+// 成交量(A股手 / 港美股股) / 成交额(元 / 港元 / 美元) 的人读格式: 万/亿分档, 小数点后一位够看
+const fmtVol = (v, unit = '手') => v == null ? '--'
+  : v >= 1e8 ? (v / 1e8).toFixed(2) + '亿' + unit
+  : v >= 1e4 ? (v / 1e4).toFixed(1) + '万' + unit
+  : Math.round(v).toLocaleString() + unit
+const fmtAmt = (v, ccy = '') => !v ? '--'
+  : v >= 1e8 ? (v / 1e8).toFixed(2) + '亿' + ccy
+  : v >= 1e4 ? (v / 1e4).toFixed(1) + '万' + ccy
+  : Math.round(v).toLocaleString() + (ccy || '元')
 
 const GAP_UP = 'rgba(207,92,92,0.18)', GAP_DOWN = 'rgba(95,168,108,0.18)'   // 跳空缺口阴影: 红跳空/绿跳空
 
@@ -199,6 +199,10 @@ class TradePrimitive {
 // 就把整张 K 线重新拉一次网络(与下面 volMode 同一个坑)。
 export default function ProKline({ code, days = 250, height = 460, fill = false, lhbDate = '', cost = null, actions = null, period = 'day' }) {
   const isDay = period === 'day'   // 周/月: 走 TDX kline, 关掉"点蜡烛看分时"和续史加载(那是日K概念)
+  const mkt = /^HK\./i.test(String(code || '')) ? 'HK' : /^US\./i.test(String(code || '')) ? 'US' : 'A'
+  const volUnit = mkt === 'A' ? '手' : '股'
+  const amtCcy = mkt === 'HK' ? '港元' : mkt === 'US' ? '美元' : ''
+  const hasAmt = mkt !== 'US'      // 美股日K源不给成交额(全 0), 不显示「额」
   const wrapRef = useRef(null)
   const volWrapRef = useRef(null)                  // 独立量/额副图容器
   const volChartRef = useRef(null)
@@ -208,6 +212,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
   const alignScalesRef = useRef(null)              // 对齐两图价格轴宽度(否则柱子错位)
   const [volMode, setVolMode] = useState('量')     // 量 | 额
   const [volLegend, setVolLegend] = useState(null) // 副图 hover 的具体数字
+  useEffect(() => { if (!hasAmt && volMode === '额') setVolMode('量') }, [hasAmt, volMode])
   const chartRef = useRef(null)
   const seriesRef = useRef({})
   const prevCloseLineRef = useRef(null)
@@ -728,7 +733,7 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
       {/* 量/额 独立副图: 自己的纵轴刻度 + hover 出具体数字; 与主图时间轴双向同步 */}
       <div className="shrink-0 mt-0.5">
         <div className="flex items-center gap-2 px-0.5 h-4 text-[10px]">
-          {[['量', '成交量'], ['额', '成交额'], ['MACD', 'MACD'], ['KDJ', 'KDJ']].map(([m, lbl]) => (
+          {[['量', '成交量'], ...(hasAmt ? [['额', '成交额']] : []), ['MACD', 'MACD'], ['KDJ', 'KDJ']].map(([m, lbl]) => (
             <button key={m} onClick={() => setVolMode(m)}
               className={`px-1.5 rounded leading-4 ${volMode === m ? 'bg-accent/20 text-accent' : 'text-text-dim hover:text-text'}`}>
               {lbl}
@@ -739,9 +744,11 @@ export default function ProKline({ code, days = 250, height = 460, fill = false,
           {(volMode === '量' || volMode === '额') && volLegend && (
             <span className="font-mono text-text-dim">
               <span className="text-text-muted mr-1.5">{volLegend.time}</span>
-              量 <span className="text-text">{fmtVol(volLegend.volume)}</span>
-              <span className="text-text-muted mx-1">·</span>
-              额 <span className="text-text">{fmtAmt(volLegend.amount)}</span>
+              量 <span className="text-text">{fmtVol(volLegend.volume, volUnit)}</span>
+              {hasAmt && <>
+                <span className="text-text-muted mx-1">·</span>
+                额 <span className="text-text">{fmtAmt(volLegend.amount, amtCcy)}</span>
+              </>}
             </span>
           )}
         </div>

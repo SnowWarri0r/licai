@@ -27,6 +27,7 @@ export default function StockKlineModal({ holding, onClose }) {
   const code = holding?.stock_code
   const assetId = holding?.asset_id               // 场外 ETF: 据此走 assets 流水端点
   const isA = code && /^\d{6}$/.test(String(code).replace(/^(sh|sz|SH|SZ)/, ''))
+  const foreign = code && /^(HK|US)\./i.test(String(code))   // 港美股: 分时走腾讯(最近一个交易日), 周/月K、盘口不支持
 
   // TDX 是否启用(决定显示哪些 tab)
   useEffect(() => {
@@ -39,8 +40,8 @@ export default function StockKlineModal({ holding, onClose }) {
     if (tab === '分价') { setLoading(false); return }   // 分价表组件自管取数
     setLoading(true); setErr('')
     const done = () => setLoading(false)
-    if (tab === '分时' && tdxOn) {
-      const murl = tickMode
+    if (tab === '分时' && (tdxOn || foreign)) {
+      const murl = tickMode && !foreign
         ? `/api/market/tdx/minute-all/${encodeURIComponent(code)}`   // 逐笔精绘: 全天逐笔, 有秒级尖峰
         : `/api/market/tdx/minute/${encodeURIComponent(code)}`       // 1分钟采样: 快, 240点
       fetchJSON(murl)
@@ -61,7 +62,7 @@ export default function StockKlineModal({ holding, onClose }) {
         })))
       }).finally(done)
     }
-  }, [code, tab, tdxOn, assetId, tickMode])
+  }, [code, tab, tdxOn, assetId, tickMode, foreign])
 
   // 五档 + 逐笔 (TDX, 仅 A 股; 5s 刷新)
   useEffect(() => {
@@ -95,10 +96,10 @@ export default function StockKlineModal({ holding, onClose }) {
 
   if (!holding) return null
   const cost = holding.cost_price > 0 ? holding.cost_price : null
-  const prevClose = book?.prev_close || holding.current_price   // 分时基准: TDX盘口昨收, 退回现价
+  const prevClose = book?.prev_close || minute?.prev_close || holding.current_price   // 分时基准: TDX盘口昨收 / 港美股分时自带昨收, 退回现价
   const px = book?.price || holding.current_price
   const vsCostPct = cost && px ? ((px / cost) - 1) * 100 : null
-  const showTabs = tdxOn ? ['分时', '日', '周', '月', ...(isA ? ['分价'] : [])] : ['日']
+  const showTabs = foreign ? ['分时', '日'] : tdxOn ? ['分时', '日', '周', '月', ...(isA ? ['分价'] : [])] : ['日']
   const hasSide = tdxOn && isA
 
   return createPortal(
@@ -147,7 +148,10 @@ export default function StockKlineModal({ holding, onClose }) {
           {/* 主图 */}
           <div className="flex-1 min-w-0">
             {/* 分时: 逐笔精绘开关. 1分钟采样丢失分钟内秒级尖峰(盘口被打空的"闪电"), 逐笔精绘用全天逐笔还原 */}
-            {tab === '分时' && (
+            {tab === '分时' && foreign && minute?.date && (
+              <div className="mb-2 text-[10.5px] text-text-muted">{minute.date} 分时 · 交易所当地时间{String(code).toUpperCase().startsWith('US') ? '(美东)' : ''} · 量单位: 股</div>
+            )}
+            {tab === '分时' && !foreign && (
               <div className="flex gap-1 mb-2 items-center">
                 <button onClick={() => setTickMode(false)} className="px-2 py-[2px] rounded text-[10px] cursor-pointer"
                   style={{ border: '1px solid', borderColor: !tickMode ? 'var(--color-accent)' : 'var(--color-border-med)', color: !tickMode ? 'var(--color-accent)' : 'var(--color-text-dim)' }}>1分钟</button>
@@ -160,7 +164,8 @@ export default function StockKlineModal({ holding, onClose }) {
               {tab === '分价' ? <PriceVolumeTable code={code} prevClose={prevClose} decimals={/^[15]\d{5}$/.test(String(code)) ? 3 : 2} />
                 : tab === '分时' ? (loading ? <div className="h-[360px] flex items-center justify-center text-text-dim text-[12px]">加载中…</div>
                     : err ? <div className="h-[360px] flex items-center justify-center text-text-dim text-[12px]">{err}</div>
-                    : <MinuteChart points={minute?.points || []} prevClose={prevClose} actions={actions} day={minute?.date} tickMode={tickMode} />)
+                    : <MinuteChart points={minute?.points || []} prevClose={prevClose} actions={actions} day={minute?.date} tickMode={tickMode && !foreign} volUnit={foreign ? '股' : '手'}
+                        tz={/^US\./i.test(String(code)) ? 'America/New_York' : null} />)
                 : <ProKline code={code} period={tab === '周' ? 'week' : tab === '月' ? 'month' : 'day'}
                     days={250} cost={cost} actions={actions} height={460} />}
             </div>
@@ -183,7 +188,7 @@ export default function StockKlineModal({ holding, onClose }) {
         <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-text-dim">
           {cost != null && <span>成本 <span className="text-accent font-mono">{fmtVal(cost)}</span></span>}
           <span><span className="inline-block w-2 h-2 rounded-sm align-middle mr-1" style={{ background: BUY_COLOR }} />B 买入<span className="mx-1.5" /><span className="inline-block w-2 h-2 rounded-sm align-middle mr-1" style={{ background: SELL_COLOR }} />S 卖出</span>
-          {tdxOn && <span className="text-accent/70">TDX 盘口/分时已接入</span>}
+          {tdxOn && !foreign && <span className="text-accent/70">TDX 盘口/分时已接入</span>}
           <span className="text-text-muted ml-auto">仅展示数据，不构成投资建议</span>
         </div>
       </div>

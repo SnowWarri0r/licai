@@ -50,19 +50,18 @@ _FUND_RULES = (
 async def snapshot(code: str) -> dict:
     """取"此刻的客观事实", 存进修订。取不到的项直接不放键 —— 不放和放 None 在下游都算缺, 但
     不放能让 JSON 小一点; 关键是**别用 0 占位**, 0 会被当成一个真实数值参与门限比较。"""
-    from services.market_data import get_realtime_quotes, normalize_stock_code
-    bare = (code or "").split(".")[-1]
-    full = normalize_stock_code(code or "")
+    from services.market_data import get_realtime_quotes
+    full = _full_code(code)
     out: dict = {"取于": _today().isoformat()}
 
     q, fund, cost = await asyncio.gather(
         get_realtime_quotes([full]),
-        _fundamentals(bare),
+        _fundamentals(full),
         _cost_of(full),
         return_exceptions=True,
     )
     if isinstance(q, dict):
-        row = q.get(bare) or q.get(full) or {}
+        row = q.get(full) or {}
         if row.get("price"):
             out["价格"] = round(float(row["price"]), 3)
     if isinstance(fund, dict):
@@ -80,10 +79,22 @@ async def snapshot(code: str) -> dict:
     return out
 
 
-async def _fundamentals(bare: str) -> dict:
+def _full_code(code: str) -> str:
+    """带市场的完整代码。修订表历史上按裸码存(港股 HK.00700 存成 00700), 5 位纯数字只可能是港股
+    (A 股 6 位), 这里补回 HK. 前缀, 否则会被当 A 股去取行情。"""
+    from services.market_data import normalize_stock_code
+    c = normalize_stock_code(code or "")
+    return f"HK.{c}" if c.isdigit() and len(c) == 5 else c
+
+
+async def _fundamentals(code: str) -> dict | None:
+    """A 股估值/财报快照; 港美股没有这套数据源, 返回 None(快照里就不放这些键)。"""
+    from services.market_data import split_stock_code
+    if split_stock_code(code)[0] != "A":
+        return None
     from services.stock_agent import _tool_fundamentals
     try:
-        return await _tool_fundamentals(bare)
+        return await _tool_fundamentals(code)
     except Exception:
         return {}
 
@@ -95,16 +106,12 @@ async def _cost_of(code: str) -> float | None:
     拿它算浮亏会得出一个凭空的数。"""
     try:
         from database import get_holding, get_position_actions
-        from services.position_ledger import compute_position_state
-        from services.dividends import dilute_state
-        from api.portfolio_routes import _broker_stock_fee
+        from services.position_ledger import ledger_state
         h = await get_holding(code)
         acts = await get_position_actions(code, limit=500)
         if not acts:
             return None
-        rate, mn = await _broker_stock_fee((h or {}).get("broker"))
-        st = compute_position_state(acts, stock_code=code, commission_rate=rate, commission_min=mn)
-        st = await dilute_state(code, st)
+        st = await ledger_state(code, acts, (h or {}).get("broker"))
         return st.get("cost_price") if float(st.get("shares") or 0) > 0 else None
     except Exception:
         return None
@@ -228,11 +235,16 @@ def _arrow(c: dict) -> str:
 async def drift(code: str) -> dict:
     """一只票的漂移全景: 逐次修订的判定 + 最后一版到现在的事实缺口 + 未复核天数。"""
     from database import get_thesis_revisions, get_thesis
+    full = _full_code(code)
     bare = (code or "").split(".")[-1]
-    revs = await get_thesis_revisions(bare)
-    t = await get_thesis(bare)
+    # 先按完整代码查, 再退回裸码(保存端历史上按裸码存)
+    key = full
+    revs = await get_thesis_revisions(full)
+    if not revs and bare != full:
+        key, revs = bare, await get_thesis_revisions(bare)
+    t = await get_thesis(key)
     if not revs:
-        return {"code": bare, "有记录": False,
+        return {"code": full, "有记录": False,
                 "note": "没记过买入逻辑, 也就无从谈漂移。"}
 
     changes = []
@@ -247,7 +259,7 @@ async def drift(code: str) -> dict:
 
     last = revs[-1]
     days = _days_since(str(last.get("created_at") or "")[:10])
-    now = await snapshot(bare)
+    now = await snapshot(full)
     since = fact_delta(last.get("facts"), now)
     stale = None
     if since.get("可判"):
@@ -256,7 +268,7 @@ async def drift(code: str) -> dict:
                  + "、".join(f"{c['项']}{_arrow(c)}" for c in moved)) if moved else \
                 "自上次修订以来价格与基本面都在门限内没动, 逻辑对得上当时的事实。"
 
-    return {"code": bare, "有记录": True, "name": (t or {}).get("name", ""),
+    return {"code": full, "有记录": True, "name": (t or {}).get("name", ""),
             "修订次数": len(revs), "首版日期": str(revs[0].get("created_at") or "")[:10],
             "末版日期": str(last.get("created_at") or "")[:10], "距末版天数": days,
             "逐次改写": changes,

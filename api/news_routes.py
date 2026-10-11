@@ -31,6 +31,27 @@ def _is_a_share(code: str) -> bool:
     return code.isdigit() and len(code) == 6
 
 
+def _is_stock(code: str) -> bool:
+    """个股持仓: A 股 6 位 + 港股/美股(HK./US. 前缀)。"""
+    up = (code or "").upper()
+    return _is_a_share(code) or up.startswith(("HK.", "US."))
+
+
+def _fetch_holding_news_sync(code: str) -> list[dict]:
+    """一只个股持仓的新闻, 按市场选源: A 股/港股走东财(港股用 5 位裸码, 中文且当天), 美股走 Yahoo
+    (东财对美股是关键词搜中文稿, 时效与相关性都差), Yahoo 不通再退回东财。返回条目的 code 统一成完整代码。"""
+    from services.market_data import normalize_stock_code, split_stock_code
+    full = normalize_stock_code(code)
+    mkt, bare = split_stock_code(full)
+    if mkt == "US":
+        items = _fetch_overseas_news_yahoo_sync(full) or _fetch_stock_news_em_sync(bare)
+    else:
+        items = _fetch_stock_news_em_sync(bare)
+    for it in items:
+        it["code"] = full
+    return items
+
+
 def _fetch_stock_news_em_sync(code: str) -> list[dict]:
     """同步拉一只票的最近 10 条新闻 (akshare EastMoney)."""
     import os
@@ -185,7 +206,7 @@ def _fetch_all_notices_sync() -> dict[str, list[dict]]:
 
 @router.get("/portfolio")
 async def portfolio_news(limit_per_code: int = 5):
-    """聚合所有 A 股持仓的新闻 + 公告. 5min 缓存.
+    """聚合个股持仓(A股/港股/美股)的新闻 + A 股公告. 5min 缓存.
 
     返回:
       { items: [{kind, code, name, title, time, ...}, ...], count: N }
@@ -198,7 +219,7 @@ async def portfolio_news(limit_per_code: int = 5):
 
     # 只拉当前在持(shares>0)的票的新闻; 已清仓的不算"持仓新闻"
     holdings = [h for h in await get_all_holdings() if float(h.get("shares") or 0) > 0]
-    codes = [h["stock_code"] for h in holdings if _is_a_share(h["stock_code"])]
+    codes = [h["stock_code"] for h in holdings if _is_stock(h["stock_code"])]
     name_by_code = {h["stock_code"]: h.get("stock_name") or "" for h in holdings}
 
     if not codes:
@@ -206,8 +227,8 @@ async def portfolio_news(limit_per_code: int = 5):
         _cache[cache_key] = (result, time.time())
         return result
 
-    # 并发拉新闻 + 一次性拉公告表
-    news_tasks = [asyncio.to_thread(_fetch_stock_news_em_sync, c) for c in codes]
+    # 并发拉新闻(按市场选源) + 一次性拉公告表(只有 A 股)
+    news_tasks = [asyncio.to_thread(_fetch_holding_news_sync, c) for c in codes]
     notices_task = asyncio.to_thread(_fetch_all_notices_sync)
     results = await asyncio.gather(*news_tasks, notices_task, return_exceptions=True)
 
@@ -538,10 +559,6 @@ async def news_digest(force: bool = False, max_items: int = 80):
     # 1) 准备素材: 持仓新闻 + 市场要闻 合并 (持仓优先)
     portfolio = await portfolio_news()
     market = await market_news()
-    holdings = [h for h in await get_all_holdings() if float(h.get("shares") or 0) > 0]
-    codes = [h["stock_code"] for h in holdings if _is_a_share(h["stock_code"])]
-    name_by_code = {h["stock_code"]: h.get("stock_name") or "" for h in holdings}
-
     # 取前 max_items 条 (持仓相关 30 + 市场 50)
     p_items = (portfolio.get("items") or [])[:30]
     m_items = (market.get("items") or [])[: max(0, max_items - len(p_items))]
@@ -569,7 +586,7 @@ async def news_digest(force: bool = False, max_items: int = 80):
         + "\n\n请按要求输出。"
     )
     system_prompt = (
-        "你是 A 股市场资讯摘要助手. 工作原则:\n"
+        "你是持仓资讯摘要助手, 覆盖 A 股、港股、美股. 工作原则:\n"
         "1. 抽取 5-8 条最值得关注的要点, 优先级:\n"
         "   (a) 直接涉及用户持仓的公告/新闻 — 必选\n"
         "   (b) 涉及用户持仓行业的政策/资金/事件 — 高优\n"
@@ -637,6 +654,18 @@ async def portfolio_events():
     return await upcoming_events()
 
 
+def _foreign_asof(market: str, q: dict) -> str:
+    """港美股涨跌的「行情日期/是否今日」标注。美股在北京下午看到的是前一晚美东那一场; 港股休市日
+    看到的是上一交易日。today_valid 口径与看板一致(quote_today_valid)。"""
+    from services.market_data import quote_session_date, quote_today_valid
+    d = quote_session_date(market, q)
+    ok = quote_today_valid(market, q)
+    if market == "US":
+        # 美股收盘在北京次日凌晨: 有效时它是「最近一场」(北京今晨收盘或正在交易), 不是北京的今天
+        return f"(美东 {d or '?'} 那一场, {'最近一场' if ok else '非今日, 已隔一个以上交易时段'})"
+    return f"(港股 {d or '?'}, {'今日' if ok else '非今日'})"
+
+
 @router.get("/daily-review")
 async def daily_review(force: bool = False):
     """收盘复盘日报: A 股持仓今日涨跌 + 板块异动 + 全球快讯 → LLM 归因复盘。
@@ -670,7 +699,9 @@ async def daily_review(force: bool = False):
         if _is_a_share(c):
             hold_moves.append(row)
         else:
-            row["cls"] = "港股" if str(c).upper().startswith("HK") else "美股"
+            mkt = "HK" if str(c).upper().startswith("HK") else "US"
+            row["cls"] = "港股" if mkt == "HK" else "美股"
+            row["suffix"] = _foreign_asof(mkt, q)
             other_moves.append(row)
     hold_moves.sort(key=lambda x: (x["change_pct"] if x["change_pct"] is not None else 0))
     try:
@@ -739,7 +770,9 @@ async def daily_review(force: bool = False):
     user_prompt = (
         f"今天是 {today}, 收盘后做组合复盘。\n\n"
         f"【我的 A 股持仓今日涨跌】\n{holds_txt}\n\n"
-        f"【我的其余持仓今日】(港美股为实时; 场外基金为净值或按底层持仓估; 加密为24h; 机器人为累计收益)\n{others_txt}\n\n"
+        f"【我的其余持仓今日】(港美股每行注明行情所属交易日: 美股是美东那一场(北京时间夜间至凌晨交易), "
+        f"标「非今日」的是更早交易时段的涨跌, 一律按所注日期表述; "
+        f"场外基金为净值或按底层持仓估; 加密为24h; 机器人为累计收益)\n{others_txt}\n\n"
         f"【A股持仓所属板块今日】\n{secs_txt}\n\n"
         f"【持仓相关新闻】\n" + ("\n".join(f"  - {h}" for h in p_heads) or "  (无)") + "\n\n"
         f"【全球财经快讯(标题)】\n" + "\n".join(f"  - {h}" for h in g_heads if h) + "\n\n"
@@ -971,9 +1004,15 @@ async def _all_holdings_desc() -> str:
     此前只取 A股 holdings 表, 解读只认 A股; 这里补上 external_assets。已清仓(份额 0)过滤。"""
     parts = []
     try:
-        a = [h for h in await get_all_holdings() if float(h.get("shares") or 0) > 0]
-        if a:
-            parts.append("A股: " + ", ".join(f"{h.get('stock_name','')}({h['stock_code']})" for h in a))
+        from services.market_data import split_stock_code
+        by_mkt: dict[str, list] = {}
+        for h in await get_all_holdings():
+            if float(h.get("shares") or 0) > 0:
+                lab = {"HK": "港股", "US": "美股"}.get(split_stock_code(h["stock_code"])[0], "A股")
+                by_mkt.setdefault(lab, []).append(f"{h.get('stock_name','')}({h['stock_code']})")
+        for lab in ("A股", "港股", "美股"):
+            if by_mkt.get(lab):
+                parts.append(f"{lab}: " + ", ".join(by_mkt[lab]))
     except Exception:
         pass
     try:

@@ -219,7 +219,7 @@ export function HoldingRow({ row, isLast, hovered, onHover, totalMv, insights, c
           details={row.extra.proxyDetails}
           fallbackToday={row.today} />
       ) : (
-        <TodayPulse change={row.today} />
+        <TodayPulse change={row.today} stale={row.type === 'A' && row._raw?.today_valid === false} />
       )}
     </div>
     <div className="text-right licai-md-only">

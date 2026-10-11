@@ -122,7 +122,12 @@ def quote_today_valid(market: str, q: dict | None) -> bool | None:
     —— 北京时间晚上到次日上午都显示前一晚那场, 到周日就不再算。"""
     if market == "HK":
         from services.dca import _is_market_trading_day
-        return _is_market_trading_day(_cst_now().date(), "HK")
+        today = _cst_now().date()
+        if not _is_market_trading_day(today, "HK"):
+            return False
+        # 交易日开盘前(含 9:00-9:30)行情还停在上一交易日: 带了行情时刻就按日期核一次
+        qd = str((q or {}).get("quote_time") or "")[:10]
+        return qd == today.isoformat() if qd else True
     if market == "US":
         s = str((q or {}).get("price_as_of") or "")
         try:
@@ -135,6 +140,26 @@ def quote_today_valid(market: str, q: dict | None) -> bool | None:
             return (now_et - d) <= timedelta(hours=20)
         except Exception:  # noqa: BLE001  解析不了就按工作日粗判
             return _cst_now().weekday() < 5
+    return None
+
+
+def quote_session_date(market: str, q: dict | None) -> str | None:
+    """行情所属那一场的交易所当地日期(YYYY-MM-DD)。港股取 quote_time, 美股解析 price_as_of(美东);
+    A 股与解析不了的返回 None。用于给模型/推送标「这是哪天的涨跌」。"""
+    q = q or {}
+    if market == "HK":
+        d = str(q.get("quote_time") or "")[:10]
+        return d or None
+    if market == "US":
+        s = str(q.get("price_as_of") or "")
+        try:
+            now = datetime.now()
+            d = datetime.strptime(f"{s[:6]} {now.year}", "%b %d %Y")
+            if d - now > timedelta(days=30):            # 1 月初看到 Dec 的行情 = 去年
+                d = d.replace(year=d.year - 1)
+            return d.strftime("%Y-%m-%d")
+        except ValueError:
+            return None
     return None
 
 
@@ -153,6 +178,112 @@ def code_fx(stock_code: str) -> float:
 def get_fx_rate(currency: str) -> float:
     """Fetch CNY conversion rate for a quote currency."""
     return float(get_fx_info(currency).get("rate") or 1.0)
+
+
+# 历史汇率: 中国银行外汇牌价(akshare currency_boc_sina, 新浪转载)的现汇买入价/卖出价中点, 每 100 外币折人民币。
+# 选它而不是外管局中间价: 实时汇率取的是新浪 USDCNY/HKDCNY 的买卖中点(市场价), 中间价与市场价常差 0.5% 上下,
+# 过去用中间价、今天用市场价会凭空造出一笔汇兑损益; 中行牌价中点与新浪实时同属市场价(实测 2026-10-09
+# 美元 6.6999 vs 6.6969), 节假日也有牌价。取不到再退外管局中间价(currency_boc_safe)。
+# 2023 年起整段约几秒, 内存缓存 6 小时 + 落盘(fx_last.json 的 history 键, 已在 .gitignore), 断网时用盘上那份。
+_FX_HIST_BOC = {"USD": "美元", "HKD": "港币"}
+_FX_HIST_SAFE = {"USD": "美元", "HKD": "港元"}
+_FX_HIST_TTL = 6 * 3600
+
+
+def fx_history(currency: str) -> dict[str, float]:
+    """date(YYYY-MM-DD) → 当日汇率(每 1 外币折人民币)。只支持 USD / HKD; 取不到返回 {}。"""
+    currency = (currency or "").upper()
+    if currency not in _FX_HIST_BOC:
+        return {}
+    cached = _cache_get("fx_hist_all", _FX_HIST_TTL)
+    if cached is None:
+        cached = _fx_history_disk()
+        yday = (_cst_now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        if not cached or max(cached.get("USD") or {"": 0}) < yday:   # 盘上那份旧了(只用到昨天为止)才重拉
+            cached = _fx_history_fetch()
+        if cached:
+            _cache_set("fx_hist_all", cached)
+    return (cached or {}).get(currency) or {}
+
+
+def _fx_history_disk() -> dict:
+    try:
+        return json.loads(_FX_FILE.read_text()).get("history") or {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _fx_history_boc() -> dict:
+    out: dict = {}
+    end = _cst_now().strftime("%Y%m%d")
+    for cur, sym in _FX_HIST_BOC.items():
+        df = ak.currency_boc_sina(symbol=sym, start_date="20230101", end_date=end)
+        m = {}
+        for _, r in df.iterrows():
+            buy, sell = float(r["中行汇买价"] or 0), float(r["中行钞卖价/汇卖价"] or 0)
+            if buy > 0 and sell > 0:
+                m[str(r["日期"])[:10]] = round((buy + sell) / 200, 6)
+        if not m:
+            return {}
+        out[cur] = m
+    return out
+
+
+def _fx_history_safe() -> dict:
+    df = ak.currency_boc_safe()
+    out: dict = {c: {} for c in _FX_HIST_SAFE}
+    for _, r in df.iterrows():
+        d = str(r["日期"])[:10]
+        if d < "2023-01-01":
+            continue
+        for cur, col in _FX_HIST_SAFE.items():
+            v = r.get(col)
+            if v is not None and v == v and float(v) > 0:
+                out[cur][d] = round(float(v) / 100, 6)
+    return out if out["USD"] else {}
+
+
+def _fx_history_fetch() -> dict:
+    for src in (_fx_history_boc, _fx_history_safe):
+        try:
+            out = src()
+        except Exception:  # noqa: BLE001
+            out = {}
+        if out:
+            try:
+                d = json.loads(_FX_FILE.read_text()) if _FX_FILE.exists() else {}
+                d["history"] = out
+                _FX_FILE.write_text(json.dumps(d))
+            except Exception:  # noqa: BLE001  落盘失败不影响取数
+                pass
+            return out
+    return _fx_history_disk()
+
+
+def fx_rate_on(currency: str, day: str | None) -> float:
+    """某成交日的汇率(每 1 外币折人民币)。今天及以后 = 实时汇率; 过去的日子 = 当天或之前最近一个
+    有牌价的日子(周末顺延前一个); 历史取不到就退回实时汇率。CNY 恒为 1。"""
+    currency = (currency or "CNY").upper()
+    if currency == "CNY":
+        return 1.0
+    d = str(day or "")[:10]
+    today = _cst_now().strftime("%Y-%m-%d")
+    if not d or d >= today:
+        return get_fx_rate(currency)
+    hist = fx_history(currency)
+    if hist:
+        from bisect import bisect_right
+        ks = sorted(hist)
+        i = bisect_right(ks, d)
+        if i > 0:
+            return hist[ks[i - 1]]
+    return get_fx_rate(currency)
+
+
+def code_fx_on(stock_code: str, day: str | None) -> float | None:
+    """这只票在某成交日的汇率; A 股返回 None(不需要记汇率)。"""
+    cur = code_currency(stock_code)
+    return None if cur == "CNY" else fx_rate_on(cur, day)
 
 
 def normalize_stock_code(stock_code: str) -> str:
@@ -1039,46 +1170,107 @@ def _fetch_overseas_quote(symbol: str) -> dict | None:
         return None
 
 
-def _fetch_hk_stock_quote(code: str) -> dict | None:
-    """港股个股实时. code = '00700' (5位带前导0). Sina /list=hk<CODE>.
-    字段: name_en, name_cn, prevclose, open, high, low, last, change_amt, change_pct, ...
-    """
-    try:
-        url = f"https://hq.sinajs.cn/list=hk{code}"
-        resp = _requests.get(url, headers={"Referer": "https://finance.sina.com.cn"}, timeout=5)
-        resp.encoding = "gbk"
-        text = resp.text.strip()
-        m = re.match(r'var hq_str_hk\w+="(.*)";', text)
-        if not m or not m.group(1):
-            return None
-        f = m.group(1).split(",")
-        if len(f) < 10:
-            return None
-        prev = float(f[2]) if f[2] else 0
-        last = float(f[6]) if f[6] else 0
-        # f[8] 通常是涨跌幅；fallback 自己算
-        try:
-            change_pct = float(f[8])
-        except (ValueError, IndexError):
-            change_pct = round((last - prev) / prev * 100, 2) if prev > 0 else 0
-        return {
-            "stock_name": f[1] or f[0] or code,
-            "price": last,
-            "open": float(f[3]) if f[3] else 0,
-            "high": float(f[4]) if f[4] else 0,
-            "low": float(f[5]) if f[5] else 0,
-            "prev_close": prev,
-            "volume": float(f[12]) if len(f) > 12 and f[12] else 0,
-            "amount": 0,
-            "change_pct": change_pct,
-            "amplitude": round((float(f[4]) - float(f[5])) / prev * 100, 2) if prev > 0 and f[4] and f[5] else 0,
-            "turnover_rate": 0,
-            "market": "HK",
-            "currency": "HKD",
-        }
-    except Exception as e:
-        print(f"[hk-stock] {code} failed: {e}")
+def _parse_sina_hk(code: str, text: str) -> dict | None:
+    """解析新浪港股行(rt_hk / hk 两种前缀字段顺序相同)。
+    字段: [0]英文名 [1]中文名 [2]今开 [3]昨收 [4]最高 [5]最低 [6]现价 [7]涨跌额 [8]涨跌% [9]买一 [10]卖一
+          [11]成交额(港元) [12]成交量(股) ... [17]日期 YYYY/MM/DD [18]时刻 HH:MM(:SS)
+    以 腾讯 00700 实测核过: 现价 423.8 − 昨收 411.4 = 涨跌额 12.4。"""
+    m = re.search(r'var hq_str_(?:rt_)?hk\w+="(.*)";', text or "")
+    if not m or not m.group(1):
         return None
+    f = m.group(1).split(",")
+    if len(f) < 13:
+        return None
+
+    def _num(i):
+        try:
+            return float(f[i]) if f[i] else 0.0
+        except (ValueError, IndexError):
+            return 0.0
+
+    open_, prev, high, low, last = _num(2), _num(3), _num(4), _num(5), _num(6)
+    if last <= 0:
+        return None
+    try:
+        change_pct = round(float(f[8]), 2)
+    except (ValueError, IndexError):
+        change_pct = round((last - prev) / prev * 100, 2) if prev > 0 else 0
+    out = {
+        "stock_name": f[1] or f[0] or code,
+        "price": last,
+        "open": open_,
+        "high": high,
+        "low": low,
+        "prev_close": prev,
+        "volume": _num(12),
+        "amount": _num(11),              # 港元
+        "change_pct": change_pct,
+        "amplitude": round((high - low) / prev * 100, 2) if prev > 0 and high and low else 0,
+        "turnover_rate": 0,
+        "market": "HK",
+        "currency": "HKD",
+    }
+    if len(f) > 18 and f[17]:
+        out["quote_time"] = f"{f[17].replace('/', '-')} {f[18]}".strip()   # 港交所当地时间(=北京时间)
+    return out
+
+
+def _fetch_hk_stock_quote(code: str) -> dict | None:
+    """港股个股行情. code = '00700' (5位带前导0)。
+
+    走新浪 rt_hk<CODE>(实时); 同源的 hk<CODE> 是 15 分钟延时行 —— 2026-10-09 14:45 实测
+    hk00700 时刻停在 14:22, rt_hk00700 是 14:45:13, 腾讯 r_hk00700 是 14:45:09(无前缀
+    hk00700 也延时)。rt_ 取不到时退回延时行, 时刻照实带在 quote_time 里。"""
+    for prefix in ("rt_hk", "hk"):
+        try:
+            resp = _requests.get(f"https://hq.sinajs.cn/list={prefix}{code}",
+                                 headers={"Referer": "https://finance.sina.com.cn"}, timeout=5)
+            resp.encoding = "gbk"
+            q = _parse_sina_hk(code, resp.text.strip())
+            if q:
+                if prefix == "hk":
+                    q["delayed"] = True
+                return q
+        except Exception as e:
+            print(f"[hk-stock] {prefix}{code} failed: {e}")
+    return None
+
+
+_hk_search_cache: dict[str, tuple[list, float]] = {}
+
+
+def search_hk_stocks(query: str, limit: int = 8) -> list[dict]:
+    """港股按名称/代码/拼音搜(腾讯 smartbox, t=hk) → [{code: HK.00700, name}]。
+    只留正股/基金/REITs(类型以 GP 开头), 去掉窝轮牛熊(QZ)与人民币柜台(8xxxx, 名称尾随 r)。
+    失败返回空表, 缓存 10 分钟。"""
+    q = (query or "").strip()
+    if not q:
+        return []
+    c = _hk_search_cache.get(q)
+    if c and time.time() - c[1] < 600:
+        return c[0][:limit]
+    out: list[dict] = []
+    try:
+        r = _requests.get("https://smartbox.gtimg.cn/s3/", params={"v": "2", "q": q, "t": "hk"}, timeout=5)
+        m = re.search(r'v_hint="(.*)"', r.text or "")
+        body = m.group(1) if m else ""
+        if body and body != "N":
+            body = body.encode("latin-1", "backslashreplace").decode("unicode_escape")
+            for item in body.split("^"):
+                f = item.split("~")
+                if len(f) < 5 or f[0] != "hk" or not f[1].isdigit():
+                    continue
+                code, name, kind = f[1].zfill(5), f[2], f[4]
+                if not kind.startswith("GP") or (code.startswith("8") and name.lower().endswith("r")):
+                    continue
+                out.append({"code": f"HK.{code}", "name": name})
+    except Exception as e:
+        print(f"[hk-search] {q} failed: {e}")
+        return []
+    _hk_search_cache[q] = (out, time.time())
+    if len(_hk_search_cache) > 500:
+        _hk_search_cache.clear()
+    return out[:limit]
 
 
 def _us_session_of(clock: str) -> str:
@@ -1984,6 +2176,51 @@ def _minute_tencent(sym: str) -> dict | None:
     return {"date": (blob.get("data") or {}).get("date") or "", "points": pts}
 
 
+def stock_minute_foreign(stock_code: str) -> dict | None:
+    """港股/美股个股分时(腾讯, 最近一个交易日; 时刻是交易所当地时间)。
+    返回 {date: YYYY-MM-DD, prev_close, points:[{time, price, 手, 额}]}, 手 = 逐分钟成交股数。
+    港股走 minute/query(午休无点); 美股走 UsMinute/query, 盘前也给上一交易日整段(391 点), 不带成交额。"""
+    mkt, sym = split_stock_code(stock_code)
+    if mkt == "HK":
+        key, url = f"hk{sym.zfill(5)}", "https://web.ifzq.gtimg.cn/appstock/app/minute/query"
+    elif mkt == "US":
+        full = _tencent_us_full(sym)
+        if not full:
+            return None
+        key, url = f"us{full}", "https://web.ifzq.gtimg.cn/appstock/app/UsMinute/query"
+    else:
+        return None
+    r = _requests.get(url, params={"code": key}, timeout=8)
+    blob = ((r.json() or {}).get("data") or {}).get(key) or {}
+    body = blob.get("data") or {}
+    pts, pv, pa = [], 0.0, 0.0
+    for row in body.get("data") or []:
+        f = str(row).split()
+        if len(f) < 3 or len(f[0]) != 4 or not f[0].isdigit():
+            continue
+        try:
+            price, cv = float(f[1]), float(f[2])
+            ca = float(f[3]) if len(f) > 3 else 0.0
+        except ValueError:
+            continue
+        if price <= 0:
+            continue
+        pts.append({"time": f"{f[0][:2]}:{f[0][2:]}", "price": price,
+                    "手": max(cv - pv, 0.0), "额": max(ca - pa, 0.0)})
+        pv, pa = cv, ca
+    if not pts:
+        return None
+    d = str(body.get("date") or "")
+    qt = (blob.get("qt") or {}).get(key) or []
+    try:
+        prev = float(qt[4]) if len(qt) > 4 else None
+    except ValueError:
+        prev = None
+    if mkt == "US" and len(qt) > 30 and str(qt[30])[:10].replace("-", "") != d:
+        prev = None        # 美股 qt 是最新一节(可能已是新的交易日), 昨收对不上分时那天就不用
+    return {"date": f"{d[:4]}-{d[4:6]}-{d[6:8]}" if len(d) == 8 else d, "prev_close": prev, "points": pts}
+
+
 # 美股指数分时: 腾讯那条 /appstock/app/minute 对**指数**只回一个收盘快照点(实测收盘后
 # 仍只有 1 个点), 画不出分时; Yahoo 的 chart 接口给整段 1 分钟线(391 点 = 9:30-16:00)
 # 且带每分钟成交量。时刻用它自带的 gmtoffset 折成交易所本地时间, 夏令时自动跟着走。
@@ -2132,6 +2369,42 @@ def is_market_hours() -> bool:
         return False
     t = cst.hour * 60 + cst.minute
     return (570 <= t <= 690) or (780 <= t <= 900)
+
+
+# 港美股连续交易时段(交易所当地时间, 分钟数)。半日市(圣诞/新年前夕)按全日处理, 只影响刷新频率。
+_SESSIONS = {
+    "HK": ("Asia/Hong_Kong", ((9 * 60 + 30, 12 * 60), (13 * 60, 16 * 60))),
+    "US": ("America/New_York", ((9 * 60 + 30, 16 * 60),)),
+}
+
+
+def market_open(market: str, now: datetime | None = None) -> bool:
+    """某市场此刻是否在连续交易时段。A 股沿用 is_market_hours 的口径(9:30-11:30 / 13:00-15:00 北京);
+    港股 09:30-12:00 / 13:00-16:00 港时; 美股 09:30-16:00 美东(zoneinfo 自动处理夏令时)。
+    交易日判断: A 股 chinese_calendar, 港美股 exchange_calendars(XHKG/XNYS), 按交易所当地日期。
+    now 须带时区(测试注入); 缺省取当前时刻。"""
+    from zoneinfo import ZoneInfo
+    now = now or datetime.now(timezone.utc)
+    if market == "A":
+        cst = now.astimezone(ZoneInfo("Asia/Shanghai"))
+        if not _is_a_share_trading_day(cst.date()):
+            return False
+        t = cst.hour * 60 + cst.minute
+        return (570 <= t <= 690) or (780 <= t <= 900)
+    spec = _SESSIONS.get(market)
+    if not spec:
+        return False
+    local = now.astimezone(ZoneInfo(spec[0]))
+    t = local.hour * 60 + local.minute
+    if not any(a <= t < b for a, b in spec[1]):
+        return False
+    from services.dca import _is_market_trading_day
+    return _is_market_trading_day(local.date(), market)
+
+
+def markets_open(now: datetime | None = None) -> dict[str, bool]:
+    """{A, HK, US} 三个市场此刻是否在交易时段。"""
+    return {m: market_open(m, now) for m in ("A", "HK", "US")}
 
 
 def is_trading_day_active() -> bool:

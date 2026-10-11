@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { createChart, LineSeries, HistogramSeries, LineStyle, CrosshairMode, createSeriesMarkers } from 'lightweight-charts'
 import { ACQUIRE, BUY_COLOR, SELL_COLOR, UP, DOWN, colorPct, fmtHand, fmtPct, fmtVal } from './shared'
+import { US_TZ, bjToEtTime, usTodayDate } from '../../helpers'
 
 // ---------------------------------------------------------------------------
 // 分时图 (lightweight-charts) — 价格线 + 均价线 + 昨收基准 + 量柱(红买绿卖) + 买卖点
@@ -17,7 +18,8 @@ import { ACQUIRE, BUY_COLOR, SELL_COLOR, UP, DOWN, colorPct, fmtHand, fmtPct, fm
 const volColor = (up) => (up ? 'rgba(207,92,92,0.55)' : 'rgba(95,168,108,0.55)')
 
 export function MinuteChart({ points, prevClose, actions = [], day, height = 410,
-                             session = 'cn', volUnit = '手', tickMode = false }) {  // eslint-disable-line no-unused-vars
+                             session = 'cn', volUnit = '手', tickMode = false,  // eslint-disable-line no-unused-vars
+                             tz = null }) {   // 'America/New_York': 轴是美东时间, 成交时刻(北京时间)要先换算再对点
   const wrapRef = useRef(null)
   const chartRef = useRef(null)
   const priceRef = useRef(null)
@@ -28,6 +30,7 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
   const rowsRef = useRef([])                 // 每个序号对应的 {time, price, avg, vol} —— 十字光标查它
   const actionsRef = useRef(actions)
   const dayRef = useRef(day)
+  const tzRef = useRef(tz)
   const [legend, setLegend] = useState(null)
 
   // 买卖点: 同一分钟同方向合成一个标记(B×3), 落到该分钟第一个序号上。从 ref 读, 可被
@@ -37,8 +40,10 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
     const rows = rowsRef.current
     if (!price || !rows.length) return
     const norm = s => String(s || '').replace(/\D/g, '').slice(0, 8)
+    const isUs = tzRef.current === US_TZ
     const now = new Date()
-    const today = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
+    const today = isUs ? norm(usTodayDate())
+      : `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`
     const matchDay = norm(dayRef.current) || today
     // 分钟(HH:MM) → 该分钟第一个序号
     const minIdx = new Map()
@@ -46,7 +51,10 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
     const byKey = new Map()
     for (const a of (actionsRef.current || [])) {
       if (norm(a.trade_date) !== matchDay || !a.at_time) continue
-      const m = String(a.at_time).slice(0, 5)
+      // at_time 是北京时间; 美股轴是美东(trade_date 也是美东交易日), 按 Intl 换算(夏令时自动对)。港股与北京同时区
+      const t = isUs ? bjToEtTime(String(a.trade_date).slice(0, 10), String(a.at_time)) : a.at_time
+      if (!t) continue
+      const m = String(t).slice(0, 5)
       const idx = minIdx.has(m) ? minIdx.get(m) : null
       if (idx == null) continue
       const isBuy = ACQUIRE.has(a.action_type)
@@ -103,7 +111,7 @@ export function MinuteChart({ points, prevClose, actions = [], day, height = 410
   }, [])
 
   // 流水变了只重画买卖点
-  useEffect(() => { actionsRef.current = actions; dayRef.current = day; drawMarkers() }, [actions, day, drawMarkers])
+  useEffect(() => { actionsRef.current = actions; dayRef.current = day; tzRef.current = tz; drawMarkers() }, [actions, day, tz, drawMarkers])
 
   // 数据: 换点集/昨收/逐笔开关 → 重填
   useEffect(() => {
