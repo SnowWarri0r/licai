@@ -1463,7 +1463,7 @@ async def etf_xray_theme(theme: str, top: int = 5):
 
 @router.get("/pools")
 async def market_pools(date: str = ""):
-    """上一个归类日各格子里的票, 今天怎么样了(真实成分 + 今日实时涨幅)。"""
+    """最近一个归类日各格子里的票(盘中=昨天那批今天怎么样; 收盘落档后默认今天那批, date=上一锚点可切回)。"""
     from services.stock_tags import pools
     return await pools(date or None)
 
