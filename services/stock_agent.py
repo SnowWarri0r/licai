@@ -548,10 +548,113 @@ async def _stock_display_name(code: str) -> str:
         return ""
 
 
+def _hkus(code: str) -> tuple[str, str] | None:
+    """港美股 → (HK|US, symbol); 其余 None。裸 5 位数字只可能是港股(A 股 6 位), 补成 HK。"""
+    from services.market_data import normalize_stock_code, split_stock_code
+    raw = normalize_stock_code(_norm_code(code))
+    if raw.isdigit() and len(raw) == 5:
+        raw = f"HK.{raw}"
+    m, sym = split_stock_code(raw)
+    return (m, sym) if m in ("HK", "US") and sym else None
+
+
+# 分时量能分段(交易所当地时刻, 左闭右开)
+_SESSION_SEGS = {
+    "HK": [("早盘首小时 09:30-10:30", "09:30", "10:30"), ("早盘后段 10:30-12:00", "10:30", "12:01"),
+           ("午后 13:00-15:00", "13:00", "15:00"), ("尾盘 15:00-16:10(含收市竞价)", "15:00", "16:11")],
+    "US": [("开盘30分 09:30-10:00", "09:30", "10:00"), ("上午 10:00-12:00", "10:00", "12:00"),
+           ("午间 12:00-14:00", "12:00", "14:00"), ("下午 14:00-15:30", "14:00", "15:30"),
+           ("尾盘30分 15:30-16:00(含收盘竞价)", "15:30", "16:01")],
+}
+_SESSION_TZ = {"HK": "香港时间(UTC+8, 与北京时间相同)",
+               "US": "美东时间(America/New_York, 夏令时 UTC-4 / 冬令时 UTC-5)"}
+
+
+def summarize_foreign_minute(market: str, m: dict, q: dict | None = None) -> dict:
+    """港美股分时摘要(纯计算): 开高低收+时间、VWAP、振幅、量能分段占比、路径采样。
+    q=同一交易日的实时行情时, 高低点以交易所行情为准(分时是逐分钟快照, 探不到分钟内的瞬时极值)。"""
+    pts = [p for p in (m or {}).get("points") or [] if p.get("price")]
+    if not pts:
+        return {"error": "分时无有效数据"}
+    prev = m.get("prev_close")
+    hi = max(pts, key=lambda p: p["price"])
+    lo = min(pts, key=lambda p: p["price"])
+    hi_p, hi_t, lo_p, lo_t = hi["price"], hi["time"], lo["price"], lo["time"]
+    if q:
+        if q.get("high") and q["high"] >= hi_p:
+            hi_p, hi_t = q["high"], min(pts, key=lambda p: abs(p["price"] - q["high"]))["time"]
+        if q.get("low") and 0 < q["low"] <= lo_p:
+            lo_p, lo_t = q["low"], min(pts, key=lambda p: abs(p["price"] - q["low"]))["time"]
+    open_p, last_p = pts[0]["price"], pts[-1]["price"]
+    vol = sum(p.get("手") or 0 for p in pts)
+    amt = sum(p.get("额") or 0 for p in pts)
+    if amt > 0 and vol > 0:
+        vwap = amt / vol
+    else:                                  # 美股分时不带成交额, 用逐分钟价×量近似
+        pv = sum(p["price"] * (p.get("手") or 0) for p in pts)
+        vwap = pv / vol if vol else None
+
+    def pct(x):
+        return round((x - prev) / prev * 100, 2) if prev and x is not None else None
+    segs = []
+    for name, a, b in _SESSION_SEGS.get(market, []):
+        v = sum(p.get("手") or 0 for p in pts if a <= p["time"] < b)
+        seg_pts = [p["price"] for p in pts if a <= p["time"] < b]
+        if seg_pts or v:
+            segs.append({"时段": name,
+                         "成交占比%": round(v / vol * 100, 1) if vol else None,
+                         "段末价": seg_pts[-1] if seg_pts else None})
+    step = max(1, len(pts) // 8)
+    path = [{"time": pts[i]["time"], "price": pts[i]["price"]} for i in range(0, len(pts), step)]
+    if path[-1]["time"] != pts[-1]["time"]:
+        path.append({"time": pts[-1]["time"], "price": last_p})
+    return {"交易日": m.get("date"), "时区": _SESSION_TZ.get(market, ""),
+            "昨收": prev, "开盘": open_p, "开盘涨跌%": pct(open_p),
+            "最高": {"price": hi_p, "time": hi_t, "涨跌%": pct(hi_p)},
+            "最低": {"price": lo_p, "time": lo_t, "涨跌%": pct(lo_p)},
+            "现价/收盘": last_p, "涨跌%": pct(last_p),
+            "VWAP": round(vwap, 3) if vwap else None,
+            "现价相对VWAP%": round((last_p - vwap) / vwap * 100, 2) if vwap else None,
+            "日内振幅%": round((hi_p - lo_p) / prev * 100, 2) if prev else None,
+            "较最高回落%": round((hi_p - last_p) / hi_p * 100, 2) if hi_p else None,
+            "高点先于低点": hi_t < lo_t,
+            "成交量股": int(vol), "量能分段": segs, "路径采样": path}
+
+
+async def _tool_intraday_foreign(market: str, sym: str) -> dict:
+    from services.market_data import stock_minute_foreign, get_realtime_quotes, quote_session_date
+    code = f"{market}.{sym}"
+    try:
+        m = await asyncio.to_thread(stock_minute_foreign, code)
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"港美股分时源(腾讯)不可达: {type(e).__name__}"}
+    if not m or not m.get("points"):
+        return {"error": "港美股分时暂无数据(源抖动或该标的停牌)"}
+    q = {}
+    try:
+        q = (await get_realtime_quotes([code])).get(code) or {}
+    except Exception:
+        pass
+    same_day = bool(q) and quote_session_date(market, q) == m.get("date")
+    out = summarize_foreign_minute(market, m, q if same_day else None)
+    if out.get("error"):
+        return out
+    note = ("港股分时(腾讯, 逐分钟; 午休 12:00-13:00 无点); 交易日与时刻均为港交所当地时间。"
+            if market == "HK" else
+            "美股分时(腾讯, 逐分钟, 仅常规时段 09:30-16:00); 交易日与时刻均为美东当地时间, 给的是最近一个已开盘的交易日。"
+            "VWAP 按逐分钟价×量近似(源不带成交额)。")
+    return {"code": code, "name": q.get("stock_name") or await _stock_display_name(code), **out,
+            "note": note + " 量能分段=各时段成交量占全天比例; 较最高回落% 大=冲高回落; 现价相对VWAP 为正=收在当日均价上方。"}
+
+
 async def _tool_intraday(code: str) -> dict:
-    """当日分时(TDX): 开盘/最高(及时间)/最低(及时间)/现价 + 是否冲高回落 + 关键点。需启用 TDX 数据源, 仅 A 股。"""
+    """当日分时: 开盘/最高(及时间)/最低(及时间)/现价 + 是否冲高回落 + 关键点。
+    A 股走 TDX(需启用); 港美股走腾讯分时, 另含 VWAP/振幅/量能分段。"""
     import services.tdx_client as _tdx
     from services.market_data import normalize_stock_code
+    hu = _hkus(code)
+    if hu:
+        return await _tool_intraday_foreign(*hu)
     if not _tdx.is_enabled():
         return {"error": "分时需启用 TDX 数据源(设置→TDX base_url), 当前未配置"}
     bare = normalize_stock_code(_norm_code(code)).split(".")[-1]
@@ -1549,11 +1652,23 @@ def clip_profile(text: str, limit: int = _PROFILE_TOOL_CHARS) -> str:
 
 
 async def _tool_company_profile(code: str) -> dict:
-    """公司是做什么的: 公司简介 + 细分行业 + 主营构成(收入占比/毛利率)。回答'这家公司主营什么、靠什么赚钱'时用。仅 A 股。"""
+    """公司是做什么的: 公司简介 + 细分行业 + 主营构成。A 股另含控股/实控人; 港美股另含上市日期/总部/员工/财报币种/财年。"""
     from services.market_data import normalize_stock_code, is_a_share
+    hu = _hkus(code)
+    if hu:
+        from services import foreign_f10 as ff
+        fn = ff.hk_profile if hu[0] == "HK" else ff.us_profile_f10
+        out = await asyncio.to_thread(fn, hu[1])
+        if isinstance(out, dict) and not out.get("error"):
+            out = {**out}
+            if out.get("profile"):
+                out["profile"] = clip_profile(out["profile"])
+            if out.get("主营业务"):
+                out["主营业务"] = clip_profile(out["主营业务"], 300)
+        return out
     raw = normalize_stock_code(_norm_code(code))
     if not is_a_share(raw):
-        return {"error": "公司简介仅支持 A 股"}
+        return {"error": "公司简介支持 A 股、港股、美股"}
     bare = raw.split(".")[-1] if "." in raw else raw
     out = await asyncio.to_thread(_fetch_company_profile_sync, bare)
     # 取数层存全文(K线头部的"完整简介"要用), 只在喂模型这一侧按句截
@@ -1564,14 +1679,18 @@ async def _tool_company_profile(code: str) -> dict:
 
 async def _tool_stock_concepts(code: str) -> dict:
     """个股所属行业/概念板块 + 核心题材。回答'这只票属于哪个概念、是不是踩在资金主线上'时用。
-    A 股给概念板块与题材; 美股给 板块/行业(Yahoo 分类) 与曾用名。"""
+    A 股给概念板块与题材; 港股给东财行业与分类层级、港股通资格; 美股给 板块/行业(Yahoo 分类) 与曾用名。"""
     from services.market_data import normalize_stock_code, is_a_share
     raw = normalize_stock_code(_norm_code(code))
     if raw.upper().startswith("US.") or (not is_a_share(raw) and _re.fullmatch(r"[A-Za-z.]{1,6}", raw)):
         from services import us_fundamentals as usf
         return await asyncio.to_thread(usf.us_profile, raw)
+    hu = _hkus(code)
+    if hu and hu[0] == "HK":
+        from services import foreign_f10 as ff
+        return await asyncio.to_thread(ff.hk_concepts, hu[1])
     if not is_a_share(raw):
-        return {"error": "所属概念支持 A 股与美股(港股暂无源)"}
+        return {"error": "所属概念支持 A 股、港股、美股"}
     return await asyncio.to_thread(_fetch_stock_concepts_sync, code)
 
 
@@ -1672,10 +1791,10 @@ def _fetch_financials_sync(code: str) -> dict:
     return out
 
 
-def _fetch_hkus_fundamentals_sync(market: str, symbol: str) -> dict:
-    """港股/美股基本面(东财, akshare em 指标): 营收/净利及同比、毛利率/净利率/ROE/负债率/EPS。金额→亿(原币种)。"""
+def _fetch_us_financials_sync(symbol: str) -> dict:
+    """美股最近年报财务(东财, akshare em 指标): 营收/净利及同比、毛利率/净利率/ROE/负债率/EPS。金额→亿(原币种)。"""
     import time as _t
-    ck = f"fin_{market}_{symbol}"
+    ck = f"fin_US_{symbol}"
     c = _fin_cache.get(ck)
     if c and _t.time() - c[1] < 3600:
         return c[0]
@@ -1685,16 +1804,9 @@ def _fetch_hkus_fundamentals_sync(market: str, symbol: str) -> dict:
             os.environ.pop(k, None)
     import akshare as ak
     try:
-        if market == "HK":
-            df = ak.stock_financial_hk_analysis_indicator_em(symbol=symbol.zfill(5), indicator="报告期")
-            profit_key, profit_yoy = "HOLDER_PROFIT", "HOLDER_PROFIT_YOY"
-            roe_key = "ROE_YEARLY"
-        else:
-            df = ak.stock_financial_us_analysis_indicator_em(symbol=symbol.upper(), indicator="年报")
-            profit_key, profit_yoy = "PARENT_HOLDER_NETPROFIT", "PARENT_HOLDER_NETPROFIT_YOY"
-            roe_key = "ROE_AVG"
+        df = ak.stock_financial_us_analysis_indicator_em(symbol=symbol.upper(), indicator="年报")
     except Exception as e:
-        return {"error": f"港美股财务源不可达: {e}"}
+        return {"error": f"美股财务源不可达: {e}"}
     if df is None or df.empty:
         return {}
     r = df.iloc[0].to_dict()
@@ -1712,28 +1824,54 @@ def _fetch_hkus_fundamentals_sync(market: str, symbol: str) -> dict:
             return round(float(v) / 1e8, 2)
         except (ValueError, TypeError):
             return None
-    cur = r.get("CURRENCY") or r.get("CURRENCY_ABBR") or ("HKD" if market == "HK" else "USD")
-    out = {"valuation": {"币种": cur, "EPS": f("BASIC_EPS", 3), "每股净资产BPS": f("BPS", 2),
-                         "note": "港美股 PE/PB 未直出, 如需用 get_quote 现价 / EPS、/ BPS 估算"},
-           "financials": {"报告期": str(r.get("REPORT_DATE") or "")[:10],
-                          "营业收入亿": yi("OPERATE_INCOME"), "营收同比增长%": f("OPERATE_INCOME_YOY", 1),
-                          "归母净利润亿": yi(profit_key), "净利同比增长%": f(profit_yoy, 1),
-                          "毛利率%": f("GROSS_PROFIT_RATIO", 1), "净利率%": f("NET_PROFIT_RATIO", 1),
-                          "ROE%": f(roe_key, 2), "资产负债率%": f("DEBT_ASSET_RATIO", 1)},
-           "note": f"金额单位亿{cur}; 港股取最近报告期, 美股取最近年报; 同比为 YoY。"}
+    from services.foreign_f10 import _cur
+    cur = _cur(r.get("CURRENCY_ABBR") or r.get("CURRENCY")) or "USD"
+    out = {"报告期": str(r.get("REPORT_DATE") or "")[:10], "口径": "最近年报",
+           "营业收入亿": yi("OPERATE_INCOME"), "营收同比增长%": f("OPERATE_INCOME_YOY", 1),
+           "归母净利润亿": yi("PARENT_HOLDER_NETPROFIT"), "净利同比增长%": f("PARENT_HOLDER_NETPROFIT_YOY", 1),
+           "毛利率%": f("GROSS_PROFIT_RATIO", 1), "净利率%": f("NET_PROFIT_RATIO", 1),
+           "ROE%": f("ROE_AVG", 2), "资产负债率%": f("DEBT_ASSET_RATIO", 1),
+           "基本EPS": f("BASIC_EPS", 3), "金额币种": cur}
     _fin_cache[ck] = (out, _t.time())
     return out
 
 
+async def _tool_fundamentals_foreign(market: str, sym: str) -> dict:
+    """港美股基本面 + 估值。估值按现价与(折算到报价币种的)每股数现算, 换算过程逐项列出。"""
+    from services.market_data import get_realtime_quotes
+    from services import foreign_f10 as ff
+    code = f"{market}.{sym}"
+    price = None
+    try:
+        price = ((await get_realtime_quotes([code])).get(code) or {}).get("price")
+    except Exception:
+        pass
+    if market == "HK":
+        out = await asyncio.to_thread(ff.hk_fundamentals, sym, price)
+        if price is None and not out.get("error"):
+            out["valuation"]["note"] = "现价暂不可得, PE/PB/市值未算"
+        return out
+    val, fin = await asyncio.gather(asyncio.to_thread(ff.us_fundamentals_valuation, sym, price),
+                                    asyncio.to_thread(_fetch_us_financials_sync, sym), return_exceptions=True)
+    val = val if isinstance(val, dict) else {}
+    fin = fin if isinstance(fin, dict) else {}
+    if not val and (not fin or fin.get("error")):
+        return {"error": "美股基本面暂不可达(东财接口抖动或限流)"}
+    cur = fin.get("金额币种") or val.get("财报披露币种") or "USD"
+    return {"valuation": val, "financials": fin,
+            "note": f"财务金额单位亿{cur}(原币), 取最近年报, 同比为 YoY; PE_TTM/PB 按现价与近四季 EPS、最新 BPS 现算"
+                    "(非美元披露的已按即期汇率折成美元, 换算过程见 EPS_TTM/BPS 字段)。"}
+
+
 async def _tool_fundamentals(code: str) -> dict:
-    """个股基本面+估值: 营收/净利及同比、ROE/毛利率/净利率、资产负债率、EPS, A股另含 PE/PB/总市值/行业。支持 A/港/美股。"""
-    from services.market_data import normalize_stock_code, is_a_share, split_stock_code
+    """个股基本面+估值。A 股: 营收/净利及同比、ROE/毛利率/净利率、负债率、EPS + PE(TTM)/PB/总市值/行业;
+    港美股: 同类财务 + 按现价现算的 PE_TTM/PB/总市值, 财报币种与报价币种不同时逐项列出折算。"""
+    from services.market_data import normalize_stock_code, is_a_share
+    hu = _hkus(code)
+    if hu:
+        return await _tool_fundamentals_foreign(*hu)
     raw = normalize_stock_code(_norm_code(code))
     if not is_a_share(raw):
-        market, symbol = split_stock_code(raw)
-        if market in ("HK", "US"):
-            out = await asyncio.to_thread(_fetch_hkus_fundamentals_sync, market, symbol)
-            return out if out else {"error": "港美股基本面暂不可达"}
         return {"error": "基本面暂不支持该市场"}
     bare = _norm_code(code)
     val, fin = await asyncio.gather(
@@ -1829,7 +1967,8 @@ def _fetch_peers_sync(code: str) -> dict:
 
 async def _tool_peers(code: str) -> dict:
     """同行横向对比: 看目标票在同业里贵不贵、强不强、资金偏好谁。
-    A 股给板块成分股的涨跌幅/PE/PB/主力净流入; 美股给 Yahoo 的相似标的 + 各自涨跌(无资金流源)。"""
+    A 股给板块成分股的涨跌幅/PE/PB/主力净流入; 港股给同行业市值前列 + PE/PB/市值/涨跌;
+    美股给 Yahoo 的相似标的 + 各自涨跌(无资金流源)。"""
     from services.market_data import normalize_stock_code, is_a_share, get_realtime_quotes
     raw = normalize_stock_code(_norm_code(code))
     if raw.upper().startswith("US.") or (not is_a_share(raw) and _re.fullmatch(r"[A-Za-z.]{1,6}", raw)):
@@ -1851,9 +1990,43 @@ async def _tool_peers(code: str) -> dict:
         return {"code": raw, "name": me.get("stock_name") or "",
                 "涨跌幅%": me.get("change_pct"), "同行": peers,
                 "note": "同行由 Yahoo 按相似度给出; 美股无资金流/主力净买源, 只给价与涨跌"}
+    hu = _hkus(code)
+    if hu and hu[0] == "HK":
+        return await _tool_peers_hk(hu[1])
     if not is_a_share(raw):
-        return {"error": "同行对比支持 A 股与美股(港股暂无源)"}
+        return {"error": "同行对比支持 A 股、港股、美股"}
     return await asyncio.to_thread(_fetch_peers_sync, _norm_code(code))
+
+
+async def _tool_peers_hk(sym: str) -> dict:
+    """港股同行: 东财港股 F10 同行业按市值排前 10 + 目标票, 套实时行情取涨跌。"""
+    from services.market_data import get_realtime_quotes, fx_cross_rate
+    from services import foreign_f10 as ff
+    raw = await asyncio.to_thread(ff.hk_peers_raw, sym)
+    if raw.get("error"):
+        return raw
+    rows = raw["rows"]
+    quotes = {}
+    try:
+        quotes = await get_realtime_quotes([r["code"] for r in rows])
+    except Exception:
+        pass
+    fx = await asyncio.to_thread(fx_cross_rate, "CNY", "HKD")
+    me = f"HK.{sym.zfill(5)}"
+    for r in rows:
+        q = quotes.get(r["code"]) or {}
+        r["price"] = q.get("price")
+        r["涨跌幅%"] = q.get("change_pct")
+        cny = r.pop("_mcap_cny", None)
+        r["市值亿HKD"] = round(cny * fx["rate"] / 1e8, 1) if cny and fx else None
+        if r["code"] == me:
+            r["本股"] = True
+    return {"code": me, "行业": raw.get("行业"), "行业成分数": raw.get("行业成分数"),
+            "行业PE_TTM平均": raw.get("行业PE_TTM平均"), "行业PE_TTM中值": raw.get("行业PE_TTM中值"),
+            "同行": rows,
+            "note": f"同属东财港股【{raw.get('行业')}】行业, 按市值降序取前 10(已去掉双柜台的人民币柜台); "
+                    f"市值为东财 {raw.get('市值截至')} 收盘口径(源按人民币列示, 已按即期汇率折成港元), PE_TTM/PB 为东财同口径; "
+                    "涨跌幅%为最新行情。港股无主力资金流源。"}
 
 
 _holders_cache: dict = {}
@@ -1924,10 +2097,19 @@ def _fetch_shareholders_sync(code: str) -> dict:
 
 
 async def _tool_shareholders(code: str) -> dict:
-    """筹码面: 十大流通股东及增减、北向(香港中央结算)持股变动、未来限售解禁(抛压)。仅 A 股。"""
+    """筹码面。A 股: 十大流通股东及增减、北向持股、未来限售解禁; 港股: 港交所权益披露(主要股东/董事)+近期权益变动+回购;
+    美股: 13F 前十大机构 + 内部人交易汇总。"""
     from services.market_data import normalize_stock_code, is_a_share
+    hu = _hkus(code)
+    if hu:
+        from services import foreign_f10 as ff
+        fn = ff.hk_shareholders if hu[0] == "HK" else ff.us_shareholders
+        try:
+            return await asyncio.to_thread(fn, hu[1])
+        except Exception as e:
+            return {"error": f"股东数据获取失败: {e}"}
     if not is_a_share(normalize_stock_code(_norm_code(code))):
-        return {"error": "股东/解禁仅支持 A 股"}
+        return {"error": "股东数据支持 A 股、港股、美股"}
     try:
         return await asyncio.to_thread(_fetch_shareholders_sync, _norm_code(code))
     except Exception as e:
@@ -2053,14 +2235,18 @@ def _fetch_announcements_sync(code: str, limit: int = 12) -> dict:
 
 async def _tool_announcements(code: str) -> dict:
     """个股公告(分红/回购/增减持/业绩/重组/股权激励/关联交易等), 比新闻权威。
-    A 股走交易所公告; 美股走 SEC EDGAR 申报(8-K=重大事件, 4/144=内部人交易, 13D/G=大股东)。"""
+    A 股走交易所公告; 港股走港交所披露易(东财转载); 美股走 SEC EDGAR 申报(8-K=重大事件, 4/144=内部人交易, 13D/G=大股东)。"""
     from services.market_data import normalize_stock_code, is_a_share
     raw = normalize_stock_code(_norm_code(code))
     if raw.upper().startswith("US.") or (not is_a_share(raw) and _re.fullmatch(r"[A-Za-z.]{1,6}", raw)):
         from services import us_fundamentals as usf
         return await asyncio.to_thread(usf.us_filings, raw)
+    hu = _hkus(code)
+    if hu and hu[0] == "HK":
+        from services import foreign_f10 as ff
+        return await asyncio.to_thread(ff.hk_announcements, hu[1])
     if not is_a_share(raw):
-        return {"error": "公告支持 A 股与美股(港股可用 get_news 看回购等动态)"}
+        return {"error": "公告支持 A 股、港股、美股"}
     return await asyncio.to_thread(_fetch_announcements_sync, _norm_code(code))
 
 
@@ -3088,8 +3274,17 @@ async def _tool_hot_themes() -> dict:
     return await gateway.call("hot_themes")
 
 
-async def _tool_inst_position(date: str = "") -> dict:
-    """机构增仓/减仓榜(行业板块, 季报口径)。凭证失效时如实报 need_login。"""
+async def _tool_inst_position(date: str = "", code: str = "") -> dict:
+    """机构持仓。不传 code: A 股机构增仓/减仓榜(行业板块, 季报口径, 凭证失效时如实报 need_login);
+    code=美股: 该股 13F 机构持仓; code=港股: 说明口径并指向权益披露。"""
+    hu = _hkus(code) if code else None
+    if hu and hu[0] == "US":
+        from services import foreign_f10 as ff
+        return await asyncio.to_thread(ff.us_inst_position, hu[1])
+    if hu and hu[0] == "HK":
+        return {"code": f"HK.{hu[1].zfill(5)}", "supported": False,
+                "note": "港股没有类似美国 13F 的季度机构持仓全量披露; 港交所只要求持股≥5% 的主要股东与董事申报权益。"
+                        "主要股东/董事持股、近期权益变动与回购用 get_shareholders 查看。"}
     from services.providers import gateway
     return await gateway.call("inst_position", date or None)
 
@@ -3116,7 +3311,16 @@ async def _tool_inst_flow(code: str = "") -> dict:
 
 
 async def _tool_earnings(code: str = "") -> dict:
-    """业绩预告: 空=全市场预喜/预警榜(带持仓关联); 传6位代码=查该股预告。"""
+    """业绩预告/业绩日历: 空=A 股全市场预喜/预警榜(带持仓关联); 传6位代码=查该股预告;
+    传港美股代码=该股下次/最近业绩日 + 最近一期业绩摘要。"""
+    hu = _hkus(code) if code else None
+    if hu:
+        from services import foreign_f10 as ff
+        fn = ff.hk_earnings if hu[0] == "HK" else ff.us_earnings
+        try:
+            return await asyncio.to_thread(fn, hu[1])
+        except Exception as e:
+            return {"error": f"港美股业绩日历获取失败: {e}"}
     try:
         from services.earnings_board import earnings_board
         b = await earnings_board(30)
@@ -3152,11 +3356,11 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_trend", "description": "查个股近 N 个交易日走势(裸K + 量): 累计涨跌/逐日涨跌/上涨天数。支持 A 股/港股/美股。daily_pct 每条是 {date, open_pct, pct, high_pct, low_pct, vol_ratio, shape}: date 是该日真实交易日(YYYY-MM-DD), open_pct/pct 是开盘/收盘相对昨收, high_pct/low_pct 是当日最高/最低相对昨收, vol_ratio 是当日量比(成交量/前5日均量, >1.5 放量、<0.7 缩量), shape 是这根K线的裸K形态(如 光头光脚阳线/长上影阴线/十字星)。最后一条即 last_date(最新交易日)。limit_pct=该股涨跌停幅度%(科创板688/创业板30开头=20, 北交所8/4开头=30, 沪深主板含ST=10), 别按10%默认。daily_pct 每条已带 板 字段(收在涨停封板/盘中触及涨停后回落/跌停, 已按该股真实涨停幅度判好, 直接用别自己算)。引用某天涨跌时日期以 date 字段为准。读裸K量价: 用 open_pct/pct/high_pct/low_pct 还原每根K线的开收高低位置 + shape 形态 + vol_ratio 量, 描述放量光头大阳=量价齐升、放量长上影=冲高回落分歧、缩量十字=观望、高位放量长上影=兑现等。无需分时即可还原历史每天盘中量价形态。structure 字段给阶梯式上行结构识别(进二退三框架, A股): 阶梯式上行(抬高高点+抬高低点)/抬高低点、台阶支撑(最近确认的上行低点价位)+距支撑%、回调量能(缩量=抛压衰竭洗盘特征/放量=分歧)、结构破位(收盘跌破上一抬高低点, 上行结构被破坏); 另含顶部/派发结构(进二退三镜像): 双顶(两个相近高点=M头, 附颈线价位)/二次冲高未创新高(右峰明显低于左峰=冲高动能衰减)、跌破颈线(顶部结构确认=高位资金共识破裂); 以及更多确定性形态: 头肩顶(肩头肩三高, 头部见顶)/头肩底(倒头肩三低, 底部企稳, 附底颈线)/突破底颈线、顶背离(价创新高但量能萎缩=上涨共识透支)/底背离(价创新低但量能萎缩=抛压衰竭)、2B假突破(斯波朗迪2B法则: 冲过前一swing高点但收盘已跌回该前高之下=突破失败, 上行趋势反转警讯, 附前高与冲高价)/2B假破位(击穿前低后收回其上=下行假破位, 空头动能衰竭信号, 附前低与下探价; 配合量能讲: 假突破放量滞涨更典型、假破位缩量下探更典型)、收敛三角(高点降+低点抬=变盘临近)、向上跳空缺口/向下跳空缺口([下沿,上沿]价位, 前复权后多为真实跳空)。用这些字段客观描述该股所处的趋势结构与所在台阶, 把方向性决策留给用户。本工具(A股)还会附一张我方数据渲染的K线图(蜡烛+量能+均线, 已标注台阶支撑/颈线), 你能直接看到它: 图下方那栏是**成交量(手)**不是成交额(轴上已标, 结果里的 图说明 字段也写了口径), 别把柱子的高度说成金额; 据图识别上面字段未编码的形态(头肩顶/旗形/收敛三角/量价背离/缺口等)作为补充, 凡引用具体价位/涨跌幅/量比仍以结构化字段为准(图负责形、数字负责数)。盘中(未收盘)时返回带 盘中=true + 盘中提示, 末根 daily_pct 标 量_盘中预估=true: 今天的量比是按已走交易时间折算的全天预估(粗估), 缩量/放量按'当前节奏预计'表述, 收盘前不下定论。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}, "days": {"type": "integer", "description": "默认20"}}, "required": ["code"]}},
-    {"name": "get_intraday", "description": "当日分时走势(开盘/最高及时间/最低及时间/现价 + 冲高回落幅度 + 路径采样): 判断盘中是不是冲高回落/炸板/尾盘拉升时用, 比日K细。需启用 TDX 数据源, 仅 A 股。",
+    {"name": "get_intraday", "description": "单日分时走势, 判断盘中冲高回落/炸板/尾盘拉升时用, 比日K细。覆盖 A 股/港股/美股。A 股(需启用 TDX 数据源): 开盘/最高及时间/最低及时间/现价 + 较最高回落% + 路径采样。港股/美股(腾讯分时): 交易日 + 时区(港股=香港时间; 美股=美东时间, 给最近一个已开盘的交易日) + 开盘/最高/最低(带时刻与相对昨收涨跌%)/现价 + VWAP 及现价相对 VWAP% + 日内振幅% + 较最高回落% + 高点先于低点 + 成交量(股) + 量能分段(各时段成交占全天比例, 尾盘段含收盘竞价) + 路径采样。引用时刻时同时写明所属交易日与时区。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_news", "description": "查个股最近新闻(标题+摘要+时间), 用来找涨跌的消息面原因。支持 A股/港股/美股(东财)。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
-    {"name": "get_announcements", "description": "查个股公告, 结构化且比新闻权威, 看公司层面有没有实质事件驱动。A 股=交易所公告(分红/回购/增减持/业绩预告/重组/股权激励); 美股=SEC EDGAR 申报, 8-K 是重大事件且带 Item 编号(如 1.01 签署重大协议、3.02 未登记股份发行), 归因盘前异动时比新闻更权威。港股暂无源, 用 get_news。",
+    {"name": "get_announcements", "description": "查个股公告, 结构化且比新闻权威, 看公司层面有没有实质事件驱动。覆盖 A 股/港股/美股。A 股=交易所公告(分红/回购/增减持/业绩预告/重组/股权激励); 港股=港交所披露易公告(东财转载的简体标题, 带日期/类型/链接), 每日回购的「翌日披露报表」合并为一条计数, key=true 标出业绩/股息/回购/并购/配售/关连交易等事件型公告; 美股=SEC EDGAR 申报, 8-K 是重大事件且带 Item 编号(如 1.01 签署重大协议、3.02 未登记股份发行), 归因盘前异动时比新闻更权威。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_fund_flow", "description": "查个股资金流: 主力/超大单/大单/中单/小单净额(亿, 与榜单 f62 同源) + 近几日趋势。按单笔金额分档(超大单+大单=主力)。重要口径提示: 当下普遍拆单 + 多子账户操作, 大单常被拆成中小单分散在多账户, 单笔分档已无法等同真实主力意图, 净流入只是参考线索而非定论。务必与 get_trend 的量价(pct+vol_ratio)和K线位置配合解读, 不单凭净流入下结论。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
@@ -3168,17 +3372,17 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "6位代码"}}, "required": ["code"]}},
     {"name": "get_red_flags", "description": "客观红线清单: 扫近期公告(监管处罚/立案/退市风险/业绩预亏/商誉减值/交易所问询/违规占用/股东减持等) + 解禁抛压 + 基本面健康度, 列出有事实依据的风险点(按高/中/低排)。回答'这票有没有雷/风险/暴雷过吗/能不能放心拿'时用。命中=有该风险事实, 非卖出建议。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
-    {"name": "get_company_profile", "description": "查公司是做什么的 + 什么背景: 公司简介(主营业务) + 细分行业 + 主营构成(各产品/地区收入占比和毛利率) + 控股/实际控制人/前三大股东(判断国资/央企/地方国企/中科院系/民营/外资性质)。回答'这家公司主营什么、靠什么赚钱、谁控股、什么背景、和同行业务差异'时必用。仅 A 股。",
+    {"name": "get_company_profile", "description": "查公司是做什么的 + 什么背景。覆盖 A 股/港股/美股。A 股: 公司简介(主营业务) + 细分行业 + 主营构成(各产品/地区收入占比和毛利率) + 控股/实际控制人/前三大股东(据此判断国资/央企/地方国企/中科院系/民营/外资性质)。港股: 简介 + 主营业务 + 东财行业与分类层级 + 上市日期/板块/港股通资格 + 总部与注册地 + 员工人数 + 财报披露币种 + 财年结束日 + 董事长/核数师。美股: 简介 + 行业 + 主营构成(按产品营收占比) + 上市日期/交易所 + 总部与注册地 + 员工人数 + 财报披露币种 + 财年结束日。回答'这家公司主营什么、靠什么赚钱、谁控股、什么背景、和同行业务差异'时必用。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
-    {"name": "get_stock_concepts", "description": "查个股所属行业/概念 + 核心题材。判断'这只票属于哪个概念、有没有踩在当下资金主线/热门概念上'时用; 可与 get_hot_concepts 交叉印证。A 股给概念板块与题材; 美股给 板块/行业 分类与曾用名(核实公司身份、防止凭记忆答更名)。港股暂无源。",
+    {"name": "get_stock_concepts", "description": "查个股所属行业/概念 + 核心题材。判断'这只票属于哪个概念、是否属于当下资金主线/热门概念'时用; 可与 get_hot_concepts 交叉印证。覆盖 A 股/港股/美股。A 股给概念板块与题材; 港股给东财港股行业 + 行业分类层级(大类到细类) + 证券类型(H股/非H股) + 港股通资格(深港通/沪港通); 美股给 板块/行业 分类与曾用名(用于核实公司身份与更名)。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
-    {"name": "get_fundamentals", "description": "查个股基本面+估值: 营收/净利及同比增速、ROE/毛利率/净利率、资产负债率、每股收益, 以及 PE(TTM)/PB/总市值/行业。回答'这票贵不贵、业绩好不好、盈利质地、有没有业绩拐点'时用。仅 A 股。",
+    {"name": "get_fundamentals", "description": "查个股基本面+估值, 回答'这票贵不贵、业绩好不好、盈利质地、有没有业绩拐点'时用。覆盖 A 股/港股/美股。A 股: 营收/净利及同比、ROE/毛利率/净利率、资产负债率、每股收益 + PE(TTM)/PB/总市值/行业。港股: 最新报告期财务(东财把港股财报统一折成人民币列示, 金额币种=CNY) + 财报披露币种(原始币种, 如腾讯=CNY、汇丰=USD) + 按港元现价现算的 PE_TTM/静态PE/PB/总市值, EPS_TTM/BPS 字段逐项给出 原币→换算汇率→折算后 的过程。美股: 最近年报财务(原币) + 按现价现算的 PE_TTM/PB/总市值, 非美元披露(如 ADR 以人民币披露)的同样列出折算过程。转述估值时引用返回的倍数与折算后每股数。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_commodity", "description": "查个股关联的大宗商品期货价(有色金属股: 铜/铝/金/锌/镍/锡 走上期所连续合约)。判断有色股涨跌是不是金属价驱动时用; 钨/锑/稀土/锂等小金属无交易所合约会返回不可得。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
-    {"name": "get_peers", "description": "同行横向对比, 回答'同业里它贵不贵、谁领涨、资金更偏好谁、龙头是谁'时用; 可配合 get_fundamentals 看相对估值。A 股给板块成分股的涨跌幅/PE/PB/主力净流入; 美股给相似标的及各自涨跌(含盘前/盘后, 无资金流源)。港股暂无源。",
+    {"name": "get_peers", "description": "同行横向对比, 回答'同业里它贵不贵、谁领涨、资金更偏好谁、龙头是谁'时用; 可配合 get_fundamentals 看相对估值。覆盖 A 股/港股/美股。A 股给板块成分股的涨跌幅/PE/PB/主力净流入; 港股给东财同行业按市值排前 10 的公司(含本股) + 现价/涨跌幅/市值(亿港元)/PE_TTM/PB + 行业 PE 平均与中值; 美股给相似标的及各自涨跌(含盘前/盘后)。港股与美股的同行结果只含价格与估值字段。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
-    {"name": "get_shareholders", "description": "筹码面: 十大流通股东及增减持、北向(香港中央结算)持股变动、未来限售解禁(抛压)。回答'谁在持股、控股股东/国家队/北向在加还是减、有没有解禁压力'时用。仅 A 股。",
+    {"name": "get_shareholders", "description": "筹码面/股东结构。覆盖 A 股/港股/美股。A 股: 十大流通股东及增减持、北向(香港中央结算)持股变动、未来限售解禁(抛压)。港股: 港交所权益披露的主要股东(持股≥5%)与董事持股、近期权益变动(好仓/淡仓、变动股数、变动后持股%)、近 90 天回购汇总(天数/股数/金额/区间均价)。美股: 13F 机构持股占比与前十大机构(含申报日与变动) + 内部人交易汇总(近3月/12月买卖笔数与股数、最近几笔)。回答'谁在持股、控股股东/大股东/北向/机构在加还是减、有没有解禁压力、公司在不在回购'时用。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}},
     {"name": "get_zsxq_digest", "description": "读用户已接入的知识星球最近 N 天主题(默认1天)。用于回答「情绪面/复盘博主怎么看今天的盘」「星球里在讲什么逻辑」这类**观点面**问题, 补指标看不到的文本面。返回字段 stance=opinion —— 是某个人的看法不是事实, 按 [星球观点] 标注并带作者与日期; 数字与结论仍以 [实测]/[联网] 为准。仅在用户问观点/社群/复盘看法时用。",
      "input_schema": {"type": "object", "properties": {"days": {"type": "integer", "description": "回看天数, 1-7, 默认 1"}, "all_authors": {"type": "boolean", "description": "默认取全部作者; 传 false 则只要星主及合伙人的帖"}}}},
@@ -3204,7 +3408,7 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"query": {"type": "string", "description": "主题词(红利/半导体) 或 6位基金代码; 留空=在持场内ETF"}}}},
     {"name": "get_market_review", "description": "今日强势股复盘画像(扫全市场涨幅榜+成交额榜聚合): 涨停数、板块/概念扎堆(资金主线)、风格(小盘高换手妖股 vs 大盘低换手趋势)、领涨样本、吸金榜。回答'今天什么风格的票在涨/今天强势股有什么共性/资金扎堆在哪/帮我复盘今天市场'时用。比 get_market_sentiment 多了'强势股结构与扎堆方向'这层。结合 get_holdings 可点出用户持仓沾不沾今日主线。",
      "input_schema": {"type": "object", "properties": {}}},
-    {"name": "get_inst_flow", "description": "机构席位动向(龙虎榜机构专用席位买卖统计): code 留空=近30天全市场机构净买入/净卖出榜, 每行带 距最近/首次上榜日至今涨跌%——大额净买入+至今大跌 即市场说的'机构接在山顶', 净卖出+至今大跌='机构跑对了'; 传6位代码=该股机构席位事件时间线。回答'机构最近在买什么/XX是不是机构被套/机构在这只票上怎么操作的'时用。上榜日才披露(抽样非全量), 表述时注明。",
+    {"name": "get_inst_flow", "description": "机构席位动向(龙虎榜机构专用席位买卖统计): code 留空=近30天全市场机构净买入/净卖出榜, 每行带 距最近/首次上榜日至今涨跌%——大额净买入+至今大跌 即市场说的'机构接在山顶', 净卖出+至今大跌='机构跑对了'; 传6位代码=该股机构席位事件时间线。回答'机构最近在买什么/XX是不是机构被套/机构在这只票上怎么操作的'时用。上榜日才披露(抽样非全量), 表述时注明。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "6位代码查单票; 留空看全市场榜"}}}},
     {"name": "get_deep_lhb", "description": "深度龙虎榜(扩展数据源): 传 code(+可选 date)→该股该日龙虎榜买卖席位明细, 每个席位带营业部名 + 买卖金额 + **游资分组标签**(知名游资/机构专用/量化抢筹这类身份识别)。与 get_lhb 的区别: get_lhb 走东财只给裸营业部名, 这个多一层游资身份标签, 回答'那天是哪个游资在买/是不是知名游资进场/机构还是量化'时更准。盘后16:30后当日数据才全。由可选的扩展数据源供数, 凭证失效时返回里带 need_login=true, 此时提示用户去设置页更新扩展数据源凭证。仅 A 股, 已披露客观数据非买卖建议。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "6位股票代码"}, "date": {"type": "string", "description": "可选 YYYY-MM-DD, 默认最近交易日"}}, "required": ["code"]}},
@@ -3212,12 +3416,12 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_hot_themes", "description": "本月热门题材榜(扩展数据源): 本月资金关注度最高的题材/板块, 按热度降序排名。回答'现在市场主线题材是什么/这个月哪些题材最热/题材轮动到哪了'时用, 是月度视角的主线判断(补 get_sector_momentum 的日度动能和涨停题材的当日视角)。由可选的扩展数据源供数, 凭证失效返回 need_login=true。客观数据非买卖建议。",
      "input_schema": {"type": "object", "properties": {}}},
-    {"name": "get_inst_position", "description": "机构增仓/减仓榜(扩展数据源): 按最新季报持仓, 机构在哪些行业板块**增仓/减仓**(增仓金额带符号)+机构持仓市值+占流通比, 返回增仓榜和减仓榜。回答'机构最近在加仓什么方向/机构在减持哪些板块/机构中线往哪搬仓'时用。这是**中线季度持仓变化**, 与 get_inst_flow(龙虎榜机构席位=短线盘口)互补, 东财/akshare 没有这个口径。date 可传季报日默认最新。季报滞后, 客观持仓数据非买卖建议。由可选的扩展数据源供数, 凭证失效返回 need_login=true。",
-     "input_schema": {"type": "object", "properties": {"date": {"type": "string", "description": "可选季报日 YYYY-MM-DD, 默认最新可用季报"}}}},
-    {"name": "get_seat_history", "description": "龙虎榜席位追踪: 传席位名号(章盟主/陈小群/拉萨天团)或营业部名(子串/全名), 返回该席位近90天上榜明细(股票/净额/上榜后1·5·10日涨跌)+客观统计(上榜次数/净买入后1日与5日红盘率)。回答'章盟主最近在买什么/这个席位胜率怎么样/大佬说XX进场了帮我看看'时用。名号映射来自公开名录会漂移, 统计是纯历史描述, 表述时注明。",
+    {"name": "get_inst_position", "description": "机构持仓。不传 code=A 股机构增仓/减仓榜(扩展数据源): 按最新季报持仓, 机构在哪些行业板块增仓/减仓(增仓金额带符号)+机构持仓市值+占流通比, 回答'机构最近在加仓什么方向/在减持哪些板块/中线往哪搬仓', 属于中线季度持仓变化, 与 get_inst_flow(龙虎榜机构席位=短线盘口)互补; date 可传季报日默认最新; 凭证失效时返回 need_login=true。传美股 code=该股 13F 机构持仓: 机构持股占比 + 相对上季增持/减持/持平/新进/清仓的机构家数与股数 + 前十大机构(申报日/持股/变动) + 近四个季度机构家数与持股占比趋势(申报期内的季度标 申报未齐)。传港股 code=返回口径说明(港股只有≥5%主要股东与董事的权益披露, 由 get_shareholders 提供)。季报滞后, 客观持仓数据非买卖建议。",
+     "input_schema": {"type": "object", "properties": {"date": {"type": "string", "description": "可选季报日 YYYY-MM-DD, 仅 A 股板块榜使用, 默认最新可用季报"}, "code": {"type": "string", "description": "可选; US.AAPL 查该美股 13F 机构持仓, HK.00700 返回港股口径说明; 留空看 A 股板块榜"}}}},
+    {"name": "get_seat_history", "description": "龙虎榜席位追踪: 传席位名号(章盟主/陈小群/拉萨天团)或营业部名(子串/全名), 返回该席位近90天上榜明细(股票/净额/上榜后1·5·10日涨跌)+客观统计(上榜次数/净买入后1日与5日红盘率)。回答'章盟主最近在买什么/这个席位胜率怎么样/大佬说XX进场了帮我看看'时用。名号映射来自公开名录会漂移, 统计是纯历史描述, 表述时注明。仅 A 股。",
      "input_schema": {"type": "object", "properties": {"q": {"type": "string", "description": "席位名号或营业部名"}}, "required": ["q"]}},
-    {"name": "get_earnings", "description": "业绩预告(最新报告期, 当前=中报): code 留空=全市场预喜榜(预增/扭亏, 按归母净利同比幅度排)+预警榜(预减/首亏)+持仓关联清单(直持或经由在持ETF成分); 传6位代码=查该股预告。回答'哪些股票中报业绩好/最近业绩雷有哪些/我持仓相关的业绩怎么样/XX中报预告了吗'时用。未披露≠业绩差(预告只对大幅变动强制), 表述时注明; 正式财报数字用 get_fundamentals。",
-     "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "6位代码查单票; 留空看全市场榜"}}}},
+    {"name": "get_earnings", "description": "业绩预告与业绩日历。code 留空=A 股全市场业绩预告: 预喜榜(预增/扭亏, 按归母净利同比幅度排)+预警榜(预减/首亏)+持仓关联清单(直持或经由在持ETF成分), 回答'哪些股票业绩好/最近业绩雷有哪些/我持仓相关的业绩怎么样'。传 A 股6位代码=查该股最新报告期预告(未披露预告属常态, 预告只对大幅变动强制, 表述时注明)。传港股代码=下次业绩董事会日期(取自公司董事会会议通告正文) + 最近一次业绩公告(日期/标题/链接) + 最新报告期财务摘要。传美股代码=下次业绩日(Nasdaq, 标明是公司已排期还是按历史规律预计, 含盘前/盘后) + 近四季 EPS 与一致预期及超预期% + 最近一季财报摘要。正式财报数字用 get_fundamentals。",
+     "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选; A股6位代码 / HK.00700 / US.AAPL; 留空看A股全市场榜"}}}},
     {"name": "get_sector_momentum", "description": "板块趋势矩阵: 各行业近N日累计涨跌/连涨动能/净流入 + 量能趋势(近3日均量/前段均量, >1.2量能放大、<0.8萎缩)和量价 tag(放量上行=量价配合趋势健康/缩量上行=动能衰减/放量下跌=抛压重等)。判断板块是真上升趋势(涨+量价配合+资金顺)还是虚涨(涨但缩量/资金流出)。days 趋势窗口可传 5(短线)/10(中期)/20(中长期), 默认10; 问'短期/这几天'传5, '近一个月趋势'传20。",
      "input_schema": {"type": "object", "properties": {"days": {"type": "integer"}}}},
     {"name": "get_hot_rank", "description": "资金人气榜(东财): 关注度最高的个股, 标出哪些在用户持仓。看资金主线/抱团方向。",
@@ -3267,7 +3471,7 @@ _EXECUTORS = {
     "get_deep_lhb": lambda a: _tool_deep_lhb(a.get("code", ""), a.get("date", "")),
     "get_plate_bidding": lambda a: _tool_plate_bidding(),
     "get_hot_themes": lambda a: _tool_hot_themes(),
-    "get_inst_position": lambda a: _tool_inst_position(a.get("date", "")),
+    "get_inst_position": lambda a: _tool_inst_position(a.get("date", ""), a.get("code", "")),
     "get_red_flags": lambda a: _tool_red_flags(a.get("code", "")),
     "screen_quality": lambda a: _tool_screen_quality(a.get("code", "")),
     "get_capital_allocation": lambda a: _tool_capital_allocation(a.get("code", "")),
