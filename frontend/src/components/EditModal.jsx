@@ -17,9 +17,9 @@ export default function EditModal({ holding, onClose, onChange }) {
       const nextCode = code.trim().toUpperCase()
       if (nextCode !== holding.stock_code) {
         await api.deleteHolding(holding.stock_code)
-        await api.addHolding({ stock_code: nextCode, stock_name: '', shares: parseInt(shares), cost_price: parseFloat(cost) })
+        await api.addHolding({ stock_code: nextCode, stock_name: '', shares: parseFloat(shares), cost_price: parseFloat(cost) })
       } else {
-        await api.updateHolding(nextCode, { shares: parseInt(shares), cost_price: parseFloat(cost) })
+        await api.updateHolding(nextCode, { shares: parseFloat(shares), cost_price: parseFloat(cost) })
       }
       onChange()
       onClose()
@@ -54,7 +54,7 @@ export default function EditModal({ holding, onClose, onChange }) {
           <div>
             <label className="text-[12px] text-text-dim block mb-1">持仓数量</label>
             <input type="number" className="w-full bg-bg border border-border rounded-lg px-3 py-2 text-[13px] text-text font-mono outline-none focus:border-accent"
-              min={mkt === 'A' ? 100 : 1} step={mkt === 'A' ? 100 : 1} value={shares} onChange={e => setShares(e.target.value)} />
+              min={mkt === 'A' ? 100 : mkt === 'US' ? 0.0001 : 1} step={mkt === 'A' ? 100 : mkt === 'US' ? 'any' : 1} value={shares} onChange={e => setShares(e.target.value)} />
           </div>
           <div>
             <label className="text-[12px] text-text-dim block mb-1">成本价{ccy && <span className="text-text-muted text-[11px] ml-1">{ccy}</span>}</label>

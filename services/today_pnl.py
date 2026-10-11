@@ -92,7 +92,7 @@ def _one(now_unit, prev_unit, cur_shares, f) -> float | None:
         prev_shares /= f["split"]        # 拆分日: 昨日份额是拆分前口径
     if prev_shares < -1e-6:
         return None                      # 流水与持仓对不上(漏录), 不硬算
-    prev_shares = max(0.0, prev_shares)
+    prev_shares = prev_shares if prev_shares > 1e-6 else 0.0   # 碎股加减的浮点尾数按 0
     if prev_shares > 0 and prev_unit is None:
         return None
     if cur_shares > 0 and now_unit is None:

@@ -108,7 +108,7 @@ function ActionRow({ action, editing, onSave, onCancel, onEdit, onDelete, broker
           className="bg-bg border border-border rounded px-1.5 py-0.5 text-[11px] w-20 text-right font-mono mt-1 block text-text-dim"
           value={draft.fx_rate ?? ''} onChange={e => setDraft({ ...draft, fx_rate: e.target.value === '' ? null : (parseFloat(e.target.value) || 0), fx_set: true })} />}
       </td>
-      <td className="py-1.5 px-2"><input type="number" step={market === 'A' ? 100 : 1} min={market === 'A' ? 100 : 1} className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-20 text-right font-mono" value={draft.shares} onChange={e => setDraft({ ...draft, shares: parseInt(e.target.value) || 0 })} /></td>
+      <td className="py-1.5 px-2"><input type="number" step={market === 'A' ? 100 : market === 'US' ? 'any' : 1} min={market === 'A' ? 100 : market === 'US' ? 0.0001 : 1} className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-20 text-right font-mono" value={draft.shares} onChange={e => setDraft({ ...draft, shares: parseFloat(e.target.value) || 0 })} /></td>
       <td className="py-1.5 px-2">
         <input type="number" step="0.01" min="0"
           placeholder={action.fee_auto != null ? `估 ${action.fee_auto.toFixed(2)}` : '0'}
@@ -168,7 +168,7 @@ export default function TransactionHistory({ stockCode, stockName, onClose, onCh
       ...newAction,
       trade_time: storeTime(market, newAction.trade_date, newAction.trade_time),
       price: parseFloat(newAction.price),
-      shares: isSplit ? 0 : parseInt(newAction.shares),
+      shares: isSplit ? 0 : parseFloat(newAction.shares),
     }
     if (market !== 'A' && !isSplit && parseFloat(newAction.fx_rate) > 0) body.fx_rate = parseFloat(newAction.fx_rate)
     else delete body.fx_rate
@@ -191,7 +191,7 @@ export default function TransactionHistory({ stockCode, stockName, onClose, onCh
     const body = {
       action_type: draft.action_type,
       price: parseFloat(draft.price),
-      shares: parseInt(draft.shares),
+      shares: parseFloat(draft.shares),
       trade_date: draft.trade_date,
       trade_time: storeTime(market, draft.trade_date, draft.trade_time) || '',   // "" → 清空回退录入时间; 美股美东→北京
       broker: draft.broker || '',           // "" → 用持仓默认券商
@@ -287,7 +287,7 @@ export default function TransactionHistory({ stockCode, stockName, onClose, onCh
                         value={newAction.fx_rate ?? ''} onChange={e => setNewAction({ ...newAction, fx_rate: e.target.value })} />}
                     </td>
                     <td className="py-1.5 px-2">{newAction.action_type === 'SPLIT' ? <span className="text-[11px] text-text-dim">--</span>
-                      : <input type="number" step={market === 'A' ? 100 : 1} min={market === 'A' ? 100 : 1} className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-20 text-right font-mono" placeholder="数量" value={newAction.shares} onChange={e => setNewAction({ ...newAction, shares: e.target.value })} />}</td>
+                      : <input type="number" step={market === 'A' ? 100 : market === 'US' ? 'any' : 1} min={market === 'A' ? 100 : market === 'US' ? 0.0001 : 1} className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-20 text-right font-mono" placeholder="数量" value={newAction.shares} onChange={e => setNewAction({ ...newAction, shares: e.target.value })} />}</td>
                     <td className="py-1.5 px-2"><input type="number" step="0.01" min="0" className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-20 text-right font-mono" placeholder="自动估" value={newAction.fee ?? ''} onChange={e => setNewAction({ ...newAction, fee: e.target.value })} title={`留空 = 按券商费率自动估; 填值 = 实际手续费(单位 ${CCY[market]})`} /></td>
                     <td className="py-1.5 px-2"><input type="text" className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-full" placeholder="备注" value={newAction.note} onChange={e => setNewAction({ ...newAction, note: e.target.value })} /></td>
                     <td className="py-1.5 px-2 text-center">

@@ -31,7 +31,7 @@ export const BROKER_COMMISSION_MIN = 5
 export const STOCK_MARKETS = {
   A: { label: 'A股', placeholder: '600362', hint: '6位代码', minShares: 100, step: 100 },
   HK: { label: '港股', placeholder: '00700', hint: '港股5位代码', minShares: 1, step: 1 },
-  US: { label: '美股', placeholder: 'AAPL', hint: '美股Ticker', minShares: 1, step: 1 },
+  US: { label: '美股', placeholder: 'AAPL', hint: '美股Ticker', minShares: 0.0001, step: 'any' },   // 美股可碎股(最多 4 位小数)
 }
 
 // Fund subcategory: derived from name keywords. 顺序即匹配优先级 —— 具体主题在前,

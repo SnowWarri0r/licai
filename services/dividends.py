@@ -255,8 +255,9 @@ def market_today(code: str) -> str:
     return _dt.datetime.now(ZoneInfo(tz)).date().isoformat()
 
 
-def shares_before(actions: list, day: str) -> int:
-    """除净日前一个交易日收盘时的持股: 回放 trade_date < day 的买卖/送股/拆合股流水。"""
+def shares_before(actions: list, day: str, fractional: bool = False) -> float:
+    """除净日前一个交易日收盘时的持股: 回放 trade_date < day 的买卖/送股/拆合股流水。
+    fractional=True(美股碎股)时保留 4 位小数, 合股零头也留着; 否则取整(零头折现金)。"""
     from services.position_ledger import ACQUIRE, RELEASE, SPLIT, split_ratio
     sh = 0.0
     for a in sorted(actions, key=lambda a: (str(a.get("trade_date") or a.get("created_at") or "")[:10], a.get("id") or 0)):
@@ -269,8 +270,10 @@ def shares_before(actions: list, day: str) -> int:
         elif t in RELEASE:
             sh = max(0.0, sh - float(a.get("shares") or 0))
         elif t == SPLIT:
-            sh = float(int(sh * (split_ratio(a) or 1) + 1e-6))
-    return int(sh + 1e-6)
+            sh = sh * (split_ratio(a) or 1)
+            if not fractional:
+                sh = float(int(sh + 1e-6))
+    return round(sh, 4) if fractional else int(sh + 1e-6)
 
 
 def _merge_same_day(events: list[dict]) -> list[dict]:
@@ -337,8 +340,8 @@ def pending_for_code(code: str, actions: list, events: list[dict], today: str,
         ex = e["ex_date"]
         if ex > today or ex in recorded or f"{code}|{ex}" in dismissed:
             continue
-        sh = shares_before(actions, ex)
-        if sh <= 0:
+        sh = shares_before(actions, ex, fractional=(mkt == "US"))
+        if sh <= 1e-9:
             continue
         ps, pay = e.get("per_share"), e.get("pay_date")
         warn = []

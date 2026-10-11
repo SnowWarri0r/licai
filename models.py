@@ -6,7 +6,7 @@ from typing import Optional
 class HoldingCreate(BaseModel):
     stock_code: str
     stock_name: str = ""
-    shares: int
+    shares: float
     cost_price: float
     trade_date: Optional[str] = None  # 首次买入日期 YYYY-MM-DD; 不填默认 today
     trade_time: Optional[str] = None  # 成交时刻 HH:MM (可选, 供分时图打点)
@@ -16,7 +16,7 @@ class HoldingCreate(BaseModel):
 
 class HoldingUpdate(BaseModel):
     stock_name: Optional[str] = None
-    shares: Optional[int] = None
+    shares: Optional[float] = None
     cost_price: Optional[float] = None
     broker: Optional[str] = None
 
@@ -26,7 +26,7 @@ class HoldingResponse(BaseModel):
     stock_name: str
     market: str = "A"
     currency: str = "CNY"
-    shares: int
+    shares: float
     cost_price: float
     current_price: Optional[float] = None
     fx_rate: float = 1.0

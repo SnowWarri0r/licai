@@ -130,7 +130,7 @@ def share_balance_series(actions: list[dict], dates: list[str]) -> list[float]:
             elif at in _OUT:
                 net -= sh
             j += 1
-        out.append(net)
+        out.append(round(net, 6))           # 碎股加减的浮点尾数, 卖光要归 0
     return out
 
 
