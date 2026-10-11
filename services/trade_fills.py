@@ -43,11 +43,26 @@ def _tick(t: dict) -> float:
     return _TICK.get(t.get("asset_class"), _TICK_DEFAULT)
 
 
-def tick_for_code(code: str) -> float:
-    """按代码定最小变动价位: A股 0.01; 场内 ETF/LOF 报价到 0.001。
+_HK_SPREADS = [(0.25, 0.001), (0.5, 0.005), (10, 0.01), (20, 0.02), (100, 0.05), (200, 0.1),
+               (500, 0.2), (1000, 0.5), (2000, 1.0), (5000, 2.0)]
+
+
+def tick_for_code(code: str, price: float | None = None) -> float:
+    """按代码定最小变动价位: A股 0.01; 场内 ETF/LOF 报价到 0.001; 美股 0.01;
+    港股按价位分档(港交所价位表, 给了 price 才能定, 不给按 0.01)。
 
     佣金那侧只有 stock_code(没有 asset_class), 所以单独给一个入口 —— 但用的还是同一套跳板数。
     """
+    c = (code or "").upper()
+    if c.startswith("HK."):
+        if price:
+            for hi, t in _HK_SPREADS:
+                if price < hi:
+                    return t
+            return 5.0
+        return 0.01
+    if c.startswith("US."):
+        return 0.01
     from services.market_data import _is_etf_lof
     return _TICK_DEFAULT if _is_etf_lof(code or "") else 0.01
 

@@ -7,10 +7,12 @@ Supported direct holdings:
 """
 from __future__ import annotations
 import asyncio
+import json
 import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 # Bypass proxy for domestic A-share API calls
 _saved_proxies = {}
@@ -84,10 +86,68 @@ def get_fx_info(currency: str) -> dict:
                     "time": fields[0] if fields else "",
                 }
                 _cache_set(cache_key, data)
+                _fx_remember(currency, rate)
                 return data
     except Exception:
         pass
+    # 取不到: 先用上次成功取到的(落盘), 再不行才用写死的近似值; source 标出来, 前端/日志能看出不是实时汇率
+    last = _fx_recall(currency)
+    if last:
+        return {"rate": last["rate"], "source": "last_known", "time": last.get("at", "")}
     return {"rate": fallback, "source": "fallback", "time": ""}
+
+
+_FX_FILE = Path(__file__).resolve().parents[1] / "fx_last.json"
+
+
+def _fx_remember(currency: str, rate: float) -> None:
+    try:
+        d = json.loads(_FX_FILE.read_text()) if _FX_FILE.exists() else {}
+        d[currency] = {"rate": rate, "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
+        _FX_FILE.write_text(json.dumps(d))
+    except Exception:  # noqa: BLE001  落盘失败不影响取价
+        pass
+
+
+def _fx_recall(currency: str) -> dict | None:
+    try:
+        return json.loads(_FX_FILE.read_text()).get(currency)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def quote_today_valid(market: str, q: dict | None) -> bool | None:
+    """港美股的「今日涨跌」现在还算不算今天的。A 股返回 None(由调用方按 A 股交易日判断)。
+    港股: 今天(北京日期)是港交所交易日; 美股: 行情所属那场的收盘(price_as_of, 美东时间)距现在不超过 20 小时
+    —— 北京时间晚上到次日上午都显示前一晚那场, 到周日就不再算。"""
+    if market == "HK":
+        from services.dca import _is_market_trading_day
+        return _is_market_trading_day(_cst_now().date(), "HK")
+    if market == "US":
+        s = str((q or {}).get("price_as_of") or "")
+        try:
+            from zoneinfo import ZoneInfo
+            et = ZoneInfo("America/New_York")
+            now_et = datetime.now(et)
+            d = datetime.strptime(f"{s[:15]} {now_et.year}", "%b %d %I:%M%p %Y").replace(tzinfo=et)
+            if d - now_et > timedelta(days=30):
+                d = d.replace(year=d.year - 1)
+            return (now_et - d) <= timedelta(hours=20)
+        except Exception:  # noqa: BLE001  解析不了就按工作日粗判
+            return _cst_now().weekday() < 5
+    return None
+
+
+def code_currency(stock_code: str) -> str:
+    """按代码判币种: 港股 HKD、美股 USD、其余 CNY。"""
+    m = split_stock_code(stock_code)[0]
+    return {"HK": "HKD", "US": "USD"}.get(m, "CNY")
+
+
+def code_fx(stock_code: str) -> float:
+    """把这只票的原币金额折成人民币的汇率(A 股为 1)。"""
+    cur = code_currency(stock_code)
+    return 1.0 if cur == "CNY" else get_fx_rate(cur)
 
 
 def get_fx_rate(currency: str) -> float:
@@ -516,6 +576,88 @@ async def _save_klines_complete(stock_code: str, records: list) -> None:
         await save_klines(stock_code, records)
 
 
+_US_FULL: dict[str, str] = {}      # AAPL → AAPL.OQ(腾讯美股日K要带交易所后缀)
+
+
+def _tencent_us_full(sym: str) -> str | None:
+    """美股代码 → 腾讯带交易所后缀的代码(AAPL.OQ / KO.N 等), 用不带后缀的请求从 qt 字段里查一次后缓存。"""
+    sym = sym.upper()
+    if sym in _US_FULL:
+        return _US_FULL[sym]
+    r = _requests.get("https://web.ifzq.gtimg.cn/appstock/app/usfqkline/get",
+                      params={"param": f"us{sym},day,,,1,qfq"}, timeout=8)
+    qt = (((r.json().get("data") or {}).get(f"us{sym}") or {}).get("qt") or {}).get(f"us{sym}") or []
+    full = qt[2] if len(qt) > 2 and str(qt[2]).upper().startswith(sym) else None
+    if full:
+        _US_FULL[sym] = full
+    return full
+
+
+def _fetch_history_foreign(stock_code: str, days: int) -> pd.DataFrame:
+    """港美股前复权日K(腾讯 hkfqkline / usfqkline)。列与 A 股主源一致: 日期 开盘 收盘 最高 最低 成交量 成交额。
+    美股按拆股复权(实测 NVDA 2024-06 拆股前后连续); 成交额源里没有, 记 0(前端据此隐藏成交额档)。"""
+    mkt, sym = split_stock_code(stock_code)
+    n = min(max(days + 10, 30), 2000)
+    if mkt == "HK":
+        key, url = f"hk{sym.zfill(5)}", "https://web.ifzq.gtimg.cn/appstock/app/hkfqkline/get"
+    elif mkt == "US":
+        full = _tencent_us_full(sym)
+        if not full:
+            return pd.DataFrame()
+        key, url = f"us{full}", "https://web.ifzq.gtimg.cn/appstock/app/usfqkline/get"
+    else:
+        return pd.DataFrame()
+    r = _requests.get(url, params={"param": f"{key},day,,,{n},qfq"}, timeout=10)
+    d = (r.json().get("data") or {}).get(key) or {}
+    rows = d.get("qfqday") or d.get("day") or []
+    out = []
+    for x in rows:
+        try:
+            out.append({"日期": str(x[0])[:10], "开盘": float(x[1]), "收盘": float(x[2]), "最高": float(x[3]),
+                        "最低": float(x[4]), "成交量": float(x[5]), "成交额": 0.0})
+        except (TypeError, ValueError, IndexError):
+            continue
+    return pd.DataFrame(out)
+
+
+def _foreign_bar_closed(stock_code: str, date_str: str) -> bool:
+    """港美股这根日K是否已收盘(未收盘的不落 SQLite, 理由同 _save_klines_complete)。"""
+    mkt = split_stock_code(stock_code)[0]
+    if mkt == "HK":
+        cst = _cst_now()
+        return date_str < cst.strftime("%Y-%m-%d") or (cst.hour * 60 + cst.minute) >= 16 * 60 + 15
+    if mkt == "US":
+        from zoneinfo import ZoneInfo
+        et = datetime.now(ZoneInfo("America/New_York"))
+        return date_str < et.strftime("%Y-%m-%d") or (et.hour * 60 + et.minute) >= 16 * 60 + 5
+    return True
+
+
+async def _get_history_foreign(stock_code: str, days: int) -> pd.DataFrame:
+    from database import get_cached_klines, save_klines
+    cache_key = f"hist_{stock_code}_{days}"
+    df = _cache_get(cache_key, config.history_cache_ttl)
+    if df is not None:
+        return df
+    try:
+        df = await asyncio.to_thread(_fetch_history_foreign, stock_code, days)
+    except Exception as e:  # noqa: BLE001
+        print(f"[market_data] 港美股日K失败 {stock_code}: {e}")
+        df = pd.DataFrame()
+    if df is not None and not df.empty:
+        recs = [r for r in df.to_dict("records") if _foreign_bar_closed(stock_code, r["日期"])]
+        if recs:
+            await save_klines(stock_code, recs)
+        df = df.tail(days).reset_index(drop=True)
+        _cache_set(cache_key, df)
+        return df
+    rows = await get_cached_klines(stock_code, days)          # 源挂了: 退回本地缓存(英文列 → 主源同款中文列)
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).rename(columns={"date": "日期", "open": "开盘", "high": "最高", "low": "最低",
+                                              "close": "收盘", "volume": "成交量", "amount": "成交额"})
+
+
 async def get_historical_data(stock_code: str, days: int = 60) -> pd.DataFrame:
     """Get historical daily OHLCV data(带盘中今日 bar 兜底)。"""
     df = await _get_historical_data_inner(stock_code, days)
@@ -533,6 +675,8 @@ async def _append_live_bar_if_missing(stock_code: str, df: pd.DataFrame) -> pd.D
     (含份额拆分)调整, 与前复权序列同标度, 拼接无缝(兜底 bar, 下次主源成功即被真数覆盖)。"""
     if df is None or df.empty or "日期" not in df.columns:
         return df
+    if not is_a_share(stock_code):
+        return df                                       # 港美股的源自带最新一根, 时段也不是 A 股的
     cst = _cst_now()
     if not _is_a_share_trading_day(cst.date()) or (cst.hour * 60 + cst.minute) < 570:   # 9:30 开盘后才有今日bar
         return df
@@ -561,6 +705,8 @@ async def _get_historical_data_inner(stock_code: str, days: int = 60) -> pd.Data
     """
     from database import get_cached_klines, get_cached_latest_date, save_klines
     stock_code = normalize_stock_code(stock_code)
+    if split_stock_code(stock_code)[0] in ("HK", "US"):
+        return await _get_history_foreign(stock_code, days)
     if not is_a_share(stock_code):
         return pd.DataFrame()
 

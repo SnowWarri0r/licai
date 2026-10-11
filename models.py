@@ -41,6 +41,7 @@ class HoldingResponse(BaseModel):
     sector: Optional[str] = None  # 顶级行业, e.g. "有色金属" / "汽车" — 用于前端分组
     broker: Optional[str] = None
     div_per_share: Optional[float] = None  # 持有期累计每股现金分红(已摊进 cost_price, 对齐券商摊薄成本)
+    today_valid: Optional[bool] = None     # 港美股: 今日涨跌是否属于「今天」(港股看港交所交易日, 美股看那场收盘距今); A 股为 None, 前端按 A 股交易日
 
 
 class QuoteData(BaseModel):

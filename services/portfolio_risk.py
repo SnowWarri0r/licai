@@ -64,8 +64,9 @@ async def build(force: bool = False) -> dict:
     hs = [h for h in await get_all_holdings() if float(h.get("shares") or 0) > 0]
     quotes = await get_realtime_quotes([h["stock_code"] for h in hs]) if hs else {}
     for h in hs:
-        px = (quotes.get(h["stock_code"]) or {}).get("price") or h.get("current_price") or 0
-        mv = float(px) * float(h["shares"])
+        q = quotes.get(h["stock_code"]) or {}
+        px = q.get("price") or h.get("current_price") or 0
+        mv = float(px) * float(h["shares"]) * float(q.get("fx_rate") or 1.0)   # 港美股原币 → 人民币
         if mv > 0:
             pos.append({"code": h["stock_code"], "name": h.get("stock_name") or h["stock_code"], "kind": "stock", "mv": mv})
     safe = 0.0

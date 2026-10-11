@@ -40,10 +40,15 @@ def estimate_trade_fee(action_type: str, price: float, shares: int, stock_code: 
     Returns total fee in yuan. Used to adjust cost basis to match broker display.
     commission_rate / commission_min default to the 招商证券 constants when not passed.
     """
-    if stock_code and not is_a_share(stock_code):
-        return 0.0
     # 非买入/卖出 (DIVIDEND 分红 / BONUS 送股 等) 不收费
     if action_type not in ACQUIRE and action_type not in RELEASE:
+        return 0.0
+    mkt = _foreign_market(stock_code)
+    if mkt:                                      # 港美股: 原币, 按券商收费方案(默认盈立)
+        from services.market_fees import order_fee
+        return order_fee(mkt, "sell" if action_type in RELEASE else "buy", price * shares, shares,
+                         date.today().isoformat())
+    if stock_code and not is_a_share(stock_code):
         return 0.0
     amount = price * shares
     if amount <= 0:
@@ -56,6 +61,11 @@ def estimate_trade_fee(action_type: str, price: float, shares: int, stock_code: 
     transfer = amount * _TRANSFER_RATE
     regulatory = amount * (_EXCHANGE_HANDLE_RATE + _REGULATORY_FEE_RATE)
     return commission + stamp + transfer + regulatory
+
+
+def _foreign_market(code: str) -> str | None:
+    c = (code or "").upper()
+    return "HK" if c.startswith("HK.") else "US" if c.startswith("US.") else None
 
 
 def _order_key(a: dict) -> tuple:
@@ -80,7 +90,7 @@ def _order_key(a: dict) -> tuple:
 
 
 def allocate_trade_fees(actions: list[dict], commission_rate: float | None = None,
-                        commission_min: float | None = None) -> list[float]:
+                        commission_min: float | None = None, fee_overrides: str | None = None) -> list[float]:
     """按「委托单」算佣金最低值, 再按成交额分摊回每一笔。返回与 actions 等长的费用列表。
 
     印花税/过户费/规费都是按比例收的, 逐笔算不会出错, 只有最低佣金需要合并。
@@ -95,7 +105,8 @@ def allocate_trade_fees(actions: list[dict], commission_rate: float | None = Non
     out = [0.0] * len(actions)
     for key, coarse in groups.items():
         code = key[0]
-        if code and not is_a_share(code):
+        mkt = _foreign_market(code)
+        if code and not mkt and not is_a_share(code):
             continue
         t0 = (actions[coarse[0]].get("action_type") or "")
         if t0 not in ACQUIRE and t0 not in RELEASE:
@@ -104,7 +115,21 @@ def allocate_trade_fees(actions: list[dict], commission_rate: float | None = Non
         rows = [actions[i] for i in coarse]
         clusters = one_order_clusters(rows, price_of=lambda a: a.get("price"),
                                       time_of=lambda a: a.get("trade_time"),
-                                      tick=tick_for_code(code))
+                                      tick=tick_for_code(code, float(rows[0].get("price") or 0) or None))
+        if mkt:                                  # 港美股: 一张委托整体算(平台费/最低佣金/封顶按单), 再按成交额分摊
+            from services.market_fees import order_fee, schedules
+            sched = schedules(fee_overrides)
+            for cl in clusters:
+                idxs = [coarse[j] for j in cl]
+                amts = [float(actions[i].get("price") or 0) * float(actions[i].get("shares") or 0) for i in idxs]
+                total, sh = sum(amts), sum(float(actions[i].get("shares") or 0) for i in idxs)
+                if total <= 0:
+                    continue
+                fee = order_fee(mkt, "sell" if t0 in RELEASE else "buy", total, sh, key[1],
+                                broker=actions[idxs[0]].get("broker"), sched=sched)
+                for i, amt in zip(idxs, amts):
+                    out[i] = fee * (amt / total)
+            continue
         for cl in clusters:
             idxs = [coarse[j] for j in cl]
             amts = [float(actions[i].get("price") or 0) * int(actions[i].get("shares") or 0)
@@ -176,7 +201,8 @@ def compute_position_state(
     # 一段持仓 = 从份数 0→正 到再次归 0。完全清仓后再买入会开启全新一段,
     # 旧段的已实现盈亏沉淀进 realized_carry, 不再摊进新段成本 (对齐券商 App)。
     lots: list[dict] = []          # 当前段的 FIFO lots (清仓时自然清空)
-    income_realized = 0.0          # 现金分红累计 (DIVIDEND), 不进 FIFO 配对
+    income_realized = 0.0          # 现金分红累计 (DIVIDEND, 税后), 不进 FIFO 配对
+    dividend_tax = 0.0             # 港美股分红预扣税累计(原币)
     realized_carry = 0.0           # 已平仓段的已实现 (不在当前浮动里)
     total_fees = 0.0               # 全周期手续费 (展示用)
     # 当前段累计 (清仓时重置)
@@ -243,11 +269,21 @@ def compute_position_state(
                 lots = []
                 flat_date = ad
         elif t in INCOME:
-            # 现金分红: 显式 amount, 或 price(每股股息) × shares(持股数)
+            # 现金分红: 显式 amount, 或 price(每股股息) × shares(持股数) —— 都是税前
             amt = float(a.get("amount") or 0)
             if amt <= 0:
                 amt = float(a.get("price") or 0) * int(a.get("shares") or 0)
-            income_realized += amt
+            # 预扣税: 港美股的分红行用 fee 字段记税(手填为准); 没填按收费方案的默认税率估(美股 W-8BEN 10%, 港股 0)
+            tax = 0.0
+            mkt = _foreign_market(a.get("stock_code") or stock_code)
+            if mkt:
+                if a.get("fee") is not None:
+                    tax = float(a["fee"])
+                else:
+                    from services.market_fees import dividend_tax_rate
+                    tax = amt * dividend_tax_rate(mkt, a.get("broker"))
+            dividend_tax += tax
+            income_realized += amt - tax
 
     # 收尾: 还停在空仓状态说明这一段确实平掉了(没有当日买回), 结算进 carry。
     # 不结算的话 realized_carry 会漏掉最后一段, 顶栏「已实现」少一块。
@@ -309,7 +345,8 @@ def compute_position_state(
         "weighted_days": int(round(weighted_days)),
         "realized_pnl": realized_pnl,
         "realized_carry": realized_carry_out,            # 已平仓段+分红 (不在浮动里, 供顶部总盈亏补)
-        "income_realized": round(income_realized, 2),   # 累计现金分红 (DIVIDEND)
+        "income_realized": round(income_realized, 2),   # 累计现金分红 (DIVIDEND, 税后)
+        "dividend_tax": round(dividend_tax, 2),         # 港美股分红预扣税累计(原币)
         "lots": [
             {"shares": l["shares"], "price": l["price"], "trade_date": l["trade_date"].isoformat()}
             for l in lots

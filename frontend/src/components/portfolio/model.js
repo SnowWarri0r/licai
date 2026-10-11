@@ -146,8 +146,14 @@ export function aggregate(rows, aShareTradingDay = true) {
     }
     // T+1 markets (A-share + fund + wealth + cash货基) — `today` is stale on weekends/holidays.
     // Crypto (C) and Bot (R) trade 24/7 and stay correct.
-    const isT1Market = r.type === 'A' || r.type === 'F' || r.type === 'W' || r.type === 'M'
-    if (isT1Market && !aShareTradingDay) continue
+    // 港美股按各自市场: 后端给 today_valid(港股看港交所交易日, 美股看那场收盘距今), 不跟 A 股日历走
+    const foreign = r.type === 'A' && (r.extra?.market === 'HK' || r.extra?.market === 'US')
+    if (foreign) {
+      if (r._raw?.today_valid === false) continue
+    } else {
+      const isT1Market = r.type === 'A' || r.type === 'F' || r.type === 'W' || r.type === 'M'
+      if (isT1Market && !aShareTradingDay) continue
+    }
     if (r.today != null && r.mv != null) {
       g.todayPnl += (r.mv * r.today / 100) / (1 + r.today / 100)
     }

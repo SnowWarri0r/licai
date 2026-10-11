@@ -14,6 +14,8 @@ def _limit_hit(code: str, pct: float | None) -> str:
     if pct is None:
         return ""
     c = str(code)
+    if c.upper().startswith(("HK.", "US.")):
+        return ""                                   # 港股、美股没有涨跌停
     lim = 20.0 if (c.startswith("688") or c.startswith("30")) else 30.0 if c[0] in "84" else 10.0
     if pct >= lim - 0.2:
         return "涨停"

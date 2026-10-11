@@ -86,13 +86,16 @@ export default function Dashboard({ holdings }) {
   const aValue = holdings.reduce((s, h) => s + (h.market_value || 0), 0)
   const aCost = holdings.reduce((s, h) => s + (h.cost_value ?? h.cost_price * h.shares), 0)
   const aPnl = holdings.reduce((s, h) => s + (h.unrealized_pnl || 0), 0)
-  // 股票今日浮动：先沿用 A 股交易日判断，港美股盘中精细交易时段后续再拆。
+  // 股票今日浮动：A 股按 A 股交易日，港美股按后端给的 today_valid。
   // 兜底：tradingDay 还没加载时用客户端 weekday 判断
   const isTradingDay = tradingDay
     ? !!tradingDay.is_trading_day
     : ![0, 6].includes(new Date().getDay())
-  const aTodayPnl = !isTradingDay ? 0 : holdings.reduce((s, h) => {
+  const aTodayPnl = holdings.reduce((s, h) => {
     if (!h.current_price || !h.price_change_pct) return s
+    // 港美股按各自市场(后端 today_valid), A 股按 A 股交易日
+    const foreign = h.market === 'HK' || h.market === 'US'
+    if (foreign ? h.today_valid === false : !isTradingDay) return s
     const mv = h.market_value || h.current_price * h.shares * (h.fx_rate || 1)
     return s + (mv * h.price_change_pct / 100) / (1 + h.price_change_pct / 100)
   }, 0)

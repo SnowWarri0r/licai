@@ -91,15 +91,16 @@ async def _positions_now() -> tuple[list, list, float, dict]:
         hs = []
     if hs:
         quotes = await get_realtime_quotes([h["stock_code"] for h in hs])
+        from services.market_data import split_stock_code
         for h in hs:
             q = quotes.get(h["stock_code"]) or {}
             px = q.get("price") or h.get("current_price") or 0
-            fx = h.get("fx_rate") or 1.0
-            mv = float(px) * float(h.get("shares") or 0) * float(fx)
+            mkt = split_stock_code(h["stock_code"])[0]              # holdings 行里没有 market/fx_rate, 按代码判
+            fx = float(q.get("fx_rate") or 1.0) if mkt in ("HK", "US") else 1.0   # 港美股原币 → 人民币
+            mv = float(px) * float(h.get("shares") or 0) * fx
             if mv > 0:
                 stocks.append({"code": h["stock_code"], "name": h.get("stock_name") or h["stock_code"],
-                               "market": "CN" if (h.get("market") or "A") in ("A", "CN") else h.get("market"),
-                               "mv": mv})
+                               "market": "CN" if mkt == "A" else mkt, "mv": mv})
 
     funds: list[dict] = []
     total_other = 0.0
@@ -149,7 +150,10 @@ async def _positions_as_of(day: str) -> tuple[list, list, float, dict]:
             nm = ((await get_holding(code)) or {}).get("stock_name") or code
         except Exception:
             nm = code
-        stocks.append({"code": code, "name": nm, "market": "CN", "mv": sh * px})
+        from services.market_data import code_fx, split_stock_code
+        mkt = split_stock_code(code)[0]
+        fx = await asyncio.to_thread(code_fx, code) if mkt in ("HK", "US") else 1.0   # 回看也按当前汇率近似
+        stocks.append({"code": code, "name": nm, "market": "CN" if mkt == "A" else mkt, "mv": sh * px * fx})
 
     snap = await get_snapshot_on_or_before(day)
     funds, total_other, snap_date = [], 0.0, None
