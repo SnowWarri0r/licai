@@ -373,6 +373,13 @@ async def build_curve(days: int = 120) -> dict:
         async with sem:
             hist = await _price_hist(kind, code, days + 60)
         fl = day_flows(acts, axis, stock=(kind == "stock"))
+        # 港美股账本是原币: 市值和外部流量都乘同一个(当前)汇率折人民币, 收益率不受影响、金额与其它资产可加
+        fx = 1.0
+        if kind == "stock":
+            from services.market_data import code_fx, split_stock_code
+            if split_stock_code(code)[0] in ("HK", "US"):
+                fx = await asyncio.to_thread(code_fx, code)
+                fl = {k: v * fx for k, v in fl.items()}
         if not hist:
             # 价史拉空: 该资产退回成本基线(市值=累计净投入), 保证与流量口径一致——
             # 否则"钱进来了市值恒0"会制造±20%级的假日收益
@@ -385,7 +392,7 @@ async def build_curve(days: int = 120) -> dict:
         if kind == "px":
             bal = adjust_to_final_scale(acts, axis, bal)   # 与前复权价同标度
         px = _ffill(hist, axis)
-        vals = [(b * p) if (p is not None and b > 0) else 0.0 for b, p in zip(bal, px)]
+        vals = [(b * p * fx) if (p is not None and b > 0) else 0.0 for b, p in zip(bal, px)]
         return vals, fl, None
 
     parts = await asyncio.gather(*[_one(k, cd, ac) for k, cd, ac in tasks], return_exceptions=True)

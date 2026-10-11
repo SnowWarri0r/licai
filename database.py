@@ -546,6 +546,10 @@ async def init_db():
             await db.execute(
                 "INSERT INTO brokers (name, stock_rate, stock_min, etf_rate, etf_min, is_default) VALUES (?,?,?,?,?,?)",
                 ("银河证券", 0.00012, 5.0, 0.0001, 0.1, 0))
+        # 港美股券商(港美股费用走 services/market_fees.py 的收费方案, 这里的 A 股费率只在它代买 A 股时用)
+        await db.execute(
+            "INSERT OR IGNORE INTO brokers (name, stock_rate, stock_min, etf_rate, etf_min, is_default) VALUES (?,?,?,?,?,?)",
+            ("盈立证券", 0.0008, 0.0, 0.0008, 0.0, 0))
         cur = await db.execute("PRAGMA table_info(holdings)")
         hcols = {r[1] for r in await cur.fetchall()}
         if "broker" not in hcols:

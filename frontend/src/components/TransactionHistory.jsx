@@ -15,7 +15,19 @@ const ACTION_TYPES = [
 
 const ACQUIRE_TYPES = new Set(['BUY', 'ADD', 'BONUS'])
 
-function ActionRow({ action, editing, onSave, onCancel, onEdit, onDelete, brokers = [] }) {
+// 港美股流水按原币记: 价格、手续费都是港元/美元; 股数没有 100 股一手的规则
+const marketOf = (code) => {
+  const c = String(code || '').toUpperCase()
+  return c.startsWith('HK.') ? 'HK' : c.startsWith('US.') ? 'US' : 'A'
+}
+const CCY = { A: '¥', HK: 'HK$', US: '$' }
+const FEE_HINT = {
+  A: '按券商费率自动估算 (万2.5 / 5元起)',
+  HK: '按港股收费方案自动估算(默认盈立 PRO: 佣金 0.06% + 平台费 18 港元/单 + 印花税等法定费用), 港元',
+  US: '按美股收费方案自动估算(默认盈立 PRO: 佣金 0.01 美元/股、最低 1 美元 + 平台费 0.009 美元/股、最低 2.88 美元; 卖出另加 SEC/TAF), 美元',
+}
+
+function ActionRow({ action, editing, onSave, onCancel, onEdit, onDelete, brokers = [], market = 'A' }) {
   const [draft, setDraft] = useState(action)
   useEffect(() => { setDraft(action) }, [action])
 
@@ -34,8 +46,8 @@ function ActionRow({ action, editing, onSave, onCancel, onEdit, onDelete, broker
         <td className="py-1.5 px-2 text-right font-mono">{fmtPrice(action.price)}</td>
         <td className="py-1.5 px-2 text-right font-mono">{action.shares}</td>
         <td className="py-1.5 px-2 text-right font-mono text-[11px]"
-          title={feeOverride ? '已手填覆盖' : '按券商费率自动估算 (万2.5 / 5元起)'}>
-          {action.fee_effective != null ? `¥${action.fee_effective.toFixed(2)}` : '--'}
+          title={feeOverride ? '已手填覆盖' : FEE_HINT[market]}>
+          {action.fee_effective != null ? `${CCY[market]}${action.fee_effective.toFixed(2)}` : '--'}
           {feeOverride && <span className="text-accent ml-0.5">·</span>}
         </td>
         <td className="py-1.5 px-2 text-[11px] text-text-muted">{action.note || '--'}</td>
@@ -67,13 +79,13 @@ function ActionRow({ action, editing, onSave, onCancel, onEdit, onDelete, broker
         </select>
       </td>
       <td className="py-1.5 px-2"><input type="number" step="0.0001" className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-20 text-right font-mono" value={draft.price} onChange={e => setDraft({ ...draft, price: parseFloat(e.target.value) || 0 })} /></td>
-      <td className="py-1.5 px-2"><input type="number" step="100" min="100" className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-20 text-right font-mono" value={draft.shares} onChange={e => setDraft({ ...draft, shares: parseInt(e.target.value) || 0 })} /></td>
+      <td className="py-1.5 px-2"><input type="number" step={market === 'A' ? 100 : 1} min={market === 'A' ? 100 : 1} className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-20 text-right font-mono" value={draft.shares} onChange={e => setDraft({ ...draft, shares: parseInt(e.target.value) || 0 })} /></td>
       <td className="py-1.5 px-2">
         <input type="number" step="0.01" min="0"
           placeholder={action.fee_auto != null ? `估 ${action.fee_auto.toFixed(2)}` : '0'}
           className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-20 text-right font-mono"
           value={feeInput} onChange={e => onFeeChange(e.target.value)}
-          title="留空 = 用券商费率自动估算; 填值 = 覆盖" />
+          title={`留空 = 用券商费率自动估算; 填值 = 覆盖(单位 ${CCY[market]})`} />
       </td>
       <td className="py-1.5 px-2"><input type="text" className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-full" placeholder="备注" value={draft.note || ''} onChange={e => setDraft({ ...draft, note: e.target.value })} /></td>
       <td className="py-1.5 px-2 text-center">
@@ -203,6 +215,7 @@ export default function TransactionHistory({ stockCode, stockName, onClose, onCh
               <tbody>
                 {actions.map(a => (
                   <ActionRow
+                    market={marketOf(stockCode)}
                     key={a.id}
                     action={a}
                     editing={editingId === a.id}
@@ -230,8 +243,8 @@ export default function TransactionHistory({ stockCode, stockName, onClose, onCh
                       </select>
                     </td>
                     <td className="py-1.5 px-2"><input type="number" step="0.0001" className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-20 text-right font-mono" placeholder="价格" value={newAction.price} onChange={e => setNewAction({ ...newAction, price: e.target.value })} /></td>
-                    <td className="py-1.5 px-2"><input type="number" step="100" min="100" className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-20 text-right font-mono" placeholder="数量" value={newAction.shares} onChange={e => setNewAction({ ...newAction, shares: e.target.value })} /></td>
-                    <td className="py-1.5 px-2"><input type="number" step="0.01" min="0" className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-20 text-right font-mono" placeholder="自动估" value={newAction.fee ?? ''} onChange={e => setNewAction({ ...newAction, fee: e.target.value })} title="留空 = 按券商费率自动估; 填值 = 实际手续费" /></td>
+                    <td className="py-1.5 px-2"><input type="number" step={marketOf(stockCode) === 'A' ? 100 : 1} min={marketOf(stockCode) === 'A' ? 100 : 1} className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-20 text-right font-mono" placeholder="数量" value={newAction.shares} onChange={e => setNewAction({ ...newAction, shares: e.target.value })} /></td>
+                    <td className="py-1.5 px-2"><input type="number" step="0.01" min="0" className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-20 text-right font-mono" placeholder="自动估" value={newAction.fee ?? ''} onChange={e => setNewAction({ ...newAction, fee: e.target.value })} title={`留空 = 按券商费率自动估; 填值 = 实际手续费(单位 ${CCY[marketOf(stockCode)]})`} /></td>
                     <td className="py-1.5 px-2"><input type="text" className="bg-bg border border-border rounded px-1.5 py-0.5 text-[12px] w-full" placeholder="备注" value={newAction.note} onChange={e => setNewAction({ ...newAction, note: e.target.value })} /></td>
                     <td className="py-1.5 px-2 text-center">
                       <button onClick={handleAdd} className="text-[11px] text-bull hover:underline cursor-pointer mr-2">确认</button>

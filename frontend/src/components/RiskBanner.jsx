@@ -23,7 +23,7 @@ export default function RiskBanner({ holdings }) {
   const todayPnl = holdings.reduce((s, h) => {
     if (!h.current_price || !h.price_change_pct) return s
     const prevPrice = h.current_price / (1 + h.price_change_pct / 100)
-    return s + (h.current_price - prevPrice) * h.shares
+    return s + (h.current_price - prevPrice) * h.shares * (h.fx_rate || 1)   // 港美股原币 → 人民币
   }, 0)
 
   const threshold = maxDailyLoss || 500 // default 500 yuan

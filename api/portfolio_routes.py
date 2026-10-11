@@ -1,5 +1,6 @@
 """Portfolio management REST endpoints."""
 from __future__ import annotations
+import asyncio
 from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -12,6 +13,7 @@ from database import (
     get_thesis, list_theses, set_thesis, delete_thesis,
 )
 from services.market_data import (
+    quote_today_valid,
     get_realtime_quotes, get_stock_name, get_stock_sector, get_stock_sector_detail,
     normalize_stock_code, split_stock_code, get_fx_info, is_a_share,
 )
@@ -38,7 +40,7 @@ class ActionCreate(BaseModel):
     trade_date: Optional[str] = None  # YYYY-MM-DD
     trade_time: Optional[str] = None  # HH:MM 成交时刻(可选, 留空则用录入时间)
     note: Optional[str] = ""
-    fee: Optional[float] = None    # CNY override; None 让后端按券商费率自动算
+    fee: Optional[float] = None    # 手续费覆盖(原币: A 股人民币、港股港元、美股美元); None 让后端按券商费率自动算
     broker: Optional[str] = None   # 本笔券商(可选, 留空用持仓默认)
 
 
@@ -82,15 +84,17 @@ async def _attach_auto_fees(actions: list, stock_code: str, holding_broker, reso
     组内交给 allocate_trade_fees 合并同一委托再分摊。
     """
     from services.position_ledger import allocate_trade_fees
+    from database import get_config
     if resolve is None:
         resolve = await _broker_fee_resolver()
+    fee_overrides = await get_config("fee_schedules")       # 港美股收费方案的覆盖(JSON), 见 services/market_fees.py
     by_broker: dict = {}
     for a in actions:
         r, m = resolve(a.get("broker") or holding_broker)
         by_broker.setdefault((r, m), []).append(a)
     for (r, m), group in by_broker.items():
         fees = allocate_trade_fees(
-            [dict(a, stock_code=a.get("stock_code") or stock_code) for a in group], r, m)
+            [dict(a, stock_code=a.get("stock_code") or stock_code) for a in group], r, m, fee_overrides)
         for a, f in zip(group, fees):
             a["_auto_fee"] = f
     return resolve
@@ -236,6 +240,7 @@ async def list_holdings() -> list[HoldingResponse]:
             sector=sector_map.get(code),
             broker=broker_display,
             div_per_share=h.get("div_per_share"),
+            today_valid=quote_today_valid(market, q),
         ))
 
     return result
@@ -270,10 +275,14 @@ async def realized_pnl():
         c_rate, c_min = await _broker_stock_fee((holdings_map.get(code) or {}).get("broker"))
         state = compute_position_state(actions, stock_code=code,
                                        commission_rate=c_rate, commission_min=c_min)
-        rp = float(state.get("realized_pnl") or 0)
+        # 账本按原币记(港股 HKD、美股 USD), 汇总前折人民币; 暂按当前汇率(流水里没有成交时的汇率)
+        from services.market_data import code_currency, code_fx
+        fx = await asyncio.to_thread(code_fx, code)
+        rp_native = float(state.get("realized_pnl") or 0)
+        rp = rp_native * fx
         # carry = 不在当前浮动里的已实现 (已平仓段 + 分红). 当前持仓段的已实现已被
         # 综合成本法摊进浮动盈亏, 顶部总盈亏只能加 carry, 否则重复算。
-        carry = float(state.get("realized_carry") or 0)
+        carry = float(state.get("realized_carry") or 0) * fx
         total += rp
         total_carry += carry
         h = holdings_map.get(code) or {}
@@ -289,6 +298,7 @@ async def realized_pnl():
             "stock_name": name,
             "realized_pnl": rp,
             "realized_carry": round(carry, 2),
+            "currency": code_currency(code), "realized_pnl_native": rp_native, "fx_rate": fx,
             "still_holding": (state.get("shares") or 0) > 0,
         })
     items.sort(key=lambda x: x["realized_pnl"])
@@ -377,12 +387,17 @@ async def trade_review():
     # 浮动 (在持仓的): 实时价 - 成本
     held = [s for s in stats if s["shares"] > 0]
     quotes = await get_realtime_quotes([s["code"] for s in held]) if held else {}
+    from services.market_data import code_fx as _code_fx
     for s in stats:
         floating = 0.0
         if s["shares"] > 0:
             price = (quotes.get(s["code"]) or {}).get("price") or 0
             if price:
                 floating = (price - s["cost_price"]) * s["shares"]
+        fx = await asyncio.to_thread(_code_fx, s["code"])     # 港美股原币 → 人民币(A 股为 1)
+        if fx != 1.0:
+            s["realized"] = round(s["realized"] * fx, 2)
+            floating *= fx
         s["floating"] = round(floating, 2)
         s["total_pnl"] = round(s["realized"] + floating, 2)
 
@@ -1528,18 +1543,22 @@ async def list_actions(stock_code: str):
     # 估算费用走 _attach_auto_fees(内部按「委托单」合并 5 元最低佣金再分摊)。
     # 这里曾经自己逐笔调 estimate_trade_fee, 于是一张委托分两笔成交时列表显示
     # 各收一次 5 元 —— 账本那边早就合并了, 列表却还在按老口径显示, 两处对不上。
-    if is_a:
-        await _attach_auto_fees(actions, stock_code, hb, resolve)
+    await _attach_auto_fees(actions, stock_code, hb, resolve)   # 港美股按 services/market_fees 的收费方案(原币)
+    div_rate = None
+    if not is_a:
+        from services.market_fees import dividend_tax_rate
+        from services.market_data import split_stock_code as _ssc
+        div_rate = dividend_tax_rate(_ssc(stock_code)[0], hb)
     for a in actions:
         a["at_time"] = resolve_action_time(a)    # 成交时刻(供分时图打点)
         a["broker_effective"] = a.get("broker") or hb   # 本笔实际券商(展示用)
-        if is_a:
-            est = float(a.get("_auto_fee") or 0)
-            a["fee_auto"] = round(est, 2)
-            a["fee_effective"] = round(float(a["fee"]) if a.get("fee") is not None else est, 2)
-        else:
-            a["fee_auto"] = 0.0
-            a["fee_effective"] = round(float(a["fee"]) if a.get("fee") is not None else 0, 2)
+        est = float(a.get("_auto_fee") or 0)
+        if div_rate is not None and (a.get("action_type") or "").upper() == "DIVIDEND":
+            # 港美股分红行: fee 字段记预扣税, 没填按默认税率估(美股 W-8BEN 10%, 港股 0)
+            gross = float(a.get("amount") or 0) or float(a.get("price") or 0) * float(a.get("shares") or 0)
+            est = gross * div_rate
+        a["fee_auto"] = round(est, 2)
+        a["fee_effective"] = round(float(a["fee"]) if a.get("fee") is not None else est, 2)
     return actions
 
 

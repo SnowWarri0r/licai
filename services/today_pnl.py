@@ -36,6 +36,19 @@ def _today_cst() -> str:
     return (datetime.now(timezone.utc) + timedelta(hours=8)).strftime("%Y-%m-%d")
 
 
+def _us_session_day(q: dict, fallback: str) -> str:
+    """美股「今天」= 行情所属的那一场(美东日期), 不是北京日期: 北京时间晚上到凌晨是同一场。
+    新浪美股行情的 price_as_of 形如 "Oct 07 04:00PM EDT"; 解析不了就退回北京日期。"""
+    s = str(q.get("price_as_of") or "")
+    try:
+        d = datetime.strptime(s[:6] + f" {datetime.now().year}", "%b %d %Y")
+        if d - datetime.now() > timedelta(days=30):       # 1 月初看到 Dec 的行情 = 去年
+            d = d.replace(year=d.year - 1)
+        return d.strftime("%Y-%m-%d")
+    except ValueError:
+        return fallback
+
+
 def _flow(actions: list, day: str) -> dict:
     """当日已确认流水 → {bought_shares, bought_amount, sold_shares, sold_amount}。
     SPLIT 只改份额不产生现金流, 但会让"昨日份额"口径失真, 单独标出交给调用方。
@@ -107,7 +120,7 @@ async def today_pnl() -> dict:
 async def _compute() -> dict:
     from database import (get_all_holdings, get_position_actions,
                           list_external_assets, list_external_actions)
-    from services.market_data import get_realtime_quotes, normalize_stock_code
+    from services.market_data import get_realtime_quotes, normalize_stock_code, split_stock_code
 
     day = _today_cst()
     items: list[dict] = []
@@ -119,18 +132,31 @@ async def _compute() -> dict:
     for a in acts_all:
         by_code.setdefault(a.get("stock_code"), []).append(a)
     # 今天有流水的票即使已清仓也要算(清仓的当日盈亏正是从这里来)
-    a_codes = set(holdings) | {c for c, arr in by_code.items() if _flow(arr, day)["bought_shares"]
-                               or _flow(arr, day)["sold_shares"]}
+    # 港美股也在这本账里: 盈亏按原币算完再乘行情里的汇率折人民币; 美股的「今天」是行情所属那一场的美东日期。
+    # 候选代码先按北京日期和前一天两天的流水宽松收进来(美股当场的美东日期可能是北京的昨天), 再按各自的日子算。
+    yday = (datetime.strptime(day, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+    a_codes = set(holdings) | {c for c, arr in by_code.items()
+                               if any(_flow(arr, d)["bought_shares"] or _flow(arr, d)["sold_shares"] for d in (day, yday))}
     quotes = await get_realtime_quotes(list(a_codes)) if a_codes else {}
     for code in sorted(a_codes):
         q = quotes.get(code) or quotes.get(normalize_stock_code(code)) or {}
-        f = _flow(by_code.get(code) or [], day)
+        mkt = split_stock_code(code)[0]
+        d = _us_session_day(q, day) if mkt == "US" else day
+        f = _flow(by_code.get(code) or [], d)
         cur = float((holdings.get(code) or {}).get("shares") or 0)
+        if not (cur or f["bought_shares"] or f["sold_shares"]):
+            continue                                 # 只是昨天(北京)有流水、当天已无持仓也无买卖
+        if mkt in ("HK", "US") and not (f["bought_shares"] or f["sold_shares"]):
+            from services.market_data import quote_today_valid
+            if quote_today_valid(mkt, q) is False:
+                continue                             # 港股今天不开市 / 美股那场已经不算今天: 不计今日盈亏
         pnl = _one(q.get("price"), q.get("prev_close"), cur, f)
-        if pnl is None and not (f["bought_shares"] or f["sold_shares"] or cur):
-            continue
+        fx = float(q.get("fx_rate") or 1.0) if mkt in ("HK", "US") else 1.0
+        if pnl is not None:
+            pnl *= fx
         items.append({
-            "code": code, "type": "A",
+            "code": code, "type": "A", "market": mkt, "session_day": d,
+            "currency": q.get("currency") or ("CNY" if mkt == "A" else ""), "fx_rate": fx,
             "name": (holdings.get(code) or {}).get("stock_name") or q.get("stock_name") or code,
             "today_pnl": round(pnl, 2) if pnl is not None else None,
             "shares": cur, "bought": f["bought_shares"], "sold": f["sold_shares"],

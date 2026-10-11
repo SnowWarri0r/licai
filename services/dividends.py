@@ -52,6 +52,8 @@ async def cumulative_dividend_per_share(code: str, since_date: str | None) -> fl
     用于摊薄成本: 摊薄成本 = 综合成本 - 本值。since_date 为空或解析失败 → 返 0。"""
     if not since_date:
         return 0.0
+    if str(code or "").upper().startswith(("HK.", "US.")):
+        return 0.0               # 这是 A 股分红数据源; 港美股分红走手工 DIVIDEND 流水(含预扣税)
     bare = (code or "").split(".")[-1].lstrip("shz").strip()
     if not bare.isdigit():
         return 0.0
