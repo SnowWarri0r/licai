@@ -13,17 +13,17 @@
 <text x="48" y="61.0" font-size="11" fill="#57606a" text-anchor="end">60</text>
 <line x1="61.5" y1="52" x2="61.5" y2="356" stroke="#e8e4dc"/>
 <text x="61.5" y="374" font-size="11" fill="#57606a" text-anchor="middle">2026-05</text>
-<line x1="186.7" y1="52" x2="186.7" y2="356" stroke="#e8e4dc"/>
-<text x="186.7" y="374" font-size="11" fill="#57606a" text-anchor="middle">2026-06</text>
-<line x1="307.9" y1="52" x2="307.9" y2="356" stroke="#e8e4dc"/>
-<text x="307.9" y="374" font-size="11" fill="#57606a" text-anchor="middle">2026-07</text>
-<line x1="433.1" y1="52" x2="433.1" y2="356" stroke="#e8e4dc"/>
-<text x="433.1" y="374" font-size="11" fill="#57606a" text-anchor="middle">2026-08</text>
-<line x1="558.3" y1="52" x2="558.3" y2="356" stroke="#e8e4dc"/>
-<text x="558.3" y="374" font-size="11" fill="#57606a" text-anchor="middle">2026-09</text>
-<line x1="679.4" y1="52" x2="679.4" y2="356" stroke="#e8e4dc"/>
-<text x="679.4" y="374" font-size="11" fill="#57606a" text-anchor="middle">2026-10</text>
-<path d="M 56.0 351.0 H 56.0 V 346.0 H 58.6 V 341.0 H 60.4 V 336.1 H 130.5 V 331.1 H 177.0 V 326.1 H 185.1 V 321.1 H 196.2 V 316.1 H 247.9 V 311.1 H 261.7 V 306.2 H 273.6 V 301.2 H 276.4 V 296.2 H 277.0 V 291.2 H 280.7 V 286.2 H 286.3 V 281.2 H 298.4 V 276.3 H 302.3 V 271.3 H 302.6 V 266.3 H 305.1 V 261.3 H 309.0 V 256.3 H 316.6 V 251.3 H 317.0 V 246.4 H 322.3 V 241.4 H 341.9 V 236.4 H 342.1 V 231.4 H 354.9 V 226.4 H 365.4 V 221.4 H 366.4 V 216.5 H 366.5 V 211.5 H 369.1 V 206.5 H 390.1 V 201.5 H 394.4 V 196.5 H 399.1 V 191.5 H 405.2 V 186.6 H 424.7 V 176.6 H 428.7 V 171.6 H 453.0 V 166.6 H 469.1 V 161.6 H 485.2 V 156.7 H 497.3 V 151.7 H 501.3 V 146.7 H 505.4 V 151.7 H 521.5 V 146.7 H 529.6 V 141.7 H 543.0 V 131.7 H 554.2 V 126.8 H 562.2 V 121.8 H 570.3 V 116.8 H 574.3 V 111.8 H 586.5 V 106.8 H 602.6 V 101.8 H 610.6 V 96.9 H 622.8 V 86.9 H 651.1 V 91.9 H 667.3 V 86.9 H 724.0 V 81.9 H 732.0" fill="none" stroke="#c8a876" stroke-width="2.5" stroke-linejoin="round"/>
+<line x1="185.9" y1="52" x2="185.9" y2="356" stroke="#e8e4dc"/>
+<text x="185.9" y="374" font-size="11" fill="#57606a" text-anchor="middle">2026-06</text>
+<line x1="306.4" y1="52" x2="306.4" y2="356" stroke="#e8e4dc"/>
+<text x="306.4" y="374" font-size="11" fill="#57606a" text-anchor="middle">2026-07</text>
+<line x1="430.9" y1="52" x2="430.9" y2="356" stroke="#e8e4dc"/>
+<text x="430.9" y="374" font-size="11" fill="#57606a" text-anchor="middle">2026-08</text>
+<line x1="555.3" y1="52" x2="555.3" y2="356" stroke="#e8e4dc"/>
+<text x="555.3" y="374" font-size="11" fill="#57606a" text-anchor="middle">2026-09</text>
+<line x1="675.8" y1="52" x2="675.8" y2="356" stroke="#e8e4dc"/>
+<text x="675.8" y="374" font-size="11" fill="#57606a" text-anchor="middle">2026-10</text>
+<path d="M 56.0 351.0 H 56.0 V 346.0 H 58.5 V 341.0 H 60.3 V 336.1 H 130.1 V 331.1 H 176.3 V 326.1 H 184.4 V 321.1 H 195.4 V 316.1 H 246.8 V 311.1 H 260.5 V 306.2 H 272.4 V 301.2 H 275.2 V 296.2 H 275.7 V 291.2 H 279.4 V 286.2 H 284.9 V 281.2 H 297.0 V 276.3 H 300.9 V 271.3 H 301.2 V 266.3 H 303.7 V 261.3 H 307.5 V 256.3 H 315.1 V 251.3 H 315.4 V 246.4 H 320.8 V 241.4 H 340.2 V 236.4 H 340.4 V 231.4 H 353.2 V 226.4 H 363.6 V 221.4 H 364.6 V 216.5 H 364.7 V 211.5 H 367.2 V 206.5 H 388.1 V 201.5 H 392.4 V 196.5 H 397.1 V 191.5 H 403.1 V 186.6 H 422.5 V 176.6 H 426.6 V 171.6 H 450.7 V 166.6 H 466.6 V 161.6 H 482.7 V 156.7 H 494.7 V 151.7 H 498.7 V 146.7 H 502.7 V 151.7 H 518.8 V 146.7 H 526.9 V 141.7 H 540.2 V 131.7 H 551.2 V 126.8 H 559.2 V 121.8 H 567.3 V 116.8 H 571.2 V 111.8 H 583.4 V 106.8 H 599.4 V 101.8 H 607.4 V 96.9 H 619.5 V 86.9 H 647.6 V 91.9 H 663.7 V 86.9 H 720.1 V 81.9 H 732.0" fill="none" stroke="#c8a876" stroke-width="2.5" stroke-linejoin="round"/>
 <circle cx="732.0" cy="81.9" r="4" fill="#c8a876"/>
 <text x="724.0" y="71.9" font-size="13" font-weight="600" fill="#24292f" text-anchor="end">55 stars</text>
 </svg>
