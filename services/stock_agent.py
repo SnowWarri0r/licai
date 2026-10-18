@@ -3914,8 +3914,8 @@ async def ask_stock_stream(question: str, history: list | None = None, images: l
                    "label": _TOOL_CN.get(tu.get("name"), tu.get("name")),
                    "arg": (tu.get("input") or {}).get("query") or (tu.get("input") or {}).get("code") or ""}
         # 同一轮里的工具相互独立(各自的网络请求), 并发跑, 顺序保留, 单个失败不连累其他
-        # 本轮之前的轮次读过第三方文本(网页/新闻/帖子)时, remember 只记成待确认, 防提示注入写进画像
-        _user_memory.untrusted_seen.set(bool(_user_memory.UNTRUSTED_TOOLS & set(used)))
+        # 本轮调过可信名单外的工具(返回第三方文本)后, remember 只记成待确认, 防提示注入写进画像
+        _user_memory.untrusted_seen.set(_user_memory.tainted(used))
         outs = await asyncio.gather(*[_run_tool(tu) for tu in tus])
         for tu, out in zip(tus, outs):
             tool_outs.setdefault(tu.get("name") or "", []).append(out)
@@ -3985,8 +3985,8 @@ async def ask_stock(question: str, history: list | None = None, images: list | N
         if len(_round_text(content)) >= _CARRY_MIN_CHARS:
             carried.append(_assemble_cited_text(content, sources, seen_urls))
         # 同一轮里的工具并发跑(相互独立), 顺序保留, 单个失败不连累其他
-        # 本轮之前的轮次读过第三方文本(网页/新闻/帖子)时, remember 只记成待确认, 防提示注入写进画像
-        _user_memory.untrusted_seen.set(bool(_user_memory.UNTRUSTED_TOOLS & set(tools_used)))
+        # 本轮调过可信名单外的工具(返回第三方文本)后, remember 只记成待确认, 防提示注入写进画像
+        _user_memory.untrusted_seen.set(_user_memory.tainted(tools_used))
         outs = await asyncio.gather(*[_run_tool(tu) for tu in tus])
         for tu, out in zip(tus, outs):
             tool_outs.setdefault(tu.get("name") or "", []).append(out)

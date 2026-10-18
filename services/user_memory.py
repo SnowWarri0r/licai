@@ -14,11 +14,18 @@ import re
 MAX_ACTIVE = 40
 MAX_FACT_CHARS = 160
 
-# 返回第三方文本的工具。本轮读过其中任何一个之后再调 remember, 记下的内容可能来自网页/帖子
-# 里夹带的指令而不是用户原话(提示注入) —— 而画像会进之后每一次的 system prompt, 一旦被写进去
-# 就是持久的。所以这种情况只存为 pending, 设置页批准后才生效。
-UNTRUSTED_TOOLS = frozenset({"web_search", "read_url", "get_news", "get_market_news", "get_announcements",
-                             "get_zsxq_digest", "search_zsxq", "read_zsxq_file"})
+# 本轮只调过这些工具时, remember 记下的内容只可能来自用户原话或用户自己的账本, 直接生效。
+# 调过名单外的任何工具(联网/新闻/公告/星球, 也包括行情与公司资料 —— 名称、简介、概念名都是
+# 第三方数据商给的文本)之后, 记下的内容可能来自夹带的指令(提示注入), 而画像会进之后每一次的
+# system prompt, 一旦写进去就是持久的。所以只存为 pending, 设置页批准后才生效。
+# 用白名单而不是黑名单: 以后新加的工具默认算不可信, 忘了登记也不会开口子。
+TRUSTED_TOOLS = frozenset({"remember", "load_guide", "calc", "resolve_stock", "get_holdings",
+                           "get_trades", "get_today_pnl", "get_asset_allocation", "get_thesis"})
+
+
+def tainted(tools_so_far) -> bool:
+    return any(t and t not in TRUSTED_TOOLS for t in tools_so_far)
+
 
 import contextvars
 # agent loop 在跑工具前设置: 本轮到目前为止是否已读过第三方文本。gather 建任务时复制上下文, 所以设在 gather 之前即可。
