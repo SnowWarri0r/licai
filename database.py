@@ -409,6 +409,17 @@ CREATE TABLE IF NOT EXISTS prompt_rule (
     decided_at TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_prompt_rule_status ON prompt_rule(status, id);
+
+-- 用户画像记忆: 用户亲口说过、跨会话成立的事实(见 services/user_memory.py)。
+-- 删除/覆盖只改 status, 留痕可查。
+CREATE TABLE IF NOT EXISTS user_memory (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    fact TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',     -- active | replaced | deleted
+    session_id INTEGER,                        -- 在哪个会话里记下的
+    replaces INTEGER,                          -- 覆盖了哪一条
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 

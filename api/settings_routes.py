@@ -472,6 +472,24 @@ async def rules_decide(rule_id: int, decision: str):
     return {"ok": True, "id": rule_id, "status": "active" if decision == "approve" else "rejected"}
 
 
+# ── 用户画像记忆 ──────────────────────────────────────────
+# agent 用 remember 工具直接记(来源是用户原话), 所以这里必须能看、能删。
+
+@router.get("/memory")
+async def memory_list():
+    from services import user_memory as um
+    items = await um.list_all()
+    return {"items": items, "n_active": sum(1 for m in items if m["status"] == "active")}
+
+
+@router.delete("/memory/{mid}")
+async def memory_delete(mid: int):
+    from services import user_memory as um
+    if not await um.delete(mid):
+        raise HTTPException(status_code=404, detail=f"没有生效中的 #{mid}")
+    return {"ok": True, "id": mid}
+
+
 @router.post("/rules/mine")
 async def rules_mine():
     """立刻挖一次(平时是每周一早上自动跑)。每次最多起草 3 条, 要调模型。"""

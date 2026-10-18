@@ -13,6 +13,7 @@ import time as _time
 
 import services.llm_client as _llm
 import services.answer_guard as _guard
+import services.user_memory as _user_memory
 # 系统提示拆成常驻核心 + 按需技能包, 见 services/agent_guides.py
 from services.agent_guides import (CORE as _SYSTEM, ALL_TEXT as _PROMPT_ALL,  # noqa: F401
                                    LOAD_GUIDE_TOOL as _LOAD_GUIDE_TOOL, load_guide as _load_guide)
@@ -3348,6 +3349,7 @@ async def _tool_earnings(code: str = "") -> dict:
 
 _TOOLS = [
     _LOAD_GUIDE_TOOL,
+    _user_memory.TOOL,
     {"name": "calc", "description": "算术兜底(Decimal 精算, 禁止心算时用它)。三种 op: "
      "eval=算表达式(expr, 只支持数字与 + - * / ( ) 和百分号, 如 '(4.36-3.96)/3.96*100'); "
      "market_cap=市值验算(price 现价, shares 股本(亿股), 可选 reported 外部报出的市值(亿), unit 默认'亿')——"
@@ -3473,6 +3475,7 @@ async def _async_value(v):
 
 _EXECUTORS = {
     "load_guide": lambda a: _async_value(_load_guide(a.get("topics"))),
+    "remember": lambda a: _user_memory.remember(a),
     "calc": lambda a: _tool_calc(a),
     "resolve_stock": lambda a: _tool_resolve_stock(a.get("query", "")),
     "get_quote": lambda a: _tool_get_quote(a.get("code", "")),
@@ -3629,13 +3632,14 @@ def _system() -> str:
     # 一大段当天才是逐字节稳定的(prompt 缓存的断点就打在 system 末尾, 见 llm_client)。
     from services.rule_forge import active_rules_sync, render_rules
     learned = render_rules(active_rules_sync())
-    return _SYSTEM + learned + (
+    profile = _user_memory.render(_user_memory.active_sync())
+    return _SYSTEM + learned + profile + (
         f"\n【今天】{d.isoformat()} 周{wk}; 本周一={monday}, 本月1号={d.replace(day=1).isoformat()}。"
         f"用户问时间范围时据此换算 start/end。\n【交易日状态】{mkt}")
 
 
 _TOOL_CN = {
-    "load_guide": "读作答规范",
+    "load_guide": "读作答规范", "remember": "记住",
     "resolve_stock": "解析代码", "get_quote": "查行情", "get_trend": "查走势",
     "get_news": "查新闻", "get_intraday": "查分时", "get_announcements": "查公告", "get_fund_flow": "查资金流", "get_lhb": "查龙虎榜", "get_seat_history": "查席位历史", "get_deep_lhb": "查深度龙虎榜",
     "get_company_profile": "查公司主营", "get_red_flags": "查红线风险", "screen_quality": "跑去劣筛选", "get_capital_allocation": "查资本配置", "get_stock_concepts": "查所属概念", "get_fundamentals": "查基本面", "get_commodity": "查商品价",

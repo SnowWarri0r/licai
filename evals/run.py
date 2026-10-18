@@ -103,6 +103,8 @@ async def main():
     ap.add_argument("-n", "--repeat", type=int, default=1, help="每条跑几次, 报 pass^n")
     args = ap.parse_args()
 
+    # 评测不写画像记忆: 否则每跑一次演示账本里多几条, 下一次评测的 prompt 就变了
+    os.environ["AGENT_MEMORY_READONLY"] = "1"
     import config
     if os.path.exists(args.db):
         # 必须改单例 config, 不是 Config 类属性 —— 类属性只是 dataclass 的默认值,
