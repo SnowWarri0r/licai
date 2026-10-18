@@ -802,14 +802,14 @@ def test_breakpoint_goes_on_last_system_block():
     blocks = [{"type": "text", "text": "身份"}, {"type": "text", "text": "长长的规则"}]
     out = llm._cached_system(blocks)
     assert "cache_control" not in out[0]
-    assert out[1]["cache_control"] == {"type": "ephemeral"}
+    assert out[1]["cache_control"] == llm._CACHE_CTL
     assert blocks[1] == {"type": "text", "text": "长长的规则"}     # 原对象没被改
 
 
 def test_cached_system_wraps_plain_string():
     out = llm._cached_system("一段 system")
     assert out == [{"type": "text", "text": "一段 system",
-                    "cache_control": {"type": "ephemeral"}}]
+                    "cache_control": llm._CACHE_CTL}]
     assert llm._cached_system("") == ""
     assert llm._cached_system(None) is None
 
@@ -824,7 +824,7 @@ def test_rolling_breakpoint_on_last_content_block():
     out = llm._cached_messages(msgs)
     assert "cache_control" not in out[1]["content"][0]
     assert out[2]["content"][0].get("cache_control") is None
-    assert out[2]["content"][1]["cache_control"] == {"type": "ephemeral"}
+    assert out[2]["content"][1]["cache_control"] == llm._CACHE_CTL
 
 
 def test_rolling_breakpoint_does_not_mutate_caller_list():
@@ -872,8 +872,8 @@ def test_payload_carries_cache_control_end_to_end(mock_post, mock_sleep):
     llm.call_claude_messages(msgs, system="很长的规则", tools=[{"name": "get_quote"}])
 
     sent = mock_post.call_args[1]["json"]
-    assert sent["system"][-1]["cache_control"] == {"type": "ephemeral"}
-    assert sent["messages"][-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert sent["system"][-1]["cache_control"] == llm._CACHE_CTL
+    assert sent["messages"][-1]["content"][-1]["cache_control"] == llm._CACHE_CTL
     assert "cache_control" not in sent["tools"][0]        # 只靠 system 那个断点覆盖
     assert "cache_control" not in msgs[0]["content"][0]   # 调用方的对象没被污染
 
@@ -972,3 +972,7 @@ def test_no_retry_when_already_at_cap(mock_post):
     mock_post.return_value = empty
     assert llm.call_claude("x", None, "claude-sonnet-5", llm._NO_TEXT_RETRY_CAP) == ""
     assert mock_post.call_count == 1
+
+
+def test_cache_ttl_defaults_to_1h():
+    assert llm._CACHE_CTL == {"type": "ephemeral", "ttl": "1h"}

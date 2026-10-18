@@ -140,7 +140,10 @@ _OVERLOAD_STATUS = {429, 529}
 _PROMPT_CACHE = os.environ.get("LLM_PROMPT_CACHE", "1").lower() not in ("0", "false", "no")
 # 正文为空时放大预算重试的上限。不设无限: 真的答不出来该报空, 而不是无休止加预算。
 _NO_TEXT_RETRY_CAP = int(os.environ.get("LLM_NO_TEXT_RETRY_CAP", "8192"))
-_CACHE_CTL = {"type": "ephemeral"}
+# 1 小时 TTL: 一次问答十几轮、两次提问间隔常超 5 分钟, 默认 5 分钟的缓存在轮间就过期了。
+# 1h 写入贵一点(2x vs 1.25x), 但读命中省 90%, 对这种长前缀(tools+40KB system)划算。
+_CACHE_TTL = os.environ.get("LLM_CACHE_TTL", "1h")
+_CACHE_CTL = {"type": "ephemeral", **({"ttl": _CACHE_TTL} if _CACHE_TTL in ("1h", "5m") else {})}
 
 # 可重试的网络异常
 _RETRYABLE_EXC = (
@@ -699,8 +702,14 @@ def call_claude_messages(
     model: str = "claude-opus-5-5",
     max_tokens: int = 2048,
     tools: list | None = None,
+    thinking: bool = False,
+    effort: str | None = None,
 ) -> dict:
     """底层 Messages 调用, 支持完整 messages 历史 + tool-use。
+
+    thinking=True 开自适应思考(模型按难度自己决定想多少, 工具轮之间也能想);
+    effort=low/medium/high 控制整体投入(查几个工具、写多长)。两者只对官方端点发 ——
+    兼容实现见到不认识的字段可能 400。开思考时 max_tokens 含思考 token, 调用方要给足。
 
     返回原始响应 dict (调用方自行看 stop_reason / content 里的 tool_use 块)。
     用于 agent loop。出错抛异常 (不走 CLI 兜底——CLI 不支持 tools)。
@@ -718,6 +727,11 @@ def call_claude_messages(
     }
     if tools:
         payload["tools"] = tools
+    if _is_anthropic_official():
+        if thinking:
+            payload["thinking"] = {"type": "adaptive"}
+        if effort:
+            payload["output_config"] = {"effort": effort}
     if _cache_enabled():
         # 两个断点: system 末尾(覆盖 tools+system 的静态前缀) + 最后一个内容块(滚动,
         # 覆盖已经攒下来的对话历史, 含里面的 K线图)。低于最低可缓存长度的那几轮不会命中,

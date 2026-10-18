@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import base64 as _b64
 import json as _json
+import os
 import re as _re
 import time as _time
 
@@ -15,6 +16,11 @@ import services.answer_guard as _guard
 
 _MODEL = "claude-opus-5-5"
 _MAX_ROUNDS = 14
+# 自适应思考 + effort: 简单题少查少写, 难题多想。effort 是整体投入档位(low/medium/high)。
+_THINKING = os.environ.get("STOCK_AGENT_THINKING", "1").lower() not in ("0", "false", "no")
+_EFFORT = os.environ.get("STOCK_AGENT_EFFORT", "medium") or None
+# 开思考时 max_tokens 含思考 token, 4096 会被思考吃掉一大半
+_ROUND_MAX_TOKENS = 16000 if _THINKING else 4096
 
 # A 股 代码↔名称 表 (akshare, 缓存 12h, 供按名字解析)
 _code_name_cache: tuple[dict, dict, float] | None = None
@@ -3949,6 +3955,30 @@ _OVERLOAD_ROUND_RETRIES = 3
 _OVERLOAD_ROUND_WAIT_S = 20      # 第 n 次等 n×20 秒
 
 
+# 工具轮里的正文多长算"答案的前半段"而不是进度旁白("我先查一下持仓"这类一句话)
+_CARRY_MIN_CHARS = 200
+
+
+def _round_text(content: list) -> str:
+    return "".join(b.get("text", "") for b in content if b.get("type") == "text").strip()
+
+
+def _join_answer(carried: list, final: str) -> str:
+    """把工具轮里已写出的成段正文接到最终答案前面。
+
+    模型有时先写一大段答案, 中途调 calc 验算, 再在最后一轮接着写后半段 —— 只取末轮文本
+    就会丢掉前半段, 答案从半句话开始(2026-10-13 评测发现)。末轮已经把前文重写过一遍时
+    (开头那段又出现在末轮里)不再拼, 免得重复。
+    """
+    parts = []
+    for t in carried:
+        head = t[:40]
+        if head and head not in final:
+            parts.append(t)
+    parts.append(final)
+    return "\n\n".join(p for p in parts if p)
+
+
 async def _llm_round(messages: list):
     """跑一轮 LLM 调用, 上游过载则原样重发。
 
@@ -3960,7 +3990,8 @@ async def _llm_round(messages: list):
     for attempt in range(_OVERLOAD_ROUND_RETRIES + 1):
         try:
             resp = await asyncio.to_thread(
-                _llm.call_claude_messages, messages, _system(), _MODEL, 4096, await _active_tools())
+                _llm.call_claude_messages, messages, _system(), _MODEL, _ROUND_MAX_TOKENS,
+                await _active_tools(), thinking=_THINKING, effort=_EFFORT)
             yield ("resp", resp)
             return
         except _llm.LLMOverloaded as e:
@@ -3990,6 +4021,7 @@ async def ask_stock_stream(question: str, history: list | None = None, images: l
     seen_urls: set = set()
     tool_outs: dict = {}
     used: list = []
+    carried: list = []                       # 工具轮里已写出的成段正文, 见 _join_answer
     repaired = False
     for rnd in range(_MAX_ROUNDS):
         resp = None
@@ -4019,7 +4051,7 @@ async def ask_stock_stream(question: str, history: list | None = None, images: l
         tus = [b for b in content if b.get("type") == "tool_use"]
         if not tus:
             before = len(sources)
-            text = _assemble_cited_text(content, sources, seen_urls)
+            text = _join_answer(carried, _assemble_cited_text(content, sources, seen_urls))
             problems = _guard.inspect(text, used, tool_outs) if not repaired else []
             if problems:
                 repaired = True
@@ -4033,9 +4065,11 @@ async def ask_stock_stream(question: str, history: list | None = None, images: l
             yield {"type": "done"}
             return
         # 先把这一轮模型的简短思考文本(若有)推出去当“正在做什么”的旁白
-        think = "".join(b.get("text", "") for b in content if b.get("type") == "text").strip()
+        think = _round_text(content)
         if think:
             yield {"type": "thought", "text": think[:120]}
+        if len(think) >= _CARRY_MIN_CHARS:
+            carried.append(_assemble_cited_text(content, sources, seen_urls))
         used.extend(tu.get("name") or "" for tu in tus)
         for tu in tus:
             yield {"type": "step", "tool": tu.get("name"),
@@ -4073,6 +4107,7 @@ async def ask_stock(question: str, history: list | None = None, images: list | N
     seen_urls: set = set()
     charts: list = []
     tool_outs: dict = {}          # 工具名 → [返回值], 给护栏对答案
+    carried: list = []            # 工具轮里已写出的成段正文, 见 _join_answer
     repaired = False              # 护栏只补一轮, 防来回拉锯
     for rnd in range(_MAX_ROUNDS):
         resp = None
@@ -4091,7 +4126,7 @@ async def ask_stock(question: str, history: list | None = None, images: list | N
         _collect_sources(content, sources, seen_urls)
         tus = [b for b in content if b.get("type") == "tool_use"]
         if not tus:
-            text = _assemble_cited_text(content, sources, seen_urls)
+            text = _join_answer(carried, _assemble_cited_text(content, sources, seen_urls))
             problems = _guard.inspect(text, tools_used, tool_outs) if not repaired else []
             if problems:
                 # 只补一轮: 让模型只改这几点。不违规时这段完全不执行(常态零成本)。
@@ -4102,6 +4137,8 @@ async def ask_stock(question: str, history: list | None = None, images: list | N
                     "sources": sources, "charts": charts,
                     "guard_repaired": repaired}
         tools_used.extend(tu.get("name", "") for tu in tus)
+        if len(_round_text(content)) >= _CARRY_MIN_CHARS:
+            carried.append(_assemble_cited_text(content, sources, seen_urls))
         # 同一轮里的工具并发跑(相互独立), 顺序保留, 单个失败不连累其他
         outs = await asyncio.gather(*[_run_tool(tu) for tu in tus])
         for tu, out in zip(tus, outs):
