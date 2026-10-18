@@ -824,7 +824,7 @@ def test_rolling_breakpoint_on_last_content_block():
     out = llm._cached_messages(msgs)
     assert "cache_control" not in out[1]["content"][0]
     assert out[2]["content"][0].get("cache_control") is None
-    assert out[2]["content"][1]["cache_control"] == llm._CACHE_CTL
+    assert out[2]["content"][1]["cache_control"] == llm._MSG_CACHE_CTL
 
 
 def test_rolling_breakpoint_does_not_mutate_caller_list():
@@ -873,7 +873,7 @@ def test_payload_carries_cache_control_end_to_end(mock_post, mock_sleep):
 
     sent = mock_post.call_args[1]["json"]
     assert sent["system"][-1]["cache_control"] == llm._CACHE_CTL
-    assert sent["messages"][-1]["content"][-1]["cache_control"] == llm._CACHE_CTL
+    assert sent["messages"][-1]["content"][-1]["cache_control"] == llm._MSG_CACHE_CTL
     assert "cache_control" not in sent["tools"][0]        # 只靠 system 那个断点覆盖
     assert "cache_control" not in msgs[0]["content"][0]   # 调用方的对象没被污染
 
@@ -976,3 +976,11 @@ def test_no_retry_when_already_at_cap(mock_post):
 
 def test_cache_ttl_defaults_to_1h():
     assert llm._CACHE_CTL == {"type": "ephemeral", "ttl": "1h"}
+
+
+def test_message_breakpoint_uses_5m_system_keeps_1h():
+    """对话尾巴只在同一次问答的轮间复用, 用 5 分钟(写入 1.25x); tools+system 跨提问复用, 留 1h。"""
+    assert llm._MSG_CACHE_CTL == {"type": "ephemeral"}
+    out = llm._cached_messages([{"role": "user", "content": "茅台怎么了"}])
+    assert out[-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert llm._cached_system("s")[0]["cache_control"]["ttl"] == "1h"

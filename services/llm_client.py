@@ -144,6 +144,13 @@ _NO_TEXT_RETRY_CAP = int(os.environ.get("LLM_NO_TEXT_RETRY_CAP", "8192"))
 # 1h 写入贵一点(2x vs 1.25x), 但读命中省 90%, 对这种长前缀(tools+40KB system)划算。
 _CACHE_TTL = os.environ.get("LLM_CACHE_TTL", "1h")
 _CACHE_CTL = {"type": "ephemeral", **({"ttl": _CACHE_TTL} if _CACHE_TTL in ("1h", "5m") else {})}
+# 对话尾巴(本轮工具结果)只用 5 分钟: 它只在同一次问答的各轮之间复用(间隔几秒到几十秒),
+# 下一次提问的历史会重写成纯文本, 这段缓存再也命中不了。按 2x 写 1h 等于白付溢价 ——
+# 实测一题的缓存写入里九成以上是工具结果, 占账单约六成(2026-10-14 逐轮剖析)。
+# API 要求长 TTL 的断点排在短 TTL 前面: system 在 messages 之前, 天然满足。
+_MSG_CACHE_TTL = os.environ.get("LLM_MSG_CACHE_TTL", "5m")
+_MSG_CACHE_CTL = ({"type": "ephemeral"} if _MSG_CACHE_TTL == "5m" or _CACHE_TTL != "1h"
+                  else _CACHE_CTL)
 
 # 可重试的网络异常
 _RETRYABLE_EXC = (
@@ -532,12 +539,12 @@ def _cached_messages(messages: list) -> list:
     last = dict(out[-1])
     content = last.get("content")
     if isinstance(content, str):
-        last["content"] = [{"type": "text", "text": content, "cache_control": _CACHE_CTL}]
+        last["content"] = [{"type": "text", "text": content, "cache_control": _MSG_CACHE_CTL}]
     elif isinstance(content, list) and content:
         blocks = [dict(b) if isinstance(b, dict) else b for b in content]
         for i in range(len(blocks) - 1, -1, -1):
             if isinstance(blocks[i], dict):
-                blocks[i]["cache_control"] = _CACHE_CTL
+                blocks[i]["cache_control"] = _MSG_CACHE_CTL
                 break
         else:
             return out
