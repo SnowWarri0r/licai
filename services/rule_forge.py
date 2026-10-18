@@ -93,7 +93,7 @@ def existing_titles() -> list[str]:
     【涨停跌停按该股真实幅度判】。
     """
     try:
-        from services.stock_agent import _SYSTEM
+        from services.stock_agent import _PROMPT_ALL as _SYSTEM
         return sorted(set(re.findall(r"【([^】]{2,24})】", _SYSTEM)))
     except Exception:
         return []

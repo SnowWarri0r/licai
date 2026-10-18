@@ -64,19 +64,19 @@ def test_prompt_forbids_filling_gaps_from_memory():
 
     prompt 对单个词都敏感, 之前有人删掉一句就让整块行为消失过, 所以钉住关键词。
     """
-    from services.stock_agent import _SYSTEM
+    from services.stock_agent import _PROMPT_ALL as _SYSTEM
     assert "取数失败必须自曝" in _SYSTEM
     assert "严禁" in _SYSTEM and "记忆" in _SYSTEM
 
 
 def test_prompt_keeps_the_no_mental_arithmetic_rule():
-    from services.stock_agent import _SYSTEM
+    from services.stock_agent import _PROMPT_ALL as _SYSTEM
     assert "不许心算" in _SYSTEM and "calc" in _SYSTEM
 
 
 def test_prompt_keeps_the_information_richness_tiering():
     """信息充裕就该做反面检验, 而不是复述人人都知道的多头逻辑。"""
-    from services.stock_agent import _SYSTEM
+    from services.stock_agent import _PROMPT_ALL as _SYSTEM
     assert "信息丰富度" in _SYSTEM
     assert "资料多≠确定性高" in _SYSTEM
 
@@ -163,7 +163,7 @@ def test_prompt_forbids_emoji_in_answers():
     问题不只是风格 —— 「⚠️判不了」读起来像一个警告, 而它的本意只是"数据不够"; 勾叉代替
     文字会把三档(通过/排除/判不了)压成对错两档。
     """
-    from services.stock_agent import _SYSTEM
+    from services.stock_agent import _PROMPT_ALL as _SYSTEM
     assert "不用 emoji" in _SYSTEM
     assert "判不了" in _SYSTEM and "没有信息量" in _SYSTEM
 
@@ -171,6 +171,6 @@ def test_prompt_forbids_emoji_in_answers():
 def test_system_prompt_itself_carries_no_emoji():
     """规则自己也得守: prompt 里举例用的符号是唯一允许出现的地方, 其余不许夹带。"""
     import re
-    from services.stock_agent import _SYSTEM
+    from services.stock_agent import _PROMPT_ALL as _SYSTEM
     body = _SYSTEM.split("【不用 emoji】")[0]        # 举例那句本身要写出符号才说得清
     assert not re.findall(r"[\U0001F300-\U0001FAFF✅❌⚠]", body)

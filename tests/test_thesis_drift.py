@@ -402,7 +402,7 @@ def test_agent_tool_returns_the_drift_block_and_explains_the_three_tiers(tmp_db,
 
 def test_prompt_carries_the_per_market_source_pairings():
     """多源校验从"原则"变成"具体配哪两个源"; 少了这个, 模型会两次都落在同一家的转载上。"""
-    from services.stock_agent import _SYSTEM
+    from services.stock_agent import _PROMPT_ALL as _SYSTEM
     for s in ("cninfo", "macrotrends", "stockanalysis", "aastocks", "EDGAR", "hkexnews"):
         assert s in _SYSTEM, s
     assert "口径" in _SYSTEM
