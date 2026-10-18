@@ -164,25 +164,27 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="理财助手", lifespan=lifespan)
 
-_LOCAL_HOSTS = {"localhost", "127.0.0.1", "[::1]", "::1"}
+from services.origin_guard import host_ok as _host_ok, LOCAL_HOSTS as _LOCAL_HOSTS
 
 
 @app.middleware("http")
-async def same_origin_writes(request, call_next):
-    """改数据的请求只收本应用页面发来的: 浏览器里别的网站能悄悄朝 localhost 发无请求体的
+async def same_origin_only(request, call_next):
+    """1) 所有请求的 Host 必须是本机名或 IP(防 DNS 重绑定);
+    2) 改数据的请求只收本应用页面发来的: 浏览器里别的网站能悄悄朝 localhost 发无请求体的
     POST(不触发 CORS 预检), 比如批准一条待确认的画像。浏览器跨站请求一定带 Origin 或
     Sec-Fetch-Site, 据此判断; 两者都没有的(curl、本机脚本)照常放行。"""
+    from urllib.parse import urlsplit
+    from fastapi.responses import JSONResponse
+    if not _host_ok(urlsplit("//" + request.headers.get("host", "")).hostname or ""):
+        return JSONResponse({"detail": "Host 不在允许范围"}, status_code=403)
     if request.method not in ("GET", "HEAD", "OPTIONS"):
-        from urllib.parse import urlsplit
         origin = request.headers.get("origin")
         if origin:
             o = urlsplit(origin)
-            host = request.headers.get("host", "")
-            ok = o.netloc == host or (o.hostname or "") in _LOCAL_HOSTS
+            ok = o.netloc == request.headers.get("host", "") or (o.hostname or "") in _LOCAL_HOSTS
         else:
             ok = request.headers.get("sec-fetch-site", "same-origin") in ("same-origin", "none")
         if not ok:
-            from fastapi.responses import JSONResponse
             return JSONResponse({"detail": "跨站请求已拒绝"}, status_code=403)
     return await call_next(request)
 

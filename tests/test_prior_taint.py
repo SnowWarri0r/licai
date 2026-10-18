@@ -34,3 +34,12 @@ def test_answer_without_meta_counts_as_tainted(monkeypatch):
 def test_frontend_history_without_session():
     assert _prior_tainted([{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}], None)
     assert not _prior_tainted([], None)
+
+
+def test_state_without_flag_falls_back_to_history():
+    assert _prior_tainted([{"role": "assistant", "content": "a"}], {"entities": []})
+
+
+def test_remember_outside_agent_loop_is_pending_by_default():
+    from services import user_memory as um
+    assert um.untrusted_seen.get() is True

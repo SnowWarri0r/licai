@@ -29,7 +29,8 @@ def tainted(tools_so_far) -> bool:
 
 import contextvars
 # agent loop 在跑工具前设置: 本轮到目前为止是否已读过第三方文本。gather 建任务时复制上下文, 所以设在 gather 之前即可。
-untrusted_seen: contextvars.ContextVar[bool] = contextvars.ContextVar("untrusted_seen", default=False)
+# 默认按读过算(失败时从严): 没经过 agent loop 设置就调到 remember 的路径, 记下的只会是待确认
+untrusted_seen: contextvars.ContextVar[bool] = contextvars.ContextVar("untrusted_seen", default=True)
 
 TOOL = {
     "name": "remember",

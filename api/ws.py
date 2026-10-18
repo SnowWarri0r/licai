@@ -30,6 +30,12 @@ async def broadcast(message: dict):
 
 @router.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
+    # WebSocket 不受 CORS 约束, 也不走 http 中间件: 别的网站可以直接连上来读推送的持仓行情。
+    # 和 http 一样只收本机名/IP 的 Host 与本应用页面的 Origin。
+    from services.origin_guard import ws_allowed
+    if not ws_allowed(ws.headers.get("host", ""), ws.headers.get("origin")):
+        await ws.close(code=1008)
+        return
     await ws.accept()
     _clients.add(ws)
     try:

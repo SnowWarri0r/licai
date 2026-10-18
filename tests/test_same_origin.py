@@ -20,3 +20,28 @@ def test_own_page_and_scripts_pass():
 
 def test_reads_unaffected():
     assert c.get("/api/app-version", headers={"Origin": "https://evil.example"}).status_code != 403
+
+
+def test_dns_rebinding_host_rejected():
+    r = TestClient(run.app, base_url="http://evil.example:8888")
+    assert r.get("/api/app-version").status_code == 403
+    assert r.post(URL, headers={"Origin": "http://evil.example:8888"}).status_code == 403
+
+
+def test_lan_ip_host_allowed():
+    r = TestClient(run.app, base_url="http://192.168.1.20:8888")
+    assert r.get("/api/app-version").status_code == 200
+
+
+def test_websocket_rejects_foreign_origin_and_host():
+    import pytest
+    from starlette.websockets import WebSocketDisconnect
+    with pytest.raises(WebSocketDisconnect):
+        with c.websocket_connect("/ws", headers={"Origin": "https://evil.example"}):
+            pass
+    with pytest.raises(WebSocketDisconnect):
+        with c.websocket_connect("/ws", headers={"Host": "evil.example:8888"}):
+            pass
+    with c.websocket_connect("/ws", headers={"Origin": "http://localhost:8888"}) as ws:
+        ws.send_text('{"type": "ping"}')
+        assert "pong" in ws.receive_text()

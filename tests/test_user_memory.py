@@ -16,7 +16,9 @@ def temp_db(monkeypatch):
     monkeypatch.delenv("AGENT_MEMORY_READONLY", raising=False)
     from database import init_db
     asyncio.run(init_db())
+    tok = um.untrusted_seen.set(False)      # 模拟 agent loop: 本轮只调过可信工具
     yield path
+    um.untrusted_seen.reset(tok)
     os.unlink(path)
 
 

@@ -3935,8 +3935,8 @@ async def _llm_round(messages: list):
 def _prior_tainted(history: list | None, state: dict | None) -> bool:
     """之前几轮是否读过第三方文本。会话里查得到每轮调过的工具就按它判; 只有前端传来的历史
     (查不到出处)时, 带着任何一轮答案都按读过算。"""
-    if state is not None:
-        return bool(state.get("tainted"))
+    if state is not None and "tainted" in state:
+        return bool(state["tainted"])
     return any((m or {}).get("role") == "assistant" for m in history or [])
 
 
