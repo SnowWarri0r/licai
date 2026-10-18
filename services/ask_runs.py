@@ -23,7 +23,7 @@ import time
 import uuid
 from typing import Optional
 
-from database import (create_ask_session, add_ask_message, save_ask_run, update_ask_run,
+from database import (create_ask_session, add_ask_message, get_ask_session, save_ask_run, update_ask_run,
                       get_ask_run, list_ask_runs, prune_ask_runs)
 from services.stock_agent import ask_stock_stream
 
@@ -96,6 +96,7 @@ async def _drive(run: Run, events) -> None:
     sources: list = []
     steps: list = []
     charts: list = []
+    entities: list = []
     cancelled = False
     try:
         async for ev in events:
@@ -110,6 +111,8 @@ async def _drive(run: Run, events) -> None:
                 steps.append(ev.get("tool"))
             elif t == "chart":
                 charts.append(ev.get("url"))
+            elif t == "state":
+                entities = ev.get("entities") or []
     except asyncio.CancelledError:
         cancelled = True
         run.events.append({"type": "error", "error": "已取消"})
@@ -119,6 +122,8 @@ async def _drive(run: Run, events) -> None:
     if answer and not cancelled:
         meta = {"tools_used": [s for s in steps if s and s not in _NOT_TOOLS],
                 "sources": sources, "charts": charts}
+        if entities:
+            meta["entities"] = entities
         try:
             await add_ask_message(run.session_id, "assistant", answer,
                                   _json.dumps(meta, ensure_ascii=False))
@@ -129,6 +134,27 @@ async def _drive(run: Run, events) -> None:
     run.finished_at = time.time()
     run.events.append({"type": "done"})
     await run.flush(force=True)             # 收尾这次必写: 内存里的会被 GC, 盘上的留着
+
+
+async def session_state(session_id: int) -> dict | None:
+    """会话里前几轮确认过的标的, 按出现先后合并(同一代码后出现的覆盖前面的称呼)。"""
+    try:
+        sess = await get_ask_session(session_id)
+    except Exception:
+        return None
+    merged: dict = {}
+    for m in (sess or {}).get("messages") or []:
+        if m.get("role") != "assistant" or not m.get("meta"):
+            continue
+        try:
+            ents = _json.loads(m["meta"]).get("entities") or []
+        except Exception:
+            continue
+        for e in ents:
+            if e.get("code"):
+                prev = merged.pop(e["code"], {})       # 挪到末尾: 最近提到的排后面, 截断时留下
+                merged[e["code"]] = {**prev, **e}
+    return {"entities": list(merged.values())} if merged else None
 
 
 async def start(question: str, *, agent_question: Optional[str] = None,
@@ -142,6 +168,7 @@ async def start(question: str, *, agent_question: Optional[str] = None,
     events 可传一条自定义事件流(如多视角对抗); 不传就走默认的问答 agent。
     """
     _gc()
+    state = await session_state(session_id) if session_id and events is None else None
     if not session_id:
         session_id = await create_ask_session((title or question)[:80])
     await add_ask_message(session_id, "user", question,
@@ -154,7 +181,7 @@ async def start(question: str, *, agent_question: Optional[str] = None,
     except Exception:
         pass
     stream = events if events is not None else ask_stock_stream(
-        agent_question or question, history or [], images)
+        agent_question or question, history or [], images, **({"state": state} if state else {}))
     run.task = asyncio.create_task(_drive(run, stream))
     return run
 

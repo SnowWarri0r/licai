@@ -353,3 +353,31 @@ def test_unknown_run_still_says_gone(temp_db, runs):
 
 async def _collect(agen):
     return [ev async for ev in agen]
+
+
+def test_entities_carry_to_next_turn(temp_db, runs, monkeypatch):
+    """上一轮确认的标的(含用户的称呼)存进回答 meta, 下一轮作为 state 交给 agent。"""
+    seen = []
+    ent = {"code": "512010", "name": "医药ETF华宝", "q": "医药"}
+
+    def agent(events):
+        async def gen(question, history=None, images=None, state=None):
+            seen.append(state)
+            for ev in events:
+                yield ev
+        return gen
+
+    first = [{"type": "state", "entities": [ent]}, {"type": "answer", "text": "a"}, {"type": "done"}]
+    second = [{"type": "answer", "text": "b"}, {"type": "done"}]
+
+    async def main():
+        monkeypatch.setattr(runs, "ask_stock_stream", agent(first))
+        a = await runs.start("医药今天怎样")
+        await a.task
+        monkeypatch.setattr(runs, "ask_stock_stream", agent(second))
+        b = await runs.start("那分时呢", session_id=a.session_id)
+        await b.task
+
+    asyncio.run(main())
+    assert seen[0] is None
+    assert seen[1] == {"entities": [ent]}

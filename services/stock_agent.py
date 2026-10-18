@@ -3728,7 +3728,36 @@ def _image_blocks(images: list | None) -> list:
     return out
 
 
-def _seed_messages(question: str, history: list | None, images: list | None = None) -> list:
+def _harvest_entities(tus: list, outs: list, acc: dict) -> None:
+    """从这一轮工具调用里收集已确认的标的(代码 → 名称, 以及用户的称呼), 给下一轮问答用。
+
+    追问时历史只带文字, 上一轮 resolve_stock 解析出的代码就丢了 —— 用户接着说"通信",
+    模型得重新猜, 曾解析成另一只同名字的票(2026-07-09)。
+    """
+    for tu, out in zip(tus, outs):
+        if not isinstance(out, dict) or out.get("error"):
+            continue
+        code, name = out.get("code"), out.get("name")
+        if not code or not name:
+            continue
+        ent = acc.setdefault(code, {"code": code, "name": name})
+        q = ((tu.get("input") or {}).get("query") or "").strip()
+        if tu.get("name") == "resolve_stock" and q and q not in (code, name):
+            ent["q"] = q
+
+
+def _state_block(state: dict | None) -> str:
+    ents = (state or {}).get("entities") or []
+    if not ents:
+        return ""
+    items = [f"{e['name']}({e['code']}" + (f", 用户称'{e['q']}'" if e.get("q") else "") + ")"
+             for e in ents[-12:]]
+    return ("【本会话前文已确认的标的】" + "; ".join(items)
+            + "。此轮提到的称呼与其中某只对应时沿用该代码; 用户明确改指别的标的时以新说法为准。")
+
+
+def _seed_messages(question: str, history: list | None, images: list | None = None,
+                   state: dict | None = None) -> list:
     """把前端传来的多轮历史(只含 role+text 的简化对话)接到当前问题前面, 让 agent 有上下文。
     带 images 时, 当前 user 消息构造成 [图片块... + 文本块] 多模态内容。"""
     msgs = []
@@ -3738,8 +3767,12 @@ def _seed_messages(question: str, history: list | None, images: list | None = No
         if role in ("user", "assistant") and content:
             msgs.append({"role": role, "content": content[:4000]})
     blocks = _image_blocks(images)
+    sb = _state_block(state)
+    pre = [{"type": "text", "text": sb}] if sb else []
     if blocks:
-        msgs.append({"role": "user", "content": blocks + [{"type": "text", "text": question or "看看这张图"}]})
+        msgs.append({"role": "user", "content": blocks + pre + [{"type": "text", "text": question or "看看这张图"}]})
+    elif pre:
+        msgs.append({"role": "user", "content": pre + [{"type": "text", "text": question}]})
     else:
         msgs.append({"role": "user", "content": question})
     return msgs
@@ -3804,7 +3837,8 @@ async def _llm_round(messages: list):
             return
 
 
-async def ask_stock_stream(question: str, history: list | None = None, images: list | None = None):
+async def ask_stock_stream(question: str, history: list | None = None, images: list | None = None,
+                           state: dict | None = None):
     """流式版: 边跑边 yield 事件 (step/answer/done/error), 供 SSE 推给前端。
     每轮 LLM 调用之间 yield 工具步骤, 步骤实时出现; 末轮文本作为答案。
     history: 前端传的多轮对话历史 [{role, content}], 让 agent 有上下文(支持追问)。
@@ -3813,7 +3847,8 @@ async def ask_stock_stream(question: str, history: list | None = None, images: l
     if not question and not images:
         yield {"type": "error", "error": "空问题"}
         return
-    messages = _seed_messages(question, history, images)
+    messages = _seed_messages(question, history, images, state)
+    entities: dict = {e["code"]: dict(e) for e in (state or {}).get("entities") or [] if e.get("code")}
     sources: list = []
     seen_urls: set = set()
     tool_outs: dict = {}
@@ -3858,6 +3893,8 @@ async def ask_stock_stream(question: str, history: list | None = None, images: l
                 continue
             if len(sources) > before:        # citations 引到的新 url 补推一条 sources 事件, 保证角标可解析
                 yield {"type": "sources", "sources": sources[before:]}
+            if entities:
+                yield {"type": "state", "entities": list(entities.values())}
             yield {"type": "answer", "text": text}
             yield {"type": "done"}
             return
@@ -3876,6 +3913,7 @@ async def ask_stock_stream(question: str, history: list | None = None, images: l
         outs = await asyncio.gather(*[_run_tool(tu) for tu in tus])
         for tu, out in zip(tus, outs):
             tool_outs.setdefault(tu.get("name") or "", []).append(out)
+        _harvest_entities(tus, outs, entities)
         # 取数失败要**看得见**: step 事件是在工具跑之前发的, 之前失败的工具在界面上照样打绿勾,
         # 模型完全可以用记忆把那一段圆过去而用户看不出来。这类"工具挂了但答案看着完整"是最难
         # 发现的失败模式(ai-berkshire 的 issue #58 同一类问题: 后台 agent 联网被静默拦截,
@@ -3893,12 +3931,14 @@ async def ask_stock_stream(question: str, history: list | None = None, images: l
     yield {"type": "done"}
 
 
-async def ask_stock(question: str, history: list | None = None, images: list | None = None) -> dict:
+async def ask_stock(question: str, history: list | None = None, images: list | None = None,
+                    state: dict | None = None) -> dict:
     """跑 agent loop, 返回 {answer, tools_used, rounds}。"""
     question = (question or "").strip()
     if not question and not images:
         return {"answer": "", "error": "空问题"}
-    messages = _seed_messages(question, history, images)
+    messages = _seed_messages(question, history, images, state)
+    entities: dict = {e["code"]: dict(e) for e in (state or {}).get("entities") or [] if e.get("code")}
     tools_used: list[str] = []
     sources: list = []
     seen_urls: set = set()
@@ -3932,7 +3972,7 @@ async def ask_stock(question: str, history: list | None = None, images: list | N
                 continue
             return {"answer": text, "tools_used": tools_used, "rounds": rnd + 1,
                     "sources": sources, "charts": charts,
-                    "guard_repaired": repaired}
+                    "guard_repaired": repaired, "entities": list(entities.values())}
         tools_used.extend(tu.get("name", "") for tu in tus)
         if len(_round_text(content)) >= _CARRY_MIN_CHARS:
             carried.append(_assemble_cited_text(content, sources, seen_urls))
@@ -3940,6 +3980,7 @@ async def ask_stock(question: str, history: list | None = None, images: list | N
         outs = await asyncio.gather(*[_run_tool(tu) for tu in tus])
         for tu, out in zip(tus, outs):
             tool_outs.setdefault(tu.get("name") or "", []).append(out)
+        _harvest_entities(tus, outs, entities)
         charts.extend(out["chart_url"] for out in outs
                       if isinstance(out, dict) and out.get("chart_url"))
         results = [{"type": "tool_result", "tool_use_id": tu.get("id"),
