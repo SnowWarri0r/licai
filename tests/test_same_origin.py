@@ -1,10 +1,26 @@
 """改数据的请求只收本应用页面发来的(防别的网站借浏览器朝本机发 POST)。"""
+import asyncio
+import os
+import tempfile
+
+import pytest
 from fastapi.testclient import TestClient
 
 import run
 
 c = TestClient(run.app, base_url="http://localhost:8888")
 URL = "/api/settings/memory/999999/approve"
+
+
+@pytest.fixture(autouse=True)
+def temp_db(monkeypatch):
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    monkeypatch.setattr("config.config.db_path", path)
+    from database import init_db
+    asyncio.run(init_db())
+    yield
+    os.unlink(path)
 
 
 def test_cross_site_post_rejected():

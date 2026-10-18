@@ -34,6 +34,24 @@ HARDCODED_PROXIES: dict[str, list[dict]] = {
 # 哪些基金跳过 top10 直接走硬编码 (商品基金 top10 全是商品期货 ETF, 不如直接拉期货)
 SKIP_HOLDINGS = {"000217", "161226"}  # 黄金/白银联接
 
+def _load_local_overrides() -> None:
+    """本机自己持有基金的代理(data/fund_proxy_local.json, 不进仓):
+    {"proxies": {代码: [...]}, "skip_holdings": [代码]}。"""
+    import json
+    from pathlib import Path
+    p = Path(__file__).resolve().parent.parent / "data" / "fund_proxy_local.json"
+    if not p.exists():
+        return
+    try:
+        d = json.loads(p.read_text())
+    except Exception:
+        return
+    HARDCODED_PROXIES.update(d.get("proxies") or {})
+    SKIP_HOLDINGS.update(d.get("skip_holdings") or [])
+
+
+_load_local_overrides()
+
 _proxy_cache: dict[str, tuple[dict, float]] = {}
 _PROXY_TTL = 30  # 秒
 

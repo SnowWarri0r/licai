@@ -72,6 +72,8 @@ scripts/broker_import/
 
 # 场外基金回归估算模型缓存(含自己持有的基金代码, 本机生成)
 data/fund_nav_model.json
+# 本机持有基金的代理配置(含自己的基金代码)
+data/fund_proxy_local.json
 fx_last.json
 
 # 取自真实对话的评测用例(含个人持仓与原话), 只在本机

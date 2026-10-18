@@ -1056,8 +1056,8 @@ _NAME_COMMODITY_MAP = {
     "钴": ("沪铜", "CU0"),
 }
 
-# Name keywords that should NOT trigger matching (e.g. 西部矿业 → 白银 is a city)
-_NAME_EXCLUDE = {"西部矿业"}
+# Name keywords that should NOT trigger matching (e.g. 白银有色 → 白银 is a city)
+_NAME_EXCLUDE = {"白银有色"}
 
 
 _sector_cache: dict[str, tuple[str, float]] = {}  # code -> (sector, ts)
