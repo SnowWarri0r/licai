@@ -6,13 +6,13 @@ import GroupPicker from './GroupPicker'
 import { pctColor, boardOf, WL_DEFAULT } from './shared'
 import PriceVolumeTable from '../kline/PriceVolumeTable'
 import { OrderBook, Ticks, LhbPanel } from '../kline/panels'
+import { useCompany, CompanyDetail } from '../kline/CompanyProfile'
 
 // 右侧面板: 选中股票看 K线(铺满); 想问就点"问 AI"或底部输入框 → 弹出式对话(与问问市场样式一致)
 export default function StockPanel({ stock, watched, onToggleWatch, groups, myGroups, onSetGroups }) {
   const [askOpen, setAskOpen] = useState(false)
   const [seed, setSeed] = useState('')
   const [draft, setDraft] = useState('')
-  const [co, setCo] = useState(null)          // 公司画像(细分行业/一句话主营/简介/主营构成)
   const [coOpen, setCoOpen] = useState(false)
   const [grpOpen, setGrpOpen] = useState(false)   // 分组下拉
   const [view, setView] = useState('K线')          // K线 | 分价 | 盘口 —— 与持仓同一批组件
@@ -68,16 +68,8 @@ export default function StockPanel({ stock, watched, onToggleWatch, groups, myGr
   }, [view, code, tdxOn, isA])
 
   // 公司画像: 榜单只有粗板块(「半导体」), 这里补三级细分 + 做啥的。抓不到就静默不显示。
-  useEffect(() => {
-    setCo(null); setCoOpen(false)
-    const code = stock?.code
-    if (!code) return
-    let alive = true
-    prefetchJSON(`/api/market/company/${encodeURIComponent(code)}`)
-      .then(d => { if (alive && d && d.industry) setCo(d) })
-      .catch(() => {})
-    return () => { alive = false }
-  }, [stock?.code])
+  const co = useCompany(stock?.code)
+  useEffect(() => { setCoOpen(false) }, [stock?.code])
 
   const openAsk = (question = '') => { setSeed(question); setAskOpen(true) }
   const submitDraft = () => { const t = draft.trim(); if (t) { openAsk(t); setDraft('') } }
@@ -171,30 +163,7 @@ export default function StockPanel({ stock, watched, onToggleWatch, groups, myGr
       {/* 公司详情: 完整简介 + 主营构成(营收占比/毛利率). 默认收起, 不挤压 K 线 */}
       {coOpen && co && (
         <div className="px-4 py-2.5 border-b border-border-subtle bg-surface-2/40 shrink-0 max-h-52 overflow-y-auto">
-          {co.profile && (
-            <p className="text-[11px] text-text-dim leading-relaxed m-0 mb-2 whitespace-pre-wrap">{co.profile}</p>
-          )}
-          {(co.main_business || []).length > 0 && (
-            <div className="text-[10.5px]">
-              <div className="text-text-muted mb-1">
-                主营构成{co.report_date ? ` · ${co.report_date}` : ''}
-                <span className="text-text-dim ml-2">营收占比 / 毛利率</span>
-              </div>
-              {co.main_business.map((m, i) => (
-                <div key={i} className="flex items-center gap-2 py-[1px]">
-                  <span className="text-text-dim w-44 truncate" title={m['项目']}>{m['项目']}</span>
-                  <span className="font-mono text-text">{m['营收占比%'] != null ? `${m['营收占比%']}%` : '—'}</span>
-                  <span className="font-mono text-text-muted">
-                    {m['毛利率%'] != null ? `毛利 ${m['毛利率%']}%` : ''}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-          <div className="text-[10px] text-text-muted mt-2 pt-1.5 border-t border-border-subtle">
-            {[co.employees ? `员工 ${co.employees}` : '', co.controller ? `实控 ${co.controller}` : '']
-              .filter(Boolean).join(' · ') || '数据来自公开披露'}
-          </div>
+          <CompanyDetail co={co} />
         </div>
       )}
 

@@ -6,6 +6,7 @@ import EntryMirror from './EntryMirror'
 import { MinuteChart } from './kline/MinuteChart'
 import { LhbPanel, OrderBook, Ticks } from './kline/panels'
 import PriceVolumeTable from './kline/PriceVolumeTable'
+import { CompanyStrip } from './kline/CompanyProfile'
 import { BUY_COLOR, SELL_COLOR, colorPct, fmtPct, fmtVal } from './kline/shared'
 import { createPortal } from 'react-dom'
 
@@ -141,6 +142,8 @@ export default function StockKlineModal({ holding, onClose }) {
             <button onClick={onClose} className="text-text-dim hover:text-text text-[18px] leading-none px-2 ml-1 cursor-pointer">×</button>
           </div>
         </div>
+
+        <CompanyStrip code={code} />
 
         <EntryMirror code={code} />
 
