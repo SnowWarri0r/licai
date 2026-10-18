@@ -73,3 +73,7 @@ scripts/broker_import/
 # 场外基金回归估算模型缓存(含自己持有的基金代码, 本机生成)
 data/fund_nav_model.json
 fx_last.json
+
+# 取自真实对话的评测用例(含个人持仓与原话), 只在本机
+evals/cases_conv.py
+tests/test_eval_cases_conv.py

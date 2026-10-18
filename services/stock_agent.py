@@ -313,7 +313,7 @@ async def _tool_resolve_stock(query: str) -> dict:
     except Exception:
         pass
     # 1a) 场外资产(基金/场内ETF/加密/理财等)在持匹配 → in_holdings=True
-    # (通信ETF 这类持仓在外部资产账本, 不在 A股 holdings 表; 漏了这层会把真实持仓说成'没有')
+    # (场内ETF 这类持仓在外部资产账本, 不在 A股 holdings 表; 漏了这层会把真实持仓说成'没有')
     try:
         from database import list_external_assets
         held_hit, cleared_hit = None, None

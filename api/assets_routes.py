@@ -13,7 +13,7 @@ from database import (
 from services.external_assets import (
     get_fund_quote, get_crypto_quote, search_fund_by_name,
 )
-from services.external_ledger import compute_external_state
+from services.external_ledger import compute_external_state, parse_fee_tiers, redeem_fee
 from services import okx_client
 
 router = APIRouter(prefix="/api/assets", tags=["external-assets"])
@@ -1059,23 +1059,27 @@ async def settle_pending_dca():
             amount = float(a.get("amount") or 0)
             known_shares = float(a.get("shares") or 0)
             if (a.get("action_type") or "").upper() in ("REDEEM", "SELL"):
-                # 赎回: 份额已知 → 到账金额 = 份额×净值(无赎回费字段, 不倒扣);
-                # 金额赎回 → 反算份额。两个都空的跳过。
+                # 赎回: 份额已知 → 到账金额 = 份额×净值 − 赎回费; 金额赎回 → 反算份额。两个都空的跳过。
+                # 赎回费按 redeem_fee_tiers 先进先出逐 lot 算(A 类持有不满一年常见 0.5%), 没配阶梯 = 0。
+                # amount 记实际到账(净额), ledger 拿它当回款, 赎回费就体现在已实现盈亏里。
                 if known_shares > 0:
-                    shares, final_amount = known_shares, round(known_shares * nav, 2)
+                    shares = known_shares
                 elif amount > 0 and nav > 0:
-                    shares, final_amount = round(amount / nav, 6), amount
+                    shares = round(amount / nav, 6)
                 else:
                     skipped += 1
                     continue
+                fee, _ = redeem_fee(actions, a["id"], shares, nav, td,
+                                    parse_fee_tiers(asset.get("redeem_fee_tiers")))
+                final_amount = round(shares * nav - fee, 2)
                 await update_external_action(
                     a["id"], amount=final_amount, shares=shares,
-                    unit_price=round(nav, 6), status="confirmed",
+                    unit_price=round(nav, 6), fee=fee, status="confirmed",
                 )
                 settled += 1
                 changed = True
                 details.append({"asset": asset.get("name"), "date": td, "nav_date": nd, "nav": round(nav, 4),
-                                "shares": -shares, "amount": final_amount, "fee": 0})
+                                "shares": -shares, "amount": final_amount, "fee": fee})
                 continue
             # 申购费内扣: 净申购额 = 申购金额 / (1+费率), 申购费 = 金额 - 净额, 份额 = 净额/净值。
             # C 类/无申购费 → rate=0 → 净额=金额, fee=0 (跟原来一致)。

@@ -528,6 +528,9 @@ async def init_db():
         # 基金申购费率 (小数, 如 0.0015 = 0.15%). C 类/无申购费 = 0/NULL. 批量结算时内扣算份额。
         if "purchase_fee_rate" not in cols:
             await db.execute("ALTER TABLE external_assets ADD COLUMN purchase_fee_rate REAL")
+        # 基金赎回费阶梯 (JSON [[天数, 费率], ...], 见 external_ledger.parse_fee_tiers). 空 = 无赎回费。
+        if "redeem_fee_tiers" not in cols:
+            await db.execute("ALTER TABLE external_assets ADD COLUMN redeem_fee_tiers TEXT")
 
         # 券商费率档案
         await db.execute("""

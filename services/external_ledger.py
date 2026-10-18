@@ -206,3 +206,45 @@ def compute_external_state(
         "total_acquired_cost": round(total_acquired_cost, 2),
         "total_release_proceeds": round(total_release_proceeds, 2),
     }
+
+
+def parse_fee_tiers(raw) -> list[tuple[int, float]]:
+    """赎回费阶梯: JSON '[[7, 0.015], [365, 0.005], [730, 0.0025]]' = 持有 <7 天 1.5%、<365 天 0.5%、
+    <730 天 0.25%, 超过最后一档 0。空/解析失败 = 无赎回费。"""
+    import json
+    if not raw:
+        return []
+    try:
+        tiers = json.loads(raw) if isinstance(raw, str) else raw
+        return sorted((int(d), float(r)) for d, r in tiers)
+    except Exception:
+        return []
+
+
+def redeem_fee(actions: Iterable[dict], redeem_id: int, shares: float, nav: float, on_date: str,
+               tiers: list[tuple[int, float]]) -> tuple[float, list[dict]]:
+    """按基金公司规则「先进先出算持有时间」逐 lot 计赎回费: 赎回金额 × 该 lot 持有天数对应费率。
+    lot 取这笔赎回之前(按 trade_date, 同日按 id)已确认的流水。持有天数 = 赎回日 − 申购日
+    (基金公司按份额确认日起算, 与这里差 1~2 天, 只在 7/365/730 天边界上可能跨档)。
+    返回 (总费用, 明细 [{date, shares, days, rate, fee}])。"""
+    if not tiers or shares <= 0 or nav <= 0:
+        return 0.0, []
+    rd = _parse_date(on_date)
+    key = (rd, redeem_id)
+    prior = [a for a in actions if a.get("id") != redeem_id
+             and (_parse_date(a.get("trade_date") or a.get("created_at")), a.get("id") or 0) < key]
+    lots = compute_external_state(prior, "FUND")["lots"]
+    remaining, total, detail = shares, 0.0, []
+    for lot in lots:
+        if remaining <= 1e-9:
+            break
+        take = min(remaining, lot.get("shares") or 0)
+        if take <= 0:
+            continue
+        days = (rd - _parse_date(lot["date"])).days
+        rate = next((r for d, r in tiers if days < d), 0.0)
+        fee = take * nav * rate
+        total += fee
+        detail.append({"date": lot["date"], "shares": round(take, 6), "days": days, "rate": rate, "fee": round(fee, 2)})
+        remaining -= take
+    return round(total, 2), detail
