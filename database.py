@@ -420,6 +420,29 @@ CREATE TABLE IF NOT EXISTS user_memory (
     replaces INTEGER,                          -- 覆盖了哪一条
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- 交易计划: 用户收盘后定的次日计划(见 services/trade_plan.py)。只对 plan_date 当天有效。
+CREATE TABLE IF NOT EXISTS trade_plan (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    plan_date TEXT NOT NULL,                   -- 生效的交易日 YYYY-MM-DD
+    code TEXT NOT NULL,
+    name TEXT DEFAULT '',
+    side TEXT NOT NULL,                        -- BUY | SELL
+    trigger_op TEXT NOT NULL,                  -- <= | >=
+    trigger_price REAL NOT NULL,
+    qty INTEGER,
+    reason TEXT DEFAULT '',
+    invalid_op TEXT,
+    invalid_price REAL,
+    status TEXT NOT NULL DEFAULT 'active',     -- active | triggered | invalidated | cancelled | expired
+    triggered_at TEXT,                         -- HH:MM:SS(北京时间)
+    triggered_price REAL,
+    invalidated_at TEXT,
+    invalidated_price REAL,
+    session_id INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_trade_plan_date ON trade_plan(plan_date, status);
 """
 
 

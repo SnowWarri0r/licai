@@ -10,6 +10,7 @@ import UnifiedPortfolio from './components/UnifiedPortfolio'
 import Rankings from './components/Rankings'
 import StockAsk from './components/StockAsk'
 import { GlobalStockModal } from './components/ask/stockOpener'
+import TradePlans, { PlanToast, PLAN_EVENT } from './components/TradePlans'
 import Settings from './components/Settings'
 import EditModal from './components/EditModal'
 import TransactionHistory from './components/TransactionHistory'
@@ -139,6 +140,10 @@ export default function App() {
   }, [hasForeign, loadPortfolio])
 
   const handleWsMessage = useCallback((msg) => {
+    if (msg.type === 'plan_alert') {        // 交易计划触发/失效: 弹提示 + 刷新计划卡
+      window.dispatchEvent(new CustomEvent(PLAN_EVENT, { detail: msg }))
+      return
+    }
     if (msg.type === 'price_update') {
       quotesRef.current = msg.data
       setMarketOpen(msg.market_open || false)
@@ -223,6 +228,7 @@ export default function App() {
 
     review: () => (
       <div className={`${PAD} space-y-3 md:space-y-4`}>
+        <TradePlans />
         <AITradeReview />
         <EntryReview />
       </div>
@@ -342,6 +348,7 @@ export default function App() {
       )}
       <StaleBundleNotice />
       <GlobalStockModal />
+      <PlanToast />
     </div>
   )
 }

@@ -40,6 +40,7 @@ from services import llm_client
 from api.portfolio_routes import router as portfolio_router
 from api.market_routes import router as market_router
 from api.settings_routes import router as settings_router
+from api.plan_routes import router as plan_router
 from api.assets_routes import router as assets_router
 from api.briefing_routes import router as briefing_router
 from api.sector_routes import router as sector_router
@@ -72,6 +73,40 @@ async def _symbol_dict_prewarm():
         raise
     except Exception as e:
         print(f"[startup] 搜股底表预热失败(搜索首次会现拉): {e}")
+
+
+async def plan_monitor_loop():
+    """交易计划盯价: A 股交易时段每 15 秒查一次, 触发/失效就推飞书 + 推页面。
+
+    不挂在 price_monitor_loop 上: 那条只在有浏览器连着时才跑, 盯计划要的是人不在屏幕前也能收到。
+    """
+    from api.ws import broadcast
+    from services import trade_plan as tp
+    from services.market_data import market_open
+
+    async def notify(text, ev):
+        try:
+            await feishu_notify.send_text(text)
+        except Exception as e:
+            print(f"[plan] 飞书推送失败: {e}")
+        await broadcast(ev)
+
+    last_expire = ""
+    while True:
+        try:
+            if last_expire != tp.today():
+                await tp.expire_old()          # 每天一次: 过了生效日还没触发的计划标过期
+                last_expire = tp.today()
+            if market_open("A"):
+                await tp.monitor_once(notify)
+                await asyncio.sleep(15)
+            else:
+                await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"[plan] 盯价出错: {e}")
+            await asyncio.sleep(30)
 
 
 @asynccontextmanager
@@ -110,6 +145,7 @@ async def lifespan(app: FastAPI):
     task9 = asyncio.create_task(eod_summary_loop())
     task10 = asyncio.create_task(_symbol_dict_prewarm())
     task11 = asyncio.create_task(rule_mine_loop())
+    task12 = asyncio.create_task(plan_monitor_loop())
     print(f"理财助手已启动: http://localhost:{config.port}")
     yield
     task1.cancel()
@@ -123,6 +159,7 @@ async def lifespan(app: FastAPI):
     task9.cancel()
     task10.cancel()
     task11.cancel()
+    task12.cancel()
 
 
 app = FastAPI(title="理财助手", lifespan=lifespan)
@@ -134,6 +171,7 @@ app.mount("/assets", StaticFiles(directory="static/assets"), name="assets")
 app.include_router(portfolio_router)
 app.include_router(market_router)
 app.include_router(settings_router)
+app.include_router(plan_router)
 app.include_router(assets_router)
 app.include_router(briefing_router)
 app.include_router(sector_router)
