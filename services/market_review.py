@@ -62,7 +62,42 @@ def _clist(fid: str, pz: int) -> list[dict]:
         out.extend(got)
         if len(got) < per:        # 末页, 后面没了
             break
+    if out:
+        _last_source["src"] = "东财"
+    else:
+        out = _sina_rank(fid, pz)
     return out[:pz]
+
+
+# 东财行情主机(push2*)整台被限流时的兜底: 新浪全市场排行。字段映射成 clist 的形状, 下游不用改;
+# 新浪没有行业/概念(f100/f103 留空), 所以这一路出来的画像缺"板块/概念扎堆", 其余(涨停数、
+# 领涨与吸金样本、风格)照常。_last_source 让上层在结果里注明数据源。
+_last_source = {"src": "东财"}
+
+
+def _sina_rank(fid: str, pz: int) -> list[dict]:
+    import requests as _rq
+    sort = {"f3": "changepercent", "f6": "amount"}.get(fid)
+    if not sort:
+        return []
+    out: list[dict] = []
+    for page in range(1, (int(pz) + 99) // 100 + 1):
+        try:
+            rows = _rq.get("https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+                           "Market_Center.getHQNodeData", timeout=8,
+                           params={"page": page, "num": 100, "sort": sort, "asc": 0, "node": "hs_a", "symbol": ""}
+                           ).json() or []
+        except Exception:
+            break
+        for x in rows:
+            out.append({"f12": x.get("code"), "f14": x.get("name"), "f2": x.get("trade"),
+                        "f3": x.get("changepercent"), "f6": x.get("amount"), "f8": x.get("turnoverratio"),
+                        "f10": None, "f20": (x.get("mktcap") or 0) * 1e4, "f100": "", "f103": ""})
+        if len(rows) < 100:
+            break
+    if out:
+        _last_source["src"] = "新浪(东财行情主机限流时的备用源, 无行业/概念, 板块扎堆缺失)"
+    return out
 
 
 def _row(x: dict) -> dict | None:
@@ -141,6 +176,17 @@ def scan_strong_stocks() -> dict:
                 "风格: 小盘高换手占比高=妖股/题材投机, 大盘低换手占比高=趋势/机构。"
                 "板块/概念扎堆=今日资金主线。已剔除 ST/退市。",
     }
+    out["数据源"] = _last_source["src"]
+    if not out.get("板块扎堆") and not out.get("概念扎堆"):
+        # 新浪排行没有行业/概念, 扎堆聚合是空的。东财资金流接口(另一台主机)有同口径的板块涨幅+主力净流入榜, 补上
+        try:
+            from services import em_dataapi as _em
+            out["行业涨幅前列"] = [{"板块": b["name"], "涨跌幅": b["pct"], "主力净流入亿": b["net_yi"]}
+                                 for b in _em.boards("行业")[:10]]
+            out["概念涨幅前列"] = _em.hot_concepts(10)
+            out["数据源"] += "; 行业/概念榜来自东财资金流接口"
+        except Exception:
+            pass
     _cache["scan"] = (out, _t.time())
     return out
 

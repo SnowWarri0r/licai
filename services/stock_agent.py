@@ -15,6 +15,7 @@ import services.llm_client as _llm
 import services.answer_guard as _guard
 import services.user_memory as _user_memory
 import services.sina_boards as _sina_boards
+import services.em_dataapi as _em_dataapi
 import services.trade_plan as _trade_plan
 # 系统提示拆成常驻核心 + 按需技能包, 见 services/agent_guides.py
 from services.agent_guides import (CORE as _SYSTEM, ALL_TEXT as _PROMPT_ALL,  # noqa: F401
@@ -3039,14 +3040,15 @@ async def _tool_hot_concepts(top: int = 15) -> dict:
     """今日热门概念榜(概念粒度, 比行业细): 涨幅 + 主力净流入。看量化/资金在冲哪个具体概念。"""
     out = await asyncio.to_thread(_fetch_hot_concepts_sync, int(top or 15))
     if not out:
-        # 东财按 IP 限流脚本时整张概念榜拉不到, 换新浪概念板块(口径不同, 无主力净流入)
-        try:
-            alt = await asyncio.to_thread(_sina_boards.hot_concepts, int(top or 15))
-        except Exception:
-            alt = []
-        if alt:
-            return {"top_concepts": alt, "数据源": _sina_boards.SOURCE,
-                    "note": "按最新交易日涨幅排序; 东财概念榜当前被限流, 这是新浪概念板块"}
+        # 东财行情主机被限流时: 先走东财资金流接口(同口径), 再退新浪概念板块(口径不同, 无主力净流入)
+        for mod, note in ((_em_dataapi, "按最新交易日涨幅排序; 主力净流入正=资金流入"),
+                          (_sina_boards, "按最新交易日涨幅排序; 东财当前被限流, 这是新浪概念板块")):
+            try:
+                alt = await asyncio.to_thread(mod.hot_concepts, int(top or 15))
+            except Exception:
+                alt = []
+            if alt:
+                return {"top_concepts": alt, "数据源": mod.SOURCE, "note": note}
         return {"error": "概念榜暂不可达(东财限流, 新浪备用源也未取到), 请改用行业级 get_sector_momentum"}
     return {"top_concepts": out, "note": "按最新交易日涨幅排序; 主力净流入正=资金流入"}
 
@@ -3114,7 +3116,7 @@ def _fetch_board_stocks_sync(name: str, top: int = 12) -> dict:
             return alt
         if not list_ok:
             # 板块列表本身没拉下来(东财限流), 不是名字不对 —— 报成"找不到"会让模型去换名字瞎试
-            return {"error": f"板块列表暂不可达(东财限流, 新浪备用源也没找到「{name}」), 稍后再试"}
+            return {"error": f"板块列表暂不可达(东财限流, 备用源也没找到「{name}」), 稍后再试"}
         return {"error": f"找不到板块/概念「{name}」(试试更标准的名字, 或先用 get_hot_concepts 看在榜的概念名)"}
     bk, std, kind = resolved
     hdr = {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
@@ -3144,7 +3146,20 @@ def _fetch_board_stocks_sync(name: str, top: int = 12) -> dict:
 
 
 def _sina_board_stocks(name: str, top: int) -> dict | None:
-    """东财拉不到时按名字去新浪找同名/相近板块。找不到返回 None, 由调用方决定怎么报错。"""
+    """东财行情主机拉不到时的兜底: 先东财资金流接口(同一套 BK 口径), 再新浪同名/相近板块。
+    都找不到返回 None, 由调用方决定怎么报错。"""
+    try:
+        b = _em_dataapi.find_board(name)
+        rows = _em_dataapi.board_stocks(b["code"], top) if b else []
+    except Exception:
+        rows = []
+    if rows:
+        return {"板块": b["name"], "类型": b["kind"], "code": b["code"],
+                "top_stocks": [{"name": r["name"], "code": r["code"], "涨跌幅": r["pct"],
+                                "主力净流入亿": r["net_yi"]} for r in rows],
+                "数据源": _em_dataapi.SOURCE,
+                "note": f"「{b['name']}」成分股按最新交易日涨幅排序; 主力净流入正=资金净买入。"
+                        "这条通道不带现价/换手, 需要时对具体个股调 get_quote。"}
     try:
         b = _sina_boards.find_board(name)
         rows = _sina_boards.board_stocks(b["node"], top) if b else []
