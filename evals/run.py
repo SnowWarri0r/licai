@@ -91,6 +91,8 @@ async def run_one(case, verbose=False, ground=None):
         "prompt_tokens": used["prompt_total"] - before["prompt_total"],
         "cache_read": used["cache_read"] - before["cache_read"],
         "answer_chars": len(ans),
+        "unsourced": r.get("unsourced") or [],      # 数字溯源影子统计
+        "guard_repaired": bool(r.get("guard_repaired")),
     }
 
 
@@ -175,6 +177,12 @@ async def main():
         line += f", 单次通过 {single}/{total} ({single / total * 100:.0f}%)"
     if tok:
         line += f"\nprompt {_fmt(tok)} tokens, 缓存命中 {hit / tok * 100:.0f}%"
+    tagged = [r for r in rows if "[实测]" in (r.get("answer") or "")]
+    if tagged:
+        nmiss = sum(len(r.get("unsourced") or []) for r in tagged)
+        withmiss = sum(1 for r in tagged if r.get("unsourced"))
+        line += (f"\n数字溯源(影子): 带[实测]的回答 {len(tagged)} 份, 其中 {withmiss} 份有找不到出处的数字,"
+                 f" 共 {nmiss} 个")
     print(line)
     flaky = [n for n, st in ran.items() if len(set(st)) > 1]
     if flaky:

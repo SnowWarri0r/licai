@@ -479,7 +479,17 @@ async def rules_decide(rule_id: int, decision: str):
 async def memory_list():
     from services import user_memory as um
     items = await um.list_all()
-    return {"items": items, "n_active": sum(1 for m in items if m["status"] == "active")}
+    return {"items": items, "n_active": sum(1 for m in items if m["status"] == "active"),
+            "n_pending": sum(1 for m in items if m["status"] == "pending")}
+
+
+@router.post("/memory/{mid}/approve")
+async def memory_approve(mid: int):
+    """批准一条待确认的画像(agent 在读过网页/新闻/帖子后记下的, 可能并非用户原话)。"""
+    from services import user_memory as um
+    if not await um.approve(mid):
+        raise HTTPException(status_code=404, detail=f"没有待确认的 #{mid}")
+    return {"ok": True, "id": mid}
 
 
 @router.delete("/memory/{mid}")

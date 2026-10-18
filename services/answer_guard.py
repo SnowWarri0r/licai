@@ -93,8 +93,103 @@ def _index_rows(g: dict):
                     yield row["name"], row
 
 
+# ── R6 数字溯源: 标了 [实测] 的数字必须能在本轮工具返回里找到出处 ──
+#
+# [实测] 是答案对用户的承诺: "这个数是接口返回的"。模型会把记忆里的数、心算的数也标成
+# [实测](评测里见过市值差一个数量级)。FinGround 一类的做法是逐个数字回溯到证据 —— 这里
+# 用确定性匹配: 容忍四舍五入与 元/万/亿、小数/百分比 的换算, 其余对不上的就是无出处。
+# 先只统计不触发修复(影子模式), 用评测量出误报率再决定是否打开。
+
+_NUM_TOKEN = re.compile(
+    r"(?<![\d.\-/:])([+\-]?\d[\d,]*(?:\.\d+)?)\s*(%|％|元|万亿|万|亿|倍|股|份)?(?![\d\-/:月日])")
+_TAG = "[实测]"
+
+
+def _tool_numbers(tool_outs: dict) -> list[float]:
+    """把本轮全部工具返回值里的数摊平(含字符串里写着的数), 去重。"""
+    seen: set = set()
+
+    def walk(v):
+        if isinstance(v, bool):
+            return
+        if isinstance(v, (int, float)):
+            seen.add(float(v))
+        elif isinstance(v, str):
+            for m in re.finditer(r"-?\d[\d,]*(?:\.\d+)?", v):
+                try:
+                    seen.add(float(m.group().replace(",", "")))
+                except ValueError:
+                    pass
+        elif isinstance(v, dict):
+            for x in v.values():
+                walk(x)
+        elif isinstance(v, (list, tuple)):
+            for x in v:
+                walk(x)
+    for outs in (tool_outs or {}).values():
+        for o in outs:
+            walk(o)
+    return list(seen)
+
+
+def _decimals(tok: str) -> int:
+    return len(tok.split(".")[1]) if "." in tok else 0
+
+
+def _matches(x: float, dec: int, unit: str, pool: list[float]) -> bool:
+    tol = 0.5 * 10 ** -dec + 1e-9
+    scales = [1.0, -1.0]
+    if unit in ("%", "％"):
+        scales += [100.0, -100.0]           # 0.0229 → 2.29%
+    if unit == "亿":
+        scales += [1e-8, 1e-4]              # 元 → 亿, 万 → 亿
+    if unit == "万":
+        scales += [1e-4]
+    if unit == "万亿":
+        scales += [1e-12, 1e-4]             # 元 → 万亿, 亿 → 万亿
+    for v in pool:
+        for k in scales:
+            if abs(v * k - x) <= max(tol, abs(x) * 0.005):
+                return True
+    return False
+
+
+def unsourced_numbers(ans: str, tool_outs: dict) -> list[str]:
+    """标了 [实测] 的行里, 在工具返回中找不到出处的数字(原文片段)。"""
+    pool = _tool_numbers(tool_outs)
+    if not pool:
+        return []
+    miss = []
+    for line in (ans or "").splitlines():
+        if _TAG not in line:
+            continue
+        for m in _NUM_TOKEN.finditer(line):
+            tok, unit = m.group(1), m.group(2) or ""
+            if not unit and "." not in tok:
+                continue                     # 不带单位的整数多是计数/序号/年份, 不查
+            try:
+                x = float(tok.replace(",", ""))
+            except ValueError:
+                continue
+            if not _matches(x, _decimals(tok.replace(",", "")), unit, pool):
+                miss.append(tok + unit)
+    return miss
+
+
+def _provenance_enforced() -> bool:
+    import os
+    return os.environ.get("ANSWER_GUARD_PROVENANCE", "").lower() in ("1", "true", "yes")
+
+
 def inspect(ans: str, tools: list, tool_outs: dict) -> list[str]:
-    return global_checks(ans, tools) + check_against_tools(ans, tools, tool_outs)
+    bad = global_checks(ans, tools) + check_against_tools(ans, tools, tool_outs)
+    if _provenance_enforced():
+        miss = unsourced_numbers(ans, tool_outs)
+        if miss:
+            bad.append("这些标了[实测]的数字在本轮工具返回里找不到出处: " + ", ".join(miss[:8])
+                       + "。逐个核对: 来自工具的改成工具原值; 由计算得出的用 calc 算过再写; "
+                         "找不到依据的改为定性表述并去掉[实测]")
+    return bad
 
 
 REPAIR_PROMPT = (

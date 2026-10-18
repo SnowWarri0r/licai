@@ -415,7 +415,7 @@ CREATE INDEX IF NOT EXISTS idx_prompt_rule_status ON prompt_rule(status, id);
 CREATE TABLE IF NOT EXISTS user_memory (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     fact TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'active',     -- active | replaced | deleted
+    status TEXT NOT NULL DEFAULT 'active',     -- active | pending(读过外部文本后记的, 待批准) | replaced | deleted
     session_id INTEGER,                        -- 在哪个会话里记下的
     replaces INTEGER,                          -- 覆盖了哪一条
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
