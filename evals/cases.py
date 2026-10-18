@@ -203,7 +203,8 @@ def check_index_amount_currency(ans, tools, g):
         bad.append("提了恒生成交额但没带港元")
     if re.search(r"KOSPI[^。\n]{0,60}成交额", ans) and "韩元" not in ans:
         bad.append("提了 KOSPI 成交额但没带韩元")
-    m = re.search(r"(纳斯达克|标普|道琼斯)[^。\n]{0,30}成交额\s*[\d,.]+", ans)
+    # 金额必须以数字开头: "不披露成交额," 后面跟的逗号不算编数(2026-10-14 误报过)
+    m = re.search(r"(纳斯达克|标普|道琼斯)[^。\n]{0,30}成交额\s*[:：]?\s*\d[\d,.]*", ans)
     if m:
         bad.append(f"给美股指数编了成交额: {m.group()[:40]!r}")
     return bad
