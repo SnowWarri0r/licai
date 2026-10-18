@@ -1,4 +1,5 @@
 """追问时沿用上一轮解析出的代码(简称被重新解析成另一只同名票)。"""
+import services.stock_agent as sa
 from services.stock_agent import _harvest_entities, _seed_messages, _state_block
 
 
@@ -27,3 +28,19 @@ def test_state_goes_before_question_in_user_message():
 def test_no_state_keeps_plain_string():
     assert _state_block(None) == ""
     assert _seed_messages("hi", [], None, None)[-1]["content"] == "hi"
+
+
+def test_earlier_block_keeps_recent_turns_within_budget():
+    turns = [{"q": f"问题{i}", "a": "答" * 2000} for i in range(10)]
+    b = sa._state_block({"earlier": turns})
+    assert "问题9" in b and "问题0" not in b          # 从最近的往前取
+    assert "更早还有" in b
+    assert len(b) < sa._EARLIER_BUDGET + 600
+    assert b.index("问题8") < b.index("问题9")        # 列出时仍按时间顺序
+
+
+def test_state_block_combines_earlier_and_entities():
+    b = sa._state_block({"earlier": [{"q": "哪些少吸了", "a": "少吸 1200 股"}],
+                         "entities": [{"code": "588080", "name": "科创50ETF"}]})
+    assert "少吸 1200 股" in b and "588080" in b
+    assert b.index("更早的对话") < b.index("已确认的标的")

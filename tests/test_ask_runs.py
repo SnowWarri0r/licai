@@ -149,7 +149,9 @@ def test_followup_reuses_the_same_session(temp_db, runs, monkeypatch):
     async def main():
         a = await runs.start("茅台今天怎么了")
         await a.task
-        b = await runs.start("那明天呢", session_id=a.session_id)
+        b = await runs.start("那明天呢", session_id=a.session_id,
+                             history=[{"role": "user", "content": "茅台今天怎么了"},
+                                      {"role": "assistant", "content": "x"}])
         await b.task
         return a, b
 
@@ -375,9 +377,42 @@ def test_entities_carry_to_next_turn(temp_db, runs, monkeypatch):
         a = await runs.start("医药今天怎样")
         await a.task
         monkeypatch.setattr(runs, "ask_stock_stream", agent(second))
-        b = await runs.start("那分时呢", session_id=a.session_id)
+        b = await runs.start("那分时呢", session_id=a.session_id,
+                             history=[{"role": "user", "content": "医药今天怎样"},
+                                      {"role": "assistant", "content": "a"}])
         await b.task
 
     asyncio.run(main())
     assert seen[0] is None
     assert seen[1] == {"entities": [ent]}
+
+
+def test_turns_beyond_frontend_window_become_earlier(temp_db, runs, monkeypatch):
+    """前端只带最近几轮原文; 更早的轮次从库里取出来, 作为 state.earlier 交给 agent。"""
+    seen = []
+
+    def agent(text):
+        async def gen(question, history=None, images=None, state=None):
+            seen.append(state)
+            yield {"type": "answer", "text": text}
+            yield {"type": "done"}
+        return gen
+
+    async def main():
+        monkeypatch.setattr(runs, "ask_stock_stream", agent("少吸 1200 股"))
+        a = await runs.start("哪些少吸了")
+        await a.task
+        monkeypatch.setattr(runs, "ask_stock_stream", agent("红利是股息高的一类"))
+        b = await runs.start("红利是啥", session_id=a.session_id,
+                             history=[{"role": "user", "content": "哪些少吸了"},
+                                      {"role": "assistant", "content": "少吸 1200 股"}])
+        await b.task
+        # 第三问: 前端窗口只带上一轮, 第一轮滑出窗口
+        c = await runs.start("那几个怎么接回来", session_id=a.session_id,
+                             history=[{"role": "user", "content": "红利是啥"},
+                                      {"role": "assistant", "content": "红利是股息高的一类"}])
+        await c.task
+
+    asyncio.run(main())
+    assert seen[1] is None
+    assert seen[2] == {"earlier": [{"q": "哪些少吸了", "a": "少吸 1200 股"}]}

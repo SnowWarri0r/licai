@@ -3750,14 +3750,46 @@ def _harvest_entities(tus: list, outs: list, acc: dict) -> None:
             ent["q"] = q
 
 
-def _state_block(state: dict | None) -> str:
-    ents = (state or {}).get("entities") or []
-    if not ents:
+# 移出窗口的早先轮次: 每轮留问题原文 + 答案开头(答案按规范结论先行, 开头就是要点)。
+# 总量封顶, 从最近的往前取 —— 越早的轮次越不可能被"那几个/刚才说的"指到。
+_EARLIER_Q_CHARS = 150
+_EARLIER_A_CHARS = 600
+_EARLIER_BUDGET = 3000
+
+
+def _earlier_block(turns: list) -> str:
+    picked, used = [], 0
+    for t in reversed(turns or []):
+        q = " ".join((t.get("q") or "").split())[:_EARLIER_Q_CHARS]
+        a = (t.get("a") or "").strip()
+        a = a[:_EARLIER_A_CHARS] + ("…" if len(a) > _EARLIER_A_CHARS else "")
+        item = f"问: {q}\n答(开头): {a}"
+        if picked and used + len(item) > _EARLIER_BUDGET:
+            break
+        picked.append(item)
+        used += len(item)
+    if not picked:
         return ""
-    items = [f"{e['name']}({e['code']}" + (f", 用户称'{e['q']}'" if e.get("q") else "") + ")"
-             for e in ents[-12:]]
-    return ("【本会话前文已确认的标的】" + "; ".join(items)
-            + "。此轮提到的称呼与其中某只对应时沿用该代码; 用户明确改指别的标的时以新说法为准。")
+    skipped = len(turns) - len(picked)
+    head = ("【本会话更早的对话(已移出上下文窗口, 答案只保留开头)】"
+            + (f"更早还有 {skipped} 轮未列出。" if skipped else "") + "\n")
+    return (head + "\n---\n".join(reversed(picked))
+            + "\n此轮提到'那几个/刚才说的'等指代时, 先在这里和下面的对话中对应; "
+              "需要完整数字时重新调用工具取数。")
+
+
+def _state_block(state: dict | None) -> str:
+    parts = []
+    earlier = _earlier_block((state or {}).get("earlier") or [])
+    if earlier:
+        parts.append(earlier)
+    ents = (state or {}).get("entities") or []
+    if ents:
+        items = [f"{e['name']}({e['code']}" + (f", 用户称'{e['q']}'" if e.get("q") else "") + ")"
+                 for e in ents[-12:]]
+        parts.append("【本会话前文已确认的标的】" + "; ".join(items)
+                     + "。此轮提到的称呼与其中某只对应时沿用该代码; 用户明确改指别的标的时以新说法为准。")
+    return "\n\n".join(parts)
 
 
 def _seed_messages(question: str, history: list | None, images: list | None = None,

@@ -136,14 +136,29 @@ async def _drive(run: Run, events) -> None:
     await run.flush(force=True)             # 收尾这次必写: 内存里的会被 GC, 盘上的留着
 
 
-async def session_state(session_id: int) -> dict | None:
-    """会话里前几轮确认过的标的, 按出现先后合并(同一代码后出现的覆盖前面的称呼)。"""
+def _earlier_turns(msgs: list, window: int) -> list[dict]:
+    """前端只带最近几轮原文; 更早的轮次成对取出(问, 答), 给 agent 拼一段压缩回顾。"""
+    old = msgs[:max(0, len(msgs) - window)]
+    turns, q = [], None
+    for m in old:
+        if m.get("role") == "user":
+            q = m.get("content") or ""
+        elif m.get("role") == "assistant" and q is not None:
+            turns.append({"q": q, "a": m.get("content") or ""})
+            q = None
+    return turns
+
+
+async def session_state(session_id: int, window: int = 0) -> dict | None:
+    """会话里前几轮确认过的标的(按出现先后合并, 同一代码后出现的覆盖前面的称呼),
+    以及前端没带上的更早轮次(window = 前端带了几条原文)。"""
     try:
         sess = await get_ask_session(session_id)
     except Exception:
         return None
+    msgs = (sess or {}).get("messages") or []
     merged: dict = {}
-    for m in (sess or {}).get("messages") or []:
+    for m in msgs:
         if m.get("role") != "assistant" or not m.get("meta"):
             continue
         try:
@@ -154,7 +169,13 @@ async def session_state(session_id: int) -> dict | None:
             if e.get("code"):
                 prev = merged.pop(e["code"], {})       # 挪到末尾: 最近提到的排后面, 截断时留下
                 merged[e["code"]] = {**prev, **e}
-    return {"entities": list(merged.values())} if merged else None
+    out: dict = {}
+    if merged:
+        out["entities"] = list(merged.values())
+    earlier = _earlier_turns(msgs, window)
+    if earlier:
+        out["earlier"] = earlier
+    return out or None
 
 
 async def start(question: str, *, agent_question: Optional[str] = None,
@@ -168,7 +189,8 @@ async def start(question: str, *, agent_question: Optional[str] = None,
     events 可传一条自定义事件流(如多视角对抗); 不传就走默认的问答 agent。
     """
     _gc()
-    state = await session_state(session_id) if session_id and events is None else None
+    state = (await session_state(session_id, len(history or []))
+             if session_id and events is None else None)
     if not session_id:
         session_id = await create_ask_session((title or question)[:80])
     await add_ask_message(session_id, "user", question,
