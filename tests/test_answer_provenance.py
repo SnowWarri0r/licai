@@ -13,7 +13,7 @@ def test_sourced_numbers_pass_with_rounding_and_units():
 
 
 def test_unsourced_flagged():
-    assert U("- 总市值约 2.83 万亿, 量比 1.87 [实测]", OUTS) == ["2.83万亿", "1.87"]
+    assert U("- 总市值约 2.83 万亿[实测], 量比 1.87 [实测]", OUTS) == ["2.83万亿", "1.87"]
 
 
 def test_untagged_lines_and_dates_ignored():
@@ -31,3 +31,12 @@ def test_required_lookups_by_loaded_guide():
     assert len(bad) == 1 and "get_intraday" in bad[0]
     assert missing_lookups(["load_guide", "get_quote", "get_trend", "get_intraday"], outs) == []
     assert missing_lookups(["get_quote"], {}) == []
+
+
+def test_only_the_clause_before_tag_is_checked():
+    """2026-10-13 评测里 4 份被标记的回答全是同一行别的分句的数(联网/规则常数/复述上一轮)。"""
+    ans = ("- 行权价是 206.58 美元,迈威尔科技昨收 370.48 美元[实测],目前行权价低于股价。\n"
+           "- 盘口印证 [实测]：按 20% 算, 涨停价 1.038\n"
+           "你现在涨了 **2.29%**[实测], 上一轮给的 +2,058 元只是 A 股")
+    assert U(ans, OUTS) == []
+    assert U("今天量比 1.87[实测]", OUTS) == ["1.87"]

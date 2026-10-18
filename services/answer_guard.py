@@ -173,16 +173,37 @@ def _matches(x: float, dec: int, unit: str, pool: list[float]) -> bool:
     return False
 
 
+_CLAUSE_END = re.compile(r"[，。；;!?！？\n]|,(?!\d)")
+
+
+def _tagged_clauses(ans: str) -> list[str]:
+    """[实测] 标的是它前面那个分句, 不是整行。
+
+    按整行查, 同一行里带 ⟦N⟧ 的联网数字、规则常数("按 20% 算")、复述上一轮的数都会被误报
+    (2026-10-13 评测: 4 份被标记的回答全是这类)。
+    """
+    out = []
+    text = ans or ""
+    pos = 0
+    while True:
+        i = text.find(_TAG, pos)
+        if i < 0:
+            return out
+        head = text[:i]
+        starts = [m.end() for m in _CLAUSE_END.finditer(head)]
+        start = max([0] + starts + [text.rfind(_TAG, 0, i) + len(_TAG) if text.rfind(_TAG, 0, i) >= 0 else 0])
+        out.append(text[start:i])
+        pos = i + len(_TAG)
+
+
 def unsourced_numbers(ans: str, tool_outs: dict) -> list[str]:
-    """标了 [实测] 的行里, 在工具返回中找不到出处的数字(原文片段)。"""
+    """标了 [实测] 的分句里, 在工具返回中找不到出处的数字(原文片段)。"""
     pool = _tool_numbers(tool_outs)
     if not pool:
         return []
     miss = []
-    for line in (ans or "").splitlines():
-        if _TAG not in line:
-            continue
-        for m in _NUM_TOKEN.finditer(line):
+    for seg in _tagged_clauses(ans):
+        for m in _NUM_TOKEN.finditer(seg):
             tok, unit = m.group(1), m.group(2) or ""
             if not unit and "." not in tok:
                 continue                     # 不带单位的整数多是计数/序号/年份, 不查
