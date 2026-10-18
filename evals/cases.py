@@ -148,8 +148,11 @@ def check_company_listed(ans, tools, g):
 
 async def fetch_total_pnl():
     a = await _tool("get_asset_allocation")
-    total = a.get("总盈亏") or a.get("total_pnl")
-    return {"total": float(total) if total not in (None, "") else None}
+    # 总盈亏在 pnl 子字典里; 之前读顶层恒为 None, 数字比对被静默跳过了
+    total = (a.get("pnl") or {}).get("总盈亏")
+    if total in (None, ""):
+        return {"skip": f"get_asset_allocation 没给总盈亏: {a.get('error') or list(a)}"}
+    return {"total": float(total)}
 
 
 def check_total_pnl(ans, tools, g):

@@ -5,6 +5,11 @@
     ./venv/bin/python evals/run.py --list          # 只列用例
     ./venv/bin/python evals/run.py -c us_premarket # 跑单条(前缀匹配)
     ./venv/bin/python evals/run.py --db portfolio.db   # 换账本(默认 demo)
+    ./venv/bin/python evals/run.py -n 3            # 每条跑 3 次, 报 pass^3(3 次全过才算过)
+
+为什么要 pass^k: 同一条实测一次挂一次过, 单次通过率会高估稳定性。单次 75% 的用例
+3 次全过只有约 42% —— 用户每次提问碰到的是单次结果, 要的是"每次都对"。
+每轮结果(含答案与工具序列)写 logs/eval-<时间>.json, 改架构前后拿两份对比。
 
 为什么走真实链路而不是 mock: 这一整天的翻车里 3/4 出在取数(字段没读、源没覆盖),
 mock 掉工具就正好把要防的那部分屏蔽了。代价是每跑一次要花模型额度, 所以支持单条跑。
@@ -49,19 +54,22 @@ def _dump(row: dict) -> str:
         return ""
 
 
-async def run_one(case, verbose=False):
+async def run_one(case, verbose=False, ground=None):
     import services.stock_agent as sa
     import services.llm_client as llm
     from evals.cases import global_checks
 
     name = case["name"]
-    ground = await case["fetch"]()
+    if ground is None:
+        ground = await case["fetch"]()
     if isinstance(ground, dict) and ground.get("skip"):
         return {"name": name, "status": "skip", "why": ground["skip"]}
+    q = case["question"]
+    question = q(ground) if callable(q) else q
 
     t0 = time.time()
     before = llm.get_usage_stats()
-    r = await sa.ask_stock(case["question"])
+    r = await sa.ask_stock(question, history=case.get("history"))
     used = llm.get_usage_stats()
     ans, tools = (r.get("answer") or ""), (r.get("tools_used") or [])
 
@@ -73,12 +81,12 @@ async def run_one(case, verbose=False):
         fails += global_checks(ans, tools)
 
     if verbose:
-        print(f"\n---- {name} ----\n问: {case['question']}\n答:\n{ans}\n")
+        print(f"\n---- {name} ----\n问: {question}\n答:\n{ans}\n")
 
     return {
         "name": name, "status": "fail" if fails else "pass", "fails": fails,
         "answer": ans,
-        "question": case["question"], "tools": tools, "rounds": r.get("rounds"),
+        "question": question, "tools": tools, "rounds": r.get("rounds"),
         "secs": round(time.time() - t0, 1),
         "prompt_tokens": used["prompt_total"] - before["prompt_total"],
         "cache_read": used["cache_read"] - before["cache_read"],
@@ -92,6 +100,7 @@ async def main():
     ap.add_argument("--list", action="store_true")
     ap.add_argument("-v", "--verbose", action="store_true", help="打印完整问答")
     ap.add_argument("--db", default="portfolio.demo.db")
+    ap.add_argument("-n", "--repeat", type=int, default=1, help="每条跑几次, 报 pass^n")
     args = ap.parse_args()
 
     import config
@@ -102,7 +111,12 @@ async def main():
     else:
         print(f"! 找不到 {args.db}, 用默认账本(真实持仓会进 prompt)")
 
-    from evals.cases import CASES
+    from evals.cases import CASES as _C1
+    try:     # 第二批取自真实对话(含个人持仓), 只在本机, 不进仓
+        from evals.cases_conv import CASES as _C2
+    except ImportError:
+        _C2 = []
+    CASES = _C1 + _C2
     picked = [c for c in CASES if c["name"].startswith(args.case)]
     if args.list:
         for c in CASES:
@@ -113,39 +127,72 @@ async def main():
         print(f"没有匹配 {args.case!r} 的用例")
         return 2
 
-    print(f"账本={config.config.db_path}  用例={len(picked)}\n")
-    rows = []
+    print(f"账本={config.config.db_path}  用例={len(picked)}  每条 {args.repeat} 次\n")
+    rows, per_case = [], {}
     for c in picked:
+        # 真值每条只取一次: 同一用例的 n 次之间行情不该变, 否则 pass^n 混进了数据漂移
         try:
-            rows.append(await run_one(c, args.verbose))
+            ground = await c["fetch"]()
         except Exception as e:
-            rows.append({"name": c["name"], "status": "error",
-                         "fails": [f"{type(e).__name__}: {e}"],
-                         "secs": 0, "prompt_tokens": 0, "cache_read": 0, "tools": []})
-        r = rows[-1]
-        mark = {"pass": "PASS", "fail": "FAIL", "skip": "SKIP", "error": "ERR "}[r["status"]]
-        extra = f"{r.get('secs', 0)}s {_fmt(r.get('prompt_tokens', 0))}tok" \
-            if r["status"] != "skip" else r.get("why", "")
-        print(f"  [{mark}] {r['name']:34} {extra}")
-        for msg in r.get("fails", []):
-            print(f"         · {msg}")
-        # 失败的答案落盘。这些用例每跑一条十万 token 且答案不稳定(同一条实测一次挂一次过),
-        # 当场留证比"回头重跑看看"靠谱 —— 不然分不清是真答错还是断言误报。
-        if r["status"] == "fail" and r.get("answer") and not args.verbose:
-            p = _dump(r)
-            if p:
-                print(f"         · 答案已存 {p}")
+            ground = {"skip": f"取真值失败 {type(e).__name__}: {e}"}
+        for k in range(args.repeat):
+            try:
+                r = await run_one(c, args.verbose, ground)
+            except Exception as e:
+                r = {"name": c["name"], "status": "error",
+                     "fails": [f"{type(e).__name__}: {e}"],
+                     "secs": 0, "prompt_tokens": 0, "cache_read": 0, "tools": []}
+            r["try"] = k + 1
+            rows.append(r)
+            per_case.setdefault(c["name"], []).append(r["status"])
+            mark = {"pass": "PASS", "fail": "FAIL", "skip": "SKIP", "error": "ERR "}[r["status"]]
+            extra = f"{r.get('secs', 0)}s {_fmt(r.get('prompt_tokens', 0))}tok" \
+                if r["status"] != "skip" else r.get("why", "")
+            tag = f"{r['name']}#{k + 1}" if args.repeat > 1 else r["name"]
+            print(f"  [{mark}] {tag:36} {extra}")
+            for msg in r.get("fails", []):
+                print(f"         · {msg}")
+            # 失败的答案落盘。这些用例每跑一条十万 token 且答案不稳定(同一条实测一次挂一次过),
+            # 当场留证比"回头重跑看看"靠谱 —— 不然分不清是真答错还是断言误报。
+            if r["status"] == "fail" and r.get("answer") and not args.verbose:
+                p = _dump(r)
+                if p:
+                    print(f"         · 答案已存 {p}")
+            if r["status"] == "skip":
+                break
 
-    ok = sum(1 for r in rows if r["status"] == "pass")
-    bad = [r for r in rows if r["status"] in ("fail", "error")]
-    skipped = [r for r in rows if r["status"] == "skip"]
+    ran = {n: st for n, st in per_case.items() if "skip" not in st}
+    all_ok = [n for n, st in ran.items() if all(x == "pass" for x in st)]
+    single = sum(x == "pass" for st in ran.values() for x in st)
+    total = sum(len(st) for st in ran.values())
+    skipped = [n for n, st in per_case.items() if "skip" in st]
     tok = sum(r.get("prompt_tokens", 0) for r in rows)
     hit = sum(r.get("cache_read", 0) for r in rows)
-    line = f"\n通过 {ok} / 失败 {len(bad)} / 跳过 {len(skipped)}"
+    line = f"\n用例 {len(ran)} 条(跳过 {len(skipped)}): pass^{args.repeat} = {len(all_ok)}/{len(ran)}"
+    if args.repeat > 1 and total:
+        line += f", 单次通过 {single}/{total} ({single / total * 100:.0f}%)"
     if tok:
-        line += f"   prompt {_fmt(tok)} tokens, 缓存命中 {hit / tok * 100:.0f}%"
+        line += f"\nprompt {_fmt(tok)} tokens, 缓存命中 {hit / tok * 100:.0f}%"
     print(line)
-    return 1 if bad else 0
+    flaky = [n for n, st in ran.items() if len(set(st)) > 1]
+    if flaky:
+        print(f"时过时挂: {', '.join(flaky)}")
+    _save(rows, args)
+    return 0 if len(all_ok) == len(ran) else 1
+
+
+def _save(rows: list, args) -> None:
+    """整轮结果存 logs/(已 gitignore): 改架构前后对比要看答案和工具序列, 不只看通过数。"""
+    import json
+    try:
+        d = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
+        os.makedirs(d, exist_ok=True)
+        p = os.path.join(d, f"eval-{time.strftime('%Y%m%d-%H%M%S')}.json")
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump({"db": args.db, "repeat": args.repeat, "rows": rows}, f, ensure_ascii=False, indent=1)
+        print(f"明细: {os.path.relpath(p)}")
+    except Exception as e:
+        print(f"! 明细没存下来: {e}")
 
 
 if __name__ == "__main__":
