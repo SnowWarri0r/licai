@@ -127,6 +127,13 @@ async def main():
     else:
         print(f"! 找不到 {args.db}, 用默认账本(真实持仓会进 prompt)")
 
+    # 和服务启动走同一份配置(模型、代理、TDX、扩展数据源): 不然评测测的是线上不存在的降级路径
+    from services.startup_config import apply_saved_config
+    from services import tdx_client
+    await apply_saved_config()
+    if not tdx_client.is_enabled():
+        print("! TDX 未启用: 分时/盘口类用例会走降级路径, 与线上不一致")
+
     from evals.cases import CASES as _C1
     try:     # 第二批取自真实对话(含个人持仓), 只在本机, 不进仓
         from evals.cases_conv import CASES as _C2
