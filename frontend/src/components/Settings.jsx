@@ -5,6 +5,7 @@ import { ProviderSection } from './settings/ProviderSection'
 import { LLMConfigSection } from './settings/LLMConfigSection'
 import { OkxSpotSection } from './settings/OkxSpotSection'
 import { PromptRulesSection } from './settings/PromptRulesSection'
+import { UserMemorySection } from './settings/UserMemorySection'
 import { ProxySection } from './settings/ProxySection'
 import { ZsxqSection } from './settings/ZsxqSection'
 
@@ -222,6 +223,11 @@ export default function Settings({ onClose }) {
         {/* 从纠正里沉淀出来的规则(待审队列) */}
         <div className="mt-2 pt-4 border-t border-border">
           <PromptRulesSection />
+        </div>
+
+        {/* AI 记住的关于用户的事实(画像), 待确认的在这里批 */}
+        <div className="mt-2 pt-4 border-t border-border">
+          <UserMemorySection />
         </div>
 
         {/* 开源许可 */}
