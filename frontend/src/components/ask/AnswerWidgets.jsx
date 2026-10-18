@@ -146,7 +146,9 @@ function CompareWidget({ items, days, mode }) {
           {hover?.t && <span className="text-text-muted ml-auto">{hover.t}</span>}
         </div>
       )}
-      <div ref={wrapRef} style={{ height: 240 }} />
+      {d && !d.series?.length
+        ? <div className="px-3 py-6 text-[12px] text-text-muted">这几项都没取到可画的数据</div>
+        : <div ref={wrapRef} style={{ height: 240 }} />}
       {(d?.basis || d?.notes?.length > 0) && (
         <div className="px-2.5 pb-1.5 text-[10.5px] text-text-muted">{[d.basis, ...(d.notes || [])].filter(Boolean).join('; ')}</div>
       )}

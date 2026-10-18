@@ -61,24 +61,29 @@ async def _daily(it: dict, days: int) -> list[tuple[str, float]]:
     return []
 
 
-async def _intraday(it: dict) -> tuple[list[tuple[str, float]], str]:
-    """当日分时(个股/ETF), 返回 [(HH:MM, 价)] 与日期。指数和板块没有分时源, 返回空。"""
-    if it["kind"] != "code":
-        return [], ""
+async def _intraday(it: dict) -> tuple[list[tuple[str, float]], float | None]:
+    """当日分时, 返回 [(HH:MM, 价)] 与昨收。个股/ETF 与带 sh/sz/bj 前缀的指数都走 TDX
+    (指数必须带前缀, 裸 000001 会被当成平安银行); 板块没有分时源, 返回空。"""
     import services.tdx_client as tdx
     if not tdx.is_enabled():
-        return [], ""
-    d = await tdx.minute(re.sub(r"\D", "", it["key"])[-6:])
+        return [], None
+    if it["kind"] == "code":
+        key = re.sub(r"\D", "", it["key"])[-6:]
+    elif it["kind"] == "macro" and it["key"][:2].lower() in ("sh", "sz", "bj"):
+        key = it["key"].lower()
+    else:
+        return [], None
+    d, q = await asyncio.gather(tdx.minute(key), tdx.quote(key))
     pts = [(p["time"], float(p["price"])) for p in (d or {}).get("points") or [] if p.get("price")]
-    return pts, (d or {}).get("date") or ""
+    return pts, (q or {}).get("prev_close")
 
 
-def _normalize(rows: list[tuple[str, float]], start: str | None) -> list[dict]:
-    """从 start 那个点起算涨跌幅%。基准取 start 当天(或之后第一天)的收盘。"""
+def _normalize(rows: list[tuple[str, float]], start: str | None, base: float | None = None) -> list[dict]:
+    """从 start 那个点起算涨跌幅%。基准默认取 start 当天(或之后第一天)的收盘; 传了 base 就用它(分时用昨收)。"""
     rows = [r for r in rows if start is None or r[0] >= start]
     if not rows or not rows[0][1]:
         return []
-    base = rows[0][1]
+    base = base or rows[0][1]
     return [{"t": t, "pct": round((v / base - 1) * 100, 2)} for t, v in rows]
 
 
@@ -88,14 +93,19 @@ async def compare(items: list[str], days: int = 20, mode: str = "日") -> dict:
     out, notes = [], []
     if mode == "分时":
         fetched = await asyncio.gather(*[_intraday(it) for it in resolved])
-        for it, (rows, _day) in zip(resolved, fetched):
+        no_prev = []
+        for it, (rows, prev) in zip(resolved, fetched):
             if not rows:
-                notes.append(f"{it['label']} 没有分时数据(分时只支持个股/ETF)")
+                notes.append(f"{it['label']} 没有分时数据(分时支持个股/ETF和 sh/sz 开头的指数, 板块没有)")
                 continue
+            if not prev:
+                no_prev.append(it["label"])
             out.append({"label": it["label"], "code": it["key"] if it["kind"] == "code" else "",
-                        "points": _normalize(rows, None)})
-        return {"mode": "分时", "series": out, "notes": notes,
-                "basis": "以当日第一笔成交价为 0%"}
+                        "points": _normalize(rows, None, prev)})
+        basis = "以昨收为 0%(即当日涨跌幅)"
+        if no_prev:
+            basis += f"; {'、'.join(no_prev)} 取不到昨收, 以当日第一笔成交价为 0%"
+        return {"mode": "分时", "series": out, "notes": notes, "basis": basis}
     fetched = await asyncio.gather(*[_daily(it, days + 5) for it in resolved])
     # 对齐到所有序列共同的起点, 否则停牌/假期不同的几条线基准日不一样, 没法比
     have = [rows[-days:] for rows in fetched if rows]
