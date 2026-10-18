@@ -106,7 +106,7 @@ async def sector_trend_ai(days: int = 10, force: bool = False):
     )
     user_prompt = f"{held_line}\n\n{data_block}"
     try:
-        raw = await asyncio.to_thread(_llm.call_claude, user_prompt, system_prompt, "claude-opus-4-8", 1600)
+        raw = await asyncio.to_thread(_llm.call_claude, user_prompt, system_prompt, "claude-opus-5-5", 1600)
     except Exception as e:
         return {"summary": "", "trends": [], "holdings_note": "", "error": str(e)}
 

@@ -154,9 +154,9 @@ _RETRYABLE_EXC = (
 # 逻辑别名默认映射: 用户没配自定义 model_map 时, smart/balanced/fast 兜底到真实
 # Anthropic 模型, 否则"fast"会原样发出去被 404(测试连接/默认调用都受影响)。
 _DEFAULT_ALIASES = {
-    "smart": "claude-opus-4-8",
-    "balanced": "claude-sonnet-5",
-    "fast": "claude-sonnet-5",   # 不用 haiku, 最低也走 sonnet
+    "smart": "claude-opus-5-5",
+    "balanced": "claude-sonnet-5-5",
+    "fast": "claude-sonnet-5-5",   # 不用 haiku, 最低也走 sonnet
 }
 
 
@@ -233,17 +233,37 @@ def _mask_key(key: str) -> str:
 # Required: when using OAuth token, system prompt must begin with this identity
 CLAUDE_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude."
 
+# OAuth 走 Claude Code 订阅, 请求头要跟真 CLI 对得上。服务端按 User-Agent 里的版本卡模型:
+# 2026-10 实测 2.1.193 调 claude-opus-5-5 直接 400 "requires 2.1.280 or newer"。
+# 新模型报这类错时重抓一次真请求对照(mitmdump + HTTPS_PROXY + NODE_EXTRA_CA_CERTS 跑 claude -p),
+# 下面的值取自 2026-10-13 抓到的 2.1.296。beta 列表照抄, 只声明能力不改变未使用功能的行为。
+CLAUDE_CODE_VERSION = "2.1.296"
+CLAUDE_CODE_BETAS = ",".join([
+    "claude-code-20250219", "oauth-2025-04-20", "interleaved-thinking-2025-05-14",
+    "thinking-token-count-2026-05-13", "context-management-2025-06-27", "prompt-caching-scope-2026-01-05",
+    "mid-conversation-system-2026-04-07", "per-turn-control-2026-07-01",
+    "mid-conversation-tool-changes-2026-07-01", "inline-tools-2026-09-15", "advisor-tool-2026-03-01",
+    "advanced-tool-use-2025-11-20", "mid-conversation-system-clear-at-2026-08-21", "effort-2025-11-24",
+    "thinking-binding-controls-2026-08-01", "extended-cache-ttl-2025-04-11", "cache-diagnosis-2026-04-07",
+    "message-threads-2026-08-12",
+])
+
 CLAUDE_CODE_HEADERS = {
     "Accept": "application/json",
     "Content-Type": "application/json",
     "anthropic-version": "2023-06-01",
-    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20",
+    "anthropic-beta": CLAUDE_CODE_BETAS,
     "anthropic-dangerous-direct-browser-access": "true",
-    "User-Agent": "claude-cli/2.1.193 (external, cli)",
+    "User-Agent": f"claude-cli/{CLAUDE_CODE_VERSION} (external, cli)",
     "x-app": "cli",
+    "X-Stainless-Arch": "arm64",
     "X-Stainless-Lang": "js",
-    "X-Stainless-Package-Version": "0.94.0",
+    "X-Stainless-OS": "MacOS",
+    "X-Stainless-Package-Version": "0.128.0",
+    "X-Stainless-Retry-Count": "0",
     "X-Stainless-Runtime": "node",
+    "X-Stainless-Runtime-Version": "v26.3.0",
+    "X-Stainless-Timeout": "600",
 }
 
 _cached_token: str | None = None
@@ -676,7 +696,7 @@ def call_claude(
 def call_claude_messages(
     messages: list,
     system: str | None = None,
-    model: str = "claude-opus-4-8",
+    model: str = "claude-opus-5-5",
     max_tokens: int = 2048,
     tools: list | None = None,
 ) -> dict:

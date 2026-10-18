@@ -803,7 +803,7 @@ async def daily_review(force: bool = False):
     import json as _json
     try:
         raw = await asyncio.to_thread(
-            llm_client.call_claude, user_prompt, system_prompt, "claude-opus-4-8", 1500)
+            llm_client.call_claude, user_prompt, system_prompt, "claude-opus-5-5", 1500)
     except Exception as e:
         return {"summary": "复盘生成失败", "holdings": [], "sectors": [], "global": [], "tomorrow": [],
                 "error": str(e)[:160], "cached": False}
