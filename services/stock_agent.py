@@ -337,7 +337,10 @@ async def _tool_resolve_stock(query: str) -> dict:
                 continue
             sh = float(x.get("shares") or 0)
             at = x.get("asset_type")
-            has_bal = (x.get("manual_value") or x.get("cost_amount") or 0) and at not in ("FUND", "CRYPTO")
+            if at == "WEALTH":   # 理财本金已全部赎回(剩余本金 0)即已清, 残留的 manual_value 不算余额(同 assets_routes._enrich)
+                has_bal = float(x.get("cost_amount") or 0) > 0
+            else:
+                has_bal = (x.get("manual_value") or x.get("cost_amount") or 0) and at not in ("FUND", "CRYPTO")
             hit = {"code": cd or nm, "name": nm,
                    "asset_class": _ASSET_CLASS_CN.get(at, "其他持仓")}
             if sh > 0 or has_bal:
@@ -2635,11 +2638,16 @@ async def _tool_get_holdings() -> dict:
             from database import list_external_assets, list_external_actions
             from services.external_ledger import compute_external_state
             from services.external_assets import _is_onchain_etf
-            for x in await list_external_assets():
+            # 金额取资产看板算好的 current_value(与 get_asset_allocation 同源): manual_value 只是上次手填的数,
+            # 机器人实时市值、理财按年化估值、本金已全部赎回的理财(current_value=0)都不在里面
+            from api.assets_routes import list_assets
+            for x in (await list_assets()).get("assets") or []:
                 at = x.get("asset_type")
                 sh = x.get("shares")
-                mv = x.get("manual_value")
+                mv = x.get("current_value")
                 if at == "FUND" and not (sh and sh > 0):   # 已赎回(shares=0)的基金不算在持
+                    continue
+                if at != "FUND" and (x.get("quote") or {}).get("value_source") == "closed":   # 本金已全部赎回
                     continue
                 row = {"name": x.get("name"), "code": x.get("code") or ""}
                 if dca_by_asset.get(x.get("id")):
