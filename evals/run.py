@@ -6,6 +6,7 @@
     ./venv/bin/python evals/run.py -c us_premarket # 跑单条(前缀匹配)
     ./venv/bin/python evals/run.py --db portfolio.db   # 换账本(默认 demo)
     ./venv/bin/python evals/run.py -n 3            # 每条跑 3 次, 报 pass^3(3 次全过才算过)
+    ./venv/bin/python evals/run.py --no-context    # 去掉用例带的会话状态和画像, 量它们的作用
 
 为什么要 pass^k: 同一条实测一次挂一次过, 单次通过率会高估稳定性。单次 75% 的用例
 3 次全过只有约 42% —— 用户每次提问碰到的是单次结果, 要的是"每次都对"。
@@ -54,9 +55,10 @@ def _dump(row: dict) -> str:
         return ""
 
 
-async def run_one(case, verbose=False, ground=None):
+async def run_one(case, verbose=False, ground=None, context=True):
     import services.stock_agent as sa
     import services.llm_client as llm
+    import services.user_memory as um
     from evals.cases import global_checks
 
     name = case["name"]
@@ -69,7 +71,16 @@ async def run_one(case, verbose=False, ground=None):
 
     t0 = time.time()
     before = llm.get_usage_stats()
-    r = await sa.ask_stock(question, history=case.get("history"))
+    # 画像一律用用例自带的(默认空): 演示账本里手工试出来的画像不该混进评测
+    memory = (case.get("memory") or []) if context else []
+    state = case.get("state") if context else None
+    real_active = um.active_sync
+    um.active_sync = lambda: memory
+    try:
+        r = await sa.ask_stock(question, history=case.get("history"),
+                               **({"state": state} if state else {}))
+    finally:
+        um.active_sync = real_active
     used = llm.get_usage_stats()
     ans, tools = (r.get("answer") or ""), (r.get("tools_used") or [])
 
@@ -103,6 +114,7 @@ async def main():
     ap.add_argument("-v", "--verbose", action="store_true", help="打印完整问答")
     ap.add_argument("--db", default="portfolio.demo.db")
     ap.add_argument("-n", "--repeat", type=int, default=1, help="每条跑几次, 报 pass^n")
+    ap.add_argument("--no-context", action="store_true", help="去掉用例带的会话状态和画像(对照组)")
     args = ap.parse_args()
 
     # 评测不写画像记忆: 否则每跑一次演示账本里多几条, 下一次评测的 prompt 就变了
@@ -131,7 +143,8 @@ async def main():
         print(f"没有匹配 {args.case!r} 的用例")
         return 2
 
-    print(f"账本={config.config.db_path}  用例={len(picked)}  每条 {args.repeat} 次\n")
+    print(f"账本={config.config.db_path}  用例={len(picked)}  每条 {args.repeat} 次"
+          + ("  [对照: 无状态/画像]" if args.no_context else "") + "\n")
     rows, per_case = [], {}
     for c in picked:
         # 真值每条只取一次: 同一用例的 n 次之间行情不该变, 否则 pass^n 混进了数据漂移
@@ -141,7 +154,7 @@ async def main():
             ground = {"skip": f"取真值失败 {type(e).__name__}: {e}"}
         for k in range(args.repeat):
             try:
-                r = await run_one(c, args.verbose, ground)
+                r = await run_one(c, args.verbose, ground, context=not args.no_context)
             except Exception as e:
                 r = {"name": c["name"], "status": "error",
                      "fails": [f"{type(e).__name__}: {e}"],
@@ -199,7 +212,7 @@ def _save(rows: list, args) -> None:
         os.makedirs(d, exist_ok=True)
         p = os.path.join(d, f"eval-{time.strftime('%Y%m%d-%H%M%S')}.json")
         with open(p, "w", encoding="utf-8") as f:
-            json.dump({"db": args.db, "repeat": args.repeat, "rows": rows}, f, ensure_ascii=False, indent=1)
+            json.dump({"db": args.db, "repeat": args.repeat, "context": not args.no_context, "rows": rows}, f, ensure_ascii=False, indent=1)
         print(f"明细: {os.path.relpath(p)}")
     except Exception as e:
         print(f"! 明细没存下来: {e}")
