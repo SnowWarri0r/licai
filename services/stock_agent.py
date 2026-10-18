@@ -3932,6 +3932,14 @@ async def _llm_round(messages: list):
             return
 
 
+def _prior_tainted(history: list | None, state: dict | None) -> bool:
+    """之前几轮是否读过第三方文本。会话里查得到每轮调过的工具就按它判; 只有前端传来的历史
+    (查不到出处)时, 带着任何一轮答案都按读过算。"""
+    if state is not None:
+        return bool(state.get("tainted"))
+    return any((m or {}).get("role") == "assistant" for m in history or [])
+
+
 async def ask_stock_stream(question: str, history: list | None = None, images: list | None = None,
                            state: dict | None = None):
     """流式版: 边跑边 yield 事件 (step/answer/done/error), 供 SSE 推给前端。
@@ -3943,6 +3951,7 @@ async def ask_stock_stream(question: str, history: list | None = None, images: l
         yield {"type": "error", "error": "空问题"}
         return
     messages = _seed_messages(question, history, images, state)
+    prior = _prior_tainted(history, state)
     entities: dict = {e["code"]: dict(e) for e in (state or {}).get("entities") or [] if e.get("code")}
     sources: list = []
     seen_urls: set = set()
@@ -4006,7 +4015,7 @@ async def ask_stock_stream(question: str, history: list | None = None, images: l
                    "arg": (tu.get("input") or {}).get("query") or (tu.get("input") or {}).get("code") or ""}
         # 同一轮里的工具相互独立(各自的网络请求), 并发跑, 顺序保留, 单个失败不连累其他
         # 本轮调过可信名单外的工具(返回第三方文本)后, remember 只记成待确认, 防提示注入写进画像
-        _user_memory.untrusted_seen.set(_user_memory.tainted(used))
+        _user_memory.untrusted_seen.set(prior or _user_memory.tainted(used))
         outs = await asyncio.gather(*[_run_tool(tu) for tu in tus])
         for tu, out in zip(tus, outs):
             tool_outs.setdefault(tu.get("name") or "", []).append(out)
@@ -4035,6 +4044,7 @@ async def ask_stock(question: str, history: list | None = None, images: list | N
     if not question and not images:
         return {"answer": "", "error": "空问题"}
     messages = _seed_messages(question, history, images, state)
+    prior = _prior_tainted(history, state)
     entities: dict = {e["code"]: dict(e) for e in (state or {}).get("entities") or [] if e.get("code")}
     tools_used: list[str] = []
     sources: list = []
@@ -4077,7 +4087,7 @@ async def ask_stock(question: str, history: list | None = None, images: list | N
             carried.append(_assemble_cited_text(content, sources, seen_urls))
         # 同一轮里的工具并发跑(相互独立), 顺序保留, 单个失败不连累其他
         # 本轮调过可信名单外的工具(返回第三方文本)后, remember 只记成待确认, 防提示注入写进画像
-        _user_memory.untrusted_seen.set(_user_memory.tainted(tools_used))
+        _user_memory.untrusted_seen.set(prior or _user_memory.tainted(tools_used))
         outs = await asyncio.gather(*[_run_tool(tu) for tu in tus])
         for tu, out in zip(tus, outs):
             tool_outs.setdefault(tu.get("name") or "", []).append(out)

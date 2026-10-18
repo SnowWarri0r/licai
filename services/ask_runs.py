@@ -34,6 +34,8 @@ _HARD_WALL_SEC = 20 * 60      # 单条 SSE 连接的兜底上限, 不让它无�
 # 收尾必定 flush, 所以最坏也就丢掉最后这半秒的中间步骤(答案在 ask_message 里, 不受影响)。
 _FLUSH_SEC = 0.5
 # 过程提示不是工具, 不进历史 meta(否则重开会话会多出假工具胶囊)
+from services import user_memory as _user_memory
+
 _NOT_TOOLS = ("llm_retry", "self_check")
 
 _RUNS: "dict[str, Run]" = {}
@@ -158,18 +160,25 @@ async def session_state(session_id: int, window: int = 0) -> dict | None:
         return None
     msgs = (sess or {}).get("messages") or []
     merged: dict = {}
+    tainted = False
     for m in msgs:
-        if m.get("role") != "assistant" or not m.get("meta"):
+        if m.get("role") != "assistant":
             continue
         try:
-            ents = _json.loads(m["meta"]).get("entities") or []
+            meta = _json.loads(m.get("meta") or "{}")
         except Exception:
-            continue
+            meta = {}
+        # 前几轮读过第三方文本, 它们的答案正以历史的身份进这一轮, 画像写入照样要待确认
+        if not meta or _user_memory.tainted(meta.get("tools_used") or []):
+            tainted = True
+        ents = meta.get("entities") or []
         for e in ents:
             if e.get("code"):
                 prev = merged.pop(e["code"], {})       # 挪到末尾: 最近提到的排后面, 截断时留下
                 merged[e["code"]] = {**prev, **e}
     out: dict = {}
+    if any(m.get("role") == "assistant" for m in msgs):
+        out["tainted"] = tainted        # 显式给出 False, agent 就不必按"历史出处不明"从严处理
     if merged:
         out["entities"] = list(merged.values())
     earlier = _earlier_turns(msgs, window)

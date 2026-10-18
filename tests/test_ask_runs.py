@@ -47,7 +47,7 @@ EVENTS = [
 
 
 def _fake_agent(events=EVENTS, delay=0.0, seen=None):
-    async def gen(question, history=None, images=None):
+    async def gen(question, history=None, images=None, state=None):
         if seen is not None:
             seen.append({"question": question, "history": history, "images": images})
         for ev in events:
@@ -384,7 +384,7 @@ def test_entities_carry_to_next_turn(temp_db, runs, monkeypatch):
 
     asyncio.run(main())
     assert seen[0] is None
-    assert seen[1] == {"entities": [ent]}
+    assert seen[1] == {"tainted": False, "entities": [ent]}
 
 
 def test_turns_beyond_frontend_window_become_earlier(temp_db, runs, monkeypatch):
@@ -414,5 +414,5 @@ def test_turns_beyond_frontend_window_become_earlier(temp_db, runs, monkeypatch)
         await c.task
 
     asyncio.run(main())
-    assert seen[1] is None
-    assert seen[2] == {"earlier": [{"q": "哪些少吸了", "a": "少吸 1200 股"}]}
+    assert seen[1] == {"tainted": False}
+    assert seen[2] == {"tainted": False, "earlier": [{"q": "哪些少吸了", "a": "少吸 1200 股"}]}
