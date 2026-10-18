@@ -129,9 +129,18 @@ export function LhbPanel({ code }) {
               <div className="text-[11px] text-text-dim flex flex-wrap gap-x-3">
                 <span>{d.date}</span>
                 <span>龙虎榜成交 <span className="font-mono text-text">{yi(d.龙虎榜成交额亿)}</span></span>
-                <span>买入合计 <span className="font-mono text-bear-bright">{yi(d.买入合计亿)}</span></span>
+                {d.净买入亿 != null && (
+                  <span title={(d.席位 || []).length > 1 ? `按第一张榜「${[].concat(d.席位[0].上榜原因 || []).join('')}」的买入减卖出` : '买入减卖出'}>
+                    净买入 <span className={`font-mono ${d.净买入亿 >= 0 ? 'text-bear-bright' : 'text-bull-bright'}`}>{yi(d.净买入亿)}</span>
+                  </span>
+                )}
                 {d.连板数 > 0 && <span className="text-accent">{d.连板数}连板</span>}
               </div>
+              {(d.席位 || []).length > 1 && (
+                <div className="text-[10.5px] text-text-muted">
+                  同一天触发了 {d.席位.length} 个上榜条件, 交易所按条件各披露一张席位表; 「三个交易日…」那张是 3 日累计金额, 其余是当日。
+                </div>
+              )}
               {(d.席位 || []).map((b, i) => (
                 <div key={i} className="bg-surface-3 rounded p-2">
                   {b.上榜原因 && <div className="text-[10.5px] text-text-muted mb-1">{Array.isArray(b.上榜原因) ? b.上榜原因.join(' · ') : b.上榜原因}</div>}
