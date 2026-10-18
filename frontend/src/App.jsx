@@ -9,6 +9,7 @@ import StaleBundleNotice from './components/StaleBundleNotice'
 import UnifiedPortfolio from './components/UnifiedPortfolio'
 import Rankings from './components/Rankings'
 import StockAsk from './components/StockAsk'
+import { GlobalStockModal } from './components/ask/stockOpener'
 import Settings from './components/Settings'
 import EditModal from './components/EditModal'
 import TransactionHistory from './components/TransactionHistory'
@@ -340,6 +341,7 @@ export default function App() {
         />
       )}
       <StaleBundleNotice />
+      <GlobalStockModal />
     </div>
   )
 }

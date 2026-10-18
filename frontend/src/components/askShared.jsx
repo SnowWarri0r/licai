@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import { openStock } from './ask/stockOpener'
+import { AnswerWidget, WIDGET_RE, parseWidget } from './ask/AnswerWidgets'
 
 // 每个数据工具一套线性 SVG 图标(描边跟随 currentColor, 贴合暖金深色主题)
 const TOOL_ICONS = {
@@ -133,6 +135,40 @@ export function colorizeSigned(text, kp) {
   })
 }
 
+// 正文里的"名称(代码)"做成可点的, 点开个股详情弹窗(分时/日周月K/分价/盘口/龙虎榜)。
+// 名字部分取括号前那串字的末尾(最多 12 字), 再去掉打头的虚词/动词, 免得把"卖出贵州茅台"整段都划进去。
+const STOCK_REF = /([\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9·]*)[(（](\d{6}|HK\.\d{4,5}|US\.[A-Za-z.]{1,8})[)）]/g
+const LEAD_WORDS = /^(?:的|了|在|和|与|及|跟|是|把|对|将|被|让|给|从|到|为|即|如|像|看|中|里|由|买入|卖出|买回|买|卖|持有|其中|以及|比如|包括|还有|只有|今天|昨天|今日|昨日)+/
+
+function trimName(raw) {
+  let nm = raw.length > 12 ? raw.slice(-12) : raw
+  const cut = nm.replace(LEAD_WORDS, '')
+  return cut.length >= 2 ? cut : nm
+}
+
+export function linkStocks(text, kp, render) {
+  const out = []
+  let last = 0, j = 0
+  for (const m of text.matchAll(STOCK_REF)) {
+    const name = trimName(m[1])
+    const start = m.index + (m[1].length - name.length)
+    if (start > last) out.push(render(text.slice(last, start), `${kp}-t${j}`))
+    const code = m[2]
+    out.push(
+      <button key={`${kp}-k${j}`} type="button" onClick={() => openStock(code, name)} title="打开详情"
+        className="text-inherit underline decoration-dotted decoration-accent/60 underline-offset-2 hover:text-accent cursor-pointer">
+        {name}({code})
+      </button>
+    )
+    last = m.index + m[0].length
+    j++
+  }
+  if (last < text.length) out.push(render(text.slice(last), `${kp}-t${j}`))
+  return out
+}
+
+const richText = (t, kp) => linkStocks(t, kp, colorizeSigned)
+
 // 模型有时用 HTML 而不是 markdown 做强调(<mark>/<b>/<br>), read_url 抓回的正文里也会夹带。
 // 这里是纯文本渲染, 认不出的标签会原样显示给用户(见过 <mark>...</mark> 裸奔), 故先归一。
 const HTML_INLINE_TAG = /<\/?(?:mark|b|strong|em|i|u|s|small|span|font|cite|code|p|div)\b[^>]*>/gi
@@ -159,7 +195,7 @@ function stripUnknownTags(text) {
 function renderInlineBase(text, kp, sources) {
   return text.split(/(\*\*[^*]+\*\*|<mark\b[^>]*>[\s\S]*?<\/mark>|⟦\d+⟧)/gi).map((p, i) => {
     if (p.startsWith('**') && p.endsWith('**'))
-      return <strong key={`${kp}-${i}`} className="text-text-bright">{colorizeSigned(p.slice(2, -2), `${kp}-${i}`)}</strong>
+      return <strong key={`${kp}-${i}`} className="text-text-bright">{richText(p.slice(2, -2), `${kp}-${i}`)}</strong>
     const hl = p.match(/^<mark\b[^>]*>([\s\S]*?)<\/mark>$/i)
     if (hl)
       return <mark key={`${kp}-${i}`} className="bg-accent/15 text-text-bright rounded px-[3px] py-[1px]">
@@ -167,7 +203,7 @@ function renderInlineBase(text, kp, sources) {
     const m = p.match(/^⟦(\d+)⟧$/)
     if (m) { const n = parseInt(m[1], 10); return <CiteMark key={`${kp}-${i}`} n={n} src={sources && sources[n - 1]} /> }
     // 落单的开/闭标签(流式还没吐完、或跨行的 <mark>)也抹掉标签留文字; 白名单外的一并抹
-    return <span key={`${kp}-${i}`}>{colorizeSigned(p.replace(HTML_INLINE_TAG, '').replace(HTML_ANY_TAG, ''), `${kp}-${i}`)}</span>
+    return <span key={`${kp}-${i}`}>{richText(p.replace(HTML_INLINE_TAG, '').replace(HTML_ANY_TAG, ''), `${kp}-${i}`)}</span>
   })
 }
 
@@ -188,9 +224,12 @@ function hideDanglingBold(text) {
   return s.slice(0, at) + s.slice(at + 2)
 }
 
+// 组件标记/引用角标还没吐完(只有 ⟦ 没有 ⟧)时先藏起来, 不然会闪一下原文
+const hideDanglingMark = (s) => (s || '').replace(/⟦[^⟧\n]*$/, '')
+
 export function MiniMarkdown({ text, sources }) {
   const renderInline = (t, kp) => renderInlineBase(t, kp, sources)
-  const lines = stripUnknownTags(normalizeHtml(hideDanglingBold(text))).split('\n')
+  const lines = stripUnknownTags(normalizeHtml(hideDanglingBold(hideDanglingMark(text)))).split('\n')
   const out = []
   let i = 0
   while (i < lines.length) {
@@ -215,6 +254,14 @@ export function MiniMarkdown({ text, sources }) {
         </div>
       )
       i = j
+      continue
+    }
+    const widgets = [...t.matchAll(WIDGET_RE)]
+    if (widgets.length) {
+      const rest = t.replace(WIDGET_RE, '').trim()
+      if (rest) out.push(<div key={`${i}-t`} className="text-[12px] text-text-dim leading-relaxed">{renderInline(rest.replace(/^[-•*]\s+/, ''), i)}</div>)
+      widgets.forEach((m, k) => out.push(<AnswerWidget key={`${i}-w${k}-${m[0]}`} spec={parseWidget(m[1], m[2])} />))
+      i++
       continue
     }
     if (!t) { out.push(<div key={i} className="h-1.5" />) }

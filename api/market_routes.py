@@ -1528,3 +1528,18 @@ async def market_provider_stock_lhb(code: str, date: str = ""):
     """
     from services.providers import gateway
     return await gateway.call("stock_lhb", code, date or None)
+
+
+@router.get("/compare")
+async def compare_series(items: str, days: int = 20, mode: str = "日"):
+    """问答里 ⟦对比:a,b⟧ 组件的数据: 几条走势归一成涨跌幅%放在同一把尺子上。
+    items 逗号分隔, 每项可以是代码/名称、指数符号(sh000001)、或 板块:名称; mode=日|分时。"""
+    from services.chart_widgets import compare
+    return await compare(items.split(","), days=max(5, min(int(days or 20), 250)), mode=mode)
+
+
+@router.get("/stock-card/{code}")
+async def stock_card(code: str):
+    """从问答里点开个股详情: 名称/现价, 持有时带成本与份额(场内 ETF 带 asset_id)。"""
+    from services.chart_widgets import stock_card as _card
+    return await _card(code)
