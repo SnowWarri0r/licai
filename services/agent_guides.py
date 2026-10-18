@@ -260,6 +260,18 @@ GUIDES = {
     "allocation": ("资产配置、现金与理财分配、应急金与流动性", _ALLOCATION),
 }
 
+# 读了某个规范之后, 作答前必须调过的工具(每组任取其一)。规范里"先查分时再下结论"这类话
+# 光写在 prompt 里是软约束, 实测常被跳过(评测: 日内问题只看收盘红绿); 这里由答案护栏在出答案
+# 前用代码核对, 缺了就打回去补查一轮。只列每类问题最低限度的那一两项, 不追求全。
+REQUIRED = {
+    "stock": [("get_quote",), ("get_trend",)],
+    "holdings": [("get_trades", "get_today_pnl", "get_holdings")],
+    "market": [("get_market_sentiment", "get_sector_momentum", "get_hot_concepts")],
+    "intraday": [("get_intraday",)],
+    "chain": [("get_chain_quote",)],
+    "allocation": [("get_asset_allocation",)],
+}
+
 CORE = _CORE_HEAD + _TRIAGE + _CORE_BODY
 
 # 规则全文(核心 + 全部技能包): 给 rule_forge 查重、给测试断言规则仍在

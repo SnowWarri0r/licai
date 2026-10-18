@@ -11,6 +11,8 @@
   R2 一手  新闻比异动旧且没联网补, 归因只能靠猜
   R3 编数  工具明说某指数没有成交额, 答案里却出现了它的成交额
   R4 红线  出买卖指令
+  R6 溯源  标了[实测]的数字在工具返回里找不到出处(影子模式, ANSWER_GUARD_PROVENANCE=1 才打回)
+  R7 必查  读了某类作答规范却没调该类最低限度的取数工具(如日内问题没看分时)
   R5 裸标签 模型用 <mark>/<b> 做强调, 前端漏成裸标签显示出来; 也见过 <augment_code_snippet>
            这种谁也不认识的标签(联网读回来的正文里夹带), 原样打在页面上
 """
@@ -54,6 +56,9 @@ def check_against_tools(ans: str, tools: list, tool_outs: dict) -> list[str]:
     ans = ans or ""
     bad = []
 
+    # R7: 读了某类作答规范, 就要调过该类最低限度的取数工具(清单见 agent_guides.REQUIRED)
+    bad += missing_lookups(tools, tool_outs)
+
     # R1: 取到了盘前/盘后价就必须点明时点。不点明的话 price 会被读成"现在"。
     for q in _iter_outs(tool_outs, "get_quote"):
         ext = q.get("ext_hours") or {}
@@ -81,6 +86,20 @@ def check_against_tools(ans: str, tools: list, tool_outs: dict) -> list[str]:
             m = re.search(rf"{re.escape(name)}[^。\n]{{0,30}}成交额\s*[\d,.]+", ans)
             if m:
                 bad.append(f"工具没给 {name} 的成交额, 答案里却出现了: {m.group()[:36]!r}")
+    return bad
+
+
+def missing_lookups(tools: list, tool_outs: dict) -> list[str]:
+    from services.agent_guides import REQUIRED
+    loaded = []
+    for o in _iter_outs(tool_outs, "load_guide"):
+        loaded += list((o.get("guides") or {}).keys())
+    called = set(tools or [])
+    bad = []
+    for topic in dict.fromkeys(loaded):
+        for group in REQUIRED.get(topic, []):
+            if not called & set(group):
+                bad.append(f"按 {topic} 规范还缺 {' / '.join(group)} 这一项取数: 先调用它, 再给出完整回答")
     return bad
 
 

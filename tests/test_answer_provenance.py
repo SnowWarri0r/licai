@@ -22,3 +22,12 @@ def test_untagged_lines_and_dates_ignored():
 
 def test_no_tools_no_flags():
     assert U("- 价 1.23 [实测]", {}) == []
+
+
+def test_required_lookups_by_loaded_guide():
+    from services.answer_guard import missing_lookups
+    outs = {"load_guide": [{"guides": {"intraday": "...", "stock": "..."}}]}
+    bad = missing_lookups(["load_guide", "get_quote", "get_trend"], outs)
+    assert len(bad) == 1 and "get_intraday" in bad[0]
+    assert missing_lookups(["load_guide", "get_quote", "get_trend", "get_intraday"], outs) == []
+    assert missing_lookups(["get_quote"], {}) == []
