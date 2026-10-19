@@ -38,15 +38,15 @@ def test_min_commission_charged_once_per_order():
 
     实测这份流水里 17 组分笔成交被重复收了 101.22 元。
     """
-    # 同股同日同方向同时刻 = 一张单分两笔成交, 两笔各 100 股都不到 5 元门槛
+    # 同股同日同方向同时刻 = 一张单分两笔成交, 两笔各 400 股都不到 5 元门槛
     fills = [
-        {"stock_code": "600000", "action_type": "BUY", "price": 20.45, "shares": 700,
+        {"stock_code": "600000", "action_type": "BUY", "price": 20.45, "shares": 400,
          "trade_date": "2026-08-07", "trade_time": "09:36"},
-        {"stock_code": "600000", "action_type": "BUY", "price": 20.46, "shares": 700,
+        {"stock_code": "600000", "action_type": "BUY", "price": 20.46, "shares": 400,
          "trade_date": "2026-08-07", "trade_time": "09:36"},
     ]
     got = sum(allocate_trade_fees(fills))
-    one = estimate_trade_fee("BUY", (20.45 * 700 + 20.46 * 700) / 1400, 1400, "600000")
+    one = estimate_trade_fee("BUY", (20.45 * 400 + 20.46 * 400) / 800, 800, "600000")
     assert abs(got - one) < 0.01                    # 与「当成一笔 1400 股」等价
     per_fill = sum(estimate_trade_fee(f["action_type"], f["price"], f["shares"], f["stock_code"])
                    for f in fills)
