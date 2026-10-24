@@ -545,6 +545,43 @@ async def news_prewarm_loop():
 _DIGEST_TTL = 1800  # LLM 摘要 30 分钟缓存 (调用贵 + 慢)
 
 
+def _parse_digest(raw: str) -> tuple[str, list]:
+    """从模型回复里取 {summary, highlights}。先按完整 JSON 解析(容忍代码块包装与前后多余文字);
+    失败(多半是被截断)时用正则取 summary, 并逐个解出 highlights 里已经完整的对象。"""
+    import json as _json
+    import re
+    raw = (raw or "").strip()
+    i = raw.find("{")
+    if i < 0:
+        return "", []
+    dec = _json.JSONDecoder()
+    try:
+        obj, _ = dec.raw_decode(raw[i:])
+        if isinstance(obj, dict):
+            hl = obj.get("highlights")
+            return str(obj.get("summary") or ""), hl if isinstance(hl, list) else []
+    except ValueError:
+        pass
+    m = re.search(r'"summary"\s*:\s*"((?:[^"\\]|\\.)*)"', raw)
+    summary = _json.loads(f'"{m.group(1)}"') if m else ""
+    highlights = []
+    h = re.search(r'"highlights"\s*:\s*\[', raw)
+    if h:
+        j = h.end()
+        while True:
+            while j < len(raw) and raw[j] in " \t\r\n,":
+                j += 1
+            if j >= len(raw) or raw[j] != "{":
+                break
+            try:
+                item, j = dec.raw_decode(raw, j)
+            except ValueError:
+                break
+            if isinstance(item, dict):
+                highlights.append(item)
+    return summary, highlights
+
+
 @router.get("/digest")
 async def news_digest(force: bool = False, max_items: int = 80):
     """LLM 摘要: 把市场要闻 + 持仓相关新闻喂给 Claude, 生成结构化要点.
@@ -603,29 +640,17 @@ async def news_digest(force: bool = False, max_items: int = 80):
     try:
         raw = await asyncio.to_thread(
             llm_client.call_claude, user_prompt, system_prompt,
-            "claude-sonnet-5", 1800,
+            "claude-sonnet-5", 4000,
         )
     except Exception as e:
         return {"summary": "", "highlights": [], "generated_at": "", "model": "", "error": str(e)[:200], "input_count": len(all_items)}
 
-    # 4) 解析 JSON (LLM 偶尔会带 ```json 包装, 兼容)
-    raw = (raw or "").strip()
-    if raw.startswith("```"):
-        # 去掉 fence
-        raw = raw.strip("`")
-        # 可能有 'json\n' 前缀
-        if raw.lower().startswith("json"):
-            raw = raw[4:].lstrip("\n").lstrip()
-        # 去掉尾部 ```
-        if raw.endswith("```"):
-            raw = raw[:-3].rstrip()
-    try:
-        parsed = _json.loads(raw)
-        summary = parsed.get("summary", "")
-        highlights = parsed.get("highlights", [])
-    except Exception:
-        summary = raw[:200] if raw else ""
-        highlights = []
+    # 4) 解析 JSON: 模型偶尔带 ```json 包装/前后多一句话, 或输出被截断; 截断时救出摘要和已写完整的要点
+    summary, highlights = _parse_digest(raw)
+    if not summary and not highlights:
+        # 解析不出来就报错且不缓存, 不把原始 JSON 当摘要显示
+        return {"summary": "", "highlights": [], "generated_at": "", "model": "",
+                "error": "摘要生成失败(模型输出不完整), 点重算再试", "input_count": len(all_items)}
 
     from datetime import datetime, timezone, timedelta
     now_cst = (datetime.now(timezone.utc) + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")

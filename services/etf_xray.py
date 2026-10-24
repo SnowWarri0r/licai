@@ -115,8 +115,40 @@ def etf_universe() -> list[dict]:
                         "今日%": x.get("f3")})
         except (TypeError, ValueError, KeyError):
             continue
+    if not out:
+        out = _sina_etf_list()            # 东财 clist 偶发限流(整页空), 换新浪行情中心
     if out:
         _cache["universe"] = (out, time.time())
+    return out
+
+
+def _sina_etf_list() -> list[dict]:
+    """新浪行情中心 ETF 全表(沪深, 按成交额排)。规模用流通市值(nmc, 万元)近似。"""
+    import json as _json
+
+    import requests
+    s = requests.Session(); s.trust_env = False
+    out = []
+    for page in range(1, 30):
+        try:
+            r = s.get("https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHQNodeData",
+                      params={"page": page, "num": 100, "sort": "amount", "asc": 0, "node": "etf_hq_fund"},
+                      headers={"Referer": "https://finance.sina.com.cn/"}, timeout=10)
+            rows = _json.loads(r.text) if r.text.strip().startswith("[") else []
+        except Exception:
+            break
+        if not rows:
+            break
+        for x in rows:
+            try:
+                out.append({"code": str(x["code"]), "name": str(x["name"]),
+                            "规模亿": round(float(x.get("nmc") or 0) / 1e4, 1),
+                            "成交额亿": round(float(x.get("amount") or 0) / 1e8, 2),
+                            "今日%": x.get("changepercent")})
+            except (TypeError, ValueError, KeyError):
+                continue
+        if len(rows) < 100:
+            break
     return out
 
 
@@ -135,8 +167,43 @@ def industry_map() -> dict:
             except (TypeError, ValueError):
                 cap = 0
             m[code] = (str(x.get("f14") or ""), str(x.get("f100") or ""), cap)
+    if not m:
+        m = _datacenter_industry_map()    # clist 被限流时换东财数据中心(同一套东财行业)
     if m:
         _cache["indmap"] = (m, time.time())
+    return m
+
+
+def _datacenter_industry_map() -> dict:
+    """东财数据中心估值表(RPT_VALUEANALYSIS_DET)最近一个交易日: code → (名称, 东财行业, 总市值亿)。"""
+    import requests
+    s = requests.Session(); s.trust_env = False
+    url = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+    base = {"reportName": "RPT_VALUEANALYSIS_DET",
+            "columns": "SECURITY_CODE,SECURITY_NAME_ABBR,BOARD_NAME,TOTAL_MARKET_CAP,TRADE_DATE"}
+    try:
+        last = s.get(url, params={**base, "pageSize": "1", "pageNumber": "1", "sortColumns": "TRADE_DATE",
+                                  "sortTypes": "-1"}, timeout=15).json()
+        day = str(((last.get("result") or {}).get("data") or [{}])[0].get("TRADE_DATE") or "")[:10]
+    except Exception:
+        return {}
+    if not day:
+        return {}
+    m: dict = {}
+    for pn in range(1, 5):
+        try:
+            res = s.get(url, params={**base, "pageSize": "5000", "pageNumber": str(pn), "sortColumns": "SECURITY_CODE",
+                                     "sortTypes": "1", "filter": f"(TRADE_DATE='{day}')"}, timeout=20).json().get("result") or {}
+        except Exception:
+            break
+        for x in res.get("data") or []:
+            try:
+                cap = round(float(x.get("TOTAL_MARKET_CAP") or 0) / 1e8, 0)
+            except (TypeError, ValueError):
+                cap = 0
+            m[str(x["SECURITY_CODE"])] = (str(x.get("SECURITY_NAME_ABBR") or ""), str(x.get("BOARD_NAME") or ""), cap)
+        if pn >= int(res.get("pages") or 1):
+            break
     return m
 
 
