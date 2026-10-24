@@ -66,6 +66,25 @@ export function bjToEtTime(usDate, bjTime) {
   return null
 }
 
+// 美股录入按北京时间(券商 App 显示的就是北京时间): 北京日期 + 北京时刻 → 美东交易日。
+// 不填时刻按当晚开盘那一场算(北京日期即美东交易日); 北京凌晨的成交要填时刻才会归到前一个美东日。
+export function bjToUsTradeDate(bjDate, bjTime) {
+  if (!bjDate) return bjDate
+  if (!bjTime) return String(bjDate).slice(0, 10)
+  return _fmt(_wallToUtc(bjDate, bjTime, BJ_TZ), US_TZ, false).date
+}
+
+// 反向: 库里的美东交易日 + 北京时刻 → 北京日期(展示/编辑用)。没有时刻就原样。
+export function usTradeToBjDate(usDate, bjTime) {
+  if (!usDate || !bjTime) return usDate ? String(usDate).slice(0, 10) : usDate
+  const day = String(usDate).slice(0, 10)
+  for (const k of [0, 1, -1]) {
+    const bj = _shiftDate(day, k)
+    if (_fmt(_wallToUtc(bj, bjTime, BJ_TZ), US_TZ, false).date === day) return bj
+  }
+  return day
+}
+
 // 美东今天(YYYY-MM-DD), 美股表单默认日期用
 export function usTodayDate() {
   return _fmt(Date.now(), US_TZ, false).date

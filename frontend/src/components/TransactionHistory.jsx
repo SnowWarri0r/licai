@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { fetchJSON } from '../hooks/useApi'
-import { bjToEtTime, etToBjTime, fmtPrice, loadBrokers, usTodayDate } from '../helpers'
+import { bjToEtTime, bjToUsTradeDate, fmtPrice, loadBrokers, usTradeToBjDate } from '../helpers'
 
 const enc = (value) => encodeURIComponent(value)
 
@@ -25,19 +25,22 @@ const marketOf = (code) => {
   return c.startsWith('HK.') ? 'HK' : c.startsWith('US.') ? 'US' : 'A'
 }
 const CCY = { A: '¥', HK: 'HK$', US: 'US$' }
-// 美股: 日期 = 美东交易日(券商成交记录上那天), 时刻按美东录入/展示; 后端 trade_time 统一存北京时间
-const US_DATE_HINT = '美东交易日 · 盈立成交记录上的日期; 北京时间凌晨成交算前一天'
+// 各市场都按北京时间录入/展示。后端 trade_date 对美股存美东交易日, trade_time 统一存北京时刻,
+// 所以美股提交时把北京日期换成美东交易日, 展示/编辑时再换回北京日期。
+const US_DATE_HINT = '北京时间; 不填时刻按当晚那场算, 凌晨成交请填时刻'
 const TIME_HINT = { A: '成交时刻(可选), 留空用录入时间, 供分时图打点', HK: '成交时刻(可选), 留空用录入时间, 供分时图打点',
-  US: '美东成交时刻(可选, 如 09:35), 留空用录入时间, 供分时图打点' }
-const defaultDate = (market) => market === 'US' ? usTodayDate() : new Date().toISOString().slice(0, 10)
+  US: '成交时刻(可选, 北京时间, 如 22:35), 凌晨成交请填, 供分时图打点' }
+const defaultDate = () => new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10)   // 北京今天
 // 展示/编辑用的时刻: 美股把北京时间换回美东(换不出来就原样)
 const localTime = (market, date, t) => {
   if (!t) return t
   if (market !== 'US') return t
   return bjToEtTime(String(date || '').slice(0, 10), String(t)) || t
 }
-// 提交用: 美股把美东时刻换成北京时间
-const storeTime = (market, date, t) => (market === 'US' && t && date) ? etToBjTime(date, t) : t
+// 展示/编辑用的日期: 美股把库里的美东交易日换回北京日期
+const localDate = (market, date, bjTime) => market === 'US' ? usTradeToBjDate(date, bjTime ? String(bjTime).slice(0, 5) : bjTime) : date
+// 提交用: 美股把北京日期换成美东交易日(时刻本来就是北京时间, 原样存)
+const storeDate = (market, date, t) => market === 'US' ? bjToUsTradeDate(date, t) : date
 const FEE_HINT = {
   A: '按券商费率自动估算 (万2.5 / 5元起)',
   HK: '按港股收费方案自动估算(默认盈立 PRO: 佣金 0.06% + 平台费 18 港元/单 + 印花税等法定费用), 港元',
@@ -45,9 +48,10 @@ const FEE_HINT = {
 }
 
 function ActionRow({ action, editing, onSave, onCancel, onEdit, onDelete, brokers = [], market = 'A', code = '' }) {
-  // 草稿里的 trade_time 是界面时区(美股=美东), 保存时再换回北京时间
-  const toDraft = (a) => market === 'US' && a.trade_time
-    ? { ...a, trade_time: localTime(market, a.trade_date, String(a.trade_time).slice(0, 5)) }
+  // 草稿按北京时间编辑: 美股把美东交易日换成北京日期, 保存时再换回
+  const toDraft = (a) => market === 'US'
+    ? { ...a, trade_date: localDate(market, a.trade_date, a.trade_time),
+        trade_time: a.trade_time ? String(a.trade_time).slice(0, 5) : a.trade_time }
     : a
   const [draft, setDraft] = useState(() => toDraft(action))
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -60,8 +64,8 @@ function ActionRow({ action, editing, onSave, onCancel, onEdit, onDelete, broker
     const feeOverride = action.fee != null   // 用户手填了 override
     return (
       <tr className="border-t border-border-subtle hover:bg-surface-2/30">
-        <td className="py-1.5 px-2 text-text-muted">{action.trade_date || '--'}
-          {action.at_time && <span className="block text-[10px] text-text-dim font-mono">{String(localTime(market, action.trade_date, action.at_time)).slice(0, 5)}{market === 'US' && <span className="text-text-muted ml-0.5" title="美东时间">美东</span>}{!action.trade_time && <span title="按录入时间推断">~</span>}</span>}
+        <td className="py-1.5 px-2 text-text-muted" title={market === 'US' && action.trade_date ? `美东交易日 ${action.trade_date}` : undefined}>{localDate(market, action.trade_date, action.at_time) || '--'}
+          {action.at_time && <span className="block text-[10px] text-text-dim font-mono">{String(action.at_time).slice(0, 5)}{!action.trade_time && <span title="按录入时间推断">~</span>}</span>}
         </td>
         <td className={`py-1.5 px-2 text-[11px] ${isAcquire ? 'text-bull' : 'text-bear'}`}>{typeLabel}
           {action.broker_effective && <span className="block text-[10px] text-text-dim">{action.broker_effective}{!action.broker && <span title="用持仓默认券商">~</span>}</span>}
@@ -139,8 +143,8 @@ export default function TransactionHistory({ stockCode, stockName, onClose, onCh
     price: '',
     shares: '',
     fee: '',
-    trade_date: defaultDate(market),
-    trade_time: '',     // 可选 HH:MM 成交时刻(美股按美东); 留空走录入时间, 供分时图打点
+    trade_date: defaultDate(),
+    trade_time: '',     // 可选 HH:MM 成交时刻(北京时间); 留空走录入时间, 供分时图打点
     note: '',
   })
 
@@ -166,7 +170,8 @@ export default function TransactionHistory({ stockCode, stockName, onClose, onCh
     if (!newAction.price || (!isSplit && !newAction.shares) || !newAction.trade_date) return alert('请填完整')
     const body = {
       ...newAction,
-      trade_time: storeTime(market, newAction.trade_date, newAction.trade_time),
+      trade_date: storeDate(market, newAction.trade_date, newAction.trade_time),
+      trade_time: newAction.trade_time,
       price: parseFloat(newAction.price),
       shares: isSplit ? 0 : parseFloat(newAction.shares),
     }
@@ -182,7 +187,7 @@ export default function TransactionHistory({ stockCode, stockName, onClose, onCh
       body: JSON.stringify(body),
     })
     setAdding(false)
-    setNewAction({ action_type: 'BUY', broker: '', price: '', shares: '', trade_date: defaultDate(market), trade_time: '', note: '', fee: '', fx_rate: '' })
+    setNewAction({ action_type: 'BUY', broker: '', price: '', shares: '', trade_date: defaultDate(), trade_time: '', note: '', fee: '', fx_rate: '' })
     await load()
     onChange?.()
   }
@@ -192,8 +197,8 @@ export default function TransactionHistory({ stockCode, stockName, onClose, onCh
       action_type: draft.action_type,
       price: parseFloat(draft.price),
       shares: parseFloat(draft.shares),
-      trade_date: draft.trade_date,
-      trade_time: storeTime(market, draft.trade_date, draft.trade_time) || '',   // "" → 清空回退录入时间; 美股美东→北京
+      trade_date: storeDate(market, draft.trade_date, draft.trade_time),   // 美股: 北京日期 → 美东交易日
+      trade_time: draft.trade_time || '',   // 空串 = 清空, 回退录入时间
       broker: draft.broker || '',           // "" → 用持仓默认券商
       note: draft.note || '',
     }
@@ -241,7 +246,7 @@ export default function TransactionHistory({ stockCode, stockName, onClose, onCh
             <table className="w-full text-[12px]">
               <thead>
                 <tr className="text-text-dim text-[11px] sticky top-0 bg-surface">
-                  <th className="py-2 px-2 text-left font-normal" title={market === 'US' ? US_DATE_HINT : undefined}>{market === 'US' ? '美东交易日' : '日期'}</th>
+                  <th className="py-2 px-2 text-left font-normal" title={market === 'US' ? US_DATE_HINT : undefined}>日期</th>
                   <th className="py-2 px-2 text-left font-normal">类型</th>
                   <th className="py-2 px-2 text-right font-normal">价格</th>
                   <th className="py-2 px-2 text-right font-normal">数量</th>
@@ -304,7 +309,7 @@ export default function TransactionHistory({ stockCode, stockName, onClose, onCh
         <div className="flex items-center justify-between pt-3 border-t border-border mt-2">
           <div className="text-[11px] text-text-muted">
             {actions.length} 条记录 · 每次修改会自动按 FIFO 重算持仓均价
-            {market === 'US' && <span className="block text-[10.5px]">日期/时刻按美东填: 盈立成交记录上的日期; 北京时间凌晨成交算前一天</span>}
+            {market === 'US' && <span className="block text-[10.5px]">日期/时刻按北京时间填, 自动换算美东交易日; 凌晨成交请填时刻</span>}
           </div>
           {!adding && (
             <button onClick={() => setAdding(true)}

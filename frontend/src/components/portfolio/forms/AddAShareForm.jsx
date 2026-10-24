@@ -1,17 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, fetchJSON } from '../../../hooks/useApi'
-import { etToBjTime, usTodayDate } from '../../../helpers'
+import { bjToUsTradeDate } from '../../../helpers'
 import { STOCK_MARKETS } from '../constants'
 import { stockCodeForMarket } from '../helpers'
 
-// 美股日期按美东交易日(券商成交记录上的那天), 其余市场按本地日期(A 股原逻辑不变)
-const defaultDate = (market) => market === 'US' ? usTodayDate() : new Date().toISOString().slice(0, 10)
-const US_DATE_HINT = '盈立成交记录上的日期; 北京时间凌晨成交算前一天'
+// 各市场都按北京时间录入; 美股提交时换算成美东交易日(后端 trade_date 存美东日, trade_time 存北京时刻)
+const bjToday = () => new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10)
+const US_TIME_HINT = '北京时间; 不填按当晚那场算, 凌晨成交请填时刻'
 
 export function AddAShareForm({ initialMarket = 'A', onDone, onCancel, brokers = [] }) {
   const [form, setForm] = useState({
     code: '', name: '', shares: '', cost: '',
-    tradeDate: defaultDate(initialMarket),
+    tradeDate: bjToday(),
     tradeTime: '',
   })
   const [market, setMarket] = useState(initialMarket)
@@ -52,11 +52,9 @@ export function AddAShareForm({ initialMarket = 'A', onDone, onCancel, brokers =
       const res = await api.addHolding({
         stock_code: stockCode, stock_name: form.name,
         shares: parseFloat(form.shares), cost_price: parseFloat(form.cost),
-        trade_date: form.tradeDate || undefined,
-        // 成交时刻后端统一存北京时间: 美股按美东录入, 这里换算(港股与北京同时区)
-        trade_time: form.tradeTime
-          ? (market === 'US' ? etToBjTime(form.tradeDate, form.tradeTime) : form.tradeTime)
-          : undefined,
+        // 按北京时间录入; 美股的日期换成美东交易日(北京凌晨的成交属于前一个美东日)
+        trade_date: (market === 'US' ? bjToUsTradeDate(form.tradeDate, form.tradeTime) : form.tradeDate) || undefined,
+        trade_time: form.tradeTime || undefined,
         broker: broker || null,
       })
       if (res.message) onDone?.()
@@ -75,7 +73,7 @@ export function AddAShareForm({ initialMarket = 'A', onDone, onCancel, brokers =
             const nextMarket = e.target.value
             setMarket(nextMarket)
             lookup('')   // 作废进行中的名称查询
-            setForm({ code: '', name: '', shares: '', cost: '', tradeDate: defaultDate(nextMarket), tradeTime: '' })
+            setForm({ code: '', name: '', shares: '', cost: '', tradeDate: bjToday(), tradeTime: '' })
           }}>
           {Object.entries(STOCK_MARKETS).map(([k, v]) => (
             <option key={k} value={k}>{v.label}</option>
@@ -115,21 +113,19 @@ export function AddAShareForm({ initialMarket = 'A', onDone, onCancel, brokers =
           onChange={e => setForm({ ...form, shares: e.target.value })} />
       </div>
       <div className="flex flex-col gap-1">
-        <label className="text-[11px] text-text-dim" title={market === 'US' ? US_DATE_HINT : undefined}>
-          {market === 'US' ? '美东交易日' : '买入日期'}
-        </label>
+        <label className="text-[11px] text-text-dim">买入日期</label>
         <input type="date" className={`${inp} w-36 font-mono`}
           value={form.tradeDate || ''}
-          title={market === 'US' ? US_DATE_HINT : undefined}
+          title={market === 'US' ? US_TIME_HINT : undefined}
           onChange={e => setForm({ ...form, tradeDate: e.target.value })} />
       </div>
       <div className="flex flex-col gap-1">
-        <label className="text-[11px] text-text-dim">{market === 'US' ? '美东时刻' : '时刻'} <span className="text-text-muted text-[10px]">可空</span></label>
+        <label className="text-[11px] text-text-dim">时刻 <span className="text-text-muted text-[10px]">可空</span></label>
         <input type="time" className={`${inp} w-28 font-mono text-text-dim`}
           value={form.tradeTime || ''}
           onChange={e => setForm({ ...form, tradeTime: e.target.value })}
           title={market === 'US'
-            ? '成交时刻(可选, 美东时间, 如 09:35), 留空用录入时间, 供分时图打点'
+            ? '成交时刻(可选, 北京时间, 如 22:35), 凌晨成交请填, 供分时图打点'
             : '成交时刻(可选), 留空用录入时间, 供分时图打点'} />
       </div>
       <div className="flex flex-col gap-1">
@@ -149,7 +145,7 @@ export function AddAShareForm({ initialMarket = 'A', onDone, onCancel, brokers =
       </button>
       <div className="text-[10px] text-text-muted pb-1">
         {STOCK_MARKETS[market].hint} · 成本价按{market === 'US' ? '美元' : market === 'HK' ? '港币' : '人民币'}录入，总资产自动折人民币
-        {market === 'US' && <> · 日期/时刻按美东填({US_DATE_HINT})</>}
+        {market === 'US' && <> · 日期/时刻按北京时间填, 自动换算美东交易日; 凌晨成交请填时刻</>}
       </div>
     </div>
   )
