@@ -223,22 +223,28 @@ async def market_volume_intraday(market: str = "两市") -> dict:
 
     # 两路取数: 1分钟(今日实时曲线+昨日对照, ~6日) + 5分钟(完成度剖面, ~30日)。
     # 剖面用 5 分钟粒度换更多历史天数——剖面平滑, 5 分钟够; 今日曲线仍 1 分钟保交互。
+    # 新浪分钟线偶发 8s 读超时(同一符号连拉几次就有一次), 失败重试一次
     async def one(sym, scale):
-        try:
-            return await asyncio.to_thread(_sina_min_sync, sym, 1500, scale)
-        except Exception:
-            return {}
+        for _ in range(2):
+            try:
+                return await asyncio.to_thread(_sina_min_sync, sym, 1500, scale)
+            except Exception:
+                continue
+        return {}
 
     if market == "两市":
         hu1, sh1, hu5, sh5 = await asyncio.gather(
             one(_SYM["沪"], 1), one(_SYM["深"], 1), one(_SYM["沪"], 5), one(_SYM["深"], 5))
-        by_day = _merge_days(hu1, sh1)
-        by5 = _merge_days(hu5, sh5)
+        # 两市要两边都拉到才相加; 缺一边会把半个市场当成两市(并被缓存)
+        by_day = _merge_days(hu1, sh1) if hu1 and sh1 else {}
+        by5 = _merge_days(hu5, sh5) if hu5 and sh5 else {}
     else:
         by_day, by5 = await asyncio.gather(one(_SYM[market], 1), one(_SYM[market], 5))
 
     days = sorted(by_day)
     if not days:
+        if c:                          # 源站这次没拉到: 退回上一份成功结果, 不把已有曲线清空
+            return {**c[0], "stale": True}
         return {"market": market, "points": [], "note": "分时数据暂不可达"}
     today_date = days[-1]
     today = by_day[today_date]

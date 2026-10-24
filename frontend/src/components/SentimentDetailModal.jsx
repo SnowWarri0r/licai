@@ -173,18 +173,26 @@ export default function SentimentDetailModal({ summary, volume, onClose }) {
     return () => { alive = false; if (timer) clearTimeout(timer) }
   }, [])
 
-  // 分时视图: 按市场拉当日逐分钟累计; 盘中每 60s 刷新
+  // 分时视图: 按市场拉当日逐分钟累计; 盘中每 60s 刷新。
+  // 数据源偶发超时会回空 points: 记成失败态并 15s 后自动重试(收盘后也重试), 点「重试」可立即再拉
+  const [intraTry, setIntraTry] = useState(0)
   useEffect(() => {
     if (view !== 'intraday') return
     let alive = true, timer = null
     const pull = () => fetchJSON(`/api/market/volume-intraday?market=${encodeURIComponent(mkt)}`).then(r => {
-      if (!alive || !r) return
-      setIntra(r)
-      if (vol?.intraday) timer = setTimeout(pull, 60000)
-    }).catch(() => {})
+      if (!alive) return
+      const ok = (r?.points || []).length > 1
+      setIntra({ ...(r || {}), market: mkt, failed: !ok })
+      if (!ok) timer = setTimeout(pull, 15000)
+      else if (vol?.intraday) timer = setTimeout(pull, 60000)
+    }).catch(() => {
+      if (!alive) return
+      setIntra({ market: mkt, points: [], failed: true })
+      timer = setTimeout(pull, 15000)
+    })
     pull()
     return () => { alive = false; if (timer) clearTimeout(timer) }
-  }, [view, mkt, vol?.intraday])
+  }, [view, mkt, vol?.intraday, intraTry])
 
   // 打开时锁住底下页面滚动 + Esc 关闭
   useEffect(() => {
@@ -300,9 +308,18 @@ export default function SentimentDetailModal({ summary, volume, onClose }) {
                 </>
               ) : (
                 <>
-                  {(intra?.points || []).length > 1
-                    ? <IntradayLine intra={intra} metric={metric} unit={unit} />
-                    : <div className="text-[11px] text-text-dim py-3 text-center">分时加载中…</div>}
+                  {/* 认 market 再用: 切市场后新数据回来前显示加载中, 而不是上一个市场的曲线 */}
+                  {intra?.market === mkt && (intra.points || []).length > 1
+                    ? <>
+                        <IntradayLine intra={intra} metric={metric} unit={unit} />
+                        {intra.stale && <div className="text-[9px] text-text-dim mt-0.5 pl-12">数据源这次没拉到, 显示的是上一次成功的结果</div>}
+                      </>
+                    : intra?.market === mkt && intra.failed
+                      ? <div className="text-[11px] text-text-dim py-3 text-center">
+                          {mkt}分时暂时没拉到(数据源超时), 15 秒后自动重试
+                          <button onClick={() => setIntraTry(n => n + 1)} className="ml-2 text-accent hover:underline cursor-pointer">立即重试</button>
+                        </div>
+                      : <div className="text-[11px] text-text-dim py-3 text-center">分时加载中…</div>}
                 </>
               )}
             </div>
