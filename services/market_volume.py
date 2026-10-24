@@ -2,7 +2,7 @@
 
 主源腾讯(web.ifzq.gtimg.cn), 不碰东财 push2(本机被零信任 L7 拦):
 - 日频: newfqkline 一次给量(手)+额(万元), ~250 交易日;
-- 分时: minute query 每分钟「时间 价 累计量(手) 累计额(元)」。
+- 分时: day/query 5 日每分钟「时间 价 累计量(手) 累计额(元)」为主, 新浪分钟线兜底; 量能节奏剖面用新浪 5 分钟线(~30 日)。
 量统一 手×100=股, 额 万元×1e4=元 / 分时额已是元。两市=沪+深。
 """
 from __future__ import annotations
@@ -16,6 +16,7 @@ from datetime import datetime, timezone, timedelta
 _cache: tuple | None = None
 _TTL = 60
 _intraday_cache: dict = {}
+_profile_cache: dict = {}   # 符号 → (日期, 5 分钟线按日累计), 剖面一天只拉一次
 
 # (名称, 腾讯符号)
 MARKETS = [("沪", "sh000001"), ("深", "sz399106"), ("创业", "sz399102"), ("科创", "sh000680")]
@@ -81,6 +82,30 @@ def _sina_min_sync(sym: str, datalen: int = 1500, scale: int = 1) -> dict:
             ca += a
             cum.append((hhmm, cv, ca))
         out[day] = cum
+    return out
+
+
+def _tx_min5d_sync(sym: str) -> dict:
+    """腾讯 5 日分时 → {YYYY-MM-DD: [(HH:MM, 累计量股, 累计额元)]}, 最近 5 个交易日(含今日)。
+    行格式「HHMM 价 累计量(手) 累计额(元)」; 丢掉 09:30 集合竞价那一行, 与新浪 1 分钟线(09:31 起)对齐。"""
+    j = _get(f"https://web.ifzq.gtimg.cn/appstock/app/day/query?code={sym}")
+    days = ((j.get("data") or {}).get(sym) or {}).get("data") or []
+    out: dict = {}
+    for d in days:
+        ds = str(d.get("date") or "")
+        if len(ds) != 8:
+            continue
+        rows = []
+        for line in d.get("data") or []:
+            f = str(line).split()
+            if len(f) < 4 or f[0] == "0930":
+                continue
+            try:
+                rows.append((f"{f[0][:2]}:{f[0][2:4]}", float(f[2]) * 100, float(f[3])))
+            except ValueError:
+                continue
+        if rows:
+            out[f"{ds[:4]}-{ds[4:6]}-{ds[6:]}"] = rows
     return out
 
 
@@ -221,25 +246,43 @@ async def market_volume_intraday(market: str = "两市") -> dict:
     if c and time.time() - c[1] < _TTL:
         return c[0]
 
-    # 两路取数: 1分钟(今日实时曲线+昨日对照, ~6日) + 5分钟(完成度剖面, ~30日)。
-    # 剖面用 5 分钟粒度换更多历史天数——剖面平滑, 5 分钟够; 今日曲线仍 1 分钟保交互。
-    # 新浪分钟线偶发 8s 读超时(同一符号连拉几次就有一次), 失败重试一次
-    async def one(sym, scale):
-        for _ in range(2):
-            try:
-                return await asyncio.to_thread(_sina_min_sync, sym, 1500, scale)
-            except Exception:
-                continue
+    # 今日曲线 + 昨日对照: 腾讯 5 日分时为主(~0.2s, 量额都有), 新浪 1 分钟线兜底; 每个源失败重试一次。
+    # 完成度剖面: 新浪 5 分钟线(~30 日), 一天只变一次, 按日缓存; 新浪拉不到就用腾讯那几个完整日凑。
+    async def first_ok(*fns):
+        for fn in fns:
+            for _ in range(2):
+                try:
+                    r = await asyncio.to_thread(fn)
+                except Exception:
+                    continue
+                if r:
+                    return r
         return {}
 
-    if market == "两市":
-        hu1, sh1, hu5, sh5 = await asyncio.gather(
-            one(_SYM["沪"], 1), one(_SYM["深"], 1), one(_SYM["沪"], 5), one(_SYM["深"], 5))
+    async def min1(sym):
+        return await first_ok(lambda: _tx_min5d_sync(sym), lambda: _sina_min_sync(sym, 1500, 1))
+
+    async def min5(sym):
+        day = _cst_now().strftime("%Y-%m-%d")
+        hit = _profile_cache.get(sym)
+        if hit and hit[0] == day:
+            return hit[1]
+        r = await first_ok(lambda: _sina_min_sync(sym, 1500, 5))
+        if r:
+            _profile_cache[sym] = (day, r)
+        return r
+
+    syms = [_SYM["沪"], _SYM["深"]] if market == "两市" else [_SYM[market]]
+    got = await asyncio.gather(*(min1(x) for x in syms), *(min5(x) for x in syms))
+    m1, m5 = got[:len(syms)], got[len(syms):]
+    if len(syms) == 2:
         # 两市要两边都拉到才相加; 缺一边会把半个市场当成两市(并被缓存)
-        by_day = _merge_days(hu1, sh1) if hu1 and sh1 else {}
-        by5 = _merge_days(hu5, sh5) if hu5 and sh5 else {}
+        by_day = _merge_days(*m1) if all(m1) else {}
+        by5 = _merge_days(*m5) if all(m5) else {}
     else:
-        by_day, by5 = await asyncio.gather(one(_SYM[market], 1), one(_SYM[market], 5))
+        by_day, by5 = m1[0], m5[0]
+    if not by5:
+        by5 = by_day
 
     days = sorted(by_day)
     if not days:
