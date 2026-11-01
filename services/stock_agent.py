@@ -2587,23 +2587,37 @@ async def _dca_plan_map() -> dict:
         return {}
 
 
-# 资产看板快照: 冷启动要 7-11 秒(三十多个基金/机器人逐个取行情, 2026-10-27 实测), 而几乎每道题
-# 第一轮都会调 get_holdings。所以每次提问一进来就在后台取一份(与第一轮 LLM 并行), 这一问里的
-# get_holdings 直接等这一份, 并发调用也不再各取一遍。快照最旧不早于本次提问开始的时刻。
+# 持仓快照: 资产看板冷启动要 7-11 秒(三十多个基金/机器人逐个取行情)、个股持仓列表 5 秒
+# (2026-10-27 实测), 而几乎每道题第一轮都会调 get_holdings。所以每次提问一进来就在后台取一份
+# (与第一轮 LLM 并行), 这一问里的 get_holdings 直接等这一份, 并发调用也不再各取一遍。
+# 快照最旧不早于本次提问开始的时刻。
 _ASSETS_SNAPSHOT_S = 180
 _assets_snap: tuple | None = None          # (开始时刻, task)
 
 
+async def _portfolio_views() -> dict:
+    """资产看板(list_assets) + 个股持仓列表(list_holdings, 现价/市值/浮动盈亏与持仓页同源)。"""
+    from api.assets_routes import list_assets
+    from api.portfolio_routes import list_holdings
+    assets, stocks = await asyncio.gather(list_assets(), list_holdings(), return_exceptions=True)
+    out = {"assets": [] if isinstance(assets, BaseException) else (assets.get("assets") or []),
+           "stocks": {}}
+    if not isinstance(stocks, BaseException):
+        for h in stocks:
+            h = h if isinstance(h, dict) else h.model_dump()
+            out["stocks"][h.get("stock_code")] = h
+    return out
+
+
 def _assets_snapshot(fresh: bool = False) -> asyncio.Future:
-    """资产看板(list_assets)的共享快照。fresh=True 另起一份(提问开始时调)。"""
+    """持仓两张视图的共享快照(见 _portfolio_views)。fresh=True 另起一份(提问开始时调)。"""
     global _assets_snap
     loop = asyncio.get_running_loop()
     if not fresh and _assets_snap and _time.time() - _assets_snap[0] < _ASSETS_SNAPSHOT_S:
         t = _assets_snap[1]
         if t.get_loop() is loop and not (t.done() and (t.cancelled() or t.exception())):
             return t
-    from api.assets_routes import list_assets
-    t = loop.create_task(list_assets())
+    t = loop.create_task(_portfolio_views())
     t.add_done_callback(lambda f: f.cancelled() or f.exception())   # 没人等它时异常也算已取走
     _assets_snap = (_time.time(), t)
     return t
@@ -2614,6 +2628,9 @@ async def _tool_get_holdings() -> dict:
         from services.market_data import code_currency, code_fx, split_stock_code
         hs = await _active_holdings()
         dca_by_asset = await _dca_plan_map()
+        views = await asyncio.shield(_assets_snapshot())
+        live = views.get("stocks") or {}
+        totals = {"市值": 0.0, "成本": 0.0, "浮动盈亏": 0.0}
         # 个股按市场分组: 港股成本是港元、美股是美元, 混进 "A股" 一组会被当成人民币直接相加。
         # 港美股额外给 币种/汇率/成本金额(人民币), 合计一律用人民币那一列。
         stocks: dict[str, list] = {"A股": [], "港股": [], "美股": []}
@@ -2624,6 +2641,20 @@ async def _tool_get_holdings() -> dict:
                    "shares": h.get("shares"), "综合成本": h.get("cost_price"),
                    "每股已收分红": h.get("每股已收分红"),
                    "持有天数": h.get("hold_days"), "开仓日": h.get("open_date")}
+            lv = live.get(code) or {}
+            if lv.get("current_price"):
+                # 现价/市值/浮动盈亏与持仓页同源(含港美股按成交日汇率的人民币成本), 不必再逐只查行情和手算
+                row["现价"] = lv["current_price"]
+                chg = "今日涨跌%" if lv.get("today_valid") is not False else "最近交易日涨跌%"
+                row[chg] = lv.get("price_change_pct")
+                row["综合成本"] = lv.get("cost_price") or row["综合成本"]
+                row["市值(人民币)"] = lv.get("market_value")
+                row["浮动盈亏(人民币)"] = lv.get("unrealized_pnl")
+                row["浮动盈亏%"] = lv.get("pnl_pct")
+                if lv.get("market_value") is not None and lv.get("unrealized_pnl") is not None:
+                    totals["市值"] += lv["market_value"]
+                    totals["成本"] += lv.get("cost_value") or 0
+                    totals["浮动盈亏"] += lv["unrealized_pnl"]
             if mkt in ("HK", "US"):
                 fx = code_fx(code)
                 row["币种"] = code_currency(code)
@@ -2641,7 +2672,7 @@ async def _tool_get_holdings() -> dict:
             from services.external_assets import _is_onchain_etf
             # 金额取资产看板算好的 current_value(与 get_asset_allocation 同源): manual_value 只是上次手填的数,
             # 机器人实时市值、理财按年化估值、本金已全部赎回的理财(current_value=0)都不在里面
-            for x in (await asyncio.shield(_assets_snapshot())).get("assets") or []:
+            for x in views.get("assets") or []:
                 at = x.get("asset_type")
                 sh = x.get("shares")
                 mv = x.get("current_value")
@@ -2656,6 +2687,10 @@ async def _tool_get_holdings() -> dict:
                     row["份额"] = round(float(sh), 2)
                 if mv is not None:
                     row["金额元"] = round(float(mv), 2)
+                if at != "CASH" and x.get("pnl") is not None:
+                    row["浮动盈亏元"] = x["pnl"]
+                    if x.get("pnl_pct") is not None:
+                        row["浮动盈亏%"] = x["pnl_pct"]
                 # 基金/ETF: 从流水账本算权威摊薄成本(拆分/减仓已折算), 与现价同标度,
                 # 直接给单价——盈亏 = (现价 − 摊薄成本) × 份额
                 if at in ("FUND", "CRYPTO") and sh and sh > 0:
@@ -2673,11 +2708,20 @@ async def _tool_get_holdings() -> dict:
                 other.setdefault(cls, []).append(row)
         except Exception:
             pass
+        summary = {}
+        if totals["成本"] > 0:
+            summary = {"个股合计(人民币)": {
+                "市值": round(totals["市值"], 2), "成本": round(totals["成本"], 2),
+                "浮动盈亏": round(totals["浮动盈亏"], 2),
+                "浮动盈亏%": round(totals["浮动盈亏"] / totals["成本"] * 100, 2)}}
         return {"A股": stocks["A股"], **{k: v for k, v in stocks.items() if k != "A股" and v},
+                **summary,
                 "其他持仓": other,
                 "note": "我的全部在持: A股/港股/美股个股(holdings) + 其他持仓(场内ETF/场外基金/理财/现金/加密/机器人, 来自资产看板)。已清仓/已赎回的不在此列"
                         "(今天刚清仓的票与今天的盈亏看 get_today_pnl)。"
                         "个股: 综合成本=含手续费+分红摊薄(对齐券商); 持有天数=资金加权(0=今天才开仓); 开仓日已带星期照抄。"
+                        "现价/市值/浮动盈亏/浮动盈亏% 与持仓页同源, 个股合计已汇总好, 这几项直接引用;"
+                        "其他持仓的 浮动盈亏元/浮动盈亏% 与资产看板同源。"
                         "港股/美股的 综合成本 是原币单价(港元/美元, 见 币种), 跨市场合计与占比一律用 成本金额(人民币)。"
                         "分类按交易场所据实表述: 场内ETF(代码 5xxxxx/1xxxxx)在交易所按市价+券商佣金成交, "
                         "场外基金(支付宝/天天基金等)按 T+1 净值申赎, 两类各按自己的名字说。"
@@ -3381,7 +3425,8 @@ _TOOLS = [
      "market_cap=市值验算(price 现价, shares 股本(亿股), 可选 reported 外部报出的市值(亿), unit 默认'亿')——"
      "会告诉你算出来多少、与报出值偏差多少、以及是不是正好差 10/100/1000 倍(那基本就是单位或总股本/流通股本搞错了); "
      "cross=多来源交叉验证(field 字段名, values 各来源的值数组, 可选 tol_pct 默认1)——返回离散度与是否一致。"
-     "凡是要写进结论的乘除、百分比、市值、同比环比, 都过这个工具再落笔; 它不做估值判断(不给内在价值/目标价)。",
+     "凡是要写进结论的乘除、百分比、市值、同比环比, 都过这个工具再落笔; 工具返回里已算好的值(如 get_holdings 的浮动盈亏%、个股合计)直接引用。"
+     "它不做估值判断(不给内在价值/目标价)。",
      "input_schema": {"type": "object", "properties": {
          "op": {"type": "string", "enum": ["eval", "market_cap", "cross"]},
          "expr": {"type": "string"}, "price": {"type": "number"}, "shares": {"type": "number"},
@@ -3430,7 +3475,7 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {"file_id": {"type": "string", "description": "附件 id, 从 附件列表 取"}, "name": {"type": "string", "description": "文件名(可选, 用于判断格式)"}}, "required": ["file_id"]}},
     {"name": "get_today_pnl", "description": "查用户**今天**的盈亏与操作: 全账户当日盈亏(券商口径, 含今天清仓/新建的仓) + 逐只明细(今日盈亏、今日买卖股数、是否今日清仓/新建) + 今天卖出的每只的卖出均价、卖出前持仓成本、本次卖出已实现盈亏。回答'今天怎么样/今天赚了亏了多少/今天我做了什么/今天的操作对不对/复盘今天'时必用 —— 今天清仓的票不在 get_holdings 里, 只有这里有。",
      "input_schema": {"type": "object", "properties": {}}},
-    {"name": "get_holdings", "description": "查用户当前**全部**在持: A股(代码/名称/股数/综合成本/持有天数) + 其他持仓(场内ETF/场外基金/理财/现金/加密/机器人, 含份额或金额; 有定投计划的基金带 定投计划 字段——频率+每期金额)。回答'我的持仓/我有什么/我持有啥/哪些在定投/跟我持仓的关系'时用——持仓不止A股, 用户还有基金/ETF/现金/理财/机器人。要各大类占比或现金理财结构分析则用 get_asset_allocation。",
+    {"name": "get_holdings", "description": "查用户当前**全部**在持: A股(代码/名称/股数/综合成本/持有天数/现价/今日涨跌/市值/浮动盈亏及百分比, 另有个股合计) + 其他持仓(场内ETF/场外基金/理财/现金/加密/机器人, 含份额或金额与浮动盈亏; 有定投计划的基金带 定投计划 字段——频率+每期金额)。回答'我的持仓/我有什么/我持有啥/哪些在定投/跟我持仓的关系'时用——持仓不止A股, 用户还有基金/ETF/现金/理财/机器人。要各大类占比或现金理财结构分析则用 get_asset_allocation。",
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_thesis", "description": "读用户当初记录的买入逻辑(为什么买这只)+ **逻辑漂移**。回答'我当初为什么买X、X的逻辑还成立吗、帮我复盘X'时用: 拿到 thesis 后对照现价/基本面/消息/红线, 客观说每条理由还成不成立。传 code 时另带漂移分析: 这段逻辑改过几版、每一版是跟着基本面改的还是**只跟着股价**改的(后者=事后合理化的迹象, 带当时的浮亏)、末版之后事实又变了什么、以及逐句 diff(改写/删除/新增)。复盘改过的逻辑必须先说它被改过 —— 拿照着股价改过的说法去对现状, 必然自洽。不传 code 看全部持仓的逻辑(不含漂移)。仅当用户记过才有。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选, 留空看全部"}}}},
