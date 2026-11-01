@@ -163,6 +163,7 @@ _DRAFT_SYSTEM_BASE = (
     "when 至少填一项, 让检查只在相关问题上生效; require_tools / answer_forbid / answer_require 至少填一项; "
     "question_any 选这条规则的场景特有、用户真实会说的短词(如「做T」「低吸」「量比」), 让检查只命中这类问题; "
     "answer_forbid 写原纠正里那种错误说法本身, 让符合规则的回答不会被误拦。检查的判据要能在原纠正那一轮上成立: 那一版回答应当被它判为违规。"
+    "正则写成短语级: 用字面词与 (A|B) 多选一, 间隔用带上限的 .{0,12}, 每条 120 字以内。"
     "规则依赖语义判断(论证方式、口吻、框架选择)、写不成关键词与工具判据时, check 填 null。"
 )
 
@@ -213,7 +214,55 @@ def validate_check(raw, names: set | None = None):
             re.compile(rx)
         except re.error as e:
             return None, f"正则写错了 {rx!r}: {e}"
+        bad = _rx_risk(rx)
+        if bad:
+            return None, f"正则 {rx!r} {bad}"
     return {k: v for k, v in chk.items() if v}, ""
+
+
+RX_MAX_LEN, RX_MAX_REPEAT = 120, 50
+
+
+def _rx_risk(rx: str) -> str:
+    """模型起草的正则启用后会对每个回答跑一遍, 回溯爆炸会卡住服务。判据是短语级的, 只收:
+    长度 ≤ RX_MAX_LEN、量词不嵌套、不用反向引用; 无上限量词(+ * {n,})只许加在单个字符上且全条至多 1 个
+    (一个时最坏是答案长度的平方), 其余量词上限 ≤ RX_MAX_REPEAT。合格返回空串。"""
+    import sre_constants as C
+    import sre_parse
+    if len(rx) > RX_MAX_LEN:
+        return f"超过 {RX_MAX_LEN} 字"
+    unbounded = [0]
+    single = {C.LITERAL, C.NOT_LITERAL, C.ANY, C.IN, C.CATEGORY}
+
+    def walk(items, in_repeat):
+        for op, av in items:
+            if op in (C.GROUPREF, C.GROUPREF_EXISTS):
+                return "用了反向引用"
+            if op in (C.MAX_REPEAT, C.MIN_REPEAT):
+                lo, hi, sub = av
+                if in_repeat:
+                    return "量词嵌套"
+                if hi == C.MAXREPEAT:
+                    unbounded[0] += 1
+                    if len(sub) != 1 or sub[0][0] not in single:
+                        return "给分组加了无上限量词(用 {0,n} 写)"
+                    if unbounded[0] > 1:
+                        return "无上限量词超过 1 个(用 {0,n} 写)"
+                elif hi > RX_MAX_REPEAT:
+                    return f"量词上限超过 {RX_MAX_REPEAT}"
+                r = walk(sub, True)
+            elif op == C.SUBPATTERN:
+                r = walk(av[-1], in_repeat)
+            elif op == C.BRANCH:
+                r = next((x for b in av[1] for x in [walk(b, in_repeat)] if x), "")
+            elif op in (C.ASSERT, C.ASSERT_NOT):
+                r = walk(av[1], in_repeat)
+            else:
+                r = ""
+            if r:
+                return r
+        return ""
+    return walk(sre_parse.parse(rx), False)
 
 
 def _turns(rows: list[dict]):
