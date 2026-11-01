@@ -457,6 +457,27 @@ async def rules_list():
     }
 
 
+@router.post("/rules/{rule_id}/compile")
+async def rules_compile(rule_id: int):
+    """给已有规则补编译检查(批准后由答案护栏在出答案前执行)。要调一次模型。"""
+    from services import rule_forge as rf
+    r = await rf.compile_rule(rule_id)
+    if not r.get("ok"):
+        raise HTTPException(status_code=404, detail=r.get("error"))
+    return r
+
+
+@router.post("/rules/{rule_id}/check/{onoff}")
+async def rules_check(rule_id: int, onoff: str):
+    """启用/停用某条规则的出答案前检查。"""
+    if onoff not in ("on", "off"):
+        raise HTTPException(status_code=400, detail="只能是 on / off")
+    from services import rule_forge as rf
+    if not await rf.set_check(rule_id, onoff == "on"):
+        raise HTTPException(status_code=404, detail=f"#{rule_id} 没有编译出的检查")
+    return {"ok": True, "id": rule_id, "check_on": onoff == "on"}
+
+
 @router.post("/rules/{rule_id}/{decision}")
 async def rules_decide(rule_id: int, decision: str):
     """批准 → 进 system prompt(下一次问答立刻生效); 否决 → 永久留在队列里但不生效。

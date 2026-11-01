@@ -3988,7 +3988,7 @@ async def ask_stock_stream(question: str, history: list | None = None, images: l
         if not tus:
             before = len(sources)
             text = _join_answer(carried, _assemble_cited_text(content, sources, seen_urls))
-            problems = _guard.inspect(text, used, tool_outs) if not repaired else []
+            problems = _guard.inspect(text, used, tool_outs, question) if not repaired else []
             if problems:
                 repaired = True
                 yield {"type": "step", "tool": "self_check", "label": "回答自查",
@@ -4071,7 +4071,7 @@ async def ask_stock(question: str, history: list | None = None, images: list | N
         tus = [b for b in content if b.get("type") == "tool_use"]
         if not tus:
             text = _join_answer(carried, _assemble_cited_text(content, sources, seen_urls))
-            problems = _guard.inspect(text, tools_used, tool_outs) if not repaired else []
+            problems = _guard.inspect(text, tools_used, tool_outs, question) if not repaired else []
             if problems:
                 # 只补一轮: 让模型只改这几点。不违规时这段完全不执行(常态零成本)。
                 repaired = True

@@ -151,7 +151,7 @@ def test_draft_system_includes_existing_titles():
     titles = rf.existing_titles()
     assert len(titles) > 30
     assert titles[0] in sysp
-    assert "已被现有规则覆盖的" in sysp
+    assert "已被现有规则覆盖" in sysp and "enforce" in sysp
 
 
 # ── 每周自动挖掘(后台循环用) ─────────────────────────────

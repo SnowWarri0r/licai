@@ -406,7 +406,10 @@ CREATE TABLE IF NOT EXISTS prompt_rule (
     evidence TEXT DEFAULT '',                  -- 触发它的那次纠正原文(截断)
     session_id INTEGER,                        -- 来自哪个会话
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    decided_at TIMESTAMP
+    decided_at TIMESTAMP,
+    check_json TEXT DEFAULT '',                -- 编译出的出答案前检查(见 rule_forge.validate_check), 空=只有文字
+    check_note TEXT DEFAULT '',                -- 编译/回放结果: 原纠正是否命中、历史回答里会触发几条
+    check_on INTEGER DEFAULT 0                 -- 检查是否执行: 批准规则时连带启用; 给已生效规则补编译的要单独启用
 );
 CREATE INDEX IF NOT EXISTS idx_prompt_rule_status ON prompt_rule(status, id);
 
@@ -473,6 +476,13 @@ async def init_db():
         if "fx_rate" not in cols:
             # 港美股成交日汇率(每 1 原币折人民币); NULL → 按当前汇率折算(A 股不用)
             await db.execute("ALTER TABLE position_actions ADD COLUMN fx_rate REAL")
+        # Migration: 沉淀规则加编译检查两列(老库只有文字规则)
+        cursor = await db.execute("PRAGMA table_info(prompt_rule)")
+        pr_cols = {row[1] for row in await cursor.fetchall()}
+        for col, typ in (("check_json", "TEXT DEFAULT ''"), ("check_note", "TEXT DEFAULT ''"),
+                         ("check_on", "INTEGER DEFAULT 0")):
+            if col not in pr_cols:
+                await db.execute(f"ALTER TABLE prompt_rule ADD COLUMN {col} {typ}")
         # Migration: kline_cache 加成交额列(老库只有 volume)
         cursor = await db.execute("PRAGMA table_info(kline_cache)")
         kc_cols = {row[1] for row in await cursor.fetchall()}

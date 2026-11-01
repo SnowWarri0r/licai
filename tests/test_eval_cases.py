@@ -208,3 +208,19 @@ def test_onchain_check_is_line_scoped():
     assert C.check_onchain_etf(ok, NO_TOOLS, g) == []
     bad = "场外基金：518880 黄金ETF"
     assert C.check_onchain_etf(bad, NO_TOOLS, g)
+
+
+def test_chain_table_check():
+    from evals.cases import check_chain_table
+    good = ("| 环节 | 标的 |\n|---|---|\n| 上游 光芯片 | 源杰科技(688498) |\n| 上游 | 光迅科技(002281) |\n"
+            "| 中游 光模块 | 中际旭创(300308) |\n| 下游 | 工业富联(601138) |")
+    assert check_chain_table(good, ["web_search", "get_chain_quote"], {}) == []
+    bad = check_chain_table("中际旭创涨得多", ["get_quote"], {})
+    assert any("get_chain_quote" in b for b in bad) and any("表格" in b for b in bad)
+
+
+def test_allocation_framework_check():
+    from evals.cases import check_allocation_framework
+    good = "应急金按 3-6 个月支出留在随时可取的货基里, 流动性分三层。具体怎么分由你决定。"
+    assert check_allocation_framework(good, ["get_asset_allocation"], {}) == []
+    assert len(check_allocation_framework("多买点理财", [], {})) == 4

@@ -13,6 +13,7 @@
   R4 红线  出买卖指令
   R6 溯源  标了[实测]的数字在工具返回里找不到出处(影子模式, ANSWER_GUARD_PROVENANCE=1 才打回)
   R7 必查  读了某类作答规范却没调该类最低限度的取数工具(如日内问题没看分时)
+  R8 纠正  用户纠正沉淀出的规则里, 能写成机器判据的那部分(rule_forge 编译、人批准后生效)
   R5 裸标签 模型用 <mark>/<b> 做强调, 前端漏成裸标签显示出来; 也见过 <augment_code_snippet>
            这种谁也不认识的标签(联网读回来的正文里夹带), 原样打在页面上
 """
@@ -89,14 +90,18 @@ def check_against_tools(ans: str, tools: list, tool_outs: dict) -> list[str]:
     return bad
 
 
-def missing_lookups(tools: list, tool_outs: dict) -> list[str]:
-    from services.agent_guides import REQUIRED
+def loaded_topics(tool_outs: dict) -> list[str]:
     loaded = []
     for o in _iter_outs(tool_outs, "load_guide"):
         loaded += list((o.get("guides") or {}).keys())
+    return list(dict.fromkeys(loaded))
+
+
+def missing_lookups(tools: list, tool_outs: dict) -> list[str]:
+    from services.agent_guides import REQUIRED
     called = set(tools or [])
     bad = []
-    for topic in dict.fromkeys(loaded):
+    for topic in loaded_topics(tool_outs):
         for group in REQUIRED.get(topic, []):
             if not called & set(group):
                 bad.append(f"按 {topic} 规范还缺 {' / '.join(group)} 这一项取数: 先调用它, 再给出完整回答")
@@ -221,8 +226,54 @@ def _provenance_enforced() -> bool:
     return os.environ.get("ANSWER_GUARD_PROVENANCE", "").lower() in ("1", "true", "yes")
 
 
-def inspect(ans: str, tools: list, tool_outs: dict) -> list[str]:
+# ── R8: 纠正编译出的检查 ─────────────────────────────────
+# 论文依据: 把用户纠正编译成"完成前必须通过的检查"比只写成提示词规则或记忆更管用
+# (TRACE, arXiv 2606.13174: 同一批偏好, 只给全部规则文字 55% 被遵守, 编译成检查 70%)。
+# R7 就是手写的一条这种检查。这里执行 rule_forge 编译、人批准过的那些; 格式见
+# rule_forge.validate_check。只做确定性判定(问题关键词/调过的工具/读过的规范/答案正则),
+# 判不了的规则留在文字层。
+
+def check_fires(chk: dict, question: str, ans: str, tools: list, topics: list) -> str:
+    """返回违规说明; 不适用或没违规返回空串。"""
+    w = chk.get("when") or {}
+    q, called = question or "", set(tools or [])
+    if w.get("question_any") and not _has_any(q, w["question_any"]):
+        return ""
+    if w.get("tools_any") and not called & set(w["tools_any"]):
+        return ""
+    if w.get("topics_any") and not set(topics or []) & set(w["topics_any"]):
+        return ""
+    miss = [" / ".join(g) for g in chk.get("require_tools") or [] if not called & set(g)]
+    hit = [m.group() for rx in chk.get("answer_forbid") or [] for m in [re.search(rx, ans or "")] if m]
+    lack = [rx for rx in chk.get("answer_require") or [] if not re.search(rx, ans or "")]
+    if not (miss or hit or lack):
+        return ""
+    parts = []
+    if miss:
+        parts.append("还缺 " + "、".join(miss) + " 的取数, 先调用再作答")
+    if hit:
+        parts.append("答案里的「" + "」「".join(h[:20] for h in hit[:3]) + "」与规则不符")
+    if lack:
+        parts.append("答案缺少规则要求写明的内容")
+    return "; ".join(parts) + (f"。{chk['message']}" if chk.get("message") else "")
+
+
+def compiled_violations(question: str, ans: str, tools: list, tool_outs: dict, checks=None) -> list[str]:
+    if checks is None:
+        from services.rule_forge import active_checks_sync
+        checks = active_checks_sync()
+    topics = loaded_topics(tool_outs)
+    out = []
+    for title, chk in checks:
+        why = check_fires(chk, question, ans, tools, topics)
+        if why:
+            out.append(f"按已批准的规则【{title}】: {why}")
+    return out
+
+
+def inspect(ans: str, tools: list, tool_outs: dict, question: str = "") -> list[str]:
     bad = global_checks(ans, tools) + check_against_tools(ans, tools, tool_outs)
+    bad += compiled_violations(question, ans, tools, tool_outs)
     if _provenance_enforced():
         miss = unsourced_numbers(ans, tool_outs)
         if miss:

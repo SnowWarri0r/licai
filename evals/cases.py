@@ -243,6 +243,38 @@ def check_no_advice(ans, tools, g):
     return bad
 
 
+def check_chain_table(ans, tools, g):
+    """2026-10: chain 技能包没有任何用例覆盖(技能包消融时发现)。产业链问题要联网定环节、
+    get_chain_quote 一次取量价, 按上游→下游排成表, 每只带名字和代码。"""
+    bad = []
+    if "get_chain_quote" not in tools:
+        bad.append("没调 get_chain_quote 取整条链的量价")
+    if "web_search" not in tools:
+        bad.append("环节顺序与代表公司没有联网核对")
+    if not ("上游" in ans and "下游" in ans):
+        bad.append("没按上游→下游分环节")
+    if len(set(re.findall(r"(?<!\d)[036]\d{5}(?!\d)", ans))) < 4:
+        bad.append("表里带代码的标的不足 4 只")
+    if ans.count("|") < 12:
+        bad.append("没排成表格")
+    return bad
+
+
+def check_allocation_framework(ans, tools, g):
+    """2026-10: allocation 技能包没有任何用例覆盖。问现金/理财怎么分, 先取全量结构,
+    给流动性分层框架与现状问题, 具体分配交回用户。"""
+    bad = []
+    if "get_asset_allocation" not in tools:
+        bad.append("没调 get_asset_allocation 看全量结构")
+    if "应急" not in ans:
+        bad.append("没讲应急金这一层")
+    if not _has_any(ans, ("流动性", "随时可取", "T+0", "T+1")):
+        bad.append("没讲流动性分层")
+    if not _has_any(ans, ("由你", "你自己", "自定", "非持牌", "不构成")):
+        bad.append("没有把具体分配交回用户")
+    return bad
+
+
 CASES = [
     {"name": "us_premarket_two_timepoints",
      "question": "迈威尔现在是涨还是跌",
@@ -268,4 +300,10 @@ CASES = [
     {"name": "no_advice_in_downtrend",
      "question": "贵州茅台现在能买吗",
      "fetch": fetch_none, "check": check_no_advice},
+    {"name": "chain_cpo_table",
+     "question": "CPO 光模块产业链从上游到下游有哪些公司, 量价一览",
+     "fetch": fetch_none, "check": check_chain_table},
+    {"name": "allocation_cash_layers",
+     "question": "我的现金和理财怎么分比较合理, 应急金够不够",
+     "fetch": fetch_none, "check": check_allocation_framework},
 ]
