@@ -7,6 +7,8 @@
     ./venv/bin/python evals/run.py --db portfolio.db   # 换账本(默认 demo)
     ./venv/bin/python evals/run.py -n 3            # 每条跑 3 次, 报 pass^3(3 次全过才算过)
     ./venv/bin/python evals/run.py --no-context    # 去掉用例带的会话状态和画像, 量它们的作用
+    ./venv/bin/python evals/run.py --guides-off chain,allocation   # 去掉这几个技能包(对照组), 量它们的作用
+    ./venv/bin/python evals/run.py --shard 1/2     # 只跑第 1 份(共 2 份), 多开几个进程并行
 
 为什么要 pass^k: 同一条实测一次挂一次过, 单次通过率会高估稳定性。单次 75% 的用例
 3 次全过只有约 42% —— 用户每次提问碰到的是单次结果, 要的是"每次都对"。
@@ -69,6 +71,15 @@ async def run_one(case, verbose=False, ground=None, context=True):
     q = case["question"]
     question = q(ground) if callable(q) else q
 
+    loaded: list = []                    # 本次读了哪些技能包, 消融时据此挑用例
+    real_load = sa._load_guide
+
+    def _spy(topics):
+        r = real_load(topics)
+        loaded.extend((r.get("guides") or {}).keys())
+        return r
+
+    sa._load_guide = _spy
     t0 = time.time()
     before = llm.get_usage_stats()
     # 画像一律用用例自带的(默认空): 演示账本里手工试出来的画像不该混进评测
@@ -81,6 +92,7 @@ async def run_one(case, verbose=False, ground=None, context=True):
                                **({"state": state} if state else {}))
     finally:
         um.active_sync = real_active
+        sa._load_guide = real_load
     used = llm.get_usage_stats()
     ans, tools = (r.get("answer") or ""), (r.get("tools_used") or [])
 
@@ -98,6 +110,7 @@ async def run_one(case, verbose=False, ground=None, context=True):
         "name": name, "status": "fail" if fails else "pass", "fails": fails,
         "answer": ans,
         "question": question, "tools": tools, "rounds": r.get("rounds"),
+        "guides": list(dict.fromkeys(loaded)),
         "secs": round(time.time() - t0, 1),
         "prompt_tokens": used["prompt_total"] - before["prompt_total"],
         "cache_read": used["cache_read"] - before["cache_read"],
@@ -115,7 +128,12 @@ async def main():
     ap.add_argument("--db", default="portfolio.demo.db")
     ap.add_argument("-n", "--repeat", type=int, default=1, help="每条跑几次, 报 pass^n")
     ap.add_argument("--no-context", action="store_true", help="去掉用例带的会话状态和画像(对照组)")
+    ap.add_argument("--guides-off", default="", help="逗号分隔的技能包名, 从 load_guide 里拿掉(对照组)")
+    ap.add_argument("--cases", default="", help="逗号分隔的用例全名, 只跑这些")
+    ap.add_argument("--shard", default="", help="i/N: 用例按序号轮分成 N 份, 只跑第 i 份")
     args = ap.parse_args()
+    if args.guides_off:
+        _drop_guides([g.strip() for g in args.guides_off.split(",") if g.strip()])
 
     # 评测不写画像记忆: 否则每跑一次演示账本里多几条, 下一次评测的 prompt 就变了
     os.environ["AGENT_MEMORY_READONLY"] = "1"
@@ -141,6 +159,12 @@ async def main():
         _C2 = []
     CASES = _C1 + _C2
     picked = [c for c in CASES if c["name"].startswith(args.case)]
+    if args.cases:
+        want = set(args.cases.split(","))
+        picked = [c for c in picked if c["name"] in want]
+    if args.shard:
+        i, n = (int(x) for x in args.shard.split("/"))
+        picked = picked[i - 1::n]
     if args.list:
         for c in CASES:
             why = (c["check"].__doc__ or "").strip().splitlines()[0]
@@ -151,7 +175,8 @@ async def main():
         return 2
 
     print(f"账本={config.config.db_path}  用例={len(picked)}  每条 {args.repeat} 次"
-          + ("  [对照: 无状态/画像]" if args.no_context else "") + "\n")
+          + ("  [对照: 无状态/画像]" if args.no_context else "")
+          + (f"  [对照: 去掉技能包 {args.guides_off}]" if args.guides_off else "") + "\n")
     rows, per_case = [], {}
     for c in picked:
         # 真值每条只取一次: 同一用例的 n 次之间行情不该变, 否则 pass^n 混进了数据漂移
@@ -211,6 +236,21 @@ async def main():
     return 0 if len(all_ok) == len(ran) else 1
 
 
+def _drop_guides(names: list) -> None:
+    """把技能包从 load_guide 里整个拿掉: 工具描述和枚举里都不再出现, 模型看不到也取不到,
+    R7 也就不会按它要求必查工具 —— 相当于这个包从没写过。"""
+    from services import agent_guides as ag
+    bad = [n for n in names if n not in ag.GUIDES]
+    if bad:
+        sys.exit(f"没有这些技能包: {bad}; 可选 {list(ag.GUIDES)}")
+    for n in names:
+        ag.GUIDES.pop(n)
+    t = ag.LOAD_GUIDE_TOOL          # stock_agent 的工具表引用的是同一个 dict, 原地改
+    t["description"] = ("取某类问题的作答规范: 该查哪些工具、数据口径、呈现格式。分析类问题在第一轮调用, "
+                        "可一次取多个。" + "; ".join(f"{k}={d}" for k, (d, _) in ag.GUIDES.items()) + "。")
+    t["input_schema"]["properties"]["topics"]["items"]["enum"] = list(ag.GUIDES)
+
+
 def _save(rows: list, args) -> None:
     """整轮结果存 logs/(已 gitignore): 改架构前后对比要看答案和工具序列, 不只看通过数。"""
     import json
@@ -219,7 +259,8 @@ def _save(rows: list, args) -> None:
         os.makedirs(d, exist_ok=True)
         p = os.path.join(d, f"eval-{time.strftime('%Y%m%d-%H%M%S')}.json")
         with open(p, "w", encoding="utf-8") as f:
-            json.dump({"db": args.db, "repeat": args.repeat, "context": not args.no_context, "rows": rows}, f, ensure_ascii=False, indent=1)
+            json.dump({"db": args.db, "repeat": args.repeat, "context": not args.no_context,
+                       "guides_off": args.guides_off, "shard": args.shard, "rows": rows}, f, ensure_ascii=False, indent=1)
         print(f"明细: {os.path.relpath(p)}")
     except Exception as e:
         print(f"! 明细没存下来: {e}")
