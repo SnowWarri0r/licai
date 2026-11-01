@@ -3722,6 +3722,8 @@ _TOOL_CN = {
     "get_sector_momentum": "看板块动量", "get_hot_rank": "看资金热度",
     "get_hot_concepts": "看热门概念", "get_board_stocks": "查板块龙头", "get_market_news": "看政策快讯", "web_search": "联网搜索",
     "get_chain_quote": "产业链量价", "read_url": "读网页全文", "get_global_indices": "看全球指数", "get_coiled_stocks": "扫横盘蓄势",
+    "calc": "精确计算", "get_exposure": "看穿透敞口", "get_etf_xray": "透视ETF成分", "get_plate_bidding": "看竞价异动",
+    "get_hot_themes": "看热门题材", "get_inst_position": "查机构持仓",
 }
 
 
