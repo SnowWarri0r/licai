@@ -17,6 +17,7 @@ import services.user_memory as _user_memory
 import services.sina_boards as _sina_boards
 import services.em_dataapi as _em_dataapi
 import services.trade_plan as _trade_plan
+from services.rule_forge import looks_like_correction as _looks_like_correction
 # 系统提示拆成常驻核心 + 按需技能包, 见 services/agent_guides.py
 from services.agent_guides import (CORE as _SYSTEM, ALL_TEXT as _PROMPT_ALL,  # noqa: F401
                                    LOAD_GUIDE_TOOL as _LOAD_GUIDE_TOOL, load_guide as _load_guide)
@@ -3851,6 +3852,34 @@ def _state_block(state: dict | None) -> str:
     return "\n\n".join(parts)
 
 
+# ── 纠正轮次 ────────────────────────────────────────────
+# 用户在纠正上一轮时("我说的是总亏损""你看了分时没有"), 模型容易把纠正当成对原有理解的补充,
+# 而不是推翻它重来(Clarification Is Not Correction, arXiv 2609.25337: 早早认定一种理解,
+# 后来的澄清只被用来细化它; 提示词与记忆类办法都不太管用, 建议从修正后的状态重建)。
+# 只改写被纠正的那一轮助手回答也能扭转相当一部分失败(arXiv 2609.05882)。
+# 两种处理: mark = 保留原回答, 在本轮问题前声明这是纠正、按新理解从头取数;
+#           neutral = 另把被纠正的回答换成占位说明, 只留其中提到的标的代码。
+# 默认关闭: 2026-10-26 用 35 条真实纠正回放(三组各一次, 模型判是否按纠正作答), 现模型不加处理
+# 已有 34/35, mark 33/35, neutral 35/35, 差别在噪声内, 而两种处理都多花 8-12 秒、多调 4 次工具。
+# 论文里的失败(Gemini 2.5)在这里没复现。换模型后可用 AGENT_CORRECTION_MODE 复测。
+_CORRECTION_NOTE = (
+    "【这句是对上一轮回答的纠正】先用一句话写明你现在对用户问题的理解(以这句纠正为准), "
+    "再从这个理解出发重新调用工具取数作答。上一轮回答所依据的理解已被用户否定, "
+    "其中的结论与数字只作为待核对的线索, 一律以本轮工具返回为准。")
+
+
+def _correction_mode() -> str:
+    m = os.environ.get("AGENT_CORRECTION_MODE", "off").lower()
+    return m if m in ("off", "mark", "neutral") else "off"
+
+
+def _neutralized(answer: str) -> str:
+    codes = list(dict.fromkeys(_re.findall(r"(?<![\d.])(?:[036]\d{5}|[15]\d{5}|\d{5}\.HK|[A-Z]{1,5}(?=\)))(?![\d])",
+                                           answer or "")))[:12]
+    return ("(上一轮回答已被用户在下一句纠正, 原文不再沿用"
+            + (f"; 其中提到过的标的: {', '.join(codes)}" if codes else "") + ")")
+
+
 def _seed_messages(question: str, history: list | None, images: list | None = None,
                    state: dict | None = None) -> list:
     """把前端传来的多轮历史(只含 role+text 的简化对话)接到当前问题前面, 让 agent 有上下文。
@@ -3861,8 +3890,13 @@ def _seed_messages(question: str, history: list | None, images: list | None = No
         content = (h.get("content") or "").strip()
         if role in ("user", "assistant") and content:
             msgs.append({"role": role, "content": content[:4000]})
+    mode = _correction_mode()
+    correcting = (mode != "off" and msgs and msgs[-1]["role"] == "assistant"
+                  and _looks_like_correction(question))
+    if correcting and mode == "neutral":
+        msgs[-1] = {"role": "assistant", "content": _neutralized(msgs[-1]["content"])}
     blocks = _image_blocks(images)
-    sb = _state_block(state)
+    sb = "\n\n".join(x for x in (_state_block(state), _CORRECTION_NOTE if correcting else "") if x)
     pre = [{"type": "text", "text": sb}] if sb else []
     if blocks:
         msgs.append({"role": "user", "content": blocks + pre + [{"type": "text", "text": question or "看看这张图"}]})
@@ -3882,6 +3916,14 @@ _OVERLOAD_ROUND_WAIT_S = 20      # 第 n 次等 n×20 秒
 
 # 工具轮里的正文多长算"答案的前半段"而不是进度旁白("我先查一下持仓"这类一句话)
 _CARRY_MIN_CHARS = 200
+
+
+def _resendable(content: list) -> list:
+    """模型这一轮的内容块原样回传前去掉空文本块: 偶有一轮返回 text="" 夹在工具调用旁边,
+    下一轮回传时 API 报 400 "text content blocks must be non-empty", 整个问答失败
+    (2026-10-26 纠正回放实验里撞到)。全空时留一个占位, 空 content 同样会被拒。"""
+    out = [b for b in content or [] if not (b.get("type") == "text" and not (b.get("text") or "").strip())]
+    return out or [{"type": "text", "text": "(无正文)"}]
 
 
 def _round_text(content: list) -> str:
@@ -3973,7 +4015,7 @@ async def ask_stock_stream(question: str, history: list | None = None, images: l
             yield {"type": "error", "error": "LLM 无响应"}
             return
         content = resp.get("content", [])
-        messages.append({"role": "assistant", "content": content})
+        messages.append({"role": "assistant", "content": _resendable(content)})
         # 服务端联网搜索(web_search)已由 API 执行完, 这里只把"联网搜索"作为步骤推给前端
         for b in content:
             if b.get("type") == "server_tool_use" and b.get("name") == "web_search":
@@ -4063,7 +4105,7 @@ async def ask_stock(question: str, history: list | None = None, images: list | N
         if resp is None:
             return {"answer": "", "error": "LLM 无响应", "tools_used": tools_used, "rounds": rnd}
         content = resp.get("content", [])
-        messages.append({"role": "assistant", "content": content})
+        messages.append({"role": "assistant", "content": _resendable(content)})
         # 服务端 web_search 也计入 tools_used(它是 server_tool_use, 不在 tus 里, 否则会被漏记成"没联网")
         tools_used.extend("web_search" for b in content
                           if b.get("type") == "server_tool_use" and b.get("name") == "web_search")
