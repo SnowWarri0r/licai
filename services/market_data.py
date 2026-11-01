@@ -1283,6 +1283,44 @@ def search_hk_stocks(query: str, limit: int = 8) -> list[dict]:
     return out[:limit]
 
 
+_us_search_cache: dict = {}
+
+
+def search_us_stocks(query: str, limit: int = 5) -> list[dict]:
+    """美股按英文名/中文名/ticker 搜(腾讯 smartbox, t=us) → [{code: US.TER, name}], 只留类型 GP 开头的。
+    条目形如 us~ter.oq~泰瑞达~trd~GP, ticker = 第二段点号前转大写。失败返回空表, 缓存 10 分钟。"""
+    q = (query or "").strip()
+    if not q:
+        return []
+    c = _us_search_cache.get(q)
+    if c and time.time() - c[1] < 600:
+        return c[0][:limit]
+    out: list[dict] = []
+    try:
+        r = _requests.get("https://smartbox.gtimg.cn/s3/", params={"v": "2", "q": q, "t": "us"}, timeout=5)
+        m = re.search(r'v_hint="(.*)"', r.text or "")
+        body = m.group(1) if m else ""
+        if body and body != "N":
+            body = body.encode("latin-1", "backslashreplace").decode("unicode_escape")
+            for item in body.split("^"):
+                f = item.split("~")
+                if len(f) < 5 or f[0] != "us" or not f[4].startswith("GP"):
+                    continue
+                tk, _, mkt = f[1].partition(".")
+                tk = tk.upper()
+                if mkt == "ps":                      # 粉单场外(腾讯控股的 TCTZF 这类), 不当成美股正股
+                    continue
+                if re.fullmatch(r"[A-Z]{1,6}", tk):
+                    out.append({"code": f"US.{tk}", "name": f[2]})
+    except Exception as e:
+        print(f"[us-search] {q} failed: {e}")
+        return []
+    _us_search_cache[q] = (out, time.time())
+    if len(_us_search_cache) > 500:
+        _us_search_cache.clear()
+    return out[:limit]
+
+
 def _us_session_of(clock: str) -> str:
     """把新浪给的交易所本地时刻(如 "Aug 19 08:41AM EDT")归到哪个时段。
 

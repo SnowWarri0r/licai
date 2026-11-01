@@ -174,3 +174,11 @@ def test_system_prompt_itself_carries_no_emoji():
     from services.stock_agent import _PROMPT_ALL as _SYSTEM
     body = _SYSTEM.split("【不用 emoji】")[0]        # 举例那句本身要写出符号才说得清
     assert not re.findall(r"[\U0001F300-\U0001FAFF✅❌⚠]", body)
+
+
+def test_failed_step_carries_arg():
+    """同名工具一轮并发调多个, 失败事件要带参数, 前端才能标对芯片。"""
+    from services.stock_agent import _failed_steps
+    tus = [{"name": "resolve_stock", "input": {"query": "LLY"}}, {"name": "resolve_stock", "input": {"query": "TER"}}]
+    evs = _failed_steps(tus, [{"code": "US.LLY"}, {"error": "找不到 TER"}])
+    assert [(e["tool"], e["arg"]) for e in evs] == [("resolve_stock", "TER")]

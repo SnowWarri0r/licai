@@ -311,6 +311,19 @@ _US_NAME_MAP = {
 }
 
 
+async def _us_ticker_hit(ticker: str) -> dict | None:
+    """美股 ticker 能取到实时报价才算存在, 顺便拿中文名; 取不到返回 None。"""
+    code = f"US.{ticker}"
+    try:
+        from services.market_data import get_realtime_quotes
+        qq = (await get_realtime_quotes([code])).get(code)
+    except Exception:
+        qq = None
+    if qq and qq.get("price"):
+        return {"code": code, "name": qq.get("stock_name") or ticker, "market": "US", "in_holdings": False}
+    return None
+
+
 async def _tool_resolve_stock(query: str) -> dict:
     """名字或代码 → 标准代码 + 名称。先查在持持仓(已清仓不算在持), 再查持仓表全部, 再 A 股全表,
     最后美股(纯字母 ticker / 常见中文名 → US.XXX)。"""
@@ -364,8 +377,15 @@ async def _tool_resolve_stock(query: str) -> dict:
                 return {"code": cd, "name": nm, "in_holdings": False, "note": "已清仓, 不在当前持仓"}
     except Exception:
         pass
+    # 1c') 美股 ticker: US.XXX 前缀, 或全大写 1~5 个字母(模型传 ticker 的写法) → 先按美股验行情。
+    #   排在 A 股全表之前: 否则 SYM/TER/LLY 会被 A 股拼音首字母抢走(三羊马/特锐德/桂林旅游)
+    m_us = _re.fullmatch(r"(?i)us\.([a-z]{1,6})", q)
+    if m_us or _re.fullmatch(r"[A-Z]{1,5}", q):
+        hit = await _us_ticker_hit(m_us.group(1).upper() if m_us else q)
+        if hit:
+            return hit
     # 1c) 港股代码: 5 位数字(A 股是 6 位, 不会撞)或 HK./hk 前缀 → 先按港股解析
-    from services.market_data import normalize_stock_code, search_hk_stocks
+    from services.market_data import normalize_stock_code, search_hk_stocks, search_us_stocks
     hk_code = None
     if q.isdigit() and len(q) == 5:
         hk_code = f"HK.{q}"
@@ -382,6 +402,10 @@ async def _tool_resolve_stock(query: str) -> dict:
         return {"code": q, "name": c2n[q], "in_holdings": False}
     if q in n2c:
         return {"code": n2c[q], "name": q, "in_holdings": False}
+    if q in _US_NAME_MAP:                       # 常见美股中文名直接给代码, 免得被同名 ETF 候选摊薄
+        hit = await _us_ticker_hit(_US_NAME_MAP[q])
+        if hit:
+            return hit
 
     # 2') 汇总所有匹配法进一个候选池(不早退, 每个代码留最优 tier)——
     #   否则"华宏"命中华宏科技就 return, 同音的华虹永远出不来。
@@ -426,6 +450,15 @@ async def _tool_resolve_stock(query: str) -> dict:
                 _add(h["code"], nm, 0 if nm.startswith(q) else 1 if q in nm else 3)
         except Exception:
             pass
+    # 美股按中英文名补进同一个池(泰瑞达/礼来/Teradyne/Symbotic 这类名字, 前面几层都认不出):
+    # 名称或 ticker 等于输入/名称前缀 tier0、子串 tier1、其余 tier3
+    if has_cjk or _re.search(r"[A-Za-z]", q):
+        try:
+            for h in await asyncio.to_thread(search_us_stocks, q, 3):
+                nm, low = h["name"], h["name"].lower()
+                _add(h["code"], nm, 0 if (h["code"][3:].lower() == ql or low.startswith(ql)) else 1 if ql in low else 3)
+        except Exception:
+            pass
     # 编辑距离近似仅中文输入且池仍空/很小时补(免误伤英文 ticker, 也省算力)
     if has_cjk and len(qpy) >= 4 and len(pool) < 3:
         cap = 1 if len(qpy) <= 6 else 2
@@ -461,13 +494,9 @@ async def _tool_resolve_stock(query: str) -> dict:
         ticker = _US_NAME_MAP[q]
     if ticker:
         code = f"US.{ticker}"
-        try:
-            from services.market_data import get_realtime_quotes
-            qq = (await get_realtime_quotes([code])).get(code)
-        except Exception:
-            qq = None
-        if qq and qq.get("price"):
-            return {"code": code, "name": qq.get("stock_name") or q, "market": "US", "in_holdings": False}
+        hit = await _us_ticker_hit(ticker)
+        if hit:
+            return hit
         if q in _US_NAME_MAP:   # 名字在映射里但行情暂不可达, 仍给出代码
             return {"code": code, "name": q, "market": "US", "in_holdings": False,
                     "note": "行情暂未验证(源抖动), 代码可直接用于 get_quote/get_trend"}
@@ -3621,6 +3650,12 @@ async def _run_tool(tu: dict) -> dict:
     return out
 
 
+def _step_arg(tu: dict) -> str:
+    """步骤芯片上显示的参数; step 与 step_result 共用, 前端靠 (工具名, 参数) 把失败对回同一个芯片。"""
+    inp = tu.get("input") or {}
+    return inp.get("query") or inp.get("code") or ""
+
+
 def _failed_steps(tus: list, outs: list) -> list[dict]:
     """哪些工具这一轮取数失败了 → step_result 事件。
 
@@ -3631,7 +3666,7 @@ def _failed_steps(tus: list, outs: list) -> list[dict]:
     out = []
     for tu, o in zip(tus, outs):
         if isinstance(o, dict) and o.get("error"):
-            out.append({"type": "step_result", "tool": tu.get("name"), "ok": False,
+            out.append({"type": "step_result", "tool": tu.get("name"), "arg": _step_arg(tu), "ok": False,
                         "err": str(o.get("error"))[:80]})
     return out
 
@@ -4094,8 +4129,9 @@ async def ask_stock_stream(question: str, history: list | None = None, images: l
             problems = _guard.inspect(text, used, tool_outs, question) if not repaired else []
             if problems:
                 repaired = True
+                print(f"[self_check] {len(problems)} 处: " + " | ".join(p[:120] for p in problems), flush=True)
                 if sent:
-                    yield {"type": "draft_reset"}
+                    yield {"type": "draft_reset", "why": "self_check", "n": len(problems)}
                 yield {"type": "step", "tool": "self_check", "label": "回答自查",
                        "arg": f"{len(problems)} 处待修"}
                 messages.append(_guard.repair_message(problems))
@@ -4119,7 +4155,7 @@ async def ask_stock_stream(question: str, history: list | None = None, images: l
         for tu in tus:
             yield {"type": "step", "tool": tu.get("name"),
                    "label": _TOOL_CN.get(tu.get("name"), tu.get("name")),
-                   "arg": (tu.get("input") or {}).get("query") or (tu.get("input") or {}).get("code") or ""}
+                   "arg": _step_arg(tu)}
         # 同一轮里的工具相互独立(各自的网络请求), 并发跑, 顺序保留, 单个失败不连累其他
         # 本轮调过可信名单外的工具(返回第三方文本)后, remember 只记成待确认, 防提示注入写进画像
         _user_memory.untrusted_seen.set(prior or _user_memory.tainted(used))

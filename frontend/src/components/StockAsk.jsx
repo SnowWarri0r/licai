@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { fetchJSON } from '../hooks/useApi'
-import { MiniMarkdown, DraftAnswer, draftText, sharedPrefix, SourcesBlock, ToolCallStrip, startRun, followRun, liveRuns, cancelRun } from './askShared'
+import { MiniMarkdown, DraftAnswer, draftText, sharedPrefix, markFailed, SourcesBlock, ToolCallStrip, startRun, followRun, liveRuns, cancelRun } from './askShared'
 import ImageZoom from './ImageZoom'
 
 // 能力展示型推荐问题 (page 模式空态用), 覆盖 市场风格/资金主线/政策/基本面/同行/筹码
@@ -204,26 +204,27 @@ export default function StockAsk({ page = false }) {
     if (ev.type === 'step') patchLast(it => ({ ...it, steps: [...it.steps, { tool: ev.tool, label: ev.label, arg: ev.arg }] }))
     // 取数失败要回填到对应的 chip 上 —— step 是工具跑之前发的, 不回填的话失败的工具
     // 也会跟成功的一样打绿勾, 界面上看不出这一块其实没数
-    if (ev.type === 'step_result' && ev.ok === false) patchLast(it => ({
-      ...it,
-      steps: it.steps.map((s, i) =>
-        s.tool === ev.tool && !s.failed && !it.steps.slice(i + 1).some(x => x.tool === ev.tool && !x.failed)
-          ? { ...s, failed: true, err: ev.err } : s),
-    }))
+    if (ev.type === 'step_result' && ev.ok === false) patchLast(it => ({ ...it, steps: markFailed(it.steps, ev) }))
     else if (ev.type === 'thought') patchLast(it => ({ ...it, thought: ev.text }))
-    else if (ev.type === 'draft') { draftRef.current += ev.text || ''; patchLast(it => ({ ...it, draft: draftRef.current })) }
-    else if (ev.type === 'draft_reset') { draftRef.current = ''; patchLast(it => ({ ...it, draft: '' })) }
+    else if (ev.type === 'draft') { draftRef.current += ev.text || ''; patchLast(it => ({ ...it, draft: draftRef.current, stale: '' })) }
+    // 自查要改时初稿不直接消失: 变淡留着并说明在重写, 新初稿或定稿到了再换掉
+    else if (ev.type === 'draft_reset') {
+      draftRef.current = ''
+      const redo = ev.why === 'self_check'
+      patchLast(it => ({ ...it, draft: '', stale: redo ? (it.draft || it.stale || '') : '',
+                         staleNote: redo ? `自查发现 ${ev.n} 处要改, 正在重写` : '' }))
+    }
     else if (ev.type === 'answer') {
       // 定稿接在初稿后面: 已经显示过的公共前缀直接落定, 打字机只打剩下的
       const full = ev.text || ''
       const from = sharedPrefix(draftText(draftRef.current), full)
       draftRef.current = ''
-      patchLast(it => ({ ...it, answer: full, draft: '', typed: full.slice(0, from) }))
+      patchLast(it => ({ ...it, answer: full, draft: '', stale: '', typed: full.slice(0, from) }))
       typewriter(full, from)
     }
     else if (ev.type === 'sources') patchLast(it => ({ ...it, sources: [...(it.sources || []), ...(ev.sources || [])] }))
     else if (ev.type === 'chart') patchLast(it => ({ ...it, charts: [...(it.charts || []), ev.url] }))
-    else if (ev.type === 'error') { draftRef.current = ''; patchLast(it => ({ ...it, err: ev.error, draft: '', done: true })) }
+    else if (ev.type === 'error') { draftRef.current = ''; patchLast(it => ({ ...it, err: ev.error, draft: '', stale: '', done: true })) }
   }
 
   const ask = async (question) => {
@@ -353,6 +354,8 @@ export default function StockAsk({ page = false }) {
                 : it.answer == null
                   ? (it.draft
                       ? <DraftAnswer text={it.draft} sources={it.sources} />
+                      : it.stale
+                        ? <DraftAnswer text={it.stale} sources={it.sources} note={it.staleNote} faded />
                       : it.steps.length === 0 && <div className="text-[11.5px] text-text-dim">分析中…</div>)
                   : <div className="relative">
                       <MiniMarkdown text={it.typed} sources={it.sources} />

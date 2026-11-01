@@ -149,6 +149,7 @@ def test_guard_repair_withdraws_draft(quiet, monkeypatch):
         evs = _drain(sa.ask_stock_stream("茅台怎么了"))
     kinds = [e["type"] for e in evs]
     assert kinds.index("draft_reset") < kinds.index("step") < kinds.index("answer")
+    assert evs[kinds.index("draft_reset")] | {} == {"type": "draft_reset", "why": "self_check", "n": 1}   # 前端据此说明在重写
     assert evs[kinds.index("answer")]["text"].endswith("补齐")
 
 

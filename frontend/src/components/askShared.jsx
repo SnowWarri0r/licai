@@ -246,12 +246,21 @@ export function sharedPrefix(a, b) {
   return j
 }
 
+// 取数失败回填到对应芯片: 同名工具一轮常并发调十几个, 要按 (工具名, 参数) 对; 取最近一个还没标失败的。
+// 老记录的失败事件不带 arg, 退回只按工具名对
+export function markFailed(steps, ev) {
+  const hit = (s) => s.tool === ev.tool && !s.failed && (ev.arg === undefined || s.arg === ev.arg)
+  let k = -1
+  steps.forEach((s, i) => { if (hit(s)) k = i })
+  return k < 0 ? steps : steps.map((s, i) => (i === k ? { ...s, failed: true, err: ev.err } : s))
+}
+
 // 初稿区: 与定稿同样渲染, 标明它还要经过自查
-export function DraftAnswer({ text, sources }) {
+export function DraftAnswer({ text, sources, note = '生成中 · 自查后定稿', faded = false }) {
   return (
     <div className="relative">
-      <div className="text-[10.5px] text-text-muted mb-1">生成中 · 自查后定稿</div>
-      <MiniMarkdown text={draftText(text)} sources={sources} />
+      <div className={`text-[10.5px] mb-1 ${faded ? 'text-accent' : 'text-text-muted'}`}>{note}</div>
+      <div className={faded ? 'opacity-40' : ''}><MiniMarkdown text={draftText(text)} sources={sources} /></div>
       <span className="inline-block w-1.5 h-3.5 bg-accent/70 align-middle animate-pulse ml-0.5" />
     </div>
   )
