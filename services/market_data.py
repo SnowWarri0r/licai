@@ -670,27 +670,16 @@ def _kline_tencent_a(stock_code: str, datalen: int = 120) -> pd.DataFrame:
 def _fetch_history_em(stock_code: str, days: int) -> pd.DataFrame:
     """东财 push2his 日K, 前复权(fqt=1)。历史序列连续 — 除权/份额折算不再断崖。
     股票/ETF 通用。Sina 的 getKLineData 是不复权, ETF 拆分日会劈一刀, 故改用这条做主源。"""
-    secid = _em_secid(stock_code)
-    # push2his 偶发 RemoteDisconnected(掐首连), 故重试多次; 在 host 间轮换提高命中.
-    # 失败到底才退回兜底(不复权), 故重试要够厚, 否则除权/拆分票偶发回到断崖图.
-    hosts = ["push2his.eastmoney.com", "push2.eastmoney.com"] * 4
-    import json as _json
-    j = None
-    last_err = None
-    for h in hosts:
-        url = (f"https://{h}/api/qt/stock/kline/get"
-               f"?secid={secid}&fields1=f1&fields2=f51,f52,f53,f54,f55,f56,f57"
-               f"&klt=101&fqt=1&end=20500101&lmt={max(int(days), 1)}")
-        try:
-            resp = _requests.get(url, headers={"Referer": "https://quote.eastmoney.com/"}, timeout=15)
-            j = _json.loads(resp.text)
-            if ((j or {}).get("data") or {}).get("klines"):
-                break
-        except Exception as e:
-            last_err = e
-            continue
-    if j is None and last_err is not None:
-        raise last_err
+    from services import em_push2
+    # push2his 偶发 RemoteDisconnected(掐首连), 故轮换主机多试几次; 失败到底才退回兜底(不复权),
+    # 否则除权/拆分票偶发回到断崖图。整组主机被限流时由 em_push2 熔断, 直接走兜底不再空转。
+    params = {"secid": _em_secid(stock_code), "fields1": "f1", "fields2": "f51,f52,f53,f54,f55,f56,f57",
+              "klt": "101", "fqt": "1", "end": "20500101", "lmt": str(max(int(days), 1))}
+    j = em_push2.get_json("/api/qt/stock/kline/get", params,
+                          ["push2his.eastmoney.com", "push2.eastmoney.com"], tries=8, timeout=15,
+                          ok=lambda j: bool(((j or {}).get("data") or {}).get("klines")))
+    if j is None:
+        raise RuntimeError("东财日K不可达" + ("(限流冷却中)" if em_push2.cooling() else ""))
     kl = ((j or {}).get("data") or {}).get("klines") or []
     rows = []
     for ln in kl:

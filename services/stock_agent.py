@@ -16,6 +16,7 @@ import services.answer_guard as _guard
 import services.user_memory as _user_memory
 import services.sina_boards as _sina_boards
 import services.em_dataapi as _em_dataapi
+import services.em_push2 as _em_push2
 import services.trade_plan as _trade_plan
 from services.rule_forge import looks_like_correction as _looks_like_correction
 # 系统提示拆成常驻核心 + 按需技能包, 见 services/agent_guides.py
@@ -1346,35 +1347,37 @@ def _em_secid(code: str) -> str:
 _fflow_cache: dict = {}
 
 
+def _em_diff(j) -> list:
+    """东财 push2 列表接口的 data.diff(没有就空表)。"""
+    return ((j if isinstance(j, dict) else {}).get("data") or {}).get("diff") or []
+
+
 def _fetch_realtime_fund_flow(secid: str, headers: dict, hosts: list) -> dict | None:
     """今日主力资金流(东财 push2 实时, ulist.np/get?secids=): 与榜单 clist f62 同源, 盘中实时滚动。
     f62 主力净 = f66 超大单净 + f72 大单净; f78 中单净; f84 小单净 (单位元)。
     注意: stock/get 不填这些资金流字段, 必须走 ulist.np。"""
-    import requests as _rq
-    import time as _t
     from datetime import datetime, timezone, timedelta
     params = {"secids": secid, "invt": "2", "fltt": "2",
               "fields": "f12,f14,f62,f66,f72,f78,f84,f184"}
-    for i in range(6):
-        try:
-            diff = (_rq.get(f"https://{hosts[i % len(hosts)]}/api/qt/ulist.np/get", params=params,
-                            timeout=7, headers=headers).json().get("data") or {}).get("diff") or []
-            if diff and diff[0].get("f62") not in (None, "", "-"):
-                d = diff[0]
-                today = (datetime.now(timezone.utc) + timedelta(hours=8)).strftime("%Y-%m-%d")
-                _g = lambda k: round(float(d.get(k) or 0) / 1e8, 2)
-                return {"date": today, "main": _g("f62"), "xlarge": _g("f66"),
-                        "big": _g("f72"), "mid": _g("f78"), "small": _g("f84")}
-        except Exception:
-            _t.sleep(0.3)
-    return None
+    diff = _em_diff(_em_push2.get_json(
+        "/api/qt/ulist.np/get", params, hosts, headers=headers,
+        ok=lambda j: (_em_diff(j) or [{}])[0].get("f62") not in (None, "", "-")))
+    if not diff:
+        return None
+    d = diff[0]
+    today = (datetime.now(timezone.utc) + timedelta(hours=8)).strftime("%Y-%m-%d")
+    try:
+        _g = lambda k: round(float(d.get(k) or 0) / 1e8, 2)
+        return {"date": today, "main": _g("f62"), "xlarge": _g("f66"),
+                "big": _g("f72"), "mid": _g("f78"), "small": _g("f84")}
+    except (TypeError, ValueError):
+        return None
 
 
 def _fetch_fund_flow_sync(code: str) -> dict:
     """个股主力资金流: 今日各单类净额走 push2 实时(stock/get f62/f66/f72/f78/f84, 与榜单 f62 同源, 盘中实时);
     近几日主力净流入趋势走 fflow/kline 日线。两个口径统一: today 永远是实时值, 不再用滞后的历史末根。
     fflow/kline 每行: 日期,主力净,小单净,中单净,大单净,超大单净 (单位元)。"""
-    import requests as _rq
     import time as _t
     ck = f"ff_{code}"
     c = _fflow_cache.get(ck)
@@ -1389,26 +1392,22 @@ def _fetch_fund_flow_sync(code: str) -> dict:
     params = {"lmt": "8", "klt": "101", "secid": secid,
               "fields1": "f1,f2,f3,f7", "fields2": "f51,f52,f53,f54,f55,f56"}
     rows = []
-    for i in range(9):
-        host = his_hosts[i % len(his_hosts)]
+    j = _em_push2.get_json("/api/qt/stock/fflow/kline/get", params, his_hosts, headers=hdr,
+                           ok=lambda j: bool(((j or {}).get("data") or {}).get("klines")))
+    for ln in (((j or {}).get("data") or {}).get("klines") or [])[-6:]:
+        p = ln.split(",")
+        if len(p) < 6:
+            continue
         try:
-            r = _rq.get(f"https://{host}/api/qt/stock/fflow/kline/get", params=params, timeout=7, headers=hdr)
-            kl = (r.json().get("data") or {}).get("klines")
-            if kl:
-                for ln in kl[-6:]:
-                    p = ln.split(",")
-                    if len(p) < 6:
-                        continue
-                    rows.append({"date": p[0], "main": round(float(p[1]) / 1e8, 2),
-                                 "small": round(float(p[2]) / 1e8, 2), "mid": round(float(p[3]) / 1e8, 2),
-                                 "big": round(float(p[4]) / 1e8, 2), "xlarge": round(float(p[5]) / 1e8, 2)})
-                break
-        except Exception:
-            _t.sleep(0.3)
+            rows.append({"date": p[0], "main": round(float(p[1]) / 1e8, 2),
+                         "small": round(float(p[2]) / 1e8, 2), "mid": round(float(p[3]) / 1e8, 2),
+                         "big": round(float(p[4]) / 1e8, 2), "xlarge": round(float(p[5]) / 1e8, 2)})
+        except ValueError:
+            continue
     # today 优先用实时值; 实时拿不到才回退历史末根
     today = rt or (rows[-1] if rows else None)
     if today is None:
-        return {"error": "资金流暂不可达(东财源抖动)"}
+        return {"error": "资金流暂不可达" + ("(东财行情主机限流冷却中, 约 10 分钟后恢复)" if _em_push2.cooling() else "(东财源抖动)")}
     series = [{"date": r["date"], "主力净流入亿": r["main"]} for r in rows]
     # 用实时今日值覆盖/补上趋势序列里的同日点, 保持序列末尾与 today 一致
     if rt:
@@ -1716,32 +1715,25 @@ _val_cache: dict = {}
 
 def _fetch_valuation_sync(code: str) -> dict:
     """估值快照(东财 stock/get): PE(TTM)/PB/总市值/流通市值/行业。f162=PE×100, f167=PB×100, f116=总市值元。"""
-    import requests as _rq
     import time as _t
     ck = f"val_{code}"
     c = _val_cache.get(ck)
     if c and _t.time() - c[1] < 600:
         return c[0]
-    secid = _em_secid(code)
-    hosts = ["push2delay.eastmoney.com", "push2.eastmoney.com", "1.push2.eastmoney.com"]
-    for i in range(9):
-        host = hosts[i % len(hosts)]
-        try:
-            d = _rq.get(f"https://{host}/api/qt/stock/get", timeout=7,
-                        params={"secid": secid, "fields": "f58,f43,f162,f167,f116,f117,f127"},
-                        headers={"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}).json().get("data")
-            if d and d.get("f58"):
-                pe = d.get("f162"); pb = d.get("f167"); mcap = d.get("f116")
-                out = {"行业": d.get("f127"),
-                       "PE_TTM": round(pe / 100, 2) if isinstance(pe, (int, float)) and pe not in (0, None) else None,
-                       "PB": round(pb / 100, 2) if isinstance(pb, (int, float)) and pb not in (0, None) else None,
-                       "总市值亿": round(mcap / 1e8, 1) if isinstance(mcap, (int, float)) and mcap else None,
-                       "流通市值亿": round(d.get("f117") / 1e8, 1) if isinstance(d.get("f117"), (int, float)) and d.get("f117") else None}
-                _val_cache[ck] = (out, _t.time())
-                return out
-        except Exception:
-            _t.sleep(0.3)
-    return {}
+    j = _em_push2.get_json("/api/qt/stock/get",
+                           {"secid": _em_secid(code), "fields": "f58,f43,f162,f167,f116,f117,f127"},
+                           ok=lambda j: bool(((j or {}).get("data") or {}).get("f58")))
+    d = (j or {}).get("data")
+    if not d:
+        return {}
+    pe = d.get("f162"); pb = d.get("f167"); mcap = d.get("f116")
+    out = {"行业": d.get("f127"),
+           "PE_TTM": round(pe / 100, 2) if isinstance(pe, (int, float)) and pe not in (0, None) else None,
+           "PB": round(pb / 100, 2) if isinstance(pb, (int, float)) and pb not in (0, None) else None,
+           "总市值亿": round(mcap / 1e8, 1) if isinstance(mcap, (int, float)) and mcap else None,
+           "流通市值亿": round(d.get("f117") / 1e8, 1) if isinstance(d.get("f117"), (int, float)) and d.get("f117") else None}
+    _val_cache[ck] = (out, _t.time())
+    return out
 
 
 _fin_cache: dict = {}
@@ -1930,56 +1922,42 @@ _peers_cache: dict = {}
 
 def _fetch_peers_sync(code: str) -> dict:
     """同行横向对比(东财): 先取个股主行业板块(f198=BKxxxx), 再拉该板块成分股的涨幅/PE/PB/主力净流入。"""
-    import requests as _rq
     import time as _t
     ck = f"peers_{code}"
     c = _peers_cache.get(ck)
     if c and _t.time() - c[1] < 300:
         return c[0]
-    secid = _em_secid(code)
-    hdr = {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
-    hosts = ["push2delay.eastmoney.com", "push2.eastmoney.com", "1.push2.eastmoney.com"]
-    bk = ind = None
-    for i in range(6):
-        try:
-            d = _rq.get(f"https://{hosts[i % len(hosts)]}/api/qt/stock/get", timeout=7, headers=hdr,
-                        params={"secid": secid, "fields": "f127,f198"}).json().get("data")
-            if d and d.get("f198"):
-                bk = d.get("f198"); ind = d.get("f127"); break
-        except Exception:
-            _t.sleep(0.3)
+    j = _em_push2.get_json("/api/qt/stock/get", {"secid": _em_secid(code), "fields": "f127,f198"},
+                           ok=lambda j: bool(((j or {}).get("data") or {}).get("f198")))
+    d = (j or {}).get("data") or {}
+    bk, ind = d.get("f198"), d.get("f127")
     if not bk:
-        return {"error": "拿不到所属行业板块"}
+        return {"error": "拿不到所属行业板块" + ("(东财行情主机限流中)" if _em_push2.cooling() else "")}
     params = {"pn": "1", "pz": "30", "po": "1", "np": "1", "fltt": "2", "invt": "2", "fid": "f62",
               "fs": f"b:{bk}", "fields": "f12,f14,f3,f9,f23,f62"}
-    for i in range(9):
+    diff = _em_diff(_em_push2.get_json("/api/qt/clist/get", params, ok=_em_diff))
+    if not diff:
+        return {"error": "板块成分暂不可达"}
+    rows = []
+    for x in diff:
         try:
-            diff = (_rq.get(f"https://{hosts[i % len(hosts)]}/api/qt/clist/get", params=params, timeout=7,
-                            headers=hdr).json().get("data") or {}).get("diff")
-            if diff:
-                rows = []
-                for x in diff:
-                    try:
-                        rows.append({"code": x.get("f12"), "name": x.get("f14"),
-                                     "涨跌幅": x.get("f3"),
-                                     "PE": x.get("f9") if isinstance(x.get("f9"), (int, float)) and x.get("f9") not in (0, "-") else None,
-                                     "PB": x.get("f23") if isinstance(x.get("f23"), (int, float)) and x.get("f23") not in (0, "-") else None,
-                                     "主力净流入亿": round(float(x.get("f62") or 0) / 1e8, 2)})
-                    except (ValueError, TypeError):
-                        continue
-                # 按主力净流入排序, 取前12, 但确保目标票在内
-                rows.sort(key=lambda r: (r["主力净流入亿"] or -999), reverse=True)
-                top = rows[:12]
-                if code not in [r["code"] for r in top]:
-                    me = [r for r in rows if r["code"] == code]
-                    top = (top[:11] + me) if me else top
-                out = {"行业": ind, "板块": bk, "peers": top,
-                       "note": f"同属【{ind}】板块, 按最新交易日主力净流入排序; PE/PB 横向比可看谁贵谁便宜, 涨跌幅看谁领涨。主力净流入亿为榜单快照, 用于榜内横向比较; 单只票的精确金额以 get_fund_flow 为准。"}
-                _peers_cache[ck] = (out, _t.time())
-                return out
-        except Exception:
-            _t.sleep(0.3)
-    return {"error": "板块成分暂不可达"}
+            rows.append({"code": x.get("f12"), "name": x.get("f14"),
+                         "涨跌幅": x.get("f3"),
+                         "PE": x.get("f9") if isinstance(x.get("f9"), (int, float)) and x.get("f9") not in (0, "-") else None,
+                         "PB": x.get("f23") if isinstance(x.get("f23"), (int, float)) and x.get("f23") not in (0, "-") else None,
+                         "主力净流入亿": round(float(x.get("f62") or 0) / 1e8, 2)})
+        except (ValueError, TypeError):
+            continue
+    # 按主力净流入排序, 取前12, 但确保目标票在内
+    rows.sort(key=lambda r: (r["主力净流入亿"] or -999), reverse=True)
+    top = rows[:12]
+    if code not in [r["code"] for r in top]:
+        me = [r for r in rows if r["code"] == code]
+        top = (top[:11] + me) if me else top
+    out = {"行业": ind, "板块": bk, "peers": top,
+           "note": f"同属【{ind}】板块, 按最新交易日主力净流入排序; PE/PB 横向比可看谁贵谁便宜, 涨跌幅看谁领涨。主力净流入亿为榜单快照, 用于榜内横向比较; 单只票的精确金额以 get_fund_flow 为准。"}
+    _peers_cache[ck] = (out, _t.time())
+    return out
 
 
 async def _tool_peers(code: str) -> dict:
@@ -2609,6 +2587,28 @@ async def _dca_plan_map() -> dict:
         return {}
 
 
+# 资产看板快照: 冷启动要 7-11 秒(三十多个基金/机器人逐个取行情, 2026-10-27 实测), 而几乎每道题
+# 第一轮都会调 get_holdings。所以每次提问一进来就在后台取一份(与第一轮 LLM 并行), 这一问里的
+# get_holdings 直接等这一份, 并发调用也不再各取一遍。快照最旧不早于本次提问开始的时刻。
+_ASSETS_SNAPSHOT_S = 180
+_assets_snap: tuple | None = None          # (开始时刻, task)
+
+
+def _assets_snapshot(fresh: bool = False) -> asyncio.Future:
+    """资产看板(list_assets)的共享快照。fresh=True 另起一份(提问开始时调)。"""
+    global _assets_snap
+    loop = asyncio.get_running_loop()
+    if not fresh and _assets_snap and _time.time() - _assets_snap[0] < _ASSETS_SNAPSHOT_S:
+        t = _assets_snap[1]
+        if t.get_loop() is loop and not (t.done() and (t.cancelled() or t.exception())):
+            return t
+    from api.assets_routes import list_assets
+    t = loop.create_task(list_assets())
+    t.add_done_callback(lambda f: f.cancelled() or f.exception())   # 没人等它时异常也算已取走
+    _assets_snap = (_time.time(), t)
+    return t
+
+
 async def _tool_get_holdings() -> dict:
     try:
         from services.market_data import code_currency, code_fx, split_stock_code
@@ -2641,8 +2641,7 @@ async def _tool_get_holdings() -> dict:
             from services.external_assets import _is_onchain_etf
             # 金额取资产看板算好的 current_value(与 get_asset_allocation 同源): manual_value 只是上次手填的数,
             # 机器人实时市值、理财按年化估值、本金已全部赎回的理财(current_value=0)都不在里面
-            from api.assets_routes import list_assets
-            for x in (await list_assets()).get("assets") or []:
+            for x in (await asyncio.shield(_assets_snapshot())).get("assets") or []:
                 at = x.get("asset_type")
                 sh = x.get("shares")
                 mv = x.get("current_value")
@@ -3012,37 +3011,26 @@ def _fetch_hot_concepts_sync(top: int = 15) -> list[dict]:
     """今日东财概念板块涨幅榜(带主力净流入)。这是 量化/游资正在冲的'概念'粒度
     (如 CPO/HBM/先进封装/玻璃基板…), 比行业级更细。
     akshare 走死分片 79.push2 被墙 → 直连可达 host(push2delay 优先)+ 重试轮换。"""
-    import requests as _rq
     import time as _t
     ck = f"concepts_{top}"
     c = _concept_cache.get(ck)
     if c and _t.time() - c[1] < 300:
         return c[0]
-    hosts = ["push2delay.eastmoney.com", "push2.eastmoney.com",
-             "1.push2.eastmoney.com", "50.push2.eastmoney.com"]
+    hosts = _em_push2.HOSTS + ["50.push2.eastmoney.com"]
     params = {"pn": "1", "pz": str(max(top, 30)), "po": "1", "np": "1", "fltt": "2",
               "invt": "2", "fid": "f3", "fs": "m:90 t:3",
               "fields": "f12,f14,f3,f62,f104,f105"}
-    for i in range(12):
-        host = hosts[i % len(hosts)]
+    out = []
+    for x in _em_diff(_em_push2.get_json("/api/qt/clist/get", params, hosts, ok=_em_diff))[:top]:
         try:
-            r = _rq.get(f"https://{host}/api/qt/clist/get", params=params, timeout=7)
-            diff = (r.json().get("data") or {}).get("diff")
-            if diff:
-                out = []
-                for x in diff[:top]:
-                    try:
-                        out.append({"概念": x.get("f14"), "涨跌幅": float(x.get("f3")),
-                                    "主力净流入亿": round(float(x.get("f62") or 0) / 1e8, 2),
-                                    "涨家": x.get("f104"), "跌家": x.get("f105")})
-                    except (ValueError, TypeError):
-                        continue
-                if out:
-                    _concept_cache[ck] = (out, _t.time())
-                    return out
-        except Exception:
-            _t.sleep(0.3)
-    return []
+            out.append({"概念": x.get("f14"), "涨跌幅": float(x.get("f3")),
+                        "主力净流入亿": round(float(x.get("f62") or 0) / 1e8, 2),
+                        "涨家": x.get("f104"), "跌家": x.get("f105")})
+        except (ValueError, TypeError):
+            continue
+    if out:
+        _concept_cache[ck] = (out, _t.time())
+    return out
 
 
 async def _tool_hot_concepts(top: int = 15) -> dict:
@@ -3067,7 +3055,6 @@ _board_list_cache: dict = {}
 
 def _fetch_board_code_sync(name: str) -> tuple | None:
     """板块/概念名 → (BK代码, 标准名, 类型)。直接传 BKxxxx 也认。搜概念(t:3)+行业(t:2)板块列表。"""
-    import requests as _rq
     import time as _t
     q = (name or "").strip()
     if not q:
@@ -3076,22 +3063,15 @@ def _fetch_board_code_sync(name: str) -> tuple | None:
         return (q.upper(), q.upper(), "板块")
     cache = _board_list_cache.get("boards")
     if not cache or _t.time() - cache[1] > 600:
-        hdr = {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
-        hosts = ["push2delay.eastmoney.com", "push2.eastmoney.com"]
+        hosts = _em_push2.HOSTS[:2]
         boards = []
         # 翻页拉全量(EM 单页截 ~100; 概念 400+/行业 90+ 必须分页, 否则只拿到涨幅靠前的)
         for fs, kind in (("m:90 t:3", "概念"), ("m:90 t:2", "行业")):
             for pn in range(1, 8):
-                page = None
-                for h in hosts:
-                    try:
-                        page = (_rq.get(f"https://{h}/api/qt/clist/get", timeout=7, headers=hdr,
-                                        params={"pn": str(pn), "pz": "100", "po": "1", "np": "1", "fltt": "2",
-                                                "invt": "2", "fid": "f3", "fs": fs, "fields": "f12,f14"}).json()
-                                .get("data") or {}).get("diff")
-                        break
-                    except Exception:
-                        _t.sleep(0.3)
+                page = _em_diff(_em_push2.get_json(
+                    "/api/qt/clist/get", {"pn": str(pn), "pz": "100", "po": "1", "np": "1", "fltt": "2",
+                                          "invt": "2", "fid": "f3", "fs": fs, "fields": "f12,f14"},
+                    hosts, ok=lambda j: isinstance(j, dict)))
                 if not page:
                     break
                 boards += [(x.get("f14"), x.get("f12"), kind) for x in page if x.get("f12")]
@@ -3115,8 +3095,6 @@ def _fetch_board_code_sync(name: str) -> tuple | None:
 
 def _fetch_board_stocks_sync(name: str, top: int = 12) -> dict:
     """某板块/概念成分股按今日涨幅 top: 涨跌幅/现价/换手/主力净流入。"""
-    import requests as _rq
-    import time as _t
     resolved = _fetch_board_code_sync(name)
     if not resolved:
         list_ok = bool(_board_list_cache.get("boards"))
@@ -3128,29 +3106,20 @@ def _fetch_board_stocks_sync(name: str, top: int = 12) -> dict:
             return {"error": f"板块列表暂不可达(东财限流, 备用源也没找到「{name}」), 稍后再试"}
         return {"error": f"找不到板块/概念「{name}」(试试更标准的名字, 或先用 get_hot_concepts 看在榜的概念名)"}
     bk, std, kind = resolved
-    hdr = {"User-Agent": "Mozilla/5.0", "Referer": "https://quote.eastmoney.com/"}
     params = {"pn": "1", "pz": str(max(top, 12)), "po": "1", "np": "1", "fltt": "2", "invt": "2",
               "fid": "f3", "fs": f"b:{bk}", "fields": "f12,f14,f2,f3,f8,f62"}
-    for i in range(9):
-        host = ["push2delay.eastmoney.com", "push2.eastmoney.com", "1.push2.eastmoney.com"][i % 3]
+    rows = []
+    for x in _em_diff(_em_push2.get_json("/api/qt/clist/get", params, ok=_em_diff))[:top]:
         try:
-            diff = (_rq.get(f"https://{host}/api/qt/clist/get", params=params, timeout=7,
-                            headers=hdr).json().get("data") or {}).get("diff")
-            if diff:
-                rows = []
-                for x in diff[:top]:
-                    try:
-                        rows.append({"name": x.get("f14"), "code": x.get("f12"),
-                                     "涨跌幅": x.get("f3"), "现价": x.get("f2"),
-                                     "换手%": x.get("f8"),
-                                     "主力净流入亿": round(float(x.get("f62") or 0) / 1e8, 2)})
-                    except (ValueError, TypeError):
-                        continue
-                if rows:
-                    return {"板块": std, "类型": kind, "code": bk, "top_stocks": rows,
-                            "note": f"「{std}」成分股按最新交易日涨幅排序; 主力净流入正=资金净买入(榜单快照, 用于看资金集中在哪几只; 单只票精确金额以 get_fund_flow 为准)。"}
-        except Exception:
-            _t.sleep(0.3)
+            rows.append({"name": x.get("f14"), "code": x.get("f12"),
+                         "涨跌幅": x.get("f3"), "现价": x.get("f2"),
+                         "换手%": x.get("f8"),
+                         "主力净流入亿": round(float(x.get("f62") or 0) / 1e8, 2)})
+        except (ValueError, TypeError):
+            continue
+    if rows:
+        return {"板块": std, "类型": kind, "code": bk, "top_stocks": rows,
+                "note": f"「{std}」成分股按最新交易日涨幅排序; 主力净流入正=资金净买入(榜单快照, 用于看资金集中在哪几只; 单只票精确金额以 get_fund_flow 为准)。"}
     return _sina_board_stocks(std, top) or {"error": f"「{std}」成分股暂不可达(东财限流, 新浪备用源也未取到)"}
 
 
@@ -4027,6 +3996,7 @@ async def ask_stock_stream(question: str, history: list | None = None, images: l
         yield {"type": "error", "error": "空问题"}
         return
     messages = _seed_messages(question, history, images, state)
+    _assets_snapshot(fresh=True)            # 持仓快照与第一轮 LLM 并行取, 见 _assets_snapshot
     prior = _prior_tainted(history, state)
     entities: dict = {e["code"]: dict(e) for e in (state or {}).get("entities") or [] if e.get("code")}
     sources: list = []
@@ -4134,6 +4104,7 @@ async def ask_stock(question: str, history: list | None = None, images: list | N
     if not question and not images:
         return {"answer": "", "error": "空问题"}
     messages = _seed_messages(question, history, images, state)
+    _assets_snapshot(fresh=True)            # 持仓快照与第一轮 LLM 并行取, 见 _assets_snapshot
     prior = _prior_tainted(history, state)
     entities: dict = {e["code"]: dict(e) for e in (state or {}).get("entities") or [] if e.get("code")}
     tools_used: list[str] = []
