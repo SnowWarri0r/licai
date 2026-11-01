@@ -150,7 +150,7 @@ def test_replay_drops_overbroad_check():
 
 def test_validate_rejects_backtracking_regex():
     """启用后的检查对每个回答都跑一遍, 会回溯爆炸的正则不收; 短语级写法照收。"""
-    for rx, why in (("(a+)+$", "分组"), (".*涨.*停", "超过 1 个"), ("(涨停)+", "分组"), ("(\\w{0,9}){0,9}", "嵌套"), ("(涨|跌)\\1", "反向引用"), ("x" * 130, "字")):
+    for rx, why in (("(a+)+$", "分组"), (".*涨.*停", "超过 1 个"), ("(涨停)+", "分组"), ("(\\w{0,9}){0,9}", "嵌套"), ("(涨|跌)\\1", "不支持"), ("(a|aa){0,50}$", "多选一"), (".{0,9}a.{0,9}b.{0,9}c.{0,9}d", "超过 3 个"), ("x" * 130, "字")):
         chk, err = rf.validate_check(INTRADAY | {"answer_forbid": [rx]}, NAMES)
         assert chk is None and why in err, (rx, err)
     chk, err = rf.validate_check(INTRADAY | {"answer_forbid": ["告诉我.{0,8}(哪个标的|代码)"]}, NAMES)

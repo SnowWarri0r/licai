@@ -220,28 +220,34 @@ def validate_check(raw, names: set | None = None):
     return {k: v for k, v in chk.items() if v}, ""
 
 
-RX_MAX_LEN, RX_MAX_REPEAT = 120, 50
+RX_MAX_LEN, RX_MAX_REPEAT, RX_MAX_VAR = 120, 50, 3
 
 
 def _rx_risk(rx: str) -> str:
-    """模型起草的正则启用后会对每个回答跑一遍, 回溯爆炸会卡住服务。判据是短语级的, 只收:
-    长度 ≤ RX_MAX_LEN、量词不嵌套、不用反向引用; 无上限量词(+ * {n,})只许加在单个字符上且全条至多 1 个
-    (一个时最坏是答案长度的平方), 其余量词上限 ≤ RX_MAX_REPEAT。合格返回空串。"""
+    """模型起草的正则启用后会对每个回答跑一遍, 回溯爆炸会卡住服务。判据是短语级的, 按白名单只收:
+    字面字符/字符类/分组/多选一/前后断言/量词; 长度 ≤ RX_MAX_LEN、量词不嵌套、量词里不放多选一、
+    不用反向引用; 无上限量词(+ * {n,})只许加在单个字符上且全条至多 1 个, 其余量词上限 ≤ RX_MAX_REPEAT;
+    可变长量词全条至多 RX_MAX_VAR 个(叠加的回溯是各上限的乘积)。合格返回空串。"""
     import sre_constants as C
     import sre_parse
     if len(rx) > RX_MAX_LEN:
         return f"超过 {RX_MAX_LEN} 字"
-    unbounded = [0]
+    unbounded, var = [0], [0]
     single = {C.LITERAL, C.NOT_LITERAL, C.ANY, C.IN, C.CATEGORY}
+    plain = single | {C.AT}
 
     def walk(items, in_repeat):
         for op, av in items:
-            if op in (C.GROUPREF, C.GROUPREF_EXISTS):
-                return "用了反向引用"
+            if op in plain:
+                continue
             if op in (C.MAX_REPEAT, C.MIN_REPEAT):
                 lo, hi, sub = av
                 if in_repeat:
                     return "量词嵌套"
+                if hi != lo:
+                    var[0] += 1
+                    if var[0] > RX_MAX_VAR:
+                        return f"可变长量词超过 {RX_MAX_VAR} 个"
                 if hi == C.MAXREPEAT:
                     unbounded[0] += 1
                     if len(sub) != 1 or sub[0][0] not in single:
@@ -254,11 +260,13 @@ def _rx_risk(rx: str) -> str:
             elif op == C.SUBPATTERN:
                 r = walk(av[-1], in_repeat)
             elif op == C.BRANCH:
-                r = next((x for b in av[1] for x in [walk(b, in_repeat)] if x), "")
+                if in_repeat:
+                    return "量词里放了多选一"
+                r = next((x for b in av[1] for x in [walk(b, False)] if x), "")
             elif op in (C.ASSERT, C.ASSERT_NOT):
                 r = walk(av[1], in_repeat)
-            else:
-                r = ""
+            else:                                   # 反向引用、条件分组、原子组等一律不收
+                return f"用了不支持的写法({op})"
             if r:
                 return r
         return ""
