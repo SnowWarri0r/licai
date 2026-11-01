@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { fetchJSON } from '../../hooks/useApi'
 
-/* 规则编译出的出答案前检查: 适用条件 + 判据。批准后由答案护栏执行, 不满足就打回补查/改写。 */
+/* 规则编译出的出答案前检查: 适用条件 + 判据 + 违反时打回给 AI 的原话。批准后由答案护栏执行,
+   不满足就打回补查/改写。打回的原话会进模型上下文, 所以审批时必须完整显示。 */
 function CheckLine({ rule, busy, onCompile, onToggle }) {
   const c = rule.check
   if (!c) {
@@ -38,6 +39,9 @@ function CheckLine({ rule, busy, onCompile, onToggle }) {
           className="ml-1.5 px-1 rounded border border-border text-text-dim hover:text-text disabled:opacity-50 cursor-pointer">
           {rule.check_on ? '停用检查' : '启用检查'}
         </button>
+      )}
+      {c.message && (
+        <div className="text-text-dim">违反时打回给 AI 的话: {c.message}</div>
       )}
       {rule.check_note && <div className="text-text-muted">{rule.check_note}</div>}
     </div>
