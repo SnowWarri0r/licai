@@ -230,12 +230,20 @@ const hideDanglingMark = (s) => (s || '').replace(/⟦[^⟧\n]*$/, '')
 // 初稿(answer 定稿前边生成边推来的正文): 引用标签由服务端在定稿时清理, 这里先剥掉, 末尾半截标签不露出
 export const draftText = (s) => (s || '').replace(/<\/?cite[^>]*>/g, '').replace(/<\/?c[a-z]*(\s[^>]*)?$/, '')
 
-// 定稿与已显示初稿的公共前缀长度: 打字机从这里接着打, 看过的部分不重放
+// 定稿与已显示初稿的公共前缀长度(按定稿 b 的下标): 打字机从这里接着打, 看过的部分不重放。
+// 定稿里联网来源的角标 ⟦N⟧ 是后端拼答案时插的, 初稿流里没有, 比对时跳过; 否则前缀断在
+// 第一个角标处, 后面几千字清掉重打一遍(2026-10-27 带联网搜索的问答实测断在 524/2969)。
+const CITE_MARK = /^⟦\d+⟧/
 export function sharedPrefix(a, b) {
-  let i = 0
-  const n = Math.min(a.length, b.length)
-  while (i < n && a[i] === b[i]) i++
-  return i
+  let i = 0, j = 0
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { i++; j++; continue }
+    const m = CITE_MARK.exec(b.slice(j, j + 8))
+    if (!m) break
+    j += m[0].length
+  }
+  for (let m; i === a.length && (m = CITE_MARK.exec(b.slice(j, j + 8)));) j += m[0].length
+  return j
 }
 
 // 初稿区: 与定稿同样渲染, 标明它还要经过自查
