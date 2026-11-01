@@ -227,6 +227,28 @@ function hideDanglingBold(text) {
 // 组件标记/引用角标还没吐完(只有 ⟦ 没有 ⟧)时先藏起来, 不然会闪一下原文
 const hideDanglingMark = (s) => (s || '').replace(/⟦[^⟧\n]*$/, '')
 
+// 初稿(answer 定稿前边生成边推来的正文): 引用标签由服务端在定稿时清理, 这里先剥掉, 末尾半截标签不露出
+export const draftText = (s) => (s || '').replace(/<\/?cite[^>]*>/g, '').replace(/<\/?c[a-z]*(\s[^>]*)?$/, '')
+
+// 定稿与已显示初稿的公共前缀长度: 打字机从这里接着打, 看过的部分不重放
+export function sharedPrefix(a, b) {
+  let i = 0
+  const n = Math.min(a.length, b.length)
+  while (i < n && a[i] === b[i]) i++
+  return i
+}
+
+// 初稿区: 与定稿同样渲染, 标明它还要经过自查
+export function DraftAnswer({ text, sources }) {
+  return (
+    <div className="relative">
+      <div className="text-[10.5px] text-text-muted mb-1">生成中 · 自查后定稿</div>
+      <MiniMarkdown text={draftText(text)} sources={sources} />
+      <span className="inline-block w-1.5 h-3.5 bg-accent/70 align-middle animate-pulse ml-0.5" />
+    </div>
+  )
+}
+
 export function MiniMarkdown({ text, sources }) {
   const renderInline = (t, kp) => renderInlineBase(t, kp, sources)
   const lines = stripUnknownTags(normalizeHtml(hideDanglingBold(hideDanglingMark(text)))).split('\n')

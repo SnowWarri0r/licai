@@ -429,14 +429,17 @@ def _post_with_retry(headers: dict, payload: dict) -> requests.Response:
     api_url = _build_api_url()
     attempt = 0
     limit = _MAX_RETRIES          # 遇到过载状态码后按 _OVERLOAD_RETRIES 抬高
+    stream = bool(payload.get("stream"))   # 流式: 状态码照常先判, 正文留给调用方边读边拼
 
     while True:
         try:
-            resp = _llm_session.post(api_url, headers=headers, json=payload, timeout=_HTTP_TIMEOUT)
+            resp = _llm_session.post(api_url, headers=headers, json=payload, timeout=_HTTP_TIMEOUT,
+                                     stream=stream)
         except requests.exceptions.ProxyError:
             # Proxy unreachable, try direct session once per attempt
             try:
-                resp = _direct_session.post(api_url, headers=headers, json=payload, timeout=_HTTP_TIMEOUT)
+                resp = _direct_session.post(api_url, headers=headers, json=payload, timeout=_HTTP_TIMEOUT,
+                                            stream=stream)
             except _RETRYABLE_EXC as e:
                 if attempt >= limit:
                     raise
@@ -703,6 +706,72 @@ def call_claude(
     return text
 
 
+def _apply_delta(block: dict, delta: dict, partial: dict, idx: int) -> None:
+    """把一条 content_block_delta 合进正在拼的块。工具入参是分片 JSON, 先攒字符串, 块结束再解析。"""
+    kind = delta.get("type")
+    if kind == "text_delta":
+        block["text"] = block.get("text", "") + delta.get("text", "")
+    elif kind == "thinking_delta":
+        block["thinking"] = block.get("thinking", "") + delta.get("thinking", "")
+    elif kind == "signature_delta":
+        block["signature"] = delta.get("signature", "")
+    elif kind == "input_json_delta":
+        partial[idx] = partial.get(idx, "") + delta.get("partial_json", "")
+    elif kind == "citations_delta":
+        block["citations"] = (block.get("citations") or []) + [delta.get("citation")]
+
+
+def _read_stream(resp, on_text) -> dict:
+    """读 SSE, 拼回与非流式一致的响应 dict; 每段正文增量随到随交给 on_text。
+
+    回传给下一轮的 content 必须与非流式逐字段一致(thinking 的 signature、工具入参、
+    web_search 结果块、citations), 否则下一轮会 400 —— 所以这里按块下标完整重建, 而不是只拼文字。
+    流中途的 error 事件: 过载类抛 LLMOverloaded 让上层重发这一轮; 连接中断同样按可重发处理。
+    """
+    msg: dict = {}
+    blocks: dict[int, dict] = {}
+    partial: dict[int, str] = {}
+    event = ""
+    try:
+        for raw in resp.iter_lines(decode_unicode=False):
+            line = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+            if line.startswith("event:"):
+                event = line[6:].strip()
+                continue
+            if not line.startswith("data:"):
+                continue
+            data = json.loads(line[5:].strip() or "{}")
+            kind = data.get("type") or event
+            if kind == "message_start":
+                msg = dict(data.get("message") or {})
+            elif kind == "content_block_start":
+                blocks[data["index"]] = dict(data.get("content_block") or {})
+            elif kind == "content_block_delta":
+                i = data["index"]
+                delta = data.get("delta") or {}
+                _apply_delta(blocks.setdefault(i, {}), delta, partial, i)
+                if delta.get("type") == "text_delta" and delta.get("text"):
+                    on_text(delta["text"])
+            elif kind == "content_block_stop":
+                i = data["index"]
+                if i in partial:
+                    blocks[i]["input"] = json.loads(partial.pop(i) or "{}")
+            elif kind == "message_delta":
+                msg.update(data.get("delta") or {})
+                msg["usage"] = {**(msg.get("usage") or {}), **(data.get("usage") or {})}
+            elif kind == "error":
+                err = data.get("error") or {}
+                if err.get("type") in ("overloaded_error", "rate_limit_error"):
+                    raise LLMOverloaded(f"LLM 上游过载(流式响应中途): {err.get('message', '')}", 529)
+                raise RuntimeError(f"LLM 流式响应出错: {err.get('type')}: {err.get('message', '')}")
+    except _RETRYABLE_EXC as e:
+        raise LLMOverloaded(f"LLM 流式响应中途断开: {type(e).__name__}", 0) from e
+    finally:
+        resp.close()
+    msg["content"] = [blocks[i] for i in sorted(blocks)]
+    return msg
+
+
 def call_claude_messages(
     messages: list,
     system: str | None = None,
@@ -711,12 +780,16 @@ def call_claude_messages(
     tools: list | None = None,
     thinking: bool = False,
     effort: str | None = None,
+    on_text=None,
 ) -> dict:
     """底层 Messages 调用, 支持完整 messages 历史 + tool-use。
 
     thinking=True 开自适应思考(模型按难度自己决定想多少, 工具轮之间也能想);
     effort=low/medium/high 控制整体投入(查几个工具、写多长)。两者只对官方端点发 ——
     兼容实现见到不认识的字段可能 400。开思考时 max_tokens 含思考 token, 调用方要给足。
+
+    on_text: 传了就走流式, 正文增量逐段回调(在调用线程里, 调用方自己转回事件循环)。
+    只对官方端点开: 兼容实现的 SSE 细节各不相同, 那边照旧整包返回, on_text 不会被调用。
 
     返回原始响应 dict (调用方自行看 stop_reason / content 里的 tool_use 块)。
     用于 agent loop。出错抛异常 (不走 CLI 兜底——CLI 不支持 tools)。
@@ -745,6 +818,9 @@ def call_claude_messages(
         # 但也不会报错, 无需特判。
         payload["system"] = _cached_system(system_blocks)
         payload["messages"] = _cached_messages(messages)
+    streaming = on_text is not None and _is_anthropic_official()
+    if streaming:
+        payload["stream"] = True
 
     resp = _post_with_retry(headers, payload)
     resp = _retry_on_oauth_401(resp, token, is_oauth, system, headers, payload)
@@ -752,7 +828,7 @@ def call_claude_messages(
     if not resp.ok:
         _raise_for_status(resp)
 
-    data = resp.json()
+    data = _read_stream(resp, on_text) if streaming else resp.json()
     _record_usage(data, model)
     return data
 

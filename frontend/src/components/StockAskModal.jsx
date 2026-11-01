@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { MiniMarkdown, SourcesBlock, ToolCallStrip, startRun, startDeepDive, followRun, liveRuns, cancelRun } from './askShared'
+import { MiniMarkdown, DraftAnswer, draftText, sharedPrefix, SourcesBlock, ToolCallStrip, startRun, startDeepDive, followRun, liveRuns, cancelRun } from './askShared'
 import ImageZoom from './ImageZoom'
 
 function pctColor(v) {
@@ -47,6 +47,7 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
   const [shown, setShown] = useState(false)     // 滑入动画: 挂载后置 true → 从右侧划出
   const abortRef = useRef(null)
   const typer = useRef(null)
+  const draftRef = useRef('')   // 本轮已收到的初稿全文(定稿时据此算公共前缀)
   const scrollBox = useRef(null)
   const follow = useRef(true)
   const started = useRef(false)
@@ -65,9 +66,9 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
   // 那套"答错了不再错第二遍"的机制对抽屉里的对话完全失效。事后想复盘也没有原文。
   // 而只要落库还挂在前端, "关抽屉"就等于"这一轮从没发生过"。
 
-  const typewriter = (full) => {
+  const typewriter = (full, from = 0) => {
     clearInterval(typer.current)
-    let n = 0
+    let n = from
     typer.current = setInterval(() => {
       n = Math.min(full.length, n + 3)
       patchLast(it => ({ ...it, typed: full.slice(0, n) }))
@@ -101,8 +102,17 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
     }))
     else if (ev.type === 'chart') patchLast(it => ({ ...it, charts: [...it.charts, ev.url] }))
     else if (ev.type === 'sources') patchLast(it => ({ ...it, sources: [...it.sources, ...(ev.sources || [])] }))
-    else if (ev.type === 'answer') { patchLast(it => ({ ...it, answer: ev.text })); typewriter(ev.text || '') }
-    else if (ev.type === 'error') patchLast(it => ({ ...it, err: ev.error, done: true }))
+    else if (ev.type === 'draft') { draftRef.current += ev.text || ''; patchLast(it => ({ ...it, draft: draftRef.current })) }
+    else if (ev.type === 'draft_reset') { draftRef.current = ''; patchLast(it => ({ ...it, draft: '' })) }
+    else if (ev.type === 'answer') {
+      // 定稿接在初稿后面: 已经显示过的公共前缀直接落定, 打字机只打剩下的
+      const full = ev.text || ''
+      const from = sharedPrefix(draftText(draftRef.current), full)
+      draftRef.current = ''
+      patchLast(it => ({ ...it, answer: full, draft: '', typed: full.slice(0, from) }))
+      typewriter(full, from)
+    }
+    else if (ev.type === 'error') { draftRef.current = ''; patchLast(it => ({ ...it, err: ev.error, draft: '', done: true })) }
   }
 
   // 最后一问的答案从库里补回来(服务端内存里已经没这条 run 了, 但落库是它跑完时就做的)。
@@ -130,6 +140,8 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
     abortRef.current?.abort()
     const ctrl = new AbortController(); abortRef.current = ctrl
     runRef.current = { id: runId, cursor }
+    // 从头重放就从空初稿拼起; 断点续拉则接着页面上已有的初稿往后拼
+    draftRef.current = cursor ? (historyRef.current.at(-1)?.draft || '') : ''
     setLoading(true)
     followRun(runId, {
       cursor, signal: ctrl.signal,
@@ -322,7 +334,9 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
                 {it.err
                   ? <div className="text-[11.5px] text-bull-bright">出错: {it.err}</div>
                   : it.answer == null
-                    ? (it.steps.length === 0 && <div className="text-[11.5px] text-text-dim">分析中…</div>)
+                    ? (it.draft
+                      ? <DraftAnswer text={it.draft} sources={it.sources} />
+                      : it.steps.length === 0 && <div className="text-[11.5px] text-text-dim">分析中…</div>)
                     : <div className="relative">
                         <MiniMarkdown text={it.typed} sources={it.sources} />
                         {!it.done && <span className="inline-block w-1.5 h-3.5 bg-accent/70 align-middle animate-pulse ml-0.5" />}

@@ -3917,6 +3917,13 @@ _OVERLOAD_ROUND_WAIT_S = 20      # 第 n 次等 n×20 秒
 # 工具轮里的正文多长算"答案的前半段"而不是进度旁白("我先查一下持仓"这类一句话)
 _CARRY_MIN_CHARS = 200
 
+# 答案边生成边推(draft 事件): 最后一轮写正文要 16-31 秒, 约占一次问答总时长的一半
+# (2026-10-27 六道重题逐轮计时)。一轮正文攒够 _DRAFT_START_CHARS 才开始推, 工具轮开头那句
+# 旁白就不会闪一下又撤回; 之后按 _DRAFT_FLUSH_S 合并增量, 事件数与落盘次数都有界。
+# 初稿只是预览: 自查要改、或这一轮其实还要调工具, 就发 draft_reset 撤回, 以 answer 事件为准。
+_DRAFT_START_CHARS = 60
+_DRAFT_FLUSH_S = 0.25
+
 
 def _resendable(content: list) -> list:
     """模型这一轮的内容块原样回传前去掉空文本块: 偶有一轮返回 text="" 夹在工具调用旁边,
@@ -3946,19 +3953,46 @@ def _join_answer(carried: list, final: str) -> str:
     return "\n\n".join(p for p in parts if p)
 
 
-async def _llm_round(messages: list):
+async def _streamed_call(*args, **kw):
+    """在工作线程里跑流式 LLM 调用, 正文增量边到边产出 ("delta", 文本), 最后 ("resp", 响应)。
+
+    增量回调发生在工作线程, 经 call_soon_threadsafe 转进事件循环里的队列。调用抛的异常
+    原样从这里抛出, 由 _llm_round 按过载/其他分别处理。
+    """
+    loop = asyncio.get_running_loop()
+    q: asyncio.Queue = asyncio.Queue()
+    call = asyncio.ensure_future(asyncio.to_thread(
+        _llm.call_claude_messages, *args, on_text=lambda t: loop.call_soon_threadsafe(q.put_nowait, t), **kw))
+    while not call.done():
+        getter = asyncio.ensure_future(q.get())
+        await asyncio.wait({call, getter}, return_when=asyncio.FIRST_COMPLETED)
+        if getter.done():
+            yield ("delta", getter.result())
+        else:
+            getter.cancel()
+    while not q.empty():
+        yield ("delta", q.get_nowait())
+    yield ("resp", call.result())
+
+
+async def _llm_round(messages: list, stream: bool = False):
     """跑一轮 LLM 调用, 上游过载则原样重发。
 
     async generator, 产出 (kind, value):
+      ("delta", 文本)     stream=True 时正文的增量(这一轮可能还会接着调工具, 由调用方决定怎么展示)
       ("wait", 事件dict)  等待重试中, 调用方把它推给前端(顺带当 SSE 心跳)
       ("resp", 响应dict)  成功
       ("error", 文案)     不可重试的错误, 或过载重试也用尽了
     """
     for attempt in range(_OVERLOAD_ROUND_RETRIES + 1):
         try:
-            resp = await asyncio.to_thread(
-                _llm.call_claude_messages, messages, _system(), _MODEL, _ROUND_MAX_TOKENS,
-                await _active_tools(), thinking=_THINKING, effort=_EFFORT)
+            args = (messages, _system(), _MODEL, _ROUND_MAX_TOKENS, await _active_tools())
+            kw = {"thinking": _THINKING, "effort": _EFFORT}
+            if stream:
+                async for kind, val in _streamed_call(*args, **kw):
+                    yield (kind, val)
+                return
+            resp = await asyncio.to_thread(_llm.call_claude_messages, *args, **kw)
             yield ("resp", resp)
             return
         except _llm.LLMOverloaded as e:
@@ -4003,7 +4037,17 @@ async def ask_stock_stream(question: str, history: list | None = None, images: l
     repaired = False
     for rnd in range(_MAX_ROUNDS):
         resp = None
-        async for kind, val in _llm_round(messages):
+        draft, sent, pushed_at = "", 0, 0.0      # 本轮正文 / 已推出的长度 / 上次推送时刻
+        async for kind, val in _llm_round(messages, stream=True):
+            if kind == "delta":
+                draft += val
+                if len(draft) >= _DRAFT_START_CHARS and _time.time() - pushed_at >= _DRAFT_FLUSH_S:
+                    yield {"type": "draft", "text": draft[sent:]}
+                    sent, pushed_at = len(draft), _time.time()
+                continue
+            if sent and kind != "resp":      # 这一轮要重发(过载)或出错: 已推出的初稿作废
+                yield {"type": "draft_reset"}
+                draft, sent = "", 0
             if kind == "wait":
                 yield val
             elif kind == "error":
@@ -4033,6 +4077,8 @@ async def ask_stock_stream(question: str, history: list | None = None, images: l
             problems = _guard.inspect(text, used, tool_outs, question) if not repaired else []
             if problems:
                 repaired = True
+                if sent:
+                    yield {"type": "draft_reset"}
                 yield {"type": "step", "tool": "self_check", "label": "回答自查",
                        "arg": f"{len(problems)} 处待修"}
                 messages.append(_guard.repair_message(problems))
@@ -4044,6 +4090,8 @@ async def ask_stock_stream(question: str, history: list | None = None, images: l
             yield {"type": "answer", "text": text}
             yield {"type": "done"}
             return
+        if sent:                             # 这一轮原来不是最后一轮(接着调工具): 初稿撤回, 正文并入最终答案
+            yield {"type": "draft_reset"}
         # 先把这一轮模型的简短思考文本(若有)推出去当“正在做什么”的旁白
         think = _round_text(content)
         if think:

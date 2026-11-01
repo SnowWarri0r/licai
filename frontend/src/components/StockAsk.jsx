@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { fetchJSON } from '../hooks/useApi'
-import { MiniMarkdown, SourcesBlock, ToolCallStrip, startRun, followRun, liveRuns, cancelRun } from './askShared'
+import { MiniMarkdown, DraftAnswer, draftText, sharedPrefix, SourcesBlock, ToolCallStrip, startRun, followRun, liveRuns, cancelRun } from './askShared'
 import ImageZoom from './ImageZoom'
 
 // 能力展示型推荐问题 (page 模式空态用), 覆盖 市场风格/资金主线/政策/基本面/同行/筹码
@@ -29,6 +29,7 @@ export default function StockAsk({ page = false }) {
   const sessionId = useRef(PAGE.sessionId)          // 当前会话 id(开跑时由后端分配)
   const abortRef = useRef(null)                     // 只是"跟看"那根连接, abort 它不影响 run
   const typer = useRef(null)
+  const draftRef = useRef('')   // 本轮已收到的初稿全文(定稿时据此算公共前缀)
   const scrollBox = useRef(null)
   const historyRef = useRef(history)                // 卸载时 setState 会被丢, 得靠这份镜像
   const follow = useRef(true)   // 是否跟随滚到底; 用户往上拖就关掉, 拖回底部再开
@@ -110,6 +111,8 @@ export default function StockAsk({ page = false }) {
     abortRef.current?.abort()
     const ctrl = new AbortController(); abortRef.current = ctrl
     PAGE.run = { id: runId, cursor }
+    // 从头重放就从空初稿拼起; 断点续拉则接着页面上已有的初稿往后拼
+    draftRef.current = cursor ? (historyRef.current.at(-1)?.draft || '') : ''
     setLoading(true)
     followRun(runId, {
       cursor, signal: ctrl.signal,
@@ -187,9 +190,9 @@ export default function StockAsk({ page = false }) {
     PAGE.history = history; PAGE.sessionId = sessionId.current
   }, [history])
 
-  const typewriter = (full) => {
+  const typewriter = (full, from = 0) => {
     clearInterval(typer.current)
-    let n = 0
+    let n = from
     typer.current = setInterval(() => {
       n = Math.min(full.length, n + 3)   // 每 tick 3 字
       patchLast(it => ({ ...it, typed: full.slice(0, n) }))   // history 变 → 上面 effect 跟随滚动
@@ -208,10 +211,19 @@ export default function StockAsk({ page = false }) {
           ? { ...s, failed: true, err: ev.err } : s),
     }))
     else if (ev.type === 'thought') patchLast(it => ({ ...it, thought: ev.text }))
-    else if (ev.type === 'answer') { patchLast(it => ({ ...it, answer: ev.text })); typewriter(ev.text || '') }
+    else if (ev.type === 'draft') { draftRef.current += ev.text || ''; patchLast(it => ({ ...it, draft: draftRef.current })) }
+    else if (ev.type === 'draft_reset') { draftRef.current = ''; patchLast(it => ({ ...it, draft: '' })) }
+    else if (ev.type === 'answer') {
+      // 定稿接在初稿后面: 已经显示过的公共前缀直接落定, 打字机只打剩下的
+      const full = ev.text || ''
+      const from = sharedPrefix(draftText(draftRef.current), full)
+      draftRef.current = ''
+      patchLast(it => ({ ...it, answer: full, draft: '', typed: full.slice(0, from) }))
+      typewriter(full, from)
+    }
     else if (ev.type === 'sources') patchLast(it => ({ ...it, sources: [...(it.sources || []), ...(ev.sources || [])] }))
     else if (ev.type === 'chart') patchLast(it => ({ ...it, charts: [...(it.charts || []), ev.url] }))
-    else if (ev.type === 'error') patchLast(it => ({ ...it, err: ev.error, done: true }))
+    else if (ev.type === 'error') { draftRef.current = ''; patchLast(it => ({ ...it, err: ev.error, draft: '', done: true })) }
   }
 
   const ask = async (question) => {
@@ -339,7 +351,9 @@ export default function StockAsk({ page = false }) {
               {it.err
                 ? <div className="text-[11.5px] text-bull-bright">出错: {it.err}</div>
                 : it.answer == null
-                  ? (it.steps.length === 0 && <div className="text-[11.5px] text-text-dim">分析中…</div>)
+                  ? (it.draft
+                      ? <DraftAnswer text={it.draft} sources={it.sources} />
+                      : it.steps.length === 0 && <div className="text-[11.5px] text-text-dim">分析中…</div>)
                   : <div className="relative">
                       <MiniMarkdown text={it.typed} sources={it.sources} />
                       {!it.done && <span className="inline-block w-1.5 h-3.5 bg-accent/70 align-middle animate-pulse ml-0.5" />}
