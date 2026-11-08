@@ -253,6 +253,7 @@ async def _enrich(asset: dict) -> dict:
                     top = proxy.get("abs_weighted_change_pct") if bond else proxy.get("weighted_change_pct")
                 est = estimate(asset["code"], quote.get("nav_date") or "", top)
                 if est is not None:
+                    quote["proxy_top10_pct"] = top             # 悬停里与明细对得上的前十大加权, 与回归值分开列
                     quote["proxy_change_pct"] = est["pct"]
                     quote["proxy_label"] = (f"回归估算(按该基金近期净值拟合, 历史日均误差约 {est['mae']:.2f}%)"
                                             + (f", 含 {est['days']} 个待公布日至 {est['through'][5:]}" if est["days"] > 1 else ""))

@@ -1143,10 +1143,11 @@ def _fetch_futures_quote(symbol: str) -> dict | None:
         fields = match.group(1).split(",")
         if len(fields) < 10:
             return None
-        # Fields: 0=name, ... 6=close, 7=settlement, 3=open, 4=high, 5=low, 8=prev_settlement
+        # 字段: 0=名 2=昨收(结算) 3=开 4=高 5=低 8=最新价, 与宏观面板 _parse_macro_line 的 nf_ 同口径。
+        # fields[8] 是最新价不是昨结算 —— 当昨结算用的话涨跌恒为 0
         name = fields[0]
-        price = float(fields[6]) if fields[6] else 0
-        prev = float(fields[8]) if fields[8] else 0
+        price = float(fields[8] or fields[6] or 0)
+        prev = float(fields[2]) if fields[2] else 0
         change_pct = round((price - prev) / prev * 100, 2) if prev > 0 and price > 0 else 0
         return {"name": name, "price": price, "prev": prev, "change_pct": change_pct}
     except Exception:

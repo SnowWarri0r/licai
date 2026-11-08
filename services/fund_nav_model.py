@@ -79,6 +79,52 @@ def _bars_sync(kind: str, sym: str, n: int = 400) -> list[dict]:
     return b
 
 
+_live: dict = {}               # 实时行情 {"ts": .., "q": {sym: quote}}, 30 秒
+
+
+def _live_quotes(syms: list[str]) -> dict:
+    """cn 类因子的实时行情(新浪 hq, 与宏观面板同源); 失败返回 {}。"""
+    import re
+    from services.market_data import _parse_macro_line, _requests
+    if _live.get("ts", 0) > time.time() - 30 and set(syms) <= set(_live.get("q", {})):
+        return _live["q"]
+    try:
+        r = _requests.get("https://hq.sinajs.cn/list=" + ",".join(syms), headers={"Referer": "https://finance.sina.com.cn"}, timeout=6)
+        r.encoding = "gbk"
+        q = {}
+        for line in r.text.strip().split("\n"):
+            m = re.match(r'var hq_str_(\w+)="(.*)";', line.strip())
+            if m:
+                row = _parse_macro_line(m.group(1), m.group(2))
+                if row:
+                    q[m.group(1)] = row
+    except Exception:  # noqa: BLE001
+        return {}
+    _live.update(ts=time.time(), q=q)
+    return q
+
+
+def _with_today(kind: str, sym: str, bars: list[dict], now=None) -> list[dict]:
+    """新浪日 K 收盘后才发当天那根: 盘中不补, 今天的 A 股/沪金因子就全按 0 算, 估值把当天涨跌整个漏掉。
+    A 股交易日 9:30 之后用实时价补一根; 开盘前不补 —— 那时实时价仍是昨天收盘, 补了会多出一个待估净值日、
+    并把昨天已进净值的 top10 涨跌再算一遍。同一天已有那根、或昨收对不上最后一根时 with_live_bar 不补。"""
+    from datetime import datetime, timedelta, timezone
+    from services.market_data import _is_a_share_trading_day, with_live_bar
+    now = now or datetime.now(timezone.utc) + timedelta(hours=8)
+    if kind != "cn" or not bars or now.hour * 60 + now.minute < 570 or not _is_a_share_trading_day(now.date()):
+        return bars
+    syms = [s for t, s in FACTORS.values() if t == "cn"]
+    q = _live_quotes(syms).get(sym)
+    if not sym.startswith("nf_"):
+        return with_live_bar(bars, q)
+    # 国内期货: 行情的「昨收」是昨结算, 和日 K 收盘对不上, with_live_bar 会一律不补; 直接接在最后一根收盘后面。
+    # 21:00 夜盘开始后实时价属于下一个交易日, 不再当今天用
+    today = now.strftime("%Y-%m-%d")
+    if not q or not q.get("price") or now.hour >= 21 or str(bars[-1]["date"])[:10] >= today:
+        return bars
+    return bars + [{"date": today, "close": float(q["price"]), "live": True}]
+
+
 def _returns(bars: list[dict]) -> dict:
     out = {}
     for a, b in zip(bars[:-1], bars[1:]):
@@ -227,7 +273,7 @@ def estimate(code: str, nav_date: str, top10_pct: float | None) -> dict | None:
             continue
         t, sym = FACTORS[k]
         try:
-            series[k] = _returns(_bars_sync(t, sym, 12))
+            series[k] = _returns(_with_today(t, sym, _bars_sync(t, sym, 12)))
         except Exception:  # noqa: BLE001
             series[k] = {}
     latest_bar = max((d for r in series.values() for d in r), default="")

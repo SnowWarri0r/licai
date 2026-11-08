@@ -114,7 +114,8 @@ export function TodayPulse({ change, width = 44, stale = false }) {
 }
 
 // 基金代理标的脉搏：用底层市场（沪金/纳指期货/恒生等）实时涨跌预判基金当日走势.
-export function ProxyPulse({ change, label, fallbackToday, details, width = 44 }) {
+// top10: 有回归估算时传前十大加权(与明细对得上), 底部分两行列出; 不传 = 显示值就是明细加权
+export function ProxyPulse({ change, label, fallbackToday, details, top10 = null, width = 44 }) {
   if (change == null) return <TodayPulse change={fallbackToday} width={width} />
   const abs = Math.abs(change)
   const clamped = Math.min(abs, 5) / 5
@@ -156,15 +157,34 @@ export function ProxyPulse({ change, label, fallbackToday, details, width = 44 }
           </span>
         </div>
       ))}
-      <div className="flex justify-between pt-1 mt-0.5 border-t border-border-subtle">
-        <span className="text-text-dim text-[10px]">加权平均</span>
-        <span className="font-mono text-[11.5px] font-semibold tabular-nums" style={{ color }}>
-          {change >= 0 ? '+' : ''}{change.toFixed(2)}%
-        </span>
-      </div>
-      <div className="text-text-muted text-[10px] mt-0.5 leading-snug">
-        盘中实时持仓加权，预判基金当日走势
-      </div>
+      {top10 != null ? (
+        <>
+          <div className="flex justify-between pt-1 mt-0.5 border-t border-border-subtle">
+            <span className="text-text-dim text-[10px]">前十大加权</span>
+            <span className="font-mono text-[11px] tabular-nums" style={{ color: colorOf(top10) }}>
+              {top10 >= 0 ? '+' : ''}{top10.toFixed(2)}%
+            </span>
+          </div>
+          <div className="flex justify-between">
+            <span className="text-text-dim text-[10px]">采用：回归估算</span>
+            <span className="font-mono text-[11.5px] font-semibold tabular-nums" style={{ color }}>
+              {change >= 0 ? '+' : ''}{change.toFixed(2)}%
+            </span>
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="flex justify-between pt-1 mt-0.5 border-t border-border-subtle">
+            <span className="text-text-dim text-[10px]">加权平均</span>
+            <span className="font-mono text-[11.5px] font-semibold tabular-nums" style={{ color }}>
+              {change >= 0 ? '+' : ''}{change.toFixed(2)}%
+            </span>
+          </div>
+          <div className="text-text-muted text-[10px] mt-0.5 leading-snug">
+            盘中实时持仓加权，预判基金当日走势
+          </div>
+        </>
+      )}
     </div>
   ) : (label || '基金代理标的预判')
 

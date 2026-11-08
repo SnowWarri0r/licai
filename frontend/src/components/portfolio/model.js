@@ -108,6 +108,7 @@ export function normalizeAsset(a) {
       proxyChangePct: q?.proxy_change_pct,
       proxyLabel: q?.proxy_label,
       proxyDetails: q?.proxy_details,
+      proxyTop10Pct: q?.model_est ? q?.proxy_top10_pct : null,   // 有回归估算时: 明细加权与采用值分开列
     },
   }
 }

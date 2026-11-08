@@ -217,6 +217,7 @@ export function HoldingRow({ row, isLast, hovered, onHover, totalMv, insights, c
           change={row.extra.proxyChangePct}
           label={row.extra.proxyLabel}
           details={row.extra.proxyDetails}
+          top10={row.extra.proxyTop10Pct}
           fallbackToday={row.today} />
       ) : (
         <TodayPulse change={row.today} stale={row.type === 'A' && row._raw?.today_valid === false} />
