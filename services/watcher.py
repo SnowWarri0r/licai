@@ -23,6 +23,9 @@ key 是去重键(检测器 + 标的 + 状态), 同一 key 只记一次; 状态�
                落在近两年 5 日累计最差 2%; 同一净值日的合成一条。
 观察池里的票(已持有的算持仓)标题前加「观察池」, 级别统一 info, 页面上排在持仓之后。
 基金两项每天(含周末, QDII 的净值和美股收盘都会落在周末) 9:00~23:00 跑, 其余只在 A 股交易日跑。
+  notice       A 股持仓与观察池的新公告: 标题命中 NOTICE_KEYS(减持/问询/立案/业绩预告/质押/重组…)的记下,
+               交给 watch_dig 由模型判断值不值得读, 子 agent 读原文; 读出实质内容才显示(watch_dig.QUIET)。
+               每 30 分钟扫一次, 只看第一次运行之后发布的(app_config.watch_notice_since)。
 新记下的发现交给 watch_dig 判断要不要派子 agent 查原因, 查到补充挂在那条发现下(dig_status / dig_result)。
 每次运行由 watch_health 记一笔; 检测器跳过时 raise Skip(原因), 页面与 agent 据此区分「没事」「跳过」「出错」。
 """
@@ -43,7 +46,7 @@ CASH_TOL = 1.0          # 元; 券商与账本的现金差在这以内算对上
 TOOL_GET = {
     "name": "get_watch_findings",
     "description": "取盯盘员记下的发现: 持仓与观察池的排雷命中、收盘事件、临近解禁, 基金估值与净值偏差大、基金净值跌幅超出常见范围, "
-                   "账本与券商对不上等, 每条带事实、历史同类统计与数据截至日; "
+                   "账本与券商对不上、持仓与观察池的重要公告(读过原文的才列出)、预约任务的结果等, 每条带事实、历史同类统计与数据截至日; "
                    "观察池的发现标题以「观察池」开头; dig_result 非空的是盯盘员事后派子 agent 查到的成因; "
                    "health_problems 是盯盘员自检发现的运行异常(检测器出错、该跑没跑、当日数据没生成), 非空时如实告诉用户哪些检查今天没做成。用户问'我持仓/自选有什么要注意的/盯盘员说了什么/盯盘员正常吗/账对上了吗'时用。date 留空=今天。",
     "input_schema": {"type": "object", "properties": {"date": {"type": "string", "description": "YYYY-MM-DD"}}},
@@ -110,7 +113,8 @@ async def list_findings(date: str | None = None, include_dismissed: bool = False
         rows = [dict(r) for r in await cur.fetchall()]
     finally:
         await db.close()
-    from services.watch_dig import DIGGABLE
+    from services.watch_dig import DIGGABLE, hidden
+    rows = [r for r in rows if not hidden(r)]
     for r in rows:
         r["evidence"] = json.loads(r.get("evidence") or "{}")
         r["dismissed"] = bool(r.get("dismissed"))
@@ -670,6 +674,100 @@ async def _dig(fresh: list[dict]) -> None:
         print(f"[watcher] 深挖判定出错: {e}")
 
 
+# ---------------- 公告 ----------------
+import re as _re
+
+NOTICE_KEYS = _re.compile("减持|增持|问询函|关注函|监管函|警示函|监管措施|立案|调查|处罚|业绩预告|业绩快报|预亏|预减|预增|首亏|扭亏|"
+                          "质押|冻结|拍卖|停牌|终止|撤回|重大资产|重组|收购|诉讼|仲裁|退市|风险警示|违规|担保|资金占用|会计差错|"
+                          "向特定对象发行|定向增发|可转债|回购|异常波动|中标|重大合同|解除限售|限售股份上市|控制人|控股股东|辞职|股权激励")
+NOTICE_SKIP = _re.compile("法律意见书|核查意见|保荐|英文|摘要|(回购|担保|增持)[^暨]{0,14}进展|前十大股东|前十名|行权价|注销.{0,8}回购|为.{0,10}子公司提供担保")
+NOTICE_WARN = _re.compile("立案|处罚|问询函|监管函|警示函|关注函|退市|风险警示|减持|冻结|质押|资金占用|违规|预亏|首亏|预减|终止")
+NOTICE_CALM = _re.compile("不减持|不转让|延期购回")
+NOTICE_EVERY_MIN = 30
+_notice_last = {"at": 0.0}
+
+
+def _notice_list_sync(code: str) -> list[dict]:
+    import requests
+    j = requests.get("https://np-anotice-stock.eastmoney.com/api/security/ann",
+                     params={"sr": "-1", "page_size": "15", "page_index": "1", "ann_type": "A", "client_source": "web",
+                             "stock_list": code}, timeout=8,
+                     headers={"User-Agent": "Mozilla/5.0", "Referer": "https://data.eastmoney.com/"}).json()
+    out = []
+    for a in (j.get("data") or {}).get("list") or []:
+        title = a.get("title") or ""
+        out.append({"art_code": a.get("art_code") or "", "title": title.split(":", 1)[-1].strip(),
+                    "time": str(a.get("display_time") or a.get("notice_date") or "")[:16],
+                    "types": [c.get("column_name") for c in (a.get("columns") or []) if c.get("column_name")]})
+    return out
+
+
+def notice_text_sync(art_code: str, limit: int = 6000) -> str:
+    """公告正文(东财正文接口, 纯文本); 取不到返回 ''。"""
+    import requests
+    if not art_code:
+        return ""
+    try:
+        d = requests.get("https://np-cnotice-stock.eastmoney.com/api/content/ann",
+                         params={"art_code": art_code, "client_source": "web", "page_index": "1"}, timeout=10,
+                         headers={"User-Agent": "Mozilla/5.0"}).json().get("data") or {}
+    except Exception:  # noqa: BLE001
+        return ""
+    t = _re.sub(r"[ \t\u3000]+", " ", d.get("notice_content") or "")
+    t = _re.sub(r"\n\s*\n+", "\n", t).strip()
+    return t[:limit] + ("\n…(后略)" if len(t) > limit else "")
+
+
+def notice_findings(code: str, name: str, items: list[dict], since: str) -> list[dict]:
+    """items: _notice_list_sync 的返回; since: 'YYYY-MM-DD HH:MM', 更早发布的不看。"""
+    out = []
+    for a in items:
+        t = a["title"]
+        if a["time"] < since or not a["art_code"] or not NOTICE_KEYS.search(t) or NOTICE_SKIP.search(t):
+            continue
+        out.append({"key": f"notice::{code}::{a['art_code']}", "detector": "notice", "code": code, "name": name,
+                    "level": "warn" if NOTICE_WARN.search(t) and not NOTICE_CALM.search(t) else "info", "title": f"{name} 公告",
+                    "summary": t,
+                    "body": f"{a['time']} 发布 · {'/'.join(a['types']) or '公告'}\n原文 https://pdf.dfcfw.com/pdf/H2_{a['art_code']}_1.pdf",
+                    "evidence": {"art_code": a["art_code"], "notice_title": t, "published": a["time"]}})
+    return out
+
+
+async def check_notices() -> list[dict]:
+    import time as _t
+    from database import get_config, set_config
+    if _t.time() - _notice_last["at"] < NOTICE_EVERY_MIN * 60 - 30:
+        note(f"每 {NOTICE_EVERY_MIN} 分钟扫一次, 上次 {datetime.fromtimestamp(_notice_last['at'], _CST):%H:%M}")
+        return []
+    held = await _held_a_shares()
+    watched = await _watched_a_shares(held)
+    if not held and not watched:
+        raise Skip("没有 A 股持仓, 观察池也没有 A 股", expected=True)
+    since = await get_config("watch_notice_since")
+    if not since:                                   # 第一次运行: 只看之后发布的, 不把积压的旧公告全报一遍
+        from datetime import timedelta
+        since = (now_cst() - timedelta(hours=12)).strftime("%Y-%m-%d %H:%M")
+        await set_config("watch_notice_since", since)
+    _notice_last["at"] = _t.time()
+    out, failed = [], []
+    for group, wrap in ((held, list), (watched, as_watchlist)):
+        for code, name in group.items():
+            try:
+                items = await asyncio.to_thread(_notice_list_sync, code)
+            except Exception:  # noqa: BLE001
+                failed.append(name)
+                continue
+            out += wrap(notice_findings(code, name, items, since))
+            await asyncio.sleep(0.3)               # 东财接口别打太密
+    total = len(held) + len(watched)
+    if failed and len(failed) == total:
+        raise Skip("公告接口都取不到(东财)")
+    note(f"扫了 {total - len(failed)}/{total} 只, 关键词命中 {len(out)} 条(含已记过的)")
+    if failed:
+        alert(f"{len(failed)} 只公告没取到: {'、'.join(failed[:3])}")
+    return await record(out) if out else []
+
+
 # (检测器 id, 名称, 起, 止(分钟, 北京时间), 非交易日也跑, 函数); watcher_loop 与 watch_health.status 共用
 SCHEDULE = (
     ("fresh_buy", "新买入", 540, 1200, False, check_fresh_buys),
@@ -678,13 +776,14 @@ SCHEDULE = (
     ("books_drift", "账本与券商核对", 920, 1200, False, check_books_drift),
     ("risk_hits", "排雷命中", 1005, 1200, False, check_risk_hits),
     ("funds", "基金估值偏差/净值跌幅", 540, 1380, True, check_funds),
+    ("notice", "公告", 480, 1380, True, check_notices),
 )
 
 
 async def watcher_loop():
     """每 10 分钟。A 股交易日: 9:00~20:00 看新买入与临近解禁; 15:05~20:00 看持仓与观察池的尾盘拉升/收盘封板;
     15:20~20:00 核现金; 16:45~20:00 看持仓与观察池的排雷命中(私仓收盘任务写完当日标记后)。
-    每天 9:00~23:00 看基金估值偏差与净值跌幅(净值傍晚到夜里陆续公布)。"""
+    每天 9:00~23:00 看基金估值偏差与净值跌幅(净值傍晚到夜里陆续公布); 每天 8:00~23:00 每 30 分钟扫一次公告。"""
     from services.market_data import _is_a_share_trading_day
     from services import watch_dig, watch_health
     try:

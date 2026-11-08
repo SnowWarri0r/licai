@@ -306,7 +306,7 @@ async def _note_scheduled(tid: int, title: str, run_at: str, status: str, answer
     import re
     from services import watcher
     first = next((ln for ln in (answer or "").splitlines() if ln.strip() and not ln.strip().startswith("#")), "")
-    first = re.sub(r"\*\*|__|`", "", first).strip()
+    first = re.sub(r"\*\*|__|`|\[(实测|联网)[^\]]*\]", "", first).strip()
     ok = status == "done" and answer
     f = {"key": f"scheduled::{tid}", "detector": "scheduled", "level": "info",
          "title": f"预约任务{'完成' if ok else '没跑成'}: {title}",

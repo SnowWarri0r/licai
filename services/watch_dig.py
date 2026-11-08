@@ -18,8 +18,11 @@ import re
 from database import get_db
 from services import agent_tasks
 
-DIGGABLE = ("risk_hits", "fund_est_miss", "fund_drop", "unlock_soon", "tail_pull", "sealed_close")
+DIGGABLE = ("risk_hits", "fund_est_miss", "fund_drop", "unlock_soon", "tail_pull", "sealed_close", "notice")
 DAILY_CAP = 4
+NOTICE_CAP = 8           # 公告单独计数: 公告是「读出实质内容才出声」, 上限挤占会让其余提醒查不了
+QUIET = ("notice",)      # 这些检测器的发现只在读出补充后才显示(watcher.list_findings)
+CAP_SKIP = "超出每日上限"
 _WAIT_S = 15 * 60
 
 _HINTS = {
@@ -33,6 +36,9 @@ _HINTS = {
                    "以及解禁规模相对日均成交额的大小。",
     "tail_pull": "查当日公告与新闻、所属板块当日尾盘是否同步拉升、资金流, 说明尾盘拉升的触发因素。",
     "sealed_close": "查当日公告与新闻、所属概念与板块联动、资金流, 收盘后的龙虎榜已公布时一并查看, 说明封板的触发因素。",
+    "notice": "下面附了公告原文(节选)。说明这份公告的实质内容: 涉及谁、数量或金额、时间节点, 以及对公司经营或股东的直接影响; "
+              "需要时用 get_trend / get_shareholders 对照规模(如减持数量占流通股、占日均成交的比例)。"
+              "公告只是例行程序, 或没有提醒标题之外的新信息, 写【无补充】。",
 }
 
 _JUDGE_SYS = ("你是盯盘员的调度员, 只做一件事: 判断每条提醒是否值得派研究员去查原因。用户只想看到查得出东西的补充。\n"
@@ -41,7 +47,7 @@ _JUDGE_SYS = ("你是盯盘员的调度员, 只做一件事: 判断每条提醒�
               '只输出 JSON: {"items": [{"id": 提醒id, "dig": true 或 false, "why": "15 字以内的理由"}]}')
 
 
-def brief_for(f: dict) -> str:
+def brief_for(f: dict, text: str = "") -> str:
     ev = f.get("evidence") or {}
     if isinstance(ev, str):
         try:
@@ -55,7 +61,8 @@ def brief_for(f: dict) -> str:
             f"【查法】{_HINTS.get(f['detector'], '查相关行情、公告与新闻, 说明这条提醒的成因。')}\n"
             "【交回格式】第一行只写【有补充】或【无补充】。查到了提醒文字之外的具体成因或新事实写【有补充】, "
             "接着用 300 字以内说明, 结论在前, 每个数字注明来源与日期; 工具没给出提醒之外的信息、或成因定不下来写【无补充】, "
-            "接着一句话说明查了什么。")
+            "接着一句话说明查了什么。"
+            + (f"\n【公告原文节选】\n{text}" if text else ""))
 
 
 def parse_result(text: str) -> tuple[str, str]:
@@ -123,11 +130,14 @@ async def consider(findings: list[dict]) -> list[int]:
     if not rows:
         return []
     today = rows[0]["date"]
-    dug = await _rows("date = ? AND dig_status NOT IN ('', 'skipped') AND dig_reason <> '用户要求'", (today,))
-    room = DAILY_CAP - len(dug)
+    notice = rows[0]["detector"] == "notice"               # 一批来自同一个检测器
+    cap = NOTICE_CAP if notice else DAILY_CAP
+    dug = await _rows("date = ? AND dig_status NOT IN ('', 'skipped') AND dig_reason <> '用户要求' AND "
+                      + ("detector = 'notice'" if notice else "detector <> 'notice'"), (today,))
+    room = cap - len(dug)
     if room <= 0:
         for r in rows:
-            await _set(r["id"], dig_status="skipped", dig_reason=f"今天已自动查过 {DAILY_CAP} 条")
+            await _set(r["id"], dig_status="skipped", dig_reason=f"{CAP_SKIP}(今天已自动查过 {cap} 条)")
         return []
     try:
         verdict = await asyncio.to_thread(_judge_sync, rows, dug)
@@ -141,12 +151,27 @@ async def consider(findings: list[dict]) -> list[int]:
             await start(r, why)
             out.append(r["id"])
         else:
-            await _set(r["id"], dig_status="skipped", dig_reason=why if not dig else "超出每日上限")
+            await _set(r["id"], dig_status="skipped", dig_reason=why if not dig else CAP_SKIP)
     return out
 
 
+def hidden(row: dict) -> bool:
+    """QUIET 检测器的发现在读出补充之前不显示; 读不了(超上限 / 出错 / 服务重启中断)的照常显示标题, 免得漏掉。"""
+    if row.get("detector") not in QUIET:
+        return False
+    st = row.get("dig_status") or ""
+    return st in ("", "queued", "running", "silent") or (st == "skipped" and not (row.get("dig_reason") or "").startswith(CAP_SKIP))
+
+
 async def start(row: dict, reason: str) -> int:
-    tid = await agent_tasks.spawn(("查原因 " + (row.get("name") or row["detector"]))[:20], brief_for(row), True)
+    text = ""
+    if row["detector"] == "notice":
+        ev = row.get("evidence") or {}
+        ev = json.loads(ev) if isinstance(ev, str) else ev
+        from services.watcher import notice_text_sync
+        text = await asyncio.to_thread(notice_text_sync, ev.get("art_code") or "")
+    verb = "读公告 " if row["detector"] == "notice" else "查原因 "
+    tid = await agent_tasks.spawn((verb + (row.get("name") or row["detector"]))[:20], brief_for(row, text), True)
     await _set(row["id"], dig_status="queued", dig_reason=reason, dig_task_id=tid)
     asyncio.create_task(_collect(row["id"], tid))
     return tid

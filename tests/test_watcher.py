@@ -398,3 +398,67 @@ def test_summaries_and_share_class_merge():
                        {"dim": "乙", "label": "y", "n_done": 9, "mean20_pct": -10.3, "win20": 0.2, "metric": ""}]}
     rf = {"date": "2026-01-02", "catalog": CAT, "flags": {"300999": ["a", "b", "c"]}, "in_pool": {"300999": True}}
     assert w.fresh_buy_finding([act], "虚构甲", mir, rf)["summary"] == "你同类买入之后 20 日平均 -10.3% ~ -6.3%; 排雷命中 3 项"
+
+
+# ---------------- 公告 ----------------
+def test_notice_keyword_filter_and_window():
+    items = [{"art_code": "AN1", "title": "关于持股5%以上股东减持股份的预披露公告", "time": "2026-01-05 18:00", "types": ["股东减持"]},
+             {"art_code": "AN2", "title": "关于股东减持计划的法律意见书", "time": "2026-01-05 18:00", "types": []},
+             {"art_code": "AN3", "title": "第三届董事会第二十三次会议决议公告", "time": "2026-01-05 18:00", "types": []},
+             {"art_code": "AN4", "title": "关于收到问询函的公告", "time": "2026-01-03 18:00", "types": []},
+             {"art_code": "AN5", "title": "2025年度业绩预告", "time": "2026-01-05 19:00", "types": ["业绩预告"]}]
+    out = w.notice_findings("300999", "虚构甲", items, "2026-01-05 08:00")
+    assert [f["key"] for f in out] == ["notice::300999::AN1", "notice::300999::AN5"]
+    assert out[0]["level"] == "warn" and out[1]["level"] == "info" and out[0]["summary"].startswith("关于持股5%")
+
+
+def test_notice_hidden_until_dug():
+    from services.watch_dig import hidden, CAP_SKIP
+    n = {"detector": "notice"}
+    assert hidden({**n, "dig_status": ""}) and hidden({**n, "dig_status": "running"}) and hidden({**n, "dig_status": "silent"})
+    assert hidden({**n, "dig_status": "skipped", "dig_reason": "例行公告"})
+    assert not hidden({**n, "dig_status": "done"}) and not hidden({**n, "dig_status": "failed"})
+    assert not hidden({**n, "dig_status": "skipped", "dig_reason": CAP_SKIP + "(今天已自动查过 8 条)"})
+    assert not hidden({"detector": "risk_hits", "dig_status": ""})
+
+
+def test_notice_dig_uses_own_cap_and_attaches_text(db, monkeypatch):
+    from services import watch_dig as wd
+    import services.agent_tasks as at
+    monkeypatch.setattr(at, "_LIVE", {})
+    monkeypatch.setattr(at, "_sem", None)
+    monkeypatch.setattr(wd, "DAILY_CAP", 0)                                # 其余提醒的额度已用完, 不影响公告
+    briefs = []
+
+    def stream(question):
+        briefs.append(question)
+
+        async def gen():
+            yield {"type": "answer", "text": "【有补充】\n大股东拟减持不超过 3%, 约为 12 个交易日的成交量"}
+        return gen()
+    monkeypatch.setattr(at, "_stream", stream)
+    monkeypatch.setattr(w, "notice_text_sync", lambda art: "公告正文: 拟减持不超过 3%")
+    monkeypatch.setattr(wd, "_judge_sync", lambda c, d: {x["id"]: (True, "涉及减持规模") for x in c})
+    fs = w.notice_findings("300999", "虚构甲", [{"art_code": "AN1", "title": "关于股东减持股份的预披露公告",
+                                                "time": "2026-01-05 18:00", "types": []}], "2026-01-05 00:00")
+
+    async def go():
+        await w.record(fs)
+        before = (await w.list_findings())["items"]
+        sent = await wd.consider(fs)
+        await asyncio.sleep(0.1)
+        return before, sent, (await w.list_findings())["items"]
+    before, sent, after = asyncio.run(go())
+    assert before == [] and len(sent) == 1                                   # 读之前不显示
+    assert "【公告原文节选】\n公告正文: 拟减持不超过 3%" in briefs[0]
+    assert after[0]["dig_result"].startswith("大股东拟减持") and after[0]["summary"] == "关于股东减持股份的预披露公告"
+
+
+def test_notice_progress_skip_keeps_material_ones():
+    mk = lambda t: {"art_code": "A" + str(abs(hash(t)) % 999), "title": t, "time": "2026-01-05 18:00", "types": []}
+    keep = ["关于对外投资收购某公司的进展暨取得控制权的公告", "关于签订日常经营重大合同的公告"]
+    drop = ["关于以集中竞价交易方式回购公司股份的进展公告", "关于为控股子公司提供担保的进展公告",
+            "关于部分董事、高管增持公司股份计划的进展公告", "关于回购股份事项前十大股东持股情况的公告"]
+    out = w.notice_findings("300999", "虚构甲", [mk(t) for t in keep + drop], "2026-01-01 00:00")
+    assert [f["summary"] for f in out] == keep
+    assert w.notice_findings("300999", "虚构甲", [mk("控股股东自愿承诺不减持公司股份的公告")], "2026-01-01 00:00")[0]["level"] == "info"
