@@ -46,7 +46,9 @@ def test_cash_cmd_never_read_from_db(db, monkeypatch):
     asyncio.run(database.set_config("watch_cash_asset_id", "1"))
     ran = []
     monkeypatch.setattr(w, "_broker_cash", lambda cmd: ran.append(cmd))
-    assert asyncio.run(w.check_books_drift()) is None and ran == []
+    with pytest.raises(w.Skip) as e:
+        asyncio.run(w.check_books_drift())
+    assert e.value.expected and ran == []
 
 
 CAT = {"flags": {"a": {"label": "甲"}, "b": {"label": "乙"}, "c": {"label": "丙"}},
@@ -97,7 +99,8 @@ def test_fresh_buys_first_run_sets_watermark_then_reports_new(db, monkeypatch):
         await con.commit()
         await con.close()
     asyncio.run(add("300999", "BUY"))
-    assert asyncio.run(w.check_fresh_buys()) == []                       # 第一次只记水位
+    with pytest.raises(w.Skip):                                          # 第一次只记水位
+        asyncio.run(w.check_fresh_buys())
     asyncio.run(add("300999", "BUY"))
     asyncio.run(add("300999", "BUY"))
     asyncio.run(add("300999", "SELL"))
@@ -306,3 +309,77 @@ def test_dig_now_skips_judge_and_daily_cap(db, monkeypatch):
     r, r2, item = asyncio.run(go())
     assert r == {"status": "queued"} and r2 == {"status": "done"}
     assert item["dig_result"] == "公告: 股东减持" and item["dig_reason"] == "用户要求"
+
+
+# ---------------- 自检 ----------------
+def test_run_tracked_records_outcomes_and_streak(db):
+    from datetime import datetime
+    from services import watch_health as wh
+    t = datetime(2026, 1, 6, 16, 0, tzinfo=w._CST)
+
+    async def ok():
+        wh.note("券商 1 / 账本 1")
+        return [{"x": 1}]
+
+    async def skip():
+        raise wh.Skip("客户端没开")
+
+    async def boom():
+        raise RuntimeError("接口挂了")
+
+    async def row():
+        con = await database.get_db()
+        cur = await con.execute("SELECT * FROM watch_health WHERE detector = 'd'")
+        r = dict(await cur.fetchone())
+        await con.close()
+        return r
+    assert asyncio.run(wh.run_tracked("d", ok, t)) == [{"x": 1}]
+    r = asyncio.run(row())
+    assert (r["outcome"], r["n_new"], r["note"], r["last_ok_at"]) == ("ok", 1, "券商 1 / 账本 1", t.isoformat())
+    asyncio.run(wh.run_tracked("d", boom, t))
+    asyncio.run(wh.run_tracked("d", boom, t))
+    r = asyncio.run(row())
+    assert r["outcome"] == "error" and r["fail_streak"] == 2 and "接口挂了" in r["note"] and r["last_ok_at"] == t.isoformat()
+    asyncio.run(wh.run_tracked("d", skip, t))
+    r = asyncio.run(row())
+    assert (r["outcome"], r["fail_streak"], r["note"], r["expected"]) == ("skipped", 0, "客户端没开", 0)
+
+
+def test_judge_flags_stale_errors_and_persistent_skips():
+    from datetime import datetime
+    from services.watch_health import judge
+    at = lambda h, m: datetime(2026, 1, 6, h, m, tzinfo=w._CST)
+    row = lambda **k: {"last_at": at(15, 20).isoformat(), "outcome": "ok", "fail_streak": 0, "expected": 0,
+                       "last_ok_at": at(15, 20).isoformat(), "alert": "", "note": "", **k}
+    lo, hi = 920, 1200                                                 # 15:20~20:00
+    assert judge(None, lo, hi, True, at(15, 30)) == ""                 # 刚开始, 还没到该有记录的时候
+    assert judge(None, lo, hi, True, at(15, 50)).startswith("该跑没跑")
+    assert judge(row(), lo, hi, True, at(16, 0)).startswith("该跑没跑")  # 40 分钟没跑
+    assert judge(row(), lo, hi, False, at(16, 0)) == ""                # 休市不跑
+    assert judge(row(last_at=at(15, 55).isoformat()), lo, hi, True, at(16, 0)) == ""
+    assert judge(row(last_at=at(15, 55).isoformat(), outcome="error", fail_streak=2, note="X"),
+                 lo, hi, True, at(16, 0)) == "连续 2 次出错: X"
+    sk = dict(outcome="skipped", note="客户端没开", last_ok_at=None)
+    assert judge(row(last_at=at(16, 0).isoformat(), **sk), lo, hi, True, at(16, 5)) == ""          # 宽限内
+    assert judge(row(last_at=at(16, 25).isoformat(), **sk), lo, hi, True, at(16, 30)) == "15:20 起一直没跑成: 客户端没开"
+    assert judge(row(last_at=at(19, 59).isoformat(), **sk), lo, hi, True, at(21, 0)) == "今天一直没跑成: 客户端没开"
+    assert judge(row(last_at=at(19, 59).isoformat(), **sk, expected=1), lo, hi, True, at(21, 0)) == ""   # 配置常态
+    assert judge(row(last_at=at(16, 25).isoformat(), alert="龙虎榜落后"), lo, hi, True, at(16, 30)) == "龙虎榜落后"
+
+
+def test_status_lists_detectors_and_slow_tasks(db, monkeypatch):
+    import time as _t
+    from datetime import datetime
+    from services import watch_health as wh
+
+    async def go():
+        con = await database.get_db()
+        await con.execute("INSERT INTO agent_task (title, brief, status, started_at) VALUES ('慢任务', 'b', 'running', ?)",
+                          (_t.time() - 15 * 60,))
+        await con.commit()
+        await con.close()
+        return await wh.status(datetime(2026, 1, 6, 21, 0, tzinfo=w._CST))
+    st = asyncio.run(go())
+    assert [d["detector"] for d in st["detectors"]] == [x[0] for x in w.SCHEDULE]
+    assert any(p["who"] == "子任务" and "慢任务" in p["text"] for p in st["problems"])
+    assert any(p["who"] == "基金估值偏差/净值跌幅" and p["text"].startswith("该跑没跑") for p in st["problems"])

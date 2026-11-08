@@ -467,6 +467,19 @@ CREATE TABLE IF NOT EXISTS watch_finding (
 );
 CREATE INDEX IF NOT EXISTS idx_watch_finding_date ON watch_finding(date);
 
+-- 盯盘员自检(见 services/watch_health.py): 每个检测器最近一次运行。
+CREATE TABLE IF NOT EXISTS watch_health (
+    detector TEXT PRIMARY KEY,
+    last_at TEXT,                              -- 最近一次运行(北京时间 ISO)
+    outcome TEXT,                              -- ok | skipped | error
+    n_new INTEGER DEFAULT 0,                   -- 这次新记下的发现数
+    note TEXT DEFAULT '',                      -- 跳过原因 / 出错信息 / 跑成时的说明
+    alert TEXT DEFAULT '',                     -- 跑成了但数据有异常
+    expected INTEGER DEFAULT 0,                -- 跳过是配置决定的常态
+    fail_streak INTEGER DEFAULT 0,             -- 连续出错次数
+    last_ok_at TEXT                            -- 最近一次跑成
+);
+
 -- 场外基金估值存档(盯盘员 fund_est_miss 用): 每个待公布净值日存最后一次估值, 净值公布后填实际涨跌。
 CREATE TABLE IF NOT EXISTS fund_est_log (
     code TEXT NOT NULL,

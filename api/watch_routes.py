@@ -31,3 +31,10 @@ async def dig(finding_id: int):
     if r.get("error"):
         raise HTTPException(400, r["error"])
     return r
+
+
+@router.get("/health")
+async def health():
+    """盯盘员自检: {checked_at, problems: [{who, text}], detectors: [{detector, label, window, last_at, outcome, note, alert, problem, ...}]}"""
+    from services.watch_health import status
+    return await status()

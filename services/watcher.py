@@ -23,6 +23,7 @@ key 是去重键(检测器 + 标的 + 状态), 同一 key 只记一次; 状态�
 观察池里的票(已持有的算持仓)标题前加「观察池」, 级别统一 info, 页面上排在持仓之后。
 基金两项每天(含周末, QDII 的净值和美股收盘都会落在周末) 9:00~23:00 跑, 其余只在 A 股交易日跑。
 新记下的发现交给 watch_dig 判断要不要派子 agent 查原因, 查到补充挂在那条发现下(dig_status / dig_result)。
+每次运行由 watch_health 记一笔; 检测器跳过时 raise Skip(原因), 页面与 agent 据此区分「没事」「跳过」「出错」。
 """
 from __future__ import annotations
 
@@ -33,6 +34,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from database import get_db
+from services.watch_health import Skip, alert, note
 
 _CST = ZoneInfo("Asia/Shanghai")
 CASH_TOL = 1.0          # 元; 券商与账本的现金差在这以内算对上
@@ -41,7 +43,8 @@ TOOL_GET = {
     "name": "get_watch_findings",
     "description": "取盯盘员记下的发现: 持仓与观察池的排雷命中、收盘事件、临近解禁, 基金估值与净值偏差大、基金净值跌幅超出常见范围, "
                    "账本与券商对不上等, 每条带事实、历史同类统计与数据截至日; "
-                   "观察池的发现标题以「观察池」开头; dig_result 非空的是盯盘员事后派子 agent 查到的成因。用户问'我持仓/自选有什么要注意的/盯盘员说了什么/账对上了吗'时用。date 留空=今天。",
+                   "观察池的发现标题以「观察池」开头; dig_result 非空的是盯盘员事后派子 agent 查到的成因; "
+                   "health_problems 是盯盘员自检发现的运行异常(检测器出错、该跑没跑、当日数据没生成), 非空时如实告诉用户哪些检查今天没做成。用户问'我持仓/自选有什么要注意的/盯盘员说了什么/盯盘员正常吗/账对上了吗'时用。date 留空=今天。",
     "input_schema": {"type": "object", "properties": {"date": {"type": "string", "description": "YYYY-MM-DD"}}},
 }
 
@@ -114,7 +117,11 @@ async def list_findings(date: str | None = None, include_dismissed: bool = False
         if r.get("dig_status") != "done":       # 只有查到补充的才给正文; 没补充的不出声
             r["dig_result"] = ""
     rows.sort(key=lambda r: r["evidence"].get("scope") == "watchlist")      # 持仓的在前, 各自按写入顺序
-    return {"date": date, "items": rows}
+    out = {"date": date, "items": rows}
+    if date == today():
+        from services.watch_health import status
+        out["health_problems"] = (await status())["problems"]
+    return out
 
 
 # ---------------- 检测器 ----------------
@@ -147,15 +154,17 @@ async def check_books_drift() -> dict | None:
     from database import get_config, get_external_asset
     cmd, aid = getattr(config, "watch_cash_cmd", ""), await get_config("watch_cash_asset_id")
     if not cmd or not aid:
-        return None
+        raise Skip("没配置读券商可用金额的命令或对照的现金资产", expected=True)
     asset = await get_external_asset(int(aid))
     if not asset:
-        return None
+        raise Skip(f"对照的现金资产 #{aid} 不存在")
     broker = await _broker_cash(cmd)
     if broker is None:
-        return None
+        raise Skip("读不到券商可用金额(客户端没开, 或读取命令出错)")
     date = today()
-    f = drift_finding(broker, float(asset.get("manual_value") or 0), asset.get("name") or "现金", date)
+    book = float(asset.get("manual_value") or 0)
+    note(f"券商 {broker:,.2f} / 账本 {book:,.2f}")
+    f = drift_finding(broker, book, asset.get("name") or "现金", date)
     await resolve("books_drift", date, keep_key=f["key"] if f else "")
     if f:
         await record([f], date)
@@ -223,9 +232,15 @@ async def check_risk_hits() -> list[dict]:
     held = await _held_a_shares()
     watched = await _watched_a_shares(held)
     if not held and not watched:
-        return []
+        raise Skip("没有 A 股持仓, 观察池也没有 A 股", expected=True)
     date = today()
     rf = analyzers.risk_flags_all(list(held) + list(watched))
+    if rf.get("stale") or rf.get("date") != date:
+        raise Skip(f"当日排雷标记还没生成(最新一份 {rf.get('date') or '无'}), 私仓收盘任务可能没跑")
+    lhb = rf.get("lhb_through")
+    note(f"标记 {date}, 龙虎榜截至 {lhb or '无'}")
+    if lhb and _trading_days_until(lhb, date) > 1:
+        alert(f"龙虎榜数据截至 {lhb}, 落后 {_trading_days_until(lhb, date)} 个交易日, 20:30 的龙虎榜采集可能没跑")
     return await record(risk_findings(held, rf, date) + as_watchlist(risk_findings(watched, rf, date)), date)
 
 
@@ -270,7 +285,7 @@ async def check_fresh_buys() -> list[dict]:
         top = (await cur.fetchone())[0]
         if last is None:
             await set_config("watch_last_action_id", str(top))
-            return []
+            raise Skip("第一次运行, 只记水位", expected=True)
         cur = await db.execute("SELECT id, stock_code, action_type, shares, price, trade_date FROM position_actions "
                                "WHERE id > ? AND action_type IN ('BUY', 'ADD') ORDER BY id", (int(last),))
         acts = [dict(r) for r in await cur.fetchall()]
@@ -337,21 +352,28 @@ async def check_close_events() -> list[dict]:
     from services.market_data import get_realtime_quotes
     from services.market_review import _limit_pct
     if not tdx.is_enabled():
-        return []
+        raise Skip("TDX 数据源没启用, 拿不到分时", expected=True)
     held = await _held_a_shares()
     watched = await _watched_a_shares(held)
     if not held and not watched:
-        return []
+        raise Skip("没有 A 股持仓, 观察池也没有 A 股", expected=True)
     date = today()
     quotes = await get_realtime_quotes(list(held) + list(watched))
     ev = analyzers.watch_events_all()
-    out = []
+    out, got = [], 0
     for group, wrap in ((held, list), (watched, as_watchlist)):
         for code, name in group.items():
             m = await tdx.minute(code)
             if not m or str(m.get("date") or "").replace("-", "") != date.replace("-", ""):
                 continue
+            got += 1
             out += wrap(close_findings(code, name, m.get("points") or [], quotes.get(code) or {}, _limit_pct(code, name), ev, date))
+    total = len(held) + len(watched)
+    if not got:
+        raise Skip(f"TDX 分时没有今天的数据(查了 {total} 只)")
+    note(f"分时 {got}/{total} 只")
+    if got < total:
+        alert(f"{total - got} 只拿不到今天的 TDX 分时")
     return await record(out, date) if out else []
 
 
@@ -545,7 +567,7 @@ async def check_funds() -> list[dict]:
     from datetime import timedelta
     funds = await _held_funds()
     if not funds:
-        return []
+        raise Skip("没有在持的基金", expected=True)
     await log_fund_estimates(funds)
     since = (now_cst() - timedelta(days=7)).strftime("%Y-%m-%d")
     db = await get_db()
@@ -555,11 +577,17 @@ async def check_funds() -> list[dict]:
     finally:
         await db.close()
     fresh = await _record_grouped(est_miss_findings(rows), "fund_est_miss")
-    hits = []
+    hits, missing = [], []
     for f in funds:
-        h = drop_hits(await _nav_changes(f["code"], str(f["quote"].get("nav_date") or "")[:10]))
+        chg = await _nav_changes(f["code"], str(f["quote"].get("nav_date") or "")[:10])
+        if not chg:
+            missing.append(f["name"])
+        h = drop_hits(chg)
         if h and h["date"] >= since:
             hits.append((f["code"], f["name"], h))
+    note(f"基金 {len(funds)} 只, 已公布可比对的估值 {len(rows)} 条(近 7 天)")
+    if missing:
+        alert(f"{len(missing)} 只基金的净值历史没取到(东财接口): {'、'.join(missing[:3])}")
     return fresh + await _record_grouped(drop_findings(hits), "fund_drop")
 
 
@@ -597,12 +625,23 @@ async def _dig(fresh: list[dict]) -> None:
         print(f"[watcher] 深挖判定出错: {e}")
 
 
+# (检测器 id, 名称, 起, 止(分钟, 北京时间), 非交易日也跑, 函数); watcher_loop 与 watch_health.status 共用
+SCHEDULE = (
+    ("fresh_buy", "新买入", 540, 1200, False, check_fresh_buys),
+    ("unlock_soon", "临近解禁", 540, 1200, False, check_unlocks),
+    ("close_events", "尾盘拉升/收盘封板", 905, 1200, False, check_close_events),
+    ("books_drift", "账本与券商核对", 920, 1200, False, check_books_drift),
+    ("risk_hits", "排雷命中", 1005, 1200, False, check_risk_hits),
+    ("funds", "基金估值偏差/净值跌幅", 540, 1380, True, check_funds),
+)
+
+
 async def watcher_loop():
     """每 10 分钟。A 股交易日: 9:00~20:00 看新买入与临近解禁; 15:05~20:00 看持仓与观察池的尾盘拉升/收盘封板;
     15:20~20:00 核现金; 16:45~20:00 看持仓与观察池的排雷命中(私仓收盘任务写完当日标记后)。
     每天 9:00~23:00 看基金估值偏差与净值跌幅(净值傍晚到夜里陆续公布)。"""
     from services.market_data import _is_a_share_trading_day
-    from services import watch_dig
+    from services import watch_dig, watch_health
     try:
         n = await watch_dig.interrupt_stale()
         if n:
@@ -614,15 +653,9 @@ async def watcher_loop():
             n = now_cst()
             t = n.hour * 60 + n.minute
             trading = _is_a_share_trading_day(n.date())
-            for lo, hi, fn, any_day in ((540, 1200, check_fresh_buys, False), (540, 1200, check_unlocks, False),
-                                        (905, 1200, check_close_events, False), (920, 1200, check_books_drift, False),
-                                        (1005, 1200, check_risk_hits, False), (540, 1380, check_funds, True)):
+            for det, _label, lo, hi, any_day, fn in SCHEDULE:
                 if lo <= t <= hi and (trading or any_day):
-                    try:
-                        fresh = await fn()
-                    except Exception as e:
-                        print(f"[watcher] {fn.__name__} 出错: {e}")
-                        continue
+                    fresh = await watch_health.run_tracked(det, fn)
                     if isinstance(fresh, list) and fresh:
                         asyncio.create_task(_dig(fresh))
             await asyncio.sleep(600)
