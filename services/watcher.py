@@ -26,6 +26,8 @@ key 是去重键(检测器 + 标的 + 状态), 同一 key 只记一次; 状态�
   notice       A 股持仓与观察池的新公告: 标题命中 NOTICE_KEYS(减持/问询/立案/业绩预告/质押/重组…)的记下,
                交给 watch_dig 由模型判断值不值得读, 子 agent 读原文; 读出实质内容才显示(watch_dig.QUIET)。
                每 30 分钟扫一次, 只看第一次运行之后发布的(app_config.watch_notice_since)。
+  vwap_break   A 股持仓盘中冲到分时均价线上方 ≥ min_peak 之后跌破(低于均价 margin、持续 hold_min 分钟, after 之后才算)。
+               每只每天一次, 10:00~15:00 每分钟看一次(intraday_loop)。参数与历史同类文案由插件 watch_events.vwap_break 给。
 新记下的发现交给 watch_dig 判断要不要派子 agent 查原因, 查到补充挂在那条发现下(dig_status / dig_result)。
 每次运行由 watch_health 记一笔; 检测器跳过时 raise Skip(原因), 页面与 agent 据此区分「没事」「跳过」「出错」。
 """
@@ -46,7 +48,7 @@ CASH_TOL = 1.0          # 元; 券商与账本的现金差在这以内算对上
 TOOL_GET = {
     "name": "get_watch_findings",
     "description": "取盯盘员记下的发现: 持仓与观察池的排雷命中、收盘事件、临近解禁, 基金估值与净值偏差大、基金净值跌幅超出常见范围, "
-                   "账本与券商对不上、持仓与观察池的重要公告(读过原文的才列出)、预约任务的结果等, 每条带事实、历史同类统计与数据截至日; "
+                   "账本与券商对不上、持仓与观察池的重要公告(读过原文的才列出)、持仓盘中冲高后跌破分时均价线、预约任务的结果等, 每条带事实、历史同类统计与数据截至日; "
                    "观察池的发现标题以「观察池」开头; dig_result 非空的是盯盘员事后派子 agent 查到的成因; "
                    "health_problems 是盯盘员自检发现的运行异常(检测器出错、该跑没跑、当日数据没生成), 非空时如实告诉用户哪些检查今天没做成。用户问'我持仓/自选有什么要注意的/盯盘员说了什么/盯盘员正常吗/账对上了吗'时用。date 留空=今天。",
     "input_schema": {"type": "object", "properties": {"date": {"type": "string", "description": "YYYY-MM-DD"}}},
@@ -783,6 +785,102 @@ async def check_notices() -> list[dict]:
     return await record(out) if out else []
 
 
+# ---------------- 盘中: 冲高后跌破分时均价线 ----------------
+VWAP_DEFAULT = {"after": "10:00", "margin": 0.003, "hold_min": 10, "min_peak": 0.03}
+
+
+def vwap_break_finding(code: str, name: str, pts: list[dict], ev: dict, date: str, prev_close: float | None,
+                       lim_pct: float) -> dict | None:
+    """pts: 当日分时 [{time, price, 手}]。均价线 = 累计(价 × 量) / 累计量(分钟价近似成交均价)。
+    冲高 = 跌破前价格相对均价线的最高偏离; 跌破 = after 之后连续 hold_min 个点低于均价 margin, 且此前站上过均价线。"""
+    cfg = {**VWAP_DEFAULT, **(ev or {})}
+    px, vwap, cv, ca = [], [], 0.0, 0.0
+    for p in pts:
+        price = p.get("price")
+        if not price:
+            continue
+        v = float(p.get("手") or 0)
+        cv, ca = cv + v, ca + price * v
+        px.append((p.get("time") or "", price))
+        vwap.append(ca / cv if cv else price)
+    k = int(cfg["hold_min"])
+    for i in range(len(px)):
+        if px[i][0] < cfg["after"] or i + 1 < k:
+            continue
+        run = range(i - k + 1, i + 1)
+        if not all(px[j][1] < vwap[j] * (1 - cfg["margin"]) for j in run):
+            continue
+        before = range(0, i - k + 1)
+        if not any(px[j][1] >= vwap[j] for j in before):
+            continue
+        peak_j = max(before, key=lambda j: px[j][1] / vwap[j])
+        peak = px[peak_j][1] / vwap[peak_j] - 1
+        if peak < cfg["min_peak"]:
+            return None                     # 只看当天第一次跌破; 冲得不够高的不算
+        t, price = px[i]
+        if prev_close and price <= prev_close * (1 - lim_pct / 100) + 0.01:
+            return None                     # 跌停附近, 不是均价线的事
+        start = px[i - k + 1]
+        return {"key": f"vwap_break::{code}::{date}", "detector": "vwap_break", "code": code, "name": name, "level": "warn",
+                "title": f"{name} 冲高后跌破分时均价线",
+                "summary": f"{px[peak_j][0]} 高出均价 {peak * 100:.1f}%, {start[0]} 起跌破, 到 {t} 仍在线下(现价 {price:g}, 均价 {vwap[i]:.2f})",
+                "body": "\n".join([f"触发你的盯盘纪律: 冲高 ≥{cfg['min_peak'] * 100:g}% 后跌破分时均价线, "
+                                    f"低于均价 {cfg['margin'] * 100:g}% 持续 {k} 分钟({cfg['after']} 以后)"]
+                                   + list((ev or {}).get("lines") or [])),
+                "evidence": {"time": t, "price": price, "vwap": round(vwap[i], 3), "peak": round(peak, 4),
+                             "peak_time": px[peak_j][0], "break_start": start[0]}}
+    return None
+
+
+async def check_vwap_breaks() -> list[dict]:
+    import services.tdx_client as tdx
+    from services import analyzers
+    from services.market_review import _limit_pct
+    if not tdx.is_enabled():
+        raise Skip("TDX 数据源没启用, 拿不到分时", expected=True)
+    held = await _held_a_shares()
+    if not held:
+        raise Skip("没有 A 股持仓", expected=True)
+    date = today()
+    ev = (analyzers.watch_events_all() or {}).get("vwap_break") or {}
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT code FROM watch_finding WHERE detector = 'vwap_break' AND date = ?", (date,))
+        done = {r[0] for r in await cur.fetchall()}
+    finally:
+        await db.close()
+    out, got = [], 0
+    for code, name in held.items():
+        if code in done:
+            continue
+        m = await tdx.minute(code)
+        if not m or str(m.get("date") or "").replace("-", "") != date.replace("-", ""):
+            continue
+        got += 1
+        q = await tdx.quote(code) or {}
+        f = vwap_break_finding(code, name, m.get("points") or [], ev, date, q.get("prev_close"), _limit_pct(code, name))
+        if f:
+            out.append(f)
+    note(f"持仓 {len(held)} 只, 今天已提醒 {len(done)} 只, 本次看了 {got} 只")
+    return await record(out, date) if out else []
+
+
+async def intraday_loop():
+    """盘中检测(冲高后跌破均价线)要及时, 不跟 watcher_loop 的 10 分钟节奏: 交易日 10:00~15:00 每分钟一次。"""
+    from services.market_data import _is_a_share_trading_day
+    from services import watch_health
+    while True:
+        try:
+            n = now_cst()
+            t = n.hour * 60 + n.minute
+            for det, _label, lo, hi, any_day, fn in SCHEDULE:
+                if det in FAST and lo <= t <= hi and (any_day or _is_a_share_trading_day(n.date())):
+                    await watch_health.run_tracked(det, fn)
+        except Exception as e:  # noqa: BLE001
+            print(f"[watcher] 盘中循环出错: {e}")
+        await asyncio.sleep(60)
+
+
 # (检测器 id, 名称, 起, 止(分钟, 北京时间), 非交易日也跑, 函数); watcher_loop 与 watch_health.status 共用
 SCHEDULE = (
     ("fresh_buy", "新买入", 540, 1200, False, check_fresh_buys),
@@ -792,7 +890,9 @@ SCHEDULE = (
     ("risk_hits", "排雷命中", 1005, 1200, False, check_risk_hits),
     ("funds", "基金估值偏差/净值跌幅", 540, 1380, True, check_funds),
     ("notice", "公告", 480, 1380, True, check_notices),
+    ("vwap_break", "冲高后跌破均价线", 600, 900, False, check_vwap_breaks),
 )
+FAST = ("vwap_break",)              # 由 intraday_loop 每分钟跑, watcher_loop 跳过
 
 
 async def watcher_loop():
@@ -813,7 +913,7 @@ async def watcher_loop():
             t = n.hour * 60 + n.minute
             trading = _is_a_share_trading_day(n.date())
             for det, _label, lo, hi, any_day, fn in SCHEDULE:
-                if lo <= t <= hi and (trading or any_day):
+                if det not in FAST and lo <= t <= hi and (trading or any_day):
                     fresh = await watch_health.run_tracked(det, fn)
                     if isinstance(fresh, list) and fresh:
                         asyncio.create_task(_dig(fresh))

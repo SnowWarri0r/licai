@@ -480,3 +480,33 @@ def test_doc_block_cannot_be_closed_from_inside():
     body = out.split("\n", 1)[1]                                         # 第一行是说明文字
     assert body.count("<<</abcd1234>>>") == 1 and body.rstrip().endswith("<<</abcd1234>>>")
     assert "＜＜＜/abcd1234＞＞＞" in out
+
+
+# ---------------- 盘中: 冲高后跌破均价线 ----------------
+def _pts(prices, start="09:30"):
+    h, m = map(int, start.split(":"))
+    out = []
+    for p in prices:
+        out.append({"time": f"{h:02d}:{m:02d}", "price": p, "手": 100})
+        m += 1
+        if m == 60:
+            h, m = h + 1, 0
+    return out
+
+
+def test_vwap_break_fires_only_after_big_peak():
+    ev = {"after": "10:00", "margin": 0.003, "hold_min": 3, "min_peak": 0.03, "lines": ["历史甲"]}
+    up = [10.0] * 10 + [10.6] * 10 + [10.0] * 20 + [9.5] * 5          # 冲到均价上方 ~4%, 10:10 起掉到线下
+    f = w.vwap_break_finding("300999", "虚构甲", _pts(up), ev, "2026-01-05", 10.0, 20.0)
+    assert f and f["key"] == "vwap_break::300999::2026-01-05" and f["level"] == "warn" and f["evidence"]["time"] >= "10:00"
+    assert "历史甲" in f["body"] and "高出均价" in f["summary"]
+    flat = [10.0] * 10 + [10.05] * 10 + [9.9] * 25                      # 只冲高 0.5%: 跌破也不算
+    assert w.vwap_break_finding("300999", "虚构甲", _pts(flat), ev, "2026-01-05", 10.0, 20.0) is None
+    early = [10.0] * 3 + [10.6] * 3 + [9.5] * 10                         # 10:00 之前的跌破不算
+    assert w.vwap_break_finding("300999", "虚构甲", _pts(early), ev, "2026-01-05", 10.0, 20.0) is None
+    floor = [10.0] * 10 + [10.6] * 10 + [8.0] * 25                       # 跌停附近不算
+    assert w.vwap_break_finding("300999", "虚构甲", _pts(floor), ev, "2026-01-05", 10.0, 20.0) is None
+
+
+def test_fast_detectors_left_to_intraday_loop():
+    assert "vwap_break" in w.FAST and "vwap_break" in [x[0] for x in w.SCHEDULE]
