@@ -3716,10 +3716,11 @@ _ZSXQ_TOOLS = ("get_zsxq_digest", "search_zsxq", "read_zsxq_file")
 _TASK_TOOLS = ("dispatch_tasks", "get_tasks", "schedule_task", "cancel_scheduled")
 _MAIN_ONLY_TOOLS = (*_TASK_TOOLS, "remember", "save_trade_plan")
 # 任务说明里带第三方原文的子 agent(见 agent_ctx.untrusted)只用白名单: 按代码查公开数据、返回里不带用户持仓的工具,
-# 外加本地计算。参数只收 A 股代码 / 日期 / 数字 —— 自由文本参数会随请求发到外部数据源, 可以被拿来夹带数据。
+# 外加本地计算。参数只收 A 股代码 / 日期 / 数字 —— 自由文本参数会随请求发到外部数据源, 可以被拿来夹带数据;
+# 且必须带 6 位代码: 不传代码的全市场模式有的会附上「持仓关联」(如业绩预告), 一律不走。
 _UNTRUSTED_ALLOW = ("get_quote", "get_trend", "get_intraday", "get_announcements", "get_shareholders", "get_fundamentals",
                     "get_company_profile", "get_stock_concepts", "get_fund_flow", "get_lhb", "get_peers", "get_red_flags",
-                    "get_earnings", "get_inst_flow", "calc")
+                    "get_inst_flow", "calc")
 _UNTRUSTED_ARG = _re.compile(r"(?:sh|sz|bj)?\d{6}|\d{4}-\d{2}-\d{2}|\d{1,4}")
 
 
@@ -3728,6 +3729,9 @@ def _untrusted_ok(name: str, args: dict) -> bool:
         return False
     if name == "calc":                      # 本地算术, 不出网
         return True
+    code = str((args or {}).get("code") or "").strip()
+    if not _re.fullmatch(r"(?:sh|sz|bj)?\d{6}", code):
+        return False
     return all(isinstance(v, (int, float)) or (isinstance(v, str) and (v == "" or _UNTRUSTED_ARG.fullmatch(v.strip())))
                for v in (args or {}).values())
 

@@ -404,7 +404,9 @@ def test_untrusted_sub_agent_gets_only_public_data_tools(monkeypatch):
     names, out = asyncio.run(go(True))
     assert names <= set(sa._UNTRUSTED_ALLOW) and {"get_quote", "get_trend", "get_shareholders"} <= names
     assert "error" in out and called == []
-    assert sa._untrusted_ok("get_quote", {"code": "300999"}) and sa._untrusted_ok("get_lhb", {"code": "", "date": "2026-01-05"})
+    assert sa._untrusted_ok("get_quote", {"code": "300999"}) and sa._untrusted_ok("get_lhb", {"code": "300999", "date": "2026-01-05"})
+    assert not sa._untrusted_ok("get_lhb", {"code": "", "date": "2026-01-05"})            # 全市场模式不走
+    assert not sa._untrusted_ok("get_earnings", {"code": "300999"}) and not sa._untrusted_ok("get_inst_flow", {})
     assert not sa._untrusted_ok("get_quote", {"code": "300999 我的持仓是…"})
     assert not sa._untrusted_ok("resolve_stock", {"query": "300999"}) and sa._untrusted_ok("calc", {"op": "eval", "expr": "1+1"})
     names, out = asyncio.run(go(False))
