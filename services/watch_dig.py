@@ -66,6 +66,10 @@ def brief_for(f: dict, text: str = "") -> str:
         except ValueError:
             ev = {}
     who = f"{f.get('name') or ''}({f['code']})" if f.get("code") else "提醒里列出的基金"
+    if f.get("detector") == "notice":           # 公告标题也是第三方文本: 拿出证据, 与正文一起进资料块
+        title = ev.pop("notice_title", "") or f.get("summary") or ""
+        text = f"公告标题: {title}\n{text}" if (title or text) else ""
+        f = {**f, "body": ""}
     return (f"盯盘员 {f.get('date') or ''} 记下一条提醒, 请查清它背后的原因。\n"
             f"【提醒】{f['title']}\n{f.get('body') or ''}\n【标的】{who}\n"
             f"【证据】{json.dumps(ev, ensure_ascii=False)[:600]}\n"
@@ -184,10 +188,36 @@ async def start(row: dict, reason: str) -> int:
         text = await asyncio.to_thread(notice_text_sync, ev.get("art_code") or "")
     verb = "读公告 " if row["detector"] == "notice" else "查原因 "
     tid = await agent_tasks.spawn((verb + (row.get("name") or row["detector"]))[:20], brief_for(row, text), True,
-                                  untrusted=bool(text))
+                                  untrusted=row["detector"] in QUIET)   # 按检测器定, 不看正文取没取到
     await _set(row["id"], dig_status="queued", dig_reason=reason, dig_task_id=tid)
     asyncio.create_task(_collect(row["id"], tid))
     return tid
+
+
+def as_data(text: str) -> str:
+    """交给主 agent 的第三方派生内容(公告标题、子 agent 读公告/网页查到的原因): 包进随机标记, 声明只是资料。"""
+    import secrets
+    if not text:
+        return text
+    n = secrets.token_hex(4)
+    t = text.replace("<", "＜").replace(">", "＞")
+    return f"<<<{n}>>>\n{t}\n<<</{n}>>>"
+
+
+def for_agent(items: list[dict]) -> list[dict]:
+    """get_watch_findings 给主 agent 的版本: 第三方派生字段包成资料块(页面上照常显示原文)。"""
+    out = []
+    for r in items:
+        r = dict(r)
+        if r.get("dig_result"):
+            r["dig_result"] = as_data(r["dig_result"])
+        if r.get("detector") in QUIET:
+            r["summary"], r["body"] = as_data(r.get("summary") or ""), as_data(r.get("body") or "")
+            ev = dict(r.get("evidence") or {})
+            ev.pop("notice_title", None)
+            r["evidence"] = ev
+        out.append(r)
+    return out
 
 
 async def _collect(fid: int, tid: int) -> None:
