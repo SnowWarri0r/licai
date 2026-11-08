@@ -441,6 +441,19 @@ CREATE TABLE IF NOT EXISTS watch_finding (
 );
 CREATE INDEX IF NOT EXISTS idx_watch_finding_date ON watch_finding(date);
 
+-- 场外基金估值存档(盯盘员 fund_est_miss 用): 每个待公布净值日存最后一次估值, 净值公布后填实际涨跌。
+CREATE TABLE IF NOT EXISTS fund_est_log (
+    code TEXT NOT NULL,
+    nav_date TEXT NOT NULL,                    -- 估的是哪一天的净值
+    name TEXT DEFAULT '',
+    est_pct REAL NOT NULL,                     -- 页面上显示的回归估算 %
+    mae REAL,                                  -- 该基金回归的历史日均误差 %
+    top10_pct REAL,                            -- 同时刻的前十大加权 %
+    logged_at TEXT,
+    actual_pct REAL,                           -- 公布的日涨幅 %; NULL = 还没公布
+    PRIMARY KEY (code, nav_date)
+);
+
 -- 交易计划: 用户收盘后定的次日计划(见 services/trade_plan.py)。只对 plan_date 当天有效。
 CREATE TABLE IF NOT EXISTS trade_plan (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

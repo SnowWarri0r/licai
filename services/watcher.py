@@ -15,7 +15,13 @@ key 是去重键(检测器 + 标的 + 状态), 同一 key 只记一次; 状态�
   tail_pull    A 股持仓与观察池尾盘 30 分钟(14:30 → 收盘)涨幅 ≥ 阈值且收盘未涨停/跌停。
   sealed_close A 股持仓与观察池收盘封住涨停(区分一字板)。这两个收盘后跑, 分时走 TDX(没启用就跳过),
                阈值与历史同类文案由插件 watch_events 给; 没装插件只给事实不给历史。
+  unlock_soon  A 股持仓与观察池 5 个交易日内有限售解禁, 且占流通市值 ≥ 5%(event_calendar 的东财解禁表)。
+  fund_est_miss 在持场外基金: 每个待公布净值日存最后一次回归估值(fund_est_log), 净值公布后与实际日涨幅比,
+               偏差 ≥ max(3 倍该基金回归的历史日均误差, 0.3%) 记一条; 同一净值日的合成一条。
+  fund_drop    在持基金(含场内 ETF): 最新净值日的跌幅落在这只基金近两年日涨幅最差 1%, 或近 5 个净值日累计跌幅
+               落在近两年 5 日累计最差 2%; 同一净值日的合成一条。
 观察池里的票(已持有的算持仓)标题前加「观察池」, 级别统一 info, 页面上排在持仓之后。
+基金两项每天(含周末, QDII 的净值和美股收盘都会落在周末) 9:00~23:00 跑, 其余只在 A 股交易日跑。
 """
 from __future__ import annotations
 
@@ -32,7 +38,8 @@ CASH_TOL = 1.0          # 元; 券商与账本的现金差在这以内算对上
 
 TOOL_GET = {
     "name": "get_watch_findings",
-    "description": "取盯盘员记下的发现: 持仓与观察池的风险和收盘事件、账本与券商对不上等, 每条带事实、历史同类统计与数据截至日; "
+    "description": "取盯盘员记下的发现: 持仓与观察池的排雷命中、收盘事件、临近解禁, 基金估值与净值偏差大、基金净值跌幅超出常见范围, "
+                   "账本与券商对不上等, 每条带事实、历史同类统计与数据截至日; "
                    "观察池的发现标题以「观察池」开头。用户问'我持仓/自选有什么要注意的/盯盘员说了什么/账对上了吗'时用。date 留空=今天。",
     "input_schema": {"type": "object", "properties": {"date": {"type": "string", "description": "YYYY-MM-DD"}}},
 }
@@ -343,6 +350,214 @@ async def check_close_events() -> list[dict]:
     return await record(out, date) if out else []
 
 
+# ---------------- 临近解禁 ----------------
+UNLOCK_DAYS, UNLOCK_MIN_PCT = 5, 5.0
+
+
+def _trading_days_until(day: str, today_: str) -> int:
+    """today_ 之后到 day(含)有几个 A 股交易日; day 就是今天 → 0。"""
+    from datetime import date, timedelta
+    from services.market_data import _is_a_share_trading_day
+    d, end, n = date.fromisoformat(today_), date.fromisoformat(day), 0
+    while d < end:
+        d += timedelta(days=1)
+        n += _is_a_share_trading_day(d)
+    return n
+
+
+def unlock_findings(code: str, name: str, events: list[dict], today_: str) -> list[dict]:
+    """events: event_calendar._stock_events_sync 的返回。"""
+    out = []
+    for e in events:
+        pct = e.get("pct")
+        if e.get("type") != "解禁" or pct is None or pct < UNLOCK_MIN_PCT or e["date"] < today_:
+            continue
+        n = _trading_days_until(e["date"], today_)
+        if n > UNLOCK_DAYS:
+            continue
+        out.append({"key": f"unlock_soon::{code}::{e['date']}", "detector": "unlock_soon", "code": code, "name": name,
+                    "level": "warn", "title": f"{name} {e['date'][5:]} 限售解禁, 占流通市值 {pct:.1f}%",
+                    "body": f"{e.get('detail') or '限售股'}; " + ("就在今天" if n == 0 else f"还有 {n} 个交易日")
+                            + "\n数据: 东财限售解禁表, 以公司公告为准",
+                    "evidence": {"date": e["date"], "pct": pct, "trading_days": n}})
+    return out
+
+
+async def check_unlocks() -> list[dict]:
+    from services.event_calendar import _stock_events_sync
+    held = await _held_a_shares()
+    watched = await _watched_a_shares(held)
+    date, out = today(), []
+    for group, wrap in ((held, list), (watched, as_watchlist)):
+        for code, name in group.items():
+            evs = await asyncio.to_thread(_stock_events_sync, code)          # 12 小时缓存
+            out += wrap(unlock_findings(code, name, evs, date))
+    return await record(out, date) if out else []
+
+
+# ---------------- 基金: 估值偏差 / 净值异常下跌 ----------------
+EST_MISS_K, EST_MISS_FLOOR = 3.0, 0.3
+DROP_Q1, DROP_Q5, DROP_MIN_N, DROP_YEARS_N = 0.01, 0.02, 250, 500
+_nav_cache: dict = {}            # code → (取数时刻, {日期: 日涨幅%})
+
+
+async def _held_funds() -> list[dict]:
+    """在持的基金, 行情与估值和页面同一条链路: [{code, name, quote}]。"""
+    from api.assets_routes import _enrich
+    from database import list_external_assets
+    rows = [r for r in await list_external_assets() if (r.get("asset_type") or "").upper() == "FUND" and r.get("code")
+            and (float(r.get("shares") or 0) > 0 or float(r.get("pending_amount") or 0) > 0)]
+    return [{"code": a["code"], "name": a.get("name") or a["code"], "quote": a.get("quote") or {}}
+            for a in await asyncio.gather(*[_enrich(r) for r in rows]) if float(a.get("shares") or 0) > 0]
+
+
+async def log_fund_estimates(funds: list[dict]) -> None:
+    """只差一个净值日的估值存下来(同一天以最后一次为准, 公布后不再改); 已公布的填上实际涨跌。"""
+    db = await get_db()
+    try:
+        for f in funds:
+            q, est = f["quote"], f["quote"].get("model_est") or {}
+            if est.get("days") == 1 and est.get("through"):
+                await db.execute(
+                    "INSERT INTO fund_est_log (code, nav_date, name, est_pct, mae, top10_pct, logged_at) VALUES (?,?,?,?,?,?,?) "
+                    "ON CONFLICT(code, nav_date) DO UPDATE SET name = excluded.name, est_pct = excluded.est_pct, mae = excluded.mae, "
+                    "top10_pct = excluded.top10_pct, logged_at = excluded.logged_at WHERE fund_est_log.actual_pct IS NULL",
+                    (f["code"], est["through"], f["name"], float(est["pct"]), est.get("mae"), q.get("proxy_top10_pct"),
+                     now_cst().isoformat(timespec="seconds")))
+            nd, chg = str(q.get("nav_date") or "")[:10], q.get("change_pct")
+            if nd and chg is not None:
+                await db.execute("UPDATE fund_est_log SET actual_pct = ? WHERE code = ? AND nav_date = ? AND actual_pct IS NULL",
+                                 (float(chg), f["code"], nd))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+def est_miss_findings(rows: list[dict]) -> list[dict]:
+    """rows: fund_est_log 里已公布的记录。偏差大的按净值日合成一条。"""
+    by: dict = {}
+    for r in rows:
+        err = r["actual_pct"] - r["est_pct"]
+        if abs(err) >= max(EST_MISS_K * (r.get("mae") or 0), EST_MISS_FLOOR):
+            by.setdefault(r["nav_date"], []).append((r, err))
+    out = []
+    for nd, xs in sorted(by.items()):
+        xs.sort(key=lambda x: x[0]["code"])
+        lines = [f"{r['name'] or r['code']}: 净值 {r['actual_pct']:+.2f}%, 估值 {r['est_pct']:+.2f}%"
+                 + (f"(前十大加权 {r['top10_pct']:+.2f}%)" if r.get("top10_pct") is not None else "")
+                 + f", 差 {err:+.2f}%, 这只平时日均误差约 {r.get('mae') or 0:.2f}%" for r, err in xs]
+        out.append({"key": f"fund_est_miss::{nd}::{','.join(r['code'] for r, _ in xs)}", "detector": "fund_est_miss",
+                    "level": "info", "title": f"{nd[5:]} 基金估值偏差大: {len(xs)} 只",
+                    "body": "\n".join(lines + [f"偏差大 = 超过平时日均误差的 {EST_MISS_K:g} 倍且不小于 {EST_MISS_FLOOR:g}%"]),
+                    "evidence": {"nav_date": nd, "errs": {r["code"]: round(err, 2) for r, err in xs}}})
+    return out
+
+
+def _nav_changes_sync(code: str) -> dict:
+    from services.event_calendar import _no_proxy
+    _no_proxy()
+    import akshare as ak
+    df = ak.fund_open_fund_info_em(symbol=code, indicator="单位净值走势")
+    if df is None or df.empty:
+        return {}
+    return {str(r["净值日期"])[:10]: float(r["日增长率"]) for _, r in df.iterrows()
+            if r.get("日增长率") is not None and str(r.get("日增长率")) not in ("", "nan")}
+
+
+async def _nav_changes(code: str, published: str) -> dict:
+    """{日期: 日涨幅%}(东财, 已按分红调整)。3 小时缓存; 页面行情显示有更新的净值日就提前重取。"""
+    import time
+    c = _nav_cache.get(code)
+    if c and time.time() - c[0] < 3 * 3600 and (not published or max(c[1], default="") >= published):
+        return c[1]
+    try:
+        h = await asyncio.to_thread(_nav_changes_sync, code)
+    except Exception as e:  # noqa: BLE001
+        print(f"[watcher] 净值历史 {code} 失败: {e}")
+        return c[1] if c else {}
+    if h:
+        _nav_cache[code] = (time.time(), h)
+    return h
+
+
+def drop_hits(chg: dict) -> dict | None:
+    """chg: {日期: 日涨幅%}。最新净值日的跌幅 / 近 5 个净值日累计跌幅落在这只基金近两年的最差 1% / 2% → 命中。"""
+    import numpy as np
+    ds = sorted(chg)[-(DROP_YEARS_N + 1):]
+    if len(ds) < DROP_MIN_N + 1:
+        return None
+    r = np.array([chg[d] for d in ds]) / 100
+    hit = {}
+    q1 = float(np.quantile(r[:-1], DROP_Q1))
+    if r[-1] < 0 and r[-1] <= q1:
+        hit["day"] = {"pct": round(float(r[-1]) * 100, 2), "line": round(q1 * 100, 2)}
+    c5 = np.expm1(np.convolve(np.log1p(r), np.ones(5), "valid"))
+    q5 = float(np.quantile(c5[:-5], DROP_Q5))                # 历史窗口不含与最新一天重叠的
+    if c5[-1] < 0 and c5[-1] <= q5:
+        hit["5d"] = {"pct": round(float(c5[-1]) * 100, 2), "line": round(q5 * 100, 2)}
+    return {"date": ds[-1], **hit} if hit else None
+
+
+def drop_findings(hits: list[tuple[str, str, dict]]) -> list[dict]:
+    """hits: [(代码, 名称, drop_hits 的返回)]。按净值日合成一条。"""
+    by: dict = {}
+    for code, name, h in hits:
+        by.setdefault(h["date"], []).append((code, name, h))
+    out = []
+    for nd, xs in sorted(by.items()):
+        xs.sort()
+        lines = []
+        for code, name, h in xs:
+            parts = []
+            if "day" in h:
+                parts.append(f"当日 {h['day']['pct']:+.2f}%(近两年最差 1% 的线 {h['day']['line']:+.2f}%)")
+            if "5d" in h:
+                parts.append(f"近 5 个净值日 {h['5d']['pct']:+.2f}%(近两年最差 2% 的线 {h['5d']['line']:+.2f}%)")
+            lines.append(f"{name}: " + ", ".join(parts))
+        out.append({"key": f"fund_drop::{nd}::{','.join(c for c, _, _ in xs)}", "detector": "fund_drop", "level": "warn",
+                    "title": f"{nd[5:]} 基金净值跌幅超出常见范围: {len(xs)} 只",
+                    "body": "\n".join(lines + ["常见范围按每只基金自己近两年的净值涨跌算"]),
+                    "evidence": {"nav_date": nd, "hits": {c: h for c, _, h in xs}}})
+    return out
+
+
+async def _record_grouped(findings: list[dict], detector: str) -> list[dict]:
+    """按净值日合成的发现: 同一净值日后来又多了几只, 新的一条替代旧的。"""
+    fresh = await record(findings)
+    for f in fresh:
+        nd = f["evidence"]["nav_date"]
+        db = await get_db()
+        try:
+            await db.execute("UPDATE watch_finding SET dismissed = 1 WHERE detector = ? AND key LIKE ? AND key <> ? AND dismissed = 0",
+                             (detector, f"{detector}::{nd}::%", f["key"]))
+            await db.commit()
+        finally:
+            await db.close()
+    return fresh
+
+
+async def check_funds() -> list[dict]:
+    from datetime import timedelta
+    funds = await _held_funds()
+    if not funds:
+        return []
+    await log_fund_estimates(funds)
+    since = (now_cst() - timedelta(days=7)).strftime("%Y-%m-%d")
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT * FROM fund_est_log WHERE actual_pct IS NOT NULL AND nav_date >= ?", (since,))
+        rows = [dict(r) for r in await cur.fetchall()]
+    finally:
+        await db.close()
+    fresh = await _record_grouped(est_miss_findings(rows), "fund_est_miss")
+    hits = []
+    for f in funds:
+        h = drop_hits(await _nav_changes(f["code"], str(f["quote"].get("nav_date") or "")[:10]))
+        if h and h["date"] >= since:
+            hits.append((f["code"], f["name"], h))
+    return fresh + await _record_grouped(drop_findings(hits), "fund_drop")
+
+
 async def _day_buys(code: str, day: str) -> list[dict]:
     db = await get_db()
     try:
@@ -370,20 +585,23 @@ def _days_ago(n: int) -> str:
 
 
 async def watcher_loop():
-    """交易日每 10 分钟: 9:00~20:00 看新买入; 15:05~20:00 看持仓与观察池的尾盘拉升/收盘封板; 15:20~20:00 核现金;
-    16:45~20:00 看持仓与观察池的排雷命中(私仓收盘任务写完当日标记后)。"""
+    """每 10 分钟。A 股交易日: 9:00~20:00 看新买入与临近解禁; 15:05~20:00 看持仓与观察池的尾盘拉升/收盘封板;
+    15:20~20:00 核现金; 16:45~20:00 看持仓与观察池的排雷命中(私仓收盘任务写完当日标记后)。
+    每天 9:00~23:00 看基金估值偏差与净值跌幅(净值傍晚到夜里陆续公布)。"""
     from services.market_data import _is_a_share_trading_day
     while True:
         try:
             n = now_cst()
             t = n.hour * 60 + n.minute
-            if _is_a_share_trading_day(n.date()):
-                for lo, fn in ((540, check_fresh_buys), (905, check_close_events), (920, check_books_drift), (1005, check_risk_hits)):
-                    if lo <= t <= 1200:
-                        try:
-                            await fn()
-                        except Exception as e:
-                            print(f"[watcher] {fn.__name__} 出错: {e}")
+            trading = _is_a_share_trading_day(n.date())
+            for lo, hi, fn, any_day in ((540, 1200, check_fresh_buys, False), (540, 1200, check_unlocks, False),
+                                        (905, 1200, check_close_events, False), (920, 1200, check_books_drift, False),
+                                        (1005, 1200, check_risk_hits, False), (540, 1380, check_funds, True)):
+                if lo <= t <= hi and (trading or any_day):
+                    try:
+                        await fn()
+                    except Exception as e:
+                        print(f"[watcher] {fn.__name__} 出错: {e}")
             await asyncio.sleep(600)
         except Exception as e:
             print(f"[watcher] Loop error: {e}")

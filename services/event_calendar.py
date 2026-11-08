@@ -1,6 +1,6 @@
 """持仓事件日历: 持仓标的未来已知事件的时间轴(纯客观, 零建议)。
 
-覆盖标的: A股直接持仓 + 在持场内ETF的前十大成分股(权重≥3%, 季报口径)。
+覆盖标的: A股直接持仓 + 在持场内ETF的前十大成分股(权重≥3%, 季报口径) + 观察池里的 A股。
 事件类型:
 - 财报披露: 交易所预约披露时间表(取最新变更后的日期, 已实际披露的不列)
 - 除权除息: 分红送配方案的股权登记日/除权除息日(未来的)
@@ -99,7 +99,7 @@ def _stock_events_sync(code: str) -> list[dict]:
                     pct = round(float(r.get("占流通市值比例") or 0) * 100, 2)
                 except (TypeError, ValueError):
                     pct = None
-                out.append({"date": dt, "type": "解禁",
+                out.append({"date": dt, "type": "解禁", "pct": pct,
                             "detail": f"{r.get('限售股类型') or '限售股'}"
                                       + (f", 占流通市值 {pct}%" if pct is not None else "")})
     except Exception:
@@ -109,7 +109,7 @@ def _stock_events_sync(code: str) -> list[dict]:
 
 
 async def _watch_list() -> list[dict]:
-    """监控标的: A股直持 + 场内ETF前十大成分(≥3%)。[{code, name, via}]"""
+    """监控标的: A股直持 + 场内ETF前十大成分(≥3%) + 观察池里的 A股。[{code, name, via}]"""
     from services.stock_agent import _active_holdings
     from services import etf_xray
     from database import list_external_assets
@@ -142,6 +142,12 @@ async def _watch_list() -> list[dict]:
             if code and code not in seen and code.isdigit() and len(code) == 6:
                 seen[code] = {"code": code, "name": h.get("name") or code,
                               "via": f"经由 {etf_name}"}
+    from database import list_watchlist
+    from services.market_data import split_stock_code
+    for w in await list_watchlist():
+        code = w["code"]
+        if code not in seen and split_stock_code(code)[0] == "A":
+            seen[code] = {"code": code, "name": w.get("name") or code, "via": "观察池"}
     return list(seen.values())
 
 
@@ -152,7 +158,7 @@ async def upcoming_events() -> dict:
         return c[0]
     watch = await _watch_list()
     if not watch:
-        return {"events": [], "note": "当前没有 A股/场内ETF 持仓, 无关联事件。"}
+        return {"events": [], "note": "当前没有 A股/场内ETF 持仓, 观察池也没有 A股, 无关联事件。"}
     today = date.today()
     horizon = today + timedelta(days=_HORIZON_DAYS)
     disc = await asyncio.to_thread(_disclosure_map_sync)
@@ -175,7 +181,7 @@ async def upcoming_events() -> dict:
     events.sort(key=lambda e: (e["date"], e["code"]))
     out = {"as_of": time.strftime("%Y-%m-%d %H:%M"),
            "watch_count": len(watch), "events": events,
-           "note": f"监控 {len(watch)} 只标的(A股直持 + 场内ETF前十大成分≥3%), 未来 {_HORIZON_DAYS} 天。"
+           "note": f"监控 {len(watch)} 只标的(A股直持 + 场内ETF前十大成分≥3% + 观察池), 未来 {_HORIZON_DAYS} 天。"
                    "财报预约日期以交易所最新公告为准, 可能变更。纯客观信息, 不构成任何买卖建议。"}
     _cache["events"] = (out, time.time())
     return out

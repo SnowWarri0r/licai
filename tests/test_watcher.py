@@ -160,3 +160,71 @@ def test_watchlist_findings_are_tagged_info_and_listed_after_holdings(db, monkey
     assert out[1]["title"].startswith("观察池 虚构乙 排雷命中 3 项")
     items = asyncio.run(w.list_findings())["items"]
     assert [i["code"] for i in items] == ["300999", "688999", "688999"]  # 持仓的在前, 观察池按写入顺序
+
+
+def test_unlock_only_big_and_within_five_trading_days():
+    evs = [{"date": "2026-01-09", "type": "解禁", "pct": 8.2, "detail": "首发原股东限售股份, 占流通市值 8.2%"},
+           {"date": "2026-01-08", "type": "解禁", "pct": 1.5, "detail": "小"},
+           {"date": "2026-01-13", "type": "解禁", "pct": 20.0, "detail": "远"},
+           {"date": "2026-01-07", "type": "除权除息", "detail": "分红"}]
+    out = w.unlock_findings("300999", "虚构甲", evs, "2026-01-05")
+    assert [f["key"] for f in out] == ["unlock_soon::300999::2026-01-09"]
+    assert "8.2%" in out[0]["title"] and "还有 4 个交易日" in out[0]["body"]
+
+
+def _est(code, nd, est, act, mae=0.5, top=None):
+    return {"code": code, "nav_date": nd, "name": f"虚构{code}", "est_pct": est, "actual_pct": act, "mae": mae, "top10_pct": top}
+
+
+def test_est_miss_threshold_and_grouping():
+    rows = [_est("000991", "2026-01-05", 9.3, 5.6, top=10.8), _est("000992", "2026-01-05", 2.0, 0.0),
+            _est("000993", "2026-01-05", 0.6, 0.2, mae=0.14),          # 0.4 < 3×0.14 → 不算
+            _est("000994", "2026-01-06", 0.3, -0.05, mae=0.01)]        # 0.35 ≥ 下限 0.3
+    out = w.est_miss_findings(rows)
+    assert [f["key"] for f in out] == ["fund_est_miss::2026-01-05::000991,000992", "fund_est_miss::2026-01-06::000994"]
+    assert "差 -3.70%" in out[0]["body"] and "前十大加权 +10.80%" in out[0]["body"] and out[0]["title"].endswith("2 只")
+
+
+def test_drop_hits_uses_own_history():
+    import numpy as np
+    rng = np.random.default_rng(0)
+    days = [f"2024-{m:02d}-{d:02d}" for m in range(1, 13) for d in range(1, 29)][:400]
+    base = {d: float(x) for d, x in zip(days, rng.normal(0, 1, len(days)))}
+    assert w.drop_hits(base) is None or w.drop_hits(base)["date"] == days[-1]
+    calm = {**base, days[-1]: -0.5}
+    assert w.drop_hits(calm) is None or "day" not in w.drop_hits(calm)
+    h = w.drop_hits({**base, days[-1]: -4.0})
+    assert h["date"] == days[-1] and h["day"]["pct"] == -4.0 and h["day"]["line"] < 0
+    assert w.drop_hits(dict(list(base.items())[:100])) is None             # 历史不够
+    f = w.drop_findings([("000991", "虚构甲", h)])[0]
+    assert f["key"] == f"fund_drop::{days[-1]}::000991" and "当日 -4.00%" in f["body"]
+
+
+def test_fund_estimates_logged_until_published_then_frozen(db):
+    def fund(est, nav_date="2026-01-02", chg=0.1, through="2026-01-05", days=1):
+        return [{"code": "000991", "name": "虚构甲", "quote": {"nav_date": nav_date, "change_pct": chg, "proxy_top10_pct": 1.0,
+                                                           "model_est": {"pct": est, "through": through, "days": days, "mae": 0.5}}}]
+
+    async def rows():
+        con = await database.get_db()
+        cur = await con.execute("SELECT nav_date, est_pct, actual_pct FROM fund_est_log ORDER BY nav_date")
+        out = [tuple(r) for r in await cur.fetchall()]
+        await con.close()
+        return out
+    asyncio.run(w.log_fund_estimates(fund(1.0)))
+    asyncio.run(w.log_fund_estimates(fund(2.0)))                         # 同一净值日以最后一次为准
+    asyncio.run(w.log_fund_estimates(fund(3.0, through="2026-01-06", days=2)))   # 跨两个净值日的不存
+    assert asyncio.run(rows()) == [("2026-01-05", 2.0, None)]
+    asyncio.run(w.log_fund_estimates(fund(0.4, nav_date="2026-01-05", chg=-1.5, through="2026-01-06")))
+    asyncio.run(w.log_fund_estimates(fund(9.9, nav_date="2026-01-05", chg=-1.5, through="2026-01-05")))  # 公布后不再改
+    assert asyncio.run(rows()) == [("2026-01-05", 2.0, -1.5), ("2026-01-06", 0.4, None)]
+
+
+def test_grouped_finding_superseded_when_more_funds_join(db):
+    a = w.est_miss_findings([_est("000991", "2026-01-05", 9.3, 5.6)])
+    asyncio.run(w._record_grouped(a, "fund_est_miss"))
+    b = w.est_miss_findings([_est("000991", "2026-01-05", 9.3, 5.6), _est("000992", "2026-01-05", 2.0, 0.0)])
+    asyncio.run(w._record_grouped(b, "fund_est_miss"))
+    asyncio.run(w._record_grouped(b, "fund_est_miss"))
+    items = asyncio.run(w.list_findings())["items"]
+    assert [i["key"] for i in items] == ["fund_est_miss::2026-01-05::000991,000992"]

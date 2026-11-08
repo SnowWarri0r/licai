@@ -384,7 +384,9 @@ export default function PortfolioNews() {
           stock={{ code: eventAsk.code, name: eventAsk.name }}
           initialQuestion={
             `${eventAsk.name}(${eventAsk.code}) 是做什么的?它 ${eventAsk.date} 有一个「${eventAsk.type}」事件(${eventAsk.detail}), 这类事件对它意味着什么?` +
-            (eventAsk.via === '直接持有' ? ' 我直接持有这只票。' : ` 我${eventAsk.via}间接持有它, 顺便说下它在该ETF里的权重。`)
+            (eventAsk.via === '直接持有' ? ' 我直接持有这只票。'
+              : eventAsk.via === '观察池' ? ' 这只票在我的观察池里, 还没买。'
+              : ` 我${eventAsk.via}间接持有它, 顺便说下它在该ETF里的权重。`)
           }
           onClose={() => setEventAsk(null)} />
       )}
