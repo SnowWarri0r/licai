@@ -3636,6 +3636,15 @@ _EXECUTORS = {
 }
 
 
+def _blocked_tools() -> tuple:
+    """当前上下文不许执行的工具, 与 _active_tools 的过滤同一口径。"""
+    if _agent_ctx.depth.get() > 0:
+        return _MAIN_ONLY_TOOLS
+    if _agent_ctx.run.get() is None:
+        return _TASK_TOOLS
+    return ()
+
+
 async def _run_tool(tu: dict) -> dict:
     """跑单个工具调用, 把异常/未知工具兜成 {"error":...}。供 asyncio.gather 并发执行。
 
@@ -3644,6 +3653,8 @@ async def _run_tool(tu: dict) -> dict:
     """
     name = tu.get("name")
     args = tu.get("input") or {}
+    if name in _blocked_tools():            # 工具清单里去掉了还不够: 模型照样能写出这个名字(提示注入等)
+        return {"error": f"{name} 只在与用户直接对话的主 agent 里可用"}
     try:
         fn = _EXECUTORS.get(name)
         if not fn:

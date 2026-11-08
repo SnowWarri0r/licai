@@ -260,3 +260,22 @@ def test_sub_agents_get_no_task_or_write_tools(monkeypatch):
     assert {"dispatch_tasks", "get_tasks", "remember"} <= main
     assert not ({"dispatch_tasks", "get_tasks", "remember", "save_trade_plan"} & sub) and "get_quote" in sub
     assert "dispatch_tasks" not in bare and "remember" in bare
+
+
+def test_blocked_tools_are_refused_at_execution(monkeypatch):
+    called = []
+    async def fake(a):
+        called.append(a)
+        return {"ok": True}
+    monkeypatch.setitem(sa._EXECUTORS, "remember", fake)
+
+    async def run(depth):
+        agent_ctx.depth.set(depth)
+        agent_ctx.run.set({"run_id": "r"})
+        return await sa._run_tool({"name": "remember", "input": {"text": "x"}})
+    assert "error" in asyncio.run(run(1)) and called == []
+    assert asyncio.run(run(0)) == {"ok": True} and len(called) == 1
+
+    async def bare():
+        return await sa._run_tool({"name": "dispatch_tasks", "input": {}})
+    assert "主 agent" in asyncio.run(bare())["error"]
