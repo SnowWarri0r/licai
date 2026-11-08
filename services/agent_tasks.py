@@ -98,16 +98,17 @@ def _stream(question: str):
     return ask_stock_stream(question)
 
 
-async def spawn(title: str, brief: str, background: bool) -> int:
+async def spawn(title: str, brief: str, background: bool, untrusted: bool = False) -> int:
+    """untrusted: brief 里带着第三方原文 → 子 agent 只给公开数据工具(agent_ctx.untrusted)。"""
     ctx = agent_ctx.run.get() or {}
     sid = ctx.get("session_id")
     tid = await create_agent_task(sid, ctx.get("run_id") or "", title, brief, background)
-    _launch(tid, title, brief, sid, background)
+    _launch(tid, title, brief, sid, background, untrusted=untrusted)
     return tid
 
 
-def _launch(tid: int, title: str, brief: str, session_id, background: bool, run_at: str = "") -> dict:
-    live = {"status": "queued", "steps": 0, "last": "", "done": asyncio.Event(), "run_at": run_at}
+def _launch(tid: int, title: str, brief: str, session_id, background: bool, run_at: str = "", untrusted: bool = False) -> dict:
+    live = {"status": "queued", "steps": 0, "last": "", "done": asyncio.Event(), "run_at": run_at, "untrusted": untrusted}
     _LIVE[tid] = live
     live["task"] = asyncio.create_task(_run(tid, title, brief, session_id, background, live))
     return live
@@ -119,6 +120,7 @@ async def _run(tid: int, title: str, brief: str, session_id, background: bool, l
         _sem = asyncio.Semaphore(_MAX_PARALLEL)
     agent_ctx.depth.set(1)
     agent_ctx.run.set(None)                 # 子 agent 不碰主对话的收件箱
+    agent_ctx.untrusted.set(bool(live.get("untrusted")))
     answer, used, sources, meta, status = "", [], [], {}, "failed"
     try:
         async with _sem:

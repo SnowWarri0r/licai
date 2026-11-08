@@ -3643,7 +3643,7 @@ _EXECUTORS = {
 def _blocked_tools() -> tuple:
     """当前上下文不许执行的工具, 与 _active_tools 的过滤同一口径。"""
     if _agent_ctx.depth.get() > 0:
-        return _MAIN_ONLY_TOOLS
+        return _MAIN_ONLY_TOOLS + (_UNTRUSTED_DENY if _agent_ctx.untrusted.get() else ())
     if _agent_ctx.run.get() is None:
         return _TASK_TOOLS
     return ()
@@ -3713,6 +3713,10 @@ def _result_content(out: dict):
 _ZSXQ_TOOLS = ("get_zsxq_digest", "search_zsxq", "read_zsxq_file")
 _TASK_TOOLS = ("dispatch_tasks", "get_tasks", "schedule_task", "cancel_scheduled")
 _MAIN_ONLY_TOOLS = (*_TASK_TOOLS, "remember", "save_trade_plan")
+# 任务说明里带第三方原文的子 agent(见 agent_ctx.untrusted): 去掉能往外发请求的, 和读用户自己数据的
+_UNTRUSTED_DENY = ("web_search", "read_url", "get_zsxq_digest", "search_zsxq", "read_zsxq_file",
+                   "get_holdings", "get_today_pnl", "get_trades", "get_asset_allocation", "get_exposure", "get_thesis",
+                   "get_watch_findings", "get_trade_plans", "load_guide")
 
 # 扩展数据源(provider)供数的工具 → 它依赖的那项能力。provider 没声明该能力就不挂这个工具。
 _PROVIDER_TOOLS = {
@@ -3746,7 +3750,7 @@ async def _active_tools() -> list:
     # 子 agent 只取数作答: 派子任务、写记忆、记交易计划都留给用户直接对话的主 agent;
     # 不在某一轮里跑(脚本/评测直接调)时没有会话可挂子任务, 派活的两个工具也不给
     if _agent_ctx.depth.get() > 0:
-        tools = [t for t in tools if t.get("name") not in _MAIN_ONLY_TOOLS]
+        tools = [t for t in tools if t.get("name") not in _blocked_tools()]
     elif _agent_ctx.run.get() is None:
         tools = [t for t in tools if t.get("name") not in _TASK_TOOLS]
     try:

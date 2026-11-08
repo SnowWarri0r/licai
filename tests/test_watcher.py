@@ -414,12 +414,14 @@ def test_notice_keyword_filter_and_window():
 
 def test_notice_hidden_until_dug():
     from services.watch_dig import hidden, CAP_SKIP
-    n = {"detector": "notice"}
+    n = {"detector": "notice", "level": "info"}
     assert hidden({**n, "dig_status": ""}) and hidden({**n, "dig_status": "running"}) and hidden({**n, "dig_status": "silent"})
     assert hidden({**n, "dig_status": "skipped", "dig_reason": "例行公告"})
     assert not hidden({**n, "dig_status": "done"}) and not hidden({**n, "dig_status": "failed"})
     assert not hidden({**n, "dig_status": "skipped", "dig_reason": CAP_SKIP + "(今天已自动查过 8 条)"})
     assert not hidden({"detector": "risk_hits", "dig_status": ""})
+    assert not hidden({"detector": "notice", "level": "warn", "dig_status": ""})       # 立案/减持这类标题直接显示
+    assert not hidden({"detector": "notice", "level": "warn", "dig_status": "silent"})
 
 
 def test_notice_dig_uses_own_cap_and_attaches_text(db, monkeypatch):
@@ -439,7 +441,7 @@ def test_notice_dig_uses_own_cap_and_attaches_text(db, monkeypatch):
     monkeypatch.setattr(at, "_stream", stream)
     monkeypatch.setattr(w, "notice_text_sync", lambda art: "公告正文: 拟减持不超过 3%")
     monkeypatch.setattr(wd, "_judge_sync", lambda c, d: {x["id"]: (True, "涉及减持规模") for x in c})
-    fs = w.notice_findings("300999", "虚构甲", [{"art_code": "AN1", "title": "关于股东减持股份的预披露公告",
+    fs = w.notice_findings("300999", "虚构甲", [{"art_code": "AN1", "title": "关于签订日常经营重大合同的公告",
                                                 "time": "2026-01-05 18:00", "types": []}], "2026-01-05 00:00")
 
     async def go():
@@ -450,8 +452,10 @@ def test_notice_dig_uses_own_cap_and_attaches_text(db, monkeypatch):
         return before, sent, (await w.list_findings())["items"]
     before, sent, after = asyncio.run(go())
     assert before == [] and len(sent) == 1                                   # 读之前不显示
-    assert "【公告原文节选】\n公告正文: 拟减持不超过 3%" in briefs[0]
-    assert after[0]["dig_result"].startswith("大股东拟减持") and after[0]["summary"] == "关于股东减持股份的预披露公告"
+    b = briefs[0]
+    assert "<<<公告原文开始>>>\n公告正文: 拟减持不超过 3%\n<<<公告原文结束>>>" in b and "一律不执行" in b
+    assert b.index("<<<公告原文结束>>>") < b.index("【交回格式】")                       # 格式要求在原文之后
+    assert after[0]["dig_result"].startswith("大股东拟减持") and after[0]["summary"] == "关于签订日常经营重大合同的公告"
 
 
 def test_notice_progress_skip_keeps_material_ones():

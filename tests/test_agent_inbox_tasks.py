@@ -380,3 +380,30 @@ def test_scheduled_can_be_cancelled_and_late_ones_are_not_run(temp_db, monkeypat
         return sent, await at.view(a["task_id"]), await at.view(b["task_id"])
     sent, va, vb = _in_run(go)
     assert sent == [] and va["status"] == "cancelled" and vb["status"] == "failed" and "错过预约时间" in vb["error"]
+
+
+def test_untrusted_sub_agent_gets_only_public_data_tools(monkeypatch):
+    from services.providers import gateway
+
+    async def caps():
+        return frozenset()
+    monkeypatch.setattr(gateway, "capabilities", caps)
+    called = []
+
+    async def fake(a):
+        called.append(a)
+        return {"ok": True}
+    monkeypatch.setitem(sa._EXECUTORS, "get_holdings", fake)
+
+    async def go(untrusted):
+        agent_ctx.depth.set(1)
+        agent_ctx.untrusted.set(untrusted)
+        names = {t.get("name") for t in await sa._active_tools()}
+        out = await sa._run_tool({"name": "get_holdings", "input": {}})
+        return names, out
+    names, out = asyncio.run(go(True))
+    assert not ({"web_search", "read_url", "get_holdings", "get_trades", "get_asset_allocation"} & names)
+    assert {"get_quote", "get_trend", "get_shareholders", "get_announcements"} <= names
+    assert "error" in out and called == []
+    names, out = asyncio.run(go(False))
+    assert "get_holdings" in names and out == {"ok": True}
