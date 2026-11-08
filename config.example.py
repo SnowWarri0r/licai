@@ -10,6 +10,9 @@ class Config:
     # --- 数据库 ---
     db_path: str = "portfolio.db"
 
+    # 盯盘员 books_drift: 输出券商可用金额(一个数)的本机命令; 空 = 不核对。会被执行, 只在这里配置
+    watch_cash_cmd: str = ""
+
     # --- 行情刷新 ---
     quote_cache_ttl: int = 5         # 实时报价缓存秒数
     history_cache_ttl: int = 300     # K 线缓存秒数

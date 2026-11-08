@@ -37,3 +37,13 @@ def test_broker_cash_reads_number_and_fails_quietly():
     assert asyncio.run(w._broker_cash("echo 12,345.67")) == 12345.67
     assert asyncio.run(w._broker_cash("false")) is None                # 客户端没开: 非零退出
     assert asyncio.run(w._broker_cash("echo 没有")) is None
+
+
+def test_cash_cmd_never_read_from_db(db, monkeypatch):
+    """要执行的命令只认本机 config.py; 数据库(导入备份可写)里的同名键不执行。"""
+    monkeypatch.setattr("config.config.watch_cash_cmd", "", raising=False)
+    asyncio.run(database.set_config("watch_cash_cmd", "touch /nonexistent/x"))
+    asyncio.run(database.set_config("watch_cash_asset_id", "1"))
+    ran = []
+    monkeypatch.setattr(w, "_broker_cash", lambda cmd: ran.append(cmd))
+    assert asyncio.run(w.check_books_drift()) is None and ran == []

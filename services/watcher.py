@@ -6,8 +6,9 @@ key 是去重键(检测器 + 标的 + 状态), 同一 key 只记一次; 状态�
 
 检测器:
   books_drift  券商可用金额与 licai 记的现金对不上 → 提醒有成交还没同步。
-               读券商可用金额的命令由 app_config.watch_cash_cmd 给(输出一个数), 对照的现金资产 id
-               由 app_config.watch_cash_asset_id 给; 两者缺一不跑。命令失败(客户端没开)静默跳过。
+               读券商可用金额的命令由本机 config.py 的 watch_cash_cmd 给(输出一个数); 它会被执行,
+               所以只放在本机配置文件里, 不进数据库(导入备份能写 app_config)。对照的现金资产 id 由
+               app_config.watch_cash_asset_id 给; 两者缺一不跑。命令失败(客户端没开)静默跳过。
 """
 from __future__ import annotations
 
@@ -122,8 +123,9 @@ def drift_finding(broker: float, book: float, asset_name: str, date: str) -> dic
 
 
 async def check_books_drift() -> dict | None:
+    from config import config
     from database import get_config, get_external_asset
-    cmd, aid = await get_config("watch_cash_cmd"), await get_config("watch_cash_asset_id")
+    cmd, aid = getattr(config, "watch_cash_cmd", ""), await get_config("watch_cash_asset_id")
     if not cmd or not aid:
         return None
     asset = await get_external_asset(int(aid))
