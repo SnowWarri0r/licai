@@ -136,3 +136,27 @@ def test_risk_body_notes_lagging_lhb_date():
           "flags": {"300999": ["a", "b"]}, "prev_flags": {}}
     f = w.risk_findings({"300999": "虚构甲"}, rf, "2026-01-05")[0]
     assert f["body"].endswith("数据截至 01-05 收盘(龙虎榜截至 01-02)")
+
+
+def test_watchlist_findings_are_tagged_info_and_listed_after_holdings(db, monkeypatch):
+    import services.analyzers as az
+
+    async def held():
+        return {"300999": "虚构甲"}
+
+    async def wl():
+        return [{"code": "300999", "name": "虚构甲"}, {"code": "688999", "name": "虚构乙"}, {"code": "hk00999", "name": "虚构港"}]
+    monkeypatch.setattr(w, "_held_a_shares", held)
+    monkeypatch.setattr(database, "list_watchlist", wl)
+    rf = {"date": w.today(), "catalog": CAT, "flags": {"300999": ["a", "b"], "688999": ["a", "b", "c"]}, "prev_flags": {}}
+    asked = []
+    monkeypatch.setattr(az, "risk_flags_all", lambda codes: asked.append(codes) or rf)
+    asyncio.run(w.record(as_wl := w.as_watchlist([{"key": "x::688999", "detector": "tail_pull", "code": "688999",
+                                                      "level": "warn", "title": "虚构乙 尾盘", "evidence": {}}])))
+    assert as_wl[0]["title"] == "观察池 虚构乙 尾盘" and as_wl[0]["level"] == "info"
+    out = asyncio.run(w.check_risk_hits())
+    assert asked == [["300999", "688999"]]                               # 已持有的不重复, 港股不进
+    assert [(f["code"], f["level"]) for f in out] == [("300999", "warn"), ("688999", "info")]
+    assert out[1]["title"].startswith("观察池 虚构乙 排雷命中 3 项")
+    items = asyncio.run(w.list_findings())["items"]
+    assert [i["code"] for i in items] == ["300999", "688999", "688999"]  # 持仓的在前, 观察池按写入顺序

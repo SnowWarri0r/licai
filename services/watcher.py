@@ -9,12 +9,13 @@ key 是去重键(检测器 + 标的 + 状态), 同一 key 只记一次; 状态�
                读券商可用金额的命令由本机 config.py 的 watch_cash_cmd 给(输出一个数); 它会被执行,
                所以只放在本机配置文件里, 不进数据库(导入备份能写 app_config)。对照的现金资产 id 由
                app_config.watch_cash_asset_id 给; 两者缺一不跑。命令失败(客户端没开)静默跳过。
-  risk_hits    A 股持仓的排雷命中数 ≥ 2 且比上一交易日多(插件 risk_flags, 收盘后的当日文件出来才跑)。
+  risk_hits    A 股持仓与观察池的排雷命中数 ≥ 2 且比上一交易日多(插件 risk_flags, 收盘后的当日文件出来才跑)。
   fresh_buy    成交流水里新出现的 A 股买入 → 你历史上同类买入之后的结果(entry_review.mirror) + 排雷命中。
                水位记在 app_config.watch_last_action_id; 第一次运行只记水位不产出, 免得把旧流水全报一遍。
-  tail_pull    A 股持仓尾盘 30 分钟(14:30 → 收盘)涨幅 ≥ 阈值且收盘未涨停/跌停。
-  sealed_close A 股持仓收盘封住涨停(区分一字板)。这两个收盘后跑, 分时走 TDX(没启用就跳过),
+  tail_pull    A 股持仓与观察池尾盘 30 分钟(14:30 → 收盘)涨幅 ≥ 阈值且收盘未涨停/跌停。
+  sealed_close A 股持仓与观察池收盘封住涨停(区分一字板)。这两个收盘后跑, 分时走 TDX(没启用就跳过),
                阈值与历史同类文案由插件 watch_events 给; 没装插件只给事实不给历史。
+观察池里的票(已持有的算持仓)标题前加「观察池」, 级别统一 info, 页面上排在持仓之后。
 """
 from __future__ import annotations
 
@@ -31,8 +32,8 @@ CASH_TOL = 1.0          # 元; 券商与账本的现金差在这以内算对上
 
 TOOL_GET = {
     "name": "get_watch_findings",
-    "description": "取盯盘员记下的发现: 持仓风险、账本与券商对不上等, 每条带事实、历史同类统计与数据截至日。"
-                   "用户问'我持仓有什么要注意的/盯盘员说了什么/账对上了吗'时用。date 留空=今天。",
+    "description": "取盯盘员记下的发现: 持仓与观察池的风险和收盘事件、账本与券商对不上等, 每条带事实、历史同类统计与数据截至日; "
+                   "观察池的发现标题以「观察池」开头。用户问'我持仓/自选有什么要注意的/盯盘员说了什么/账对上了吗'时用。date 留空=今天。",
     "input_schema": {"type": "object", "properties": {"date": {"type": "string", "description": "YYYY-MM-DD"}}},
 }
 
@@ -100,6 +101,7 @@ async def list_findings(date: str | None = None, include_dismissed: bool = False
     for r in rows:
         r["evidence"] = json.loads(r.get("evidence") or "{}")
         r["dismissed"] = bool(r.get("dismissed"))
+    rows.sort(key=lambda r: r["evidence"].get("scope") == "watchlist")      # 持仓的在前, 各自按写入顺序
     return {"date": date, "items": rows}
 
 
@@ -190,13 +192,29 @@ async def _held_a_shares() -> dict:
             if h.shares and split_stock_code(h.stock_code)[0] == "A"}
 
 
+async def _watched_a_shares(held: dict) -> dict:
+    """观察池里的 A 股, 去掉已持有的: {6位代码: 名称}。"""
+    from database import list_watchlist
+    from services.market_data import split_stock_code
+    return {w["code"]: w.get("name") or w["code"] for w in await list_watchlist()
+            if w["code"] not in held and split_stock_code(w["code"])[0] == "A"}
+
+
+def as_watchlist(findings: list[dict]) -> list[dict]:
+    """观察池的发现: 标题前加「观察池」, 级别降为 info(不是自己的仓位)。"""
+    return [{**f, "title": f"观察池 {f['title']}", "level": "info",
+             "evidence": {**(f.get("evidence") or {}), "scope": "watchlist"}} for f in findings]
+
+
 async def check_risk_hits() -> list[dict]:
     from services import analyzers
     held = await _held_a_shares()
-    if not held:
+    watched = await _watched_a_shares(held)
+    if not held and not watched:
         return []
     date = today()
-    return await record(risk_findings(held, analyzers.risk_flags_all(list(held)), date), date)
+    rf = analyzers.risk_flags_all(list(held) + list(watched))
+    return await record(risk_findings(held, rf, date) + as_watchlist(risk_findings(watched, rf, date)), date)
 
 
 # ---------------- 新买入对照 ----------------
@@ -309,17 +327,19 @@ async def check_close_events() -> list[dict]:
     if not tdx.is_enabled():
         return []
     held = await _held_a_shares()
-    if not held:
+    watched = await _watched_a_shares(held)
+    if not held and not watched:
         return []
     date = today()
-    quotes = await get_realtime_quotes(list(held))
+    quotes = await get_realtime_quotes(list(held) + list(watched))
     ev = analyzers.watch_events_all()
     out = []
-    for code, name in held.items():
-        m = await tdx.minute(code)
-        if not m or str(m.get("date") or "").replace("-", "") != date.replace("-", ""):
-            continue
-        out += close_findings(code, name, m.get("points") or [], quotes.get(code) or {}, _limit_pct(code, name), ev, date)
+    for group, wrap in ((held, list), (watched, as_watchlist)):
+        for code, name in group.items():
+            m = await tdx.minute(code)
+            if not m or str(m.get("date") or "").replace("-", "") != date.replace("-", ""):
+                continue
+            out += wrap(close_findings(code, name, m.get("points") or [], quotes.get(code) or {}, _limit_pct(code, name), ev, date))
     return await record(out, date) if out else []
 
 
@@ -350,8 +370,8 @@ def _days_ago(n: int) -> str:
 
 
 async def watcher_loop():
-    """交易日每 10 分钟: 9:00~20:00 看新买入; 15:05~20:00 看尾盘拉升/收盘封板; 15:20~20:00 核现金;
-    16:45~20:00 看排雷命中(私仓收盘任务写完当日标记后)。"""
+    """交易日每 10 分钟: 9:00~20:00 看新买入; 15:05~20:00 看持仓与观察池的尾盘拉升/收盘封板; 15:20~20:00 核现金;
+    16:45~20:00 看持仓与观察池的排雷命中(私仓收盘任务写完当日标记后)。"""
     from services.market_data import _is_a_share_trading_day
     while True:
         try:
