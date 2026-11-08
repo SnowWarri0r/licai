@@ -12,6 +12,9 @@ key 是去重键(检测器 + 标的 + 状态), 同一 key 只记一次; 状态�
   risk_hits    A 股持仓的排雷命中数 ≥ 2 且比上一交易日多(插件 risk_flags, 收盘后的当日文件出来才跑)。
   fresh_buy    成交流水里新出现的 A 股买入 → 你历史上同类买入之后的结果(entry_review.mirror) + 排雷命中。
                水位记在 app_config.watch_last_action_id; 第一次运行只记水位不产出, 免得把旧流水全报一遍。
+  tail_pull    A 股持仓尾盘 30 分钟(14:30 → 收盘)涨幅 ≥ 阈值且收盘未涨停/跌停。
+  sealed_close A 股持仓收盘封住涨停(区分一字板)。这两个收盘后跑, 分时走 TDX(没启用就跳过),
+               阈值与历史同类文案由插件 watch_events 给; 没装插件只给事实不给历史。
 """
 from __future__ import annotations
 
@@ -253,20 +256,75 @@ async def check_fresh_buys() -> list[dict]:
     return fresh
 
 
+# ---------------- 收盘事件: 尾盘拉升 / 收盘封板 ----------------
+def close_findings(code: str, name: str, pts: list[dict], q: dict, lim_pct: float, ev: dict, date: str) -> list[dict]:
+    """pts: 当日分时 [{time: "HH:MM", price}]; q: 实时行情(收盘后 = 收盘价) {price, prev_close, open, low}。"""
+    pc, close = q.get("prev_close"), q.get("price")
+    if not pc or not close:
+        return []
+    up = round(pc * (1 + lim_pct / 100) + 1e-9, 2)
+    dn = round(pc * (1 - lim_pct / 100) + 1e-9, 2)
+    sealed, floored = close >= up - 0.005, close <= dn + 0.005
+    out = []
+    if sealed:
+        yizi = (q.get("open") or 0) >= up - 0.005 and (q.get("low") or 0) >= up - 0.005
+        lines = ((ev.get("sealed_close") or {}).get("yizi" if yizi else "normal")) or []
+        out.append({"key": f"sealed_close::{code}::{date}", "detector": "sealed_close", "code": code, "name": name,
+                    "level": "info", "title": f"{name} 收盘封住涨停" + ("(一字板)" if yizi else ""),
+                    "body": "\n".join([f"收盘 {close:g}, 涨停价 {up:g}"] + lines),
+                    "evidence": {"close": close, "limit": up, "yizi": yizi}})
+        return out
+    before = [p for p in pts if p.get("price") and p.get("time", "") <= "14:30"]
+    if floored or not before:
+        return out
+    p1430 = before[-1]["price"]
+    tail = close / p1430 - 1
+    thr = (ev.get("tail_pull") or {}).get("min_tail30", 0.02)
+    if tail >= thr:
+        out.append({"key": f"tail_pull::{code}::{date}", "detector": "tail_pull", "code": code, "name": name,
+                    "level": "warn", "title": f"{name} 尾盘 30 分钟 {tail * 100:+.1f}%",
+                    "body": "\n".join([f"14:30 {p1430:g} → 收盘 {close:g}"] + ((ev.get("tail_pull") or {}).get("lines") or [])),
+                    "evidence": {"p1430": p1430, "close": close, "tail30": round(tail, 4)}})
+    return out
+
+
+async def check_close_events() -> list[dict]:
+    import services.tdx_client as tdx
+    from services import analyzers
+    from services.market_data import get_realtime_quotes
+    from services.market_review import _limit_pct
+    if not tdx.is_enabled():
+        return []
+    held = await _held_a_shares()
+    if not held:
+        return []
+    date = today()
+    quotes = await get_realtime_quotes(list(held))
+    ev = analyzers.watch_events_all()
+    out = []
+    for code, name in held.items():
+        m = await tdx.minute(code)
+        if not m or str(m.get("date") or "").replace("-", "") != date.replace("-", ""):
+            continue
+        out += close_findings(code, name, m.get("points") or [], quotes.get(code) or {}, _limit_pct(code, name), ev, date)
+    return await record(out, date) if out else []
+
+
 def _days_ago(n: int) -> str:
     from datetime import timedelta
     return (now_cst() - timedelta(days=n)).strftime("%Y-%m-%d")
 
 
 async def watcher_loop():
-    """交易日每 10 分钟: 9:00~20:00 看新买入; 15:20~20:00 核现金; 16:45~20:00 看排雷命中(私仓收盘任务写完当日标记后)。"""
+    """交易日每 10 分钟: 9:00~20:00 看新买入; 15:05~20:00 看尾盘拉升/收盘封板; 15:20~20:00 核现金;
+    16:45~20:00 看排雷命中(私仓收盘任务写完当日标记后)。"""
     from services.market_data import _is_a_share_trading_day
     while True:
         try:
             n = now_cst()
             t = n.hour * 60 + n.minute
             if _is_a_share_trading_day(n.date()):
-                for lo, fn in ((540, check_fresh_buys), (920, check_books_drift), (1005, check_risk_hits)):
+                for lo, fn in ((540, check_fresh_buys), (905, check_close_events), (920, check_books_drift), (1005, check_risk_hits)):
                     if lo <= t <= 1200:
                         try:
                             await fn()

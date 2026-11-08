@@ -173,3 +173,17 @@ def risk_flags_all(codes: list[str]) -> dict:
             log.warning("analyzer %s risk_flags 出错: %s", name, e)
     return {"stale": True}
 
+
+def watch_events_all() -> dict:
+    """第一个实现了 watch_events 的插件给出的收盘事件阈值与历史文案(盯盘员用); 没有返回 {}。
+    约定: {tail_pull: {min_tail30, lines: [str]}, sealed_close: {normal: [str], yizi: [str]}}。"""
+    for name, a in get_analyzers().items():
+        fn = getattr(a, "watch_events", None)
+        if not fn:
+            continue
+        try:
+            return fn() or {}
+        except Exception as e:  # noqa: BLE001
+            log.warning("analyzer %s watch_events 出错: %s", name, e)
+    return {}
+

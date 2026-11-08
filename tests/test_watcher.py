@@ -102,3 +102,24 @@ def test_fresh_buys_first_run_sets_watermark_then_reports_new(db, monkeypatch):
     out = asyncio.run(w.check_fresh_buys())
     assert [f["detector"] for f in out] == ["fresh_buy"] and out[0]["title"] == "新买入 虚构甲"
     assert asyncio.run(w.check_fresh_buys()) == []                       # 水位已推进
+
+
+EV = {"tail_pull": {"min_tail30": 0.02, "lines": ["历史甲"]}, "sealed_close": {"normal": ["普通板"], "yizi": ["一字板"]}}
+PTS = [{"time": "14:29", "price": 9.9}, {"time": "14:30", "price": 10.0}, {"time": "14:31", "price": 10.1}]
+
+
+def test_tail_pull_fires_at_threshold_and_not_on_limit_close():
+    q = {"price": 10.25, "prev_close": 10.0, "open": 10.0, "low": 9.8}
+    f = w.close_findings("300999", "虚构甲", PTS, q, 20.0, EV, "2026-01-05")
+    assert [x["detector"] for x in f] == ["tail_pull"] and "+2.5%" in f[0]["title"] and "历史甲" in f[0]["body"]
+    assert w.close_findings("300999", "虚构甲", PTS, {**q, "price": 10.15}, 20.0, EV, "2026-01-05") == []
+    # 收盘跌停没有尾盘行为可言
+    assert w.close_findings("300999", "虚构甲", [{"time": "14:30", "price": 7.5}], {**q, "price": 8.0}, 20.0, EV, "2026-01-05") == []
+
+
+def test_sealed_close_tells_yizi_apart():
+    q = {"price": 11.0, "prev_close": 10.0, "open": 10.5, "low": 10.3}
+    f = w.close_findings("605999", "虚构乙", PTS, q, 10.0, EV, "2026-01-05")
+    assert [x["detector"] for x in f] == ["sealed_close"] and "普通板" in f[0]["body"] and "一字" not in f[0]["title"]
+    f = w.close_findings("605999", "虚构乙", PTS, {**q, "open": 11.0, "low": 11.0}, 10.0, EV, "2026-01-05")
+    assert f[0]["title"].endswith("(一字板)") and "一字板" in f[0]["body"]
