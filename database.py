@@ -2224,6 +2224,72 @@ async def set_watchlist_groups(code: str, groups: list[str]) -> list[str]:
         await db.close()
 
 
+WATCH_MAX_GROUPS_PER_STOCK = 8
+
+
+async def batch_edit_watchlist(codes: list[str], add: list[str] | None = None,
+                               remove: list[str] | None = None, drop: bool = False) -> dict:
+    """批量编辑观察池, 一个事务里做完(中途失败整批回滚, 不会改一半)。
+
+    drop=True: 这些票整个移出观察池(连同分组成员行)。
+    否则对每只票: 先退出 remove 里的组, 再加入 add 里的组(新进的组排到该组末尾, 已在的
+    组保留原位次)。「移到某组」= add=[目标] + remove=[当前组]。
+    退到一个组都不剩的票落回默认组「自选」, 与 set_watchlist_groups 同一口径。
+    每只票最多挂 WATCH_MAX_GROUPS_PER_STOCK 个组, 超出的新组不加, 计入 capped。
+    不在观察池里的代码跳过(计入 skipped), 不会被顺手加进来。
+    返回 {changed, skipped, capped}。"""
+    def _clean(gs):
+        out = []
+        for g in gs or []:
+            g = (str(g) or "").strip()[:20]
+            if g and g not in out:
+                out.append(g)
+        return out
+    add, remove = _clean(add), _clean(remove)
+    codes = list(dict.fromkeys(c for c in (codes or []) if c))
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            f"SELECT stock_code FROM watchlist WHERE stock_code IN ({','.join('?' * len(codes))})",
+            codes) if codes else None
+        present = {r[0] for r in await cur.fetchall()} if cur else set()
+        todo = [c for c in codes if c in present]
+        skipped = len(codes) - len(todo)
+        changed = capped = 0
+        if drop:
+            for c in todo:
+                await db.execute("DELETE FROM watchlist WHERE stock_code=?", (c,))
+                await db.execute("DELETE FROM watchlist_group WHERE stock_code=?", (c,))
+            await db.commit()
+            return {"changed": len(todo), "skipped": skipped, "capped": 0}
+        for c in todo:
+            cur = await db.execute("SELECT grp FROM watchlist_group WHERE stock_code=?", (c,))
+            have = [r[0] for r in await cur.fetchall()]
+            keep = [g for g in have if g not in remove]
+            new = [g for g in add if g not in keep]
+            room = max(WATCH_MAX_GROUPS_PER_STOCK - len(keep), 0)
+            if len(new) > room:
+                capped += 1
+                new = new[:room]
+            if not keep and not new:
+                new = [DEFAULT_WATCH_GROUP]
+            for g in set(have) - set(keep):
+                await db.execute("DELETE FROM watchlist_group WHERE stock_code=? AND grp=?", (c, g))
+            for g in new:
+                cur = await db.execute(
+                    "SELECT COALESCE(MAX(group_order),0)+1 FROM watchlist_group WHERE grp=?", (g,))
+                nxt = (await cur.fetchone())[0] or 0
+                await db.execute(
+                    "INSERT OR IGNORE INTO watchlist_group (stock_code, grp, group_order) "
+                    "VALUES (?,?,?)", (c, g, nxt))
+            if set(keep + new) != set(have):
+                changed += 1
+        await db.commit()
+        return {"changed": changed, "skipped": skipped, "capped": capped}
+    finally:
+        await db.close()
+
+
 async def reorder_watchlist(codes: list[str], scope: str = "global", group: str | None = None) -> None:
     """按给定顺序覆盖写位次。
 

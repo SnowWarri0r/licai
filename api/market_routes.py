@@ -696,6 +696,49 @@ async def watchlist_set_groups(stock_code: str, body: WatchGroupsReq):
     return {"ok": True, "groups": saved}
 
 
+class WatchBatchReq(BaseModel):
+    codes: list[str] = []
+    op: str = ""                 # add_groups | remove_groups | move | remove
+    groups: list[str] = []       # add_groups/remove_groups 的组; move 的目标组(取第一个)
+    from_group: str = ""         # move: 从哪个组移出(当前视图的组)
+
+
+_BATCH_MAX = 500
+
+
+@router.post("/watchlist-batch")
+async def watchlist_batch(body: WatchBatchReq):
+    """批量编辑观察池, 一个事务做完。
+
+    op=add_groups   这些票都加入 groups(原有分组保留)
+    op=remove_groups 这些票都退出 groups(退空的落回默认组「自选」)
+    op=move          从 from_group 移到 groups[0]
+    op=remove        这些票整个移出观察池
+    不在观察池里的代码跳过, 不会被加进来。返回 {ok, changed, skipped, capped}。
+    """
+    from fastapi import HTTPException
+    from database import batch_edit_watchlist
+    codes = [_wl_code(str(c)) for c in (body.codes or [])][:_BATCH_MAX]
+    if not codes:
+        raise HTTPException(400, "codes 为空")
+    groups = [str(g).strip()[:20] for g in (body.groups or []) if str(g).strip()]
+    op = body.op
+    if op == "remove":
+        res = await batch_edit_watchlist(codes, drop=True)
+    elif op == "add_groups" and groups:
+        res = await batch_edit_watchlist(codes, add=groups)
+    elif op == "remove_groups" and groups:
+        res = await batch_edit_watchlist(codes, remove=groups)
+    elif op == "move" and groups and body.from_group.strip():
+        src = body.from_group.strip()[:20]
+        if src == groups[0]:
+            raise HTTPException(400, "目标组与当前组相同")
+        res = await batch_edit_watchlist(codes, add=groups[:1], remove=[src])
+    else:
+        raise HTTPException(400, "op 或 groups 不合法")
+    return {"ok": True, **res}
+
+
 @router.put("/watchlist-order")
 async def watchlist_reorder(body: WatchReorderReq):
     """覆盖写位次: 前端把拖动后的完整代码顺序发过来。

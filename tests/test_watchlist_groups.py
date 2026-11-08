@@ -17,6 +17,9 @@ import sqlite3
 import tempfile
 
 import pytest
+from fastapi.testclient import TestClient
+
+from run import app
 
 
 @pytest.fixture
@@ -264,3 +267,97 @@ def test_migration_is_idempotent_on_a_new_db(temp_db):
     _set("600519", ["金矿", "博弈"])
     _init(temp_db)
     assert _rows()["600519"]["groups"] == ["博弈", "金矿"]
+
+
+# ── 批量编辑 ────────────────────────────────────────────
+
+def _batch(codes, **kw):
+    from database import batch_edit_watchlist
+    return asyncio.run(batch_edit_watchlist(codes, **kw))
+
+
+def test_batch_add_groups_keeps_existing(temp_db):
+    _init(temp_db)
+    _add("300999"); _add("605999")
+    _set("605999", ["博弈"])
+    r = _batch(["300999", "605999"], add=["金矿"])
+    rows = _rows()
+    assert rows["300999"]["groups"] == ["自选", "金矿"]
+    assert rows["605999"]["groups"] == ["博弈", "金矿"]
+    assert r == {"changed": 2, "skipped": 0, "capped": 0}
+
+
+def test_batch_new_members_go_to_end_in_given_order(temp_db):
+    _init(temp_db)
+    _add("000991"); _add("300999"); _add("605999")
+    _set("000991", ["金矿"])
+    _batch(["605999", "300999"], add=["金矿"])
+    o = {c: r["group_orders"]["金矿"] for c, r in _rows().items()}
+    assert o["000991"] < o["605999"] < o["300999"]
+
+
+def test_batch_remove_group_falls_back_to_default(temp_db):
+    _init(temp_db)
+    _add("300999"); _add("605999")
+    _set("300999", ["金矿"])
+    _set("605999", ["金矿", "博弈"])
+    _batch(["300999", "605999"], remove=["金矿"])
+    rows = _rows()
+    assert rows["300999"]["groups"] == ["自选"]
+    assert rows["605999"]["groups"] == ["博弈"]
+
+
+def test_batch_move_between_groups(temp_db):
+    _init(temp_db)
+    _add("300999")
+    _set("300999", ["自选", "博弈"])
+    _batch(["300999"], add=["金矿"], remove=["自选"])
+    assert _rows()["300999"]["groups"] == ["博弈", "金矿"]
+
+
+def test_batch_drop_removes_rows_and_groups(temp_db):
+    _init(temp_db)
+    _add("300999"); _add("605999")
+    _set("300999", ["金矿"])
+    r = _batch(["300999"], drop=True)
+    assert set(_rows()) == {"605999"}
+    con = sqlite3.connect(temp_db)
+    try:
+        assert con.execute("SELECT COUNT(*) FROM watchlist_group WHERE stock_code='300999'").fetchone()[0] == 0
+    finally:
+        con.close()
+    assert r["changed"] == 1
+
+
+def test_batch_skips_codes_not_in_pool(temp_db):
+    _init(temp_db)
+    _add("300999")
+    r = _batch(["300999", "000991"], add=["金矿"])
+    assert set(_rows()) == {"300999"}
+    assert r["skipped"] == 1 and r["changed"] == 1
+
+
+def test_batch_respects_group_cap(temp_db):
+    from database import WATCH_MAX_GROUPS_PER_STOCK as N
+    _init(temp_db)
+    _add("300999")
+    _set("300999", [f"g{i}" for i in range(N - 1)])
+    r = _batch(["300999"], add=["甲", "乙"])
+    assert len(_rows()["300999"]["groups"]) == N
+    assert r["capped"] == 1
+
+
+def test_batch_route_validates_and_dispatches(temp_db, monkeypatch):
+    _init(temp_db)
+    _add("300999"); _add("605999")
+    c = TestClient(app)
+    assert c.post("/api/market/watchlist-batch", json={"codes": [], "op": "remove"}).status_code == 400
+    assert c.post("/api/market/watchlist-batch", json={"codes": ["300999"], "op": "add_groups"}).status_code == 400
+    assert c.post("/api/market/watchlist-batch",
+                  json={"codes": ["300999"], "op": "move", "groups": ["自选"], "from_group": "自选"}).status_code == 400
+    r = c.post("/api/market/watchlist-batch",
+               json={"codes": ["300999", "605999"], "op": "move", "groups": ["金矿"], "from_group": "自选"})
+    assert r.status_code == 200 and r.json()["changed"] == 2
+    assert {k: v["groups"] for k, v in _rows().items()} == {"300999": ["金矿"], "605999": ["金矿"]}
+    r = c.post("/api/market/watchlist-batch", json={"codes": ["300999"], "op": "remove"})
+    assert r.json()["changed"] == 1 and set(_rows()) == {"605999"}

@@ -3,6 +3,7 @@ import { fetchJSON, prefetchJSON } from '../hooks/useApi'
 import RotationBoard from './RotationBoard'
 import GroupPicker from './rankings/GroupPicker'
 import StockPanel from './rankings/StockPanel'
+import WatchBatchBar from './rankings/WatchBatchBar'
 import { pctColor, boardOf, WL_ALL, WL_HELD, WL_DEFAULT, WL_LAST_KEY } from './rankings/shared'
 
 const TABS = [
@@ -68,6 +69,12 @@ export default function Rankings() {
   })
   const [dragCode, setDragCode] = useState('')            // 正在拖动的自选代码
   const [grpMenu, setGrpMenu] = useState('')              // 展开「移到分组」菜单的代码
+  // 批量编辑: 开着时点行=勾选(不开 K 线), Shift 点=连选; 只作用于手动自选行, 持仓行不参与
+  const [batch, setBatch] = useState(false)
+  const [picked, setPicked] = useState(() => new Set())
+  const [batchBusy, setBatchBusy] = useState(false)
+  const [batchMsg, setBatchMsg] = useState('')
+  const lastPickRef = useRef('')
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState(false)
   const [selected, setSelected] = useState(null)
@@ -182,6 +189,73 @@ export default function Rankings() {
   const wlVisibleCodes = () => {
     const rs = ((watch?.rows) || []).filter(r => r.source !== '持仓' && wlInView(r))
     return [...rs].sort((a, b) => wlPosOf(a) - wlPosOf(b)).map(r => r.code)
+  }
+
+  // 换组/换页签就清空勾选: 勾着看不见的票再去批量操作, 结果会出乎意料
+  // 结果提示不随换组清掉: 把一个组移空后会自动跳回「全部」, 那条提示正是要给人看的
+  useEffect(() => { setPicked(new Set()); lastPickRef.current = '' }, [wlGroup, tab])
+  useEffect(() => { if (tab !== 'watch') setBatch(false) }, [tab])
+
+  const togglePick = (code, shift) => {
+    const vis = wlVisibleCodes()
+    // 锚点先取出来: 更新函数是 React 渲染时才跑的, 那时 lastPickRef 已经被下面改成本次的代码
+    const anchor = lastPickRef.current
+    setPicked(prev => {
+      const next = new Set(prev)
+      const a = vis.indexOf(anchor), b = vis.indexOf(code)
+      if (shift && a >= 0 && b >= 0 && a !== b) {
+        // 连选: 两端之间全部设成与锚点相同的状态
+        const on = prev.has(anchor)
+        vis.slice(Math.min(a, b), Math.max(a, b) + 1).forEach(c => (on ? next.add(c) : next.delete(c)))
+      } else if (next.has(code)) next.delete(code)
+      else next.add(code)
+      return next
+    })
+    lastPickRef.current = code
+  }
+
+  // 批量动作。成功后就地改 watch.rows(不重拉全量视图, 冷启要十几秒), 分组表走轻端点对齐。
+  const applyBatch = async (op, groups) => {
+    const codes = wlVisibleCodes().filter(c => picked.has(c))
+    if (!codes.length) return
+    const from = wlScopeGroup()
+    setBatchBusy(true); setBatchMsg('')
+    let res
+    try {
+      res = await fetchJSON('/api/market/watchlist-batch', {
+        method: 'POST', body: JSON.stringify({ codes, op, groups, from_group: from }),
+      })
+    } catch (e) {
+      setBatchBusy(false); setBatchMsg(`没改成: ${e?.message || '请求失败'}`); return
+    }
+    const sel = new Set(codes)
+    const add = op === 'add_groups' || op === 'move' ? groups : []
+    const drop = op === 'remove_groups' ? groups : op === 'move' ? [from] : []
+    setWatch(w => {
+      if (!w || !Array.isArray(w.rows)) return w
+      if (op === 'remove') return { ...w, rows: w.rows.filter(r => r.source === '持仓' || !sel.has(r.code)) }
+      const tail = {}
+      w.rows.forEach(r => Object.entries(r.group_orders || {}).forEach(([g, v]) => { tail[g] = Math.max(tail[g] ?? -1, v) }))
+      return { ...w, rows: w.rows.map(r => {
+        if (r.source === '持仓' || !sel.has(r.code)) return r
+        const have = r['分组'] || []
+        const keep = have.filter(g => !drop.includes(g))
+        let next = [...keep, ...add.filter(g => !keep.includes(g))].slice(0, Math.max(8, keep.length))
+        if (!next.length) next = [WL_DEFAULT]
+        const orders = { ...(r.group_orders || {}) }
+        Object.keys(orders).forEach(g => { if (!next.includes(g)) delete orders[g] })
+        next.filter(g => !(g in orders)).forEach(g => { tail[g] = (tail[g] ?? -1) + 1; orders[g] = tail[g] })
+        return { ...r, '分组': next, group_orders: orders }
+      }) }
+    })
+    if (op === 'remove') setWatchSet(prev => { const s = new Set(prev); codes.forEach(c => s.delete(c)); return s })
+    setPicked(new Set())
+    const verb = { add_groups: `已加入「${groups[0]}」`, move: `已移到「${groups[0]}」`,
+      remove_groups: `已移出「${groups[0]}」`, remove: '已移出观察池' }[op]
+    setBatchMsg(`${verb} ${res.changed} 只` + (res.capped ? ` · ${res.capped} 只分组已满 8 个没加上` : '')
+      + (res.skipped ? ` · ${res.skipped} 只已不在池中` : ''))
+    setBatchBusy(false)
+    reloadWlMeta()
   }
 
   const commitOrder = async (codes) => {
@@ -560,7 +634,13 @@ export default function Rankings() {
                 )
               })}
               <span className="text-text-muted mx-0.5">·</span>
-              <span className="text-[10px] text-text-muted">行右侧 ⠿ 拖动排序 · ↑↓ 微调 · ⋯ 归组(可多选)</span>
+              {wlGroup !== WL_HELD && (
+                <button onClick={() => { setBatch(b => !b); setPicked(new Set()); setBatchMsg('') }}
+                  className={`text-[11px] px-2 py-0.5 rounded ${batch ? 'bg-accent/15 text-accent' : 'text-text-dim hover:text-text border border-border-subtle'}`}>
+                  {batch ? '退出批量' : '批量编辑'}
+                </button>
+              )}
+              <span className="text-[10px] text-text-muted">{batch ? '点行勾选 · Shift 点连选' : '行右侧 ⠿ 拖动排序 · ↑↓ 微调 · ⋯ 归组(可多选)'}</span>
             </>
           )}
           {tab === 'structure' && (
@@ -684,15 +764,25 @@ export default function Rankings() {
             }
             const active = selected?.code === r.code
             const wlCtl = tab === 'watch' && r.source !== '持仓'   // 手动自选才可排序/分组
+            const pickable = wlCtl && batch
+            const isPicked = pickable && picked.has(r.code)
             const mTail = metaTail(r)
             return (
               <div key={r._k || r.code} className="relative group/row"
-                draggable={wlCtl}
-                onDragStart={wlCtl ? (e) => { setDragCode(r.code); e.dataTransfer.effectAllowed = 'move' } : undefined}
-                onDragOver={wlCtl ? (e) => e.preventDefault() : undefined}
-                onDrop={wlCtl ? (e) => { e.preventDefault(); dropOn(r.code) } : undefined}>
-              <button data-row={r.code} onClick={() => setSelected(r)} title={r['AI理由'] || r['上榜原因'] || undefined}
-                className={`w-full flex items-center gap-2 px-3 py-1.5 text-left border-b border-border-subtle/60 ${active ? 'bg-accent/15' : 'hover:bg-surface-3/60'}`}>
+                draggable={wlCtl && !batch}
+                onDragStart={wlCtl && !batch ? (e) => { setDragCode(r.code); e.dataTransfer.effectAllowed = 'move' } : undefined}
+                onDragOver={wlCtl && !batch ? (e) => e.preventDefault() : undefined}
+                onDrop={wlCtl && !batch ? (e) => { e.preventDefault(); dropOn(r.code) } : undefined}>
+              <button data-row={r.code} aria-pressed={pickable ? isPicked : undefined}
+                onClick={(e) => (pickable ? togglePick(r.code, e.shiftKey) : setSelected(r))}
+                onMouseDown={pickable ? (e) => { if (e.shiftKey) e.preventDefault() } : undefined}
+                title={r['AI理由'] || r['上榜原因'] || undefined}
+                className={`w-full flex items-center gap-2 px-3 py-1.5 text-left border-b border-border-subtle/60 ${isPicked ? 'bg-accent/10' : active && !batch ? 'bg-accent/15' : 'hover:bg-surface-3/60'}`}>
+                {pickable && (
+                  <span className={`w-3.5 h-3.5 shrink-0 rounded-sm border text-[9px] leading-[12px] text-center ${isPicked ? 'bg-accent border-accent text-surface' : 'border-text-muted/60'}`}>
+                    {isPicked ? '✓' : ''}
+                  </span>
+                )}
                 <span className="text-[10px] font-mono text-text-muted w-5 shrink-0 text-right">{r._idx ?? i + 1}</span>
                 <span className="min-w-0 flex-1">
                   <span className="flex items-center gap-1.5">
@@ -784,7 +874,7 @@ export default function Rankings() {
                   </span>
                 </span>
               </button>
-              {wlCtl && (
+              {wlCtl && !batch && (
                 <span className="absolute right-1.5 top-1/2 -translate-y-1/2 z-10 hidden group-hover/row:flex items-center gap-0.5
                                  bg-surface-2/95 rounded px-1 py-0.5 border border-border-subtle">
                   <span title="按住拖动排序" className="cursor-grab text-text-muted px-0.5 select-none">⠿</span>
@@ -848,7 +938,14 @@ export default function Rankings() {
             </div>
           </div>
         )}
-        {tab === 'watch' && !loading && (watch?.rows || []).length > 0 && (
+        {tab === 'watch' && batch && !loading && (
+          <WatchBatchBar n={wlVisibleCodes().filter(c => picked.has(c)).length}
+            total={wlGroup === WL_HELD ? 0 : wlVisibleCodes().length}
+            groups={wlMeta.groups} curGroup={wlScopeGroup()} busy={batchBusy} msg={batchMsg}
+            onAll={() => setPicked(new Set(wlVisibleCodes()))} onClear={() => setPicked(new Set())}
+            onApply={applyBatch} onDone={() => { setBatch(false); setPicked(new Set()); setBatchMsg('') }} />
+        )}
+        {tab === 'watch' && !batch && !loading && (watch?.rows || []).length > 0 && (
           <div className="shrink-0 px-3 py-1.5 border-t border-border-subtle text-[9.5px] text-text-muted leading-relaxed">
             观察池=按分组管理的跟踪清单（在看但未必持有，一只票可同时属于多个组，「自选」是新加时默认落的组、与其他组平级），副行是当下K线结构形态与业绩预告 · 选中后点右上 ★ 移出 · 纯客观结构描述，非买卖建议
           </div>
