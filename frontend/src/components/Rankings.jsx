@@ -4,6 +4,7 @@ import RotationBoard from './RotationBoard'
 import GroupPicker from './rankings/GroupPicker'
 import StockPanel from './rankings/StockPanel'
 import WatchBatchBar from './rankings/WatchBatchBar'
+import WatchImportPanel from './rankings/WatchImportPanel'
 import { pctColor, boardOf, WL_ALL, WL_HELD, WL_DEFAULT, WL_LAST_KEY } from './rankings/shared'
 
 const TABS = [
@@ -75,6 +76,13 @@ export default function Rankings() {
   const [batchBusy, setBatchBusy] = useState(false)
   const [batchMsg, setBatchMsg] = useState('')
   const lastPickRef = useRef('')
+  const [importOpen, setImportOpen] = useState(false)    // 批量添加弹窗
+  const [importMsg, setImportMsg] = useState('')
+  useEffect(() => {
+    if (!importMsg) return
+    const t = setTimeout(() => setImportMsg(''), 8000)
+    return () => clearTimeout(t)
+  }, [importMsg])
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState(false)
   const [selected, setSelected] = useState(null)
@@ -633,14 +641,24 @@ export default function Rankings() {
                   </button>
                 )
               })}
-              <span className="text-text-muted mx-0.5">·</span>
+              {/* 动作与提示单占一行: 跟分组 chip、板块筛选挤在一起会被折成三四截 */}
+              <div className="basis-full flex items-center gap-1.5 py-0.5">
               {wlGroup !== WL_HELD && (
                 <button onClick={() => { setBatch(b => !b); setPicked(new Set()); setBatchMsg('') }}
                   className={`text-[11px] px-2 py-0.5 rounded ${batch ? 'bg-accent/15 text-accent' : 'text-text-dim hover:text-text border border-border-subtle'}`}>
                   {batch ? '退出批量' : '批量编辑'}
                 </button>
               )}
-              <span className="text-[10px] text-text-muted">{batch ? '点行勾选 · Shift 点连选' : '行右侧 ⠿ 拖动排序 · ↑↓ 微调 · ⋯ 归组(可多选)'}</span>
+              {!batch && (
+                <button onClick={() => setImportOpen(true)}
+                  className="text-[11px] px-2 py-0.5 rounded text-text-dim hover:text-text border border-border-subtle">
+                  批量添加
+                </button>
+              )}
+              {importMsg
+                ? <span className="text-[10px] text-accent truncate" title={importMsg}>{importMsg}</span>
+                : <span className="text-[10px] text-text-muted truncate">{batch ? '点行勾选 · Shift 点连选' : '行右侧 ⠿ 拖动排序 · ↑↓ 微调 · ⋯ 归组(可多选)'}</span>}
+              </div>
             </>
           )}
           {tab === 'structure' && (
@@ -972,6 +990,18 @@ export default function Rankings() {
         )}
       </div>
 
+      {importOpen && (
+        <WatchImportPanel groups={wlMeta.groups}
+          defaultGroup={wlIsRealGroup() ? wlGroup : WL_DEFAULT}
+          inPool={(c) => watchSet.has(c)}
+          onClose={() => setImportOpen(false)}
+          onDone={(msg, grp) => {
+            setImportOpen(false); setImportMsg(msg)
+            reloadWlMeta()
+            if (wlGroup !== WL_ALL && wlGroup !== grp) pickWlGroup(grp)
+            setWatch(null); load()      // 新加的票要取行情/结构才有完整一行, 只能重拉
+          }} />
+      )}
       <div className="flex-1 min-h-0 min-w-0">
         <StockPanel stock={selected} watched={selected ? watchSet.has(selected.code) : false}
           onToggleWatch={toggleWatch} groups={wlMeta.groups} onSetGroups={pickGroups}

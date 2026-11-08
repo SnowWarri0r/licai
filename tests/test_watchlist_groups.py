@@ -361,3 +361,96 @@ def test_batch_route_validates_and_dispatches(temp_db, monkeypatch):
     assert {k: v["groups"] for k, v in _rows().items()} == {"300999": ["金矿"], "605999": ["金矿"]}
     r = c.post("/api/market/watchlist-batch", json={"codes": ["300999"], "op": "remove"})
     assert r.json()["changed"] == 1 and set(_rows()) == {"605999"}
+
+
+# ── 批量添加 ────────────────────────────────────────────
+
+def _import(items, group=""):
+    from database import import_watchlist
+    return asyncio.run(import_watchlist(items, group))
+
+
+def test_import_new_codes_go_to_default_group(temp_db):
+    _init(temp_db)
+    r = _import([("300999", "虚构甲", 10.0), ("605999", "虚构乙", 20.0)])
+    rows = _rows()
+    assert r == {"added": 2, "existed": 0, "grouped": 0}
+    assert rows["300999"]["groups"] == ["自选"] and rows["605999"]["added_price"] == 20.0
+    o = rows["300999"]["group_orders"]["自选"], rows["605999"]["group_orders"]["自选"]
+    assert o[0] < o[1]
+
+
+def test_import_into_group_only(temp_db):
+    _init(temp_db)
+    _import([("300999", "虚构甲", 10.0)], group="金矿")
+    assert _rows()["300999"]["groups"] == ["金矿"]
+
+
+def test_import_existing_keeps_added_info_and_gains_group(temp_db):
+    _init(temp_db)
+    _add("300999", "虚构甲", 5.0)
+    con = sqlite3.connect(temp_db)
+    con.execute("UPDATE watchlist SET added_at='2026-01-02' WHERE stock_code='300999'")
+    con.commit(); con.close()
+    r = _import([("300999", "虚构甲", 99.0), ("300999", "虚构甲", 99.0)], group="金矿")
+    row = _rows()["300999"]
+    assert r == {"added": 0, "existed": 1, "grouped": 1}
+    assert row["added_price"] == 5.0 and row["added_at"] == "2026-01-02"
+    assert row["groups"] == ["自选", "金矿"]
+
+
+def test_import_existing_without_group_changes_nothing(temp_db):
+    _init(temp_db)
+    _add("300999")
+    r = _import([("300999", "X", 1.0)])
+    assert r == {"added": 0, "existed": 1, "grouped": 0}
+    assert _rows()["300999"]["groups"] == ["自选"]
+
+
+def test_parse_import_text(monkeypatch):
+    import services.stock_agent as sa
+    import services.market_data as md
+    from services.watchlist import parse_import_text
+
+    async def maps():
+        return {"虚构甲": "300999", "虚构乙": "605999"}, {"300999": "虚构甲", "605999": "虚构乙", "000991": "虚构丙"}
+
+    async def us(t):
+        return {"code": f"US.{t}", "name": t} if t == "ZZZQ" else None
+
+    async def resolve(q):
+        if q == "虚构港股":
+            return {"code": "HK.09999", "name": "虚构港股"}
+        return {"candidates": [{"code": "000991", "name": "虚构丙"}]}
+
+    async def quotes(codes):
+        return {c: {"price": 1.0, "stock_name": "港甲"} for c in codes if c == "HK.09998"}
+
+    monkeypatch.setattr(sa, "_code_name_maps", maps)
+    monkeypatch.setattr(sa, "_us_ticker_hit", us)
+    monkeypatch.setattr(sa, "_tool_resolve_stock", resolve)
+    monkeypatch.setattr(md, "get_realtime_quotes", quotes)
+    text = "300999 虚构甲 12.5 +3.2%\nsh605999、虚构乙；000991.SZ\n09998 hk9997 ZZZQ 虚构港股 虚构"
+    r = asyncio.run(parse_import_text(text))
+    got = {x["code"]: x["token"] for x in r["resolved"]}
+    assert got == {"300999": "300999", "605999": "sh605999", "000991": "000991.SZ",
+                   "HK.09998": "09998", "US.ZZZQ": "ZZZQ", "HK.09999": "虚构港股"}
+    un = {x["token"]: x["suggest"] for x in r["unresolved"]}
+    assert set(un) == {"hk9997", "虚构"}
+    assert un["虚构"] == [{"code": "000991", "name": "虚构丙"}]
+    assert r["truncated"] is False
+
+
+def test_import_route(temp_db, monkeypatch):
+    _init(temp_db)
+    import services.market_data as md
+
+    async def quotes(codes):
+        return {c: {"price": 3.0, "stock_name": "虚构甲"} for c in codes}
+
+    monkeypatch.setattr(md, "get_realtime_quotes", quotes)
+    c = TestClient(app)
+    assert c.post("/api/market/watchlist-import", json={"codes": []}).status_code == 400
+    r = c.post("/api/market/watchlist-import", json={"codes": ["300999", "300999"], "group": "博弈"})
+    assert r.json() == {"ok": True, "added": 1, "existed": 0, "grouped": 0}
+    assert _rows()["300999"]["groups"] == ["博弈"] and _rows()["300999"]["name"] == "虚构甲"

@@ -696,6 +696,44 @@ async def watchlist_set_groups(stock_code: str, body: WatchGroupsReq):
     return {"ok": True, "groups": saved}
 
 
+_BATCH_MAX = 500
+
+
+class WatchParseReq(BaseModel):
+    text: str = ""
+
+
+class WatchImportReq(BaseModel):
+    codes: list[str] = []
+    group: str = ""              # 空 = 默认组「自选」
+
+
+@router.post("/watchlist-parse")
+async def watchlist_parse(body: WatchParseReq):
+    """批量添加第一步: 粘贴的文本 → 解析出的代码(预览, 不写库)。见 parse_import_text。"""
+    from services.watchlist import parse_import_text
+    if len(body.text or "") > 20000:
+        from fastapi import HTTPException
+        raise HTTPException(400, "文本太长")
+    return await parse_import_text(body.text)
+
+
+@router.post("/watchlist-import")
+async def watchlist_import(body: WatchImportReq):
+    """批量添加第二步: 用户确认后的代码表写进观察池。取一次实时行情记加入价与名称。
+    返回 {ok, added, existed, grouped}。"""
+    from fastapi import HTTPException
+    from database import import_watchlist
+    from services.market_data import get_realtime_quotes
+    codes = list(dict.fromkeys(_wl_code(str(c)) for c in (body.codes or []) if str(c).strip()))[:_BATCH_MAX]
+    if not codes:
+        raise HTTPException(400, "codes 为空")
+    quotes = await get_realtime_quotes(codes)
+    items = [(c, (quotes.get(c) or {}).get("stock_name") or c, (quotes.get(c) or {}).get("price"))
+             for c in codes]
+    return {"ok": True, **await import_watchlist(items, (body.group or "").strip()[:20])}
+
+
 class WatchBatchReq(BaseModel):
     codes: list[str] = []
     op: str = ""                 # add_groups | remove_groups | move | remove
@@ -703,7 +741,6 @@ class WatchBatchReq(BaseModel):
     from_group: str = ""         # move: 从哪个组移出(当前视图的组)
 
 
-_BATCH_MAX = 500
 
 
 @router.post("/watchlist-batch")

@@ -122,3 +122,74 @@ async def watchlist_view() -> dict:
     groups = sorted({g for r in wl for g in (r.get("groups") or [])})
     return {"rows": out, "n_hold": len(holds), "n_watch": len(wl), "groups": groups,
             "note": "持仓组自动置顶(现取, 清仓即消失); 手动自选=在看未必持有。结构标签与业绩预告为客观描述, 不构成买卖建议。"}
+
+
+# ── 批量添加: 粘贴文本 → 解析成代码 ──────────────────────────────
+
+_SPLIT_RE = r"[\s,，、;；|/]+"
+_NOISE_RE = r"[-+]?\d+(\.\d+)?%?"          # 价格/涨跌幅/数量等纯数字(5/6 位整数代码除外)
+_MAX_TOKENS = 200
+
+
+async def parse_import_text(text: str) -> dict:
+    """把一段粘贴文本解析成观察池代码。只认确定的匹配: A 股/场内基金 6 位代码(可带
+    sh/sz/bj 前后缀)、港股 5 位或 HK 前缀、美股 US. 前缀或大写 ticker、A 股精确名称;
+    其余放进 unresolved, 附上至多 3 个候选让用户自己挑, 不按模糊匹配直接收。
+    同一只票出现多次(代码和名称都贴了)只算一次。
+    返回 {resolved:[{code,name,token}], unresolved:[{token,suggest:[{code,name}]}], truncated}"""
+    import re
+    from services.stock_agent import _code_name_maps, _tool_resolve_stock, _us_ticker_hit
+    from services.market_data import get_realtime_quotes
+    toks = []
+    for t in re.split(_SPLIT_RE, text or ""):
+        t = t.strip().strip("()（）[]【】\"'“”")
+        if not t or (re.fullmatch(_NOISE_RE, t) and not re.fullmatch(r"\d{5,6}", t)):
+            continue
+        if t not in toks:
+            toks.append(t)
+    truncated = len(toks) > _MAX_TOKENS
+    toks = toks[:_MAX_TOKENS]
+    n2c, c2n = await _code_name_maps()
+
+    resolved: dict[str, dict] = {}
+    unresolved = []
+    hk_pending: list[tuple[str, str]] = []
+    for t in toks:
+        m = re.fullmatch(r"(?i)(?:sh|sz|bj)?(\d{6})(?:\.(?:sh|sz|bj))?", t)
+        if m and m.group(1) in c2n:
+            resolved.setdefault(m.group(1), {"code": m.group(1), "name": c2n[m.group(1)], "token": t})
+            continue
+        m = re.fullmatch(r"(?i)(?:hk\.?)?(\d{1,5})", t)
+        if m and (len(t) == 5 or t[:2].lower() == "hk"):
+            hk_pending.append((t, f"HK.{int(m.group(1)):05d}"))
+            continue
+        m = re.fullmatch(r"(?i)us\.([a-z][a-z.]{0,6})", t) or re.fullmatch(r"([A-Z]{1,5})", t)
+        if m:
+            hit = await _us_ticker_hit(m.group(1).upper())
+            if hit:
+                resolved.setdefault(hit["code"], {"code": hit["code"], "name": hit["name"], "token": t})
+                continue
+        if t in n2c:
+            resolved.setdefault(n2c[t], {"code": n2c[t], "name": t, "token": t})
+            continue
+        suggest = []
+        try:
+            r = await _tool_resolve_stock(t)
+            if r.get("code") and (r.get("name") == t) and not r.get("asset_class"):
+                resolved.setdefault(r["code"], {"code": r["code"], "name": t, "token": t})
+                continue
+            cands = r.get("candidates") or ([{"code": r["code"], "name": r.get("name")}] if r.get("code") else [])
+            suggest = [{"code": str(c["code"]), "name": c.get("name") or str(c["code"])}
+                       for c in cands if not c.get("asset_class")][:3]
+        except Exception:
+            pass
+        unresolved.append({"token": t, "suggest": suggest})
+    if hk_pending:
+        quotes = await get_realtime_quotes([c for _, c in hk_pending])
+        for t, c in hk_pending:
+            q = quotes.get(c) or {}
+            if q.get("price"):
+                resolved.setdefault(c, {"code": c, "name": q.get("stock_name") or c, "token": t})
+            else:
+                unresolved.append({"token": t, "suggest": []})
+    return {"resolved": list(resolved.values()), "unresolved": unresolved, "truncated": truncated}

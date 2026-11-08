@@ -2290,6 +2290,53 @@ async def batch_edit_watchlist(codes: list[str], add: list[str] | None = None,
         await db.close()
 
 
+async def import_watchlist(items: list[tuple], group: str = "") -> dict:
+    """批量加入观察池, 一个事务。items=[(code, name, price)]。
+
+    新票: 记下加入日与当时价格, 放进 group(没给就是默认组「自选」), 排到该组末尾。
+    已在池里的票: 加入日与加入价不动(「自选以来」涨跌照旧从第一次加入算); 给了 group
+    就补进这个组, 原有分组保留, 分组已满 WATCH_MAX_GROUPS_PER_STOCK 的不加。
+    返回 {added, existed, grouped}: grouped=已在池里、这次被补进 group 的只数。"""
+    import datetime
+    grp = (group or "").strip()[:20] or DEFAULT_WATCH_GROUP
+    today = datetime.date.today().isoformat()
+    added = existed = grouped = 0
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "SELECT COALESCE(MAX(group_order),0) FROM watchlist_group WHERE grp=?", (grp,))
+        tail = (await cur.fetchone())[0] or 0
+        seen = set()
+        for code, name, price in items or []:
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            cur = await db.execute("SELECT 1 FROM watchlist WHERE stock_code=?", (code,))
+            if await cur.fetchone():
+                existed += 1
+                cur = await db.execute("SELECT grp FROM watchlist_group WHERE stock_code=?", (code,))
+                have = {r[0] for r in await cur.fetchall()}
+                if group and grp not in have and len(have) < WATCH_MAX_GROUPS_PER_STOCK:
+                    tail += 1
+                    await db.execute(
+                        "INSERT INTO watchlist_group (stock_code, grp, group_order) VALUES (?,?,?)",
+                        (code, grp, tail))
+                    grouped += 1
+                continue
+            await db.execute(
+                "INSERT INTO watchlist (stock_code, stock_name, added_at, added_price) VALUES (?,?,?,?)",
+                (code, name or code, today, price))
+            tail += 1
+            await db.execute(
+                "INSERT OR IGNORE INTO watchlist_group (stock_code, grp, group_order) VALUES (?,?,?)",
+                (code, grp, tail))
+            added += 1
+        await db.commit()
+        return {"added": added, "existed": existed, "grouped": grouped}
+    finally:
+        await db.close()
+
+
 async def reorder_watchlist(codes: list[str], scope: str = "global", group: str | None = None) -> None:
     """按给定顺序覆盖写位次。
 
