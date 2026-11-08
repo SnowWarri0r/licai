@@ -3641,9 +3641,9 @@ _EXECUTORS = {
 
 
 def _blocked_tools() -> tuple:
-    """当前上下文不许执行的工具, 与 _active_tools 的过滤同一口径。"""
+    """当前上下文不许执行的工具, 与 _active_tools 的过滤同一口径(带第三方原文的子 agent 另走白名单, 见 _untrusted_ok)。"""
     if _agent_ctx.depth.get() > 0:
-        return _MAIN_ONLY_TOOLS + (_UNTRUSTED_DENY if _agent_ctx.untrusted.get() else ())
+        return _MAIN_ONLY_TOOLS
     if _agent_ctx.run.get() is None:
         return _TASK_TOOLS
     return ()
@@ -3659,6 +3659,8 @@ async def _run_tool(tu: dict) -> dict:
     args = tu.get("input") or {}
     if name in _blocked_tools():            # 工具清单里去掉了还不够: 模型照样能写出这个名字(提示注入等)
         return {"error": f"{name} 只在与用户直接对话的主 agent 里可用"}
+    if _agent_ctx.untrusted.get() and not _untrusted_ok(name, args):
+        return {"error": f"{name} 在这项任务里不可用(只能按 A 股代码查公开数据)"}
     try:
         fn = _EXECUTORS.get(name)
         if not fn:
@@ -3713,10 +3715,21 @@ def _result_content(out: dict):
 _ZSXQ_TOOLS = ("get_zsxq_digest", "search_zsxq", "read_zsxq_file")
 _TASK_TOOLS = ("dispatch_tasks", "get_tasks", "schedule_task", "cancel_scheduled")
 _MAIN_ONLY_TOOLS = (*_TASK_TOOLS, "remember", "save_trade_plan")
-# 任务说明里带第三方原文的子 agent(见 agent_ctx.untrusted): 去掉能往外发请求的, 和读用户自己数据的
-_UNTRUSTED_DENY = ("web_search", "read_url", "get_zsxq_digest", "search_zsxq", "read_zsxq_file",
-                   "get_holdings", "get_today_pnl", "get_trades", "get_asset_allocation", "get_exposure", "get_thesis",
-                   "get_watch_findings", "get_trade_plans", "load_guide")
+# 任务说明里带第三方原文的子 agent(见 agent_ctx.untrusted)只用白名单: 按代码查公开数据、返回里不带用户持仓的工具,
+# 外加本地计算。参数只收 A 股代码 / 日期 / 数字 —— 自由文本参数会随请求发到外部数据源, 可以被拿来夹带数据。
+_UNTRUSTED_ALLOW = ("get_quote", "get_trend", "get_intraday", "get_announcements", "get_shareholders", "get_fundamentals",
+                    "get_company_profile", "get_stock_concepts", "get_fund_flow", "get_lhb", "get_peers", "get_red_flags",
+                    "get_earnings", "get_inst_flow", "calc")
+_UNTRUSTED_ARG = _re.compile(r"(?:sh|sz|bj)?\d{6}|\d{4}-\d{2}-\d{2}|\d{1,4}")
+
+
+def _untrusted_ok(name: str, args: dict) -> bool:
+    if name not in _UNTRUSTED_ALLOW:
+        return False
+    if name == "calc":                      # 本地算术, 不出网
+        return True
+    return all(isinstance(v, (int, float)) or (isinstance(v, str) and (v == "" or _UNTRUSTED_ARG.fullmatch(v.strip())))
+               for v in (args or {}).values())
 
 # 扩展数据源(provider)供数的工具 → 它依赖的那项能力。provider 没声明该能力就不挂这个工具。
 _PROVIDER_TOOLS = {
@@ -3749,7 +3762,9 @@ async def _active_tools() -> list:
              if _PROVIDER_TOOLS.get(t.get("name")) in (None, *caps)]
     # 子 agent 只取数作答: 派子任务、写记忆、记交易计划都留给用户直接对话的主 agent;
     # 不在某一轮里跑(脚本/评测直接调)时没有会话可挂子任务, 派活的两个工具也不给
-    if _agent_ctx.depth.get() > 0:
+    if _agent_ctx.untrusted.get():
+        tools = [t for t in tools if t.get("name") in _UNTRUSTED_ALLOW]
+    elif _agent_ctx.depth.get() > 0:
         tools = [t for t in tools if t.get("name") not in _blocked_tools()]
     elif _agent_ctx.run.get() is None:
         tools = [t for t in tools if t.get("name") not in _TASK_TOOLS]
@@ -3779,7 +3794,8 @@ def _system() -> str:
     # 一大段当天才是逐字节稳定的(prompt 缓存的断点就打在 system 末尾, 见 llm_client)。
     from services.rule_forge import active_rules_sync, render_rules
     learned = render_rules(active_rules_sync())
-    profile = _user_memory.render(_user_memory.active_sync())
+    # 带第三方原文的子 agent 不放用户画像: 原文里的指令即使生效, 也没有个人信息可复述
+    profile = "" if _agent_ctx.untrusted.get() else _user_memory.render(_user_memory.active_sync())
     return _SYSTEM + learned + profile + (
         f"\n【今天】{d.isoformat()} 周{wk}; 本周一={monday}, 本月1号={d.replace(day=1).isoformat()}。"
         f"用户问时间范围时据此换算 start/end。\n【交易日状态】{mkt}")

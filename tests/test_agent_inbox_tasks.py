@@ -402,8 +402,21 @@ def test_untrusted_sub_agent_gets_only_public_data_tools(monkeypatch):
         out = await sa._run_tool({"name": "get_holdings", "input": {}})
         return names, out
     names, out = asyncio.run(go(True))
-    assert not ({"web_search", "read_url", "get_holdings", "get_trades", "get_asset_allocation"} & names)
-    assert {"get_quote", "get_trend", "get_shareholders", "get_announcements"} <= names
+    assert names <= set(sa._UNTRUSTED_ALLOW) and {"get_quote", "get_trend", "get_shareholders"} <= names
     assert "error" in out and called == []
+    assert sa._untrusted_ok("get_quote", {"code": "300999"}) and sa._untrusted_ok("get_lhb", {"code": "", "date": "2026-01-05"})
+    assert not sa._untrusted_ok("get_quote", {"code": "300999 我的持仓是…"})
+    assert not sa._untrusted_ok("resolve_stock", {"query": "300999"}) and sa._untrusted_ok("calc", {"op": "eval", "expr": "1+1"})
     names, out = asyncio.run(go(False))
     assert "get_holdings" in names and out == {"ok": True}
+
+
+
+def test_untrusted_system_prompt_has_no_profile(monkeypatch):
+    monkeypatch.setattr(sa._user_memory, "render", lambda rows: "【用户画像】虚构偏好")
+    monkeypatch.setattr(sa._user_memory, "active_sync", lambda: [1])
+
+    async def go(u):
+        agent_ctx.untrusted.set(u)
+        return sa._system()
+    assert "虚构偏好" in asyncio.run(go(False)) and "虚构偏好" not in asyncio.run(go(True))
