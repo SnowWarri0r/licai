@@ -19,6 +19,8 @@ const TOOL_ICONS = {
   get_commodity: <><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z" /><path d="M12 12v9M4 7.5l8 4.5 8-4.5" /></>,
   get_peers: <><path d="M12 5v15M7 20h10M5 8l7-2 7 2" /><path d="M5 8l-2 5a3 3 0 006 0zM19 8l2 5a3 3 0 01-6 0z" /></>,
   get_shareholders: <><circle cx="9" cy="8" r="3" /><path d="M3.5 19a5.5 5 0 0111 0" /><path d="M16 6a3 3 0 010 6M20.5 19a5.5 5 0 00-4-5" /></>,
+  dispatch_tasks: <><circle cx="6" cy="12" r="2.2" /><circle cx="18" cy="6" r="2.2" /><circle cx="18" cy="18" r="2.2" /><path d="M8.2 11l7.6-4M8.2 13l7.6 4" /></>,
+  get_tasks: <><rect x="4" y="5" width="16" height="14" rx="2" /><path d="M8 10h8M8 14h5" /></>,
   get_holdings: <><rect x="4" y="8" width="16" height="11" rx="2" /><path d="M9 8V6a2 2 0 012-2h2a2 2 0 012 2v2M4 13h16" /></>,
   get_thesis: <><path d="M7 4h8l4 4v12H7zM15 4v4h4M10 13h6M10 16.5h4" /></>,
   get_asset_allocation: <><circle cx="12" cy="12" r="8" /><path d="M12 12V4M12 12l7 3.5" /></>,
@@ -411,4 +413,33 @@ export async function liveRuns(scope) {
 
 export function cancelRun(runId) {
   return fetch(`/api/ask/runs/${runId}/cancel`, { method: 'POST' }).catch(() => {})
+}
+
+// 一轮在跑时补一句: {status:'queued', id} 进了这一轮的收件箱(agent 下一步读到);
+// {status:'closed'} 这一轮已收尾, 照常开新一轮。
+export async function postInbox(runId, text) {
+  const r = await fetch(`/api/ask/runs/${runId}/inbox`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }),
+  })
+  if (!r.ok) throw new Error(`${r.status}`)
+  return r.json()
+}
+
+export async function withdrawInbox(runId, id) {
+  try {
+    const r = await fetch(`/api/ask/runs/${runId}/inbox/${id}`, { method: 'DELETE' })
+    return (await r.json()).withdrawn
+  } catch { return false }
+}
+
+// 主 agent 派出的子任务(services/agent_tasks.py)
+export async function listTasks(sessionId) {
+  try {
+    const r = await fetch(`/api/ask/tasks?session_id=${sessionId}`)
+    return (await r.json()).tasks || []
+  } catch { return null }
+}
+
+export function cancelTask(id) {
+  return fetch(`/api/ask/tasks/${id}/cancel`, { method: 'POST' }).catch(() => {})
 }

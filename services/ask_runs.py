@@ -15,6 +15,11 @@
 
 内存里只留"正在跑 + 刚跑完"的那几条(供重挂和续拉), 原文归 DB。服务重启则内存里的 run 全没,
 这时前端续拉会拿到一条明确的提示, 让人去历史里翻原文, 而不是空转。
+
+收件箱: 一轮在跑时用户照样能发消息(post_inbox), 消息先落库(meta.state=queued)再进 run.inbox。
+agent 每做完一步工具调用、或写完答案准备收尾时取走收件箱(agent_ctx.take_inbox), 把补充交给模型
+接着做, 并发 interject 事件; 落库那条改成 merged。这一轮跑完时收件箱里还剩的(答案已经出了才到的),
+合成一问自动开下一轮, 发 next_run 事件让前端接着跟看。还没被取走的可以撤回(withdraw)。
 """
 from __future__ import annotations
 import asyncio
@@ -24,7 +29,9 @@ import uuid
 from typing import Optional
 
 from database import (create_ask_session, add_ask_message, get_ask_session, save_ask_run, update_ask_run,
-                      get_ask_run, list_ask_runs, prune_ask_runs)
+                      get_ask_run, list_ask_runs, prune_ask_runs, set_ask_message_meta, delete_ask_message,
+                      list_agent_tasks)
+from services import agent_ctx
 from services.stock_agent import ask_stock_stream
 
 _KEEP_DONE_SEC = 30 * 60      # 跑完的 run 在内存留半小时: 够切回来把过程重看一遍
@@ -57,11 +64,19 @@ class Run:
         self.finished_at: Optional[float] = None
         self.task: Optional[asyncio.Task] = None
         self._flushed_at = 0.0             # 上次落盘时间(合并窗口用)
+        self.inbox: list[dict] = []        # 执行期间用户补充、还没交给 agent 的消息 [{id, text}]
+        self.closed = False                # 事件流已结束: 再来的消息开下一轮, 不进收件箱
+        self.next_run_id: Optional[str] = None
+
+    def take_inbox(self) -> list[dict]:
+        out, self.inbox = self.inbox, []
+        return out
 
     def brief(self) -> dict:
         return {"run_id": self.id, "session_id": self.session_id, "question": self.question,
                 "scope": self.scope, "done": self.done, "answered": self.answered,
-                "n_events": len(self.events), "started_at": self.started_at}
+                "n_events": len(self.events), "started_at": self.started_at,
+                "inbox": [dict(m) for m in self.inbox], "next_run_id": self.next_run_id}
 
     async def flush(self, force: bool = False) -> None:
         """把事件流写盘。进程没了内存就没了 —— 落盘的这份是重启后唯一还认得这一轮的东西。"""
@@ -100,12 +115,16 @@ async def _drive(run: Run, events) -> None:
     charts: list = []
     entities: list = []
     cancelled = False
+    agent_ctx.run.set({"run_id": run.id, "session_id": run.session_id, "take_inbox": run.take_inbox, "spawned": 0})
     try:
         async for ev in events:
             run.events.append(ev)
             await run.flush()               # 合并窗口内不重复写
             t = ev.get("type")
-            if t == "answer":
+            if t == "interject":
+                for mid in ev.get("ids") or []:
+                    await _mark_inbox(mid, run.id, "merged")
+            elif t == "answer":
                 answer = ev.get("text")
             elif t == "sources":
                 sources.extend(ev.get("sources") or [])
@@ -120,6 +139,8 @@ async def _drive(run: Run, events) -> None:
         run.events.append({"type": "error", "error": "已取消"})
     except Exception as e:
         run.events.append({"type": "error", "error": str(e)})
+    run.closed = True                       # 从这儿起 post_inbox 不再往这一轮塞(同步置位, 中间没有 await)
+    leftover = run.take_inbox()
     # 落库放在这儿而不是前端: 答出来就存, 哪怕早就没人在看了 —— 这一步就是"切走也不丢"
     if answer and not cancelled:
         meta = {"tools_used": [s for s in steps if s and s not in _NOT_TOOLS],
@@ -132,23 +153,99 @@ async def _drive(run: Run, events) -> None:
             run.answered = True
         except Exception as e:
             run.events.append({"type": "error", "error": f"答案没能落库: {e}"})
+    # 答案出来之后才到的补充: 合成一问接着跑。取消了就不续跑, 补充留在库里(queued), 历史里看得见没送达
+    if leftover and not cancelled:
+        try:
+            nxt = await _follow_up(run, leftover)
+            run.next_run_id = nxt.id
+            run.events.append({"type": "next_run", "run_id": nxt.id, "question": nxt.question,
+                               "ids": [m["id"] for m in leftover]})
+        except Exception as e:
+            run.events.append({"type": "error", "error": f"补充的消息没能接着跑: {e}"})
     run.done = True
     run.finished_at = time.time()
     run.events.append({"type": "done"})
     await run.flush(force=True)             # 收尾这次必写: 内存里的会被 GC, 盘上的留着
 
 
-def _earlier_turns(msgs: list, window: int) -> list[dict]:
-    """前端只带最近几轮原文; 更早的轮次成对取出(问, 答), 给 agent 拼一段压缩回顾。"""
-    old = msgs[:max(0, len(msgs) - window)]
+async def _mark_inbox(message_id: int, run_id: str, state: str) -> None:
+    try:
+        await set_ask_message_meta(message_id, _json.dumps({"interject": run_id, "state": state}))
+    except Exception:
+        pass
+
+
+async def _follow_up(run: Run, msgs: list[dict]) -> Run:
+    """收件箱里剩下的几条合成一问, 在同一会话里开下一轮。原来那几条落库记录删掉, 由新一问替代。"""
+    for m in msgs:
+        await delete_ask_message(m["id"])
+    question = "\n".join(m["text"] for m in msgs)
+    return await start(question, history=await _db_history(run.session_id), session_id=run.session_id,
+                       title=run.title, scope=run.scope)
+
+
+def _fold_turns(msgs: list) -> list[dict]:
+    """库里的消息 → 完整的问答轮次 [{q, a}]。执行中补充的消息并进那一问; 子任务卡片与没答完的问不算轮次。"""
     turns, q = [], None
-    for m in old:
-        if m.get("role") == "user":
+    for m in msgs:
+        role = m.get("role")
+        if role == "user":
+            meta = _meta(m)
+            if meta.get("interject"):
+                if q is not None and meta.get("state") == "merged":
+                    q += f"\n(执行中补充: {m.get('content') or ''})"
+                continue
             q = m.get("content") or ""
-        elif m.get("role") == "assistant" and q is not None:
+        elif role == "assistant" and q is not None:
             turns.append({"q": q, "a": m.get("content") or ""})
             q = None
     return turns
+
+
+def _meta(m: dict) -> dict:
+    try:
+        return _json.loads(m.get("meta") or "{}") or {}
+    except Exception:
+        return {}
+
+
+async def _db_history(session_id: int, pairs: int = 4) -> list[dict]:
+    """自动续跑的一轮没有前端带历史, 从库里取最近几轮原文(与前端带的口径一致)。"""
+    sess = await get_ask_session(session_id)
+    turns = _fold_turns((sess or {}).get("messages") or [])[-pairs:]
+    return [x for t in turns for x in ({"role": "user", "content": t["q"]}, {"role": "assistant", "content": t["a"]})]
+
+
+async def post_inbox(run_id: str, text: str) -> dict:
+    """一轮在跑时用户又发了一句。进收件箱 → {status: queued, id}; 这一轮已经收尾 → {status: closed}(前端照常开新一轮)。"""
+    run = _RUNS.get(run_id)
+    text = (text or "").strip()
+    if not run or run.closed or not text:
+        return {"status": "closed"}
+    mid = await add_ask_message(run.session_id, "user", text,
+                                _json.dumps({"interject": run.id, "state": "queued"}))
+    if run.closed:                          # 落库那一下 await 期间这一轮收尾了: 撤掉记录, 让前端开新一轮
+        await delete_ask_message(mid)
+        return {"status": "closed"}
+    run.inbox.append({"id": mid, "text": text})
+    return {"status": "queued", "id": mid}
+
+
+async def withdraw(run_id: str, message_id: int) -> bool:
+    """撤回还没交给 agent 的补充。已经交出去的撤不回(模型已经读到了)。"""
+    run = _RUNS.get(run_id)
+    if not run or not any(m["id"] == message_id for m in run.inbox):
+        return False
+    run.inbox = [m for m in run.inbox if m["id"] != message_id]
+    await delete_ask_message(message_id)
+    return True
+
+
+def _earlier_turns(msgs: list, window: int) -> list[dict]:
+    """前端只带最近几轮原文(window 条 = window/2 轮); 更早的轮次成对取出(问, 答), 给 agent 拼一段压缩回顾。
+    按完整轮次切而不是按消息条数: 执行中补充的消息与子任务卡片也在库里, 按条数切会切到半轮。"""
+    turns = _fold_turns(msgs)
+    return turns[:max(0, len(turns) - window // 2)]
 
 
 async def session_state(session_id: int, window: int = 0) -> dict | None:
@@ -184,6 +281,13 @@ async def session_state(session_id: int, window: int = 0) -> dict | None:
     earlier = _earlier_turns(msgs, window)
     if earlier:
         out["earlier"] = earlier
+    try:
+        tasks = await list_agent_tasks(session_id, limit=8)
+    except Exception:
+        tasks = []
+    if tasks:
+        out["tasks"] = [{"id": t["id"], "title": t["title"], "status": t["status"], "background": bool(t["background"]),
+                         "result": (t.get("result") or "")[:1200]} for t in tasks]
     return out or None
 
 

@@ -19,6 +19,8 @@ import services.em_dataapi as _em_dataapi
 import services.em_push2 as _em_push2
 import services.trade_plan as _trade_plan
 import services.watcher as _watcher
+import services.agent_tasks as _agent_tasks
+from services import agent_ctx as _agent_ctx
 from services.rule_forge import looks_like_correction as _looks_like_correction
 # 系统提示拆成常驻核心 + 按需技能包, 见 services/agent_guides.py
 from services.agent_guides import (CORE as _SYSTEM, ALL_TEXT as _PROMPT_ALL,  # noqa: F401
@@ -3451,6 +3453,8 @@ _TOOLS = [
     _trade_plan.TOOL_SAVE,
     _trade_plan.TOOL_GET,
     _watcher.TOOL_GET,
+    _agent_tasks.TOOL_DISPATCH,
+    _agent_tasks.TOOL_GET,
     {"name": "calc", "description": "算术兜底(Decimal 精算, 禁止心算时用它)。三种 op: "
      "eval=算表达式(expr, 只支持数字与 + - * / ( ) 和百分号, 如 '(4.36-3.96)/3.96*100'); "
      "market_cap=市值验算(price 现价, shares 股本(亿股), 可选 reported 外部报出的市值(亿), unit 默认'亿')——"
@@ -3581,6 +3585,8 @@ _EXECUTORS = {
     "save_trade_plan": lambda a: _trade_plan.add_plans(a.get("plans") or []),
     "get_trade_plans": lambda a: _trade_plan.review(a.get("date") or None),
     "get_watch_findings": lambda a: _watcher.list_findings(a.get("date") or None),
+    "dispatch_tasks": lambda a: _agent_tasks.dispatch(a.get("tasks") or [], bool(a.get("wait", True))),
+    "get_tasks": lambda a: _agent_tasks.get(a.get("task_id")),
     "calc": lambda a: _tool_calc(a),
     "resolve_stock": lambda a: _tool_resolve_stock(a.get("query", "")),
     "get_quote": lambda a: _tool_get_quote(a.get("code", "")),
@@ -3656,6 +3662,9 @@ async def _run_tool(tu: dict) -> dict:
 def _step_arg(tu: dict) -> str:
     """步骤芯片上显示的参数; step 与 step_result 共用, 前端靠 (工具名, 参数) 把失败对回同一个芯片。"""
     inp = tu.get("input") or {}
+    if tu.get("name") == "dispatch_tasks":
+        ts = inp.get("tasks") or []
+        return ("后台 · " if inp.get("wait") is False else "") + "、".join(str(t.get("title") or "")[:12] for t in ts if isinstance(t, dict))
     return inp.get("query") or inp.get("code") or ""
 
 
@@ -3687,6 +3696,8 @@ def _result_content(out: dict):
 
 
 _ZSXQ_TOOLS = ("get_zsxq_digest", "search_zsxq", "read_zsxq_file")
+_TASK_TOOLS = ("dispatch_tasks", "get_tasks")
+_MAIN_ONLY_TOOLS = (*_TASK_TOOLS, "remember", "save_trade_plan")
 
 # 扩展数据源(provider)供数的工具 → 它依赖的那项能力。provider 没声明该能力就不挂这个工具。
 _PROVIDER_TOOLS = {
@@ -3717,6 +3728,12 @@ async def _active_tools() -> list:
         caps = frozenset()
     tools = [t for t in tools
              if _PROVIDER_TOOLS.get(t.get("name")) in (None, *caps)]
+    # 子 agent 只取数作答: 派子任务、写记忆、记交易计划都留给用户直接对话的主 agent;
+    # 不在某一轮里跑(脚本/评测直接调)时没有会话可挂子任务, 派活的两个工具也不给
+    if _agent_ctx.depth.get() > 0:
+        tools = [t for t in tools if t.get("name") not in _MAIN_ONLY_TOOLS]
+    elif _agent_ctx.run.get() is None:
+        tools = [t for t in tools if t.get("name") not in _TASK_TOOLS]
     try:
         if _llm._is_anthropic_official():
             return tools
@@ -3752,6 +3769,7 @@ def _system() -> str:
 _TOOL_CN = {
     "load_guide": "读作答规范", "remember": "记住",
     "save_trade_plan": "记交易计划", "get_trade_plans": "查计划执行", "get_watch_findings": "看盯盘员发现",
+    "dispatch_tasks": "派子任务", "get_tasks": "查子任务",
     "resolve_stock": "解析代码", "get_quote": "查行情", "get_trend": "查走势",
     "get_news": "查新闻", "get_intraday": "查分时", "get_announcements": "查公告", "get_fund_flow": "查资金流", "get_lhb": "查龙虎榜", "get_seat_history": "查席位历史", "get_deep_lhb": "查深度龙虎榜",
     "get_company_profile": "查公司主营", "get_red_flags": "查红线风险", "screen_quality": "跑去劣筛选", "get_capital_allocation": "查资本配置", "get_stock_concepts": "查所属概念", "get_fundamentals": "查基本面", "get_commodity": "查商品价",
@@ -3903,6 +3921,14 @@ def _state_block(state: dict | None) -> str:
                  for e in ents[-12:]]
         parts.append("【本会话前文已确认的标的】" + "; ".join(items)
                      + "。此轮提到的称呼与其中某只对应时沿用该代码; 用户明确改指别的标的时以新说法为准。")
+    tasks = (state or {}).get("tasks") or []
+    if tasks:
+        st = {"queued": "排队中", "running": "运行中", "done": "已完成", "failed": "失败", "cancelled": "已取消",
+              "interrupted": "服务重启中断"}
+        lines = [f"#{t['id']} {t['title']}({'后台' if t.get('background') else '并行拆解'}, {st.get(t['status'], t['status'])})"
+                 + (f": {t['result'][:300]}" if t.get("result") else "") for t in tasks[-6:]]
+        parts.append("【本会话派出过的子任务】\n" + "\n".join(lines)
+                     + "\n用户提到这些任务时据此回应; 需要某个任务的完整结论用 get_tasks(task_id)。")
     return "\n\n".join(parts)
 
 
@@ -3977,6 +4003,17 @@ _CARRY_MIN_CHARS = 200
 # 初稿只是预览: 自查要改、或这一轮其实还要调工具, 就发 draft_reset 撤回, 以 answer 事件为准。
 _DRAFT_START_CHARS = 60
 _DRAFT_FLUSH_S = 0.25
+
+
+def _interject_text(msgs: list[dict], final: bool = False) -> str:
+    head = "【用户在你作答期间补充】" if final else "【用户在你执行期间补充】"
+    tail = ("上面那版回答还没展示给用户。把补充纳入后输出完整的最终回答; 补充需要新数据时先调用工具。" if final else
+            "把补充纳入当前任务: 需要新数据就调用工具, 与原问题有出入时以补充为准, 最终回答里一并回应。")
+    return head + "\n" + "\n".join(f"- {m['text']}" for m in msgs) + "\n" + tail
+
+
+def _interject_event(msgs: list[dict]) -> dict:
+    return {"type": "interject", "ids": [m["id"] for m in msgs], "texts": [m["text"] for m in msgs]}
 
 
 def _resendable(content: list) -> list:
@@ -4126,6 +4163,14 @@ async def ask_stock_stream(question: str, history: list | None = None, images: l
         if fresh:
             yield {"type": "sources", "sources": fresh}
         tus = [b for b in content if b.get("type") == "tool_use"]
+        # 答案写完时收件箱里来了补充: 这版先不定稿, 把补充交给模型重写(留两轮余量给它补取数)
+        extra = _agent_ctx.take_inbox() if not tus and rnd < _MAX_ROUNDS - 2 else []
+        if extra:
+            if sent:
+                yield {"type": "draft_reset"}
+            messages.append({"role": "user", "content": [{"type": "text", "text": _interject_text(extra, final=True)}]})
+            yield _interject_event(extra)
+            continue
         if not tus:
             before = len(sources)
             text = _join_answer(carried, _assemble_cited_text(content, sources, seen_urls))
@@ -4178,6 +4223,10 @@ async def ask_stock_stream(question: str, history: list | None = None, images: l
         results = [{"type": "tool_result", "tool_use_id": tu.get("id"),
                     "content": _result_content(out)}
                    for tu, out in zip(tus, outs)]
+        extra = _agent_ctx.take_inbox()      # 这一步期间用户补充的话, 跟工具结果一起交给模型
+        if extra:
+            results.append({"type": "text", "text": _interject_text(extra)})
+            yield _interject_event(extra)
         messages.append({"role": "user", "content": results})
     yield {"type": "answer", "text": "（分析步数超限, 请换个问法或更具体）"}
     yield {"type": "done"}

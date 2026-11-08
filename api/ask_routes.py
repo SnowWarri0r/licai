@@ -81,6 +81,10 @@ class RunIn(BaseModel):
     scope: str = "market"                   # market | stock:<code>, 前端按它认领自己那条
 
 
+class InboxIn(BaseModel):
+    text: str
+
+
 class DeepIn(BaseModel):
     code: str
     name: Optional[str] = None
@@ -187,6 +191,33 @@ async def run_events(run_id: str, cursor: int = 0):
 async def cancel_run(run_id: str):
     """明确停掉(点"新对话"这类)。跟"前端走开"区分: 走开不取消。"""
     return {"cancelled": ask_runs.cancel(run_id)}
+
+
+@router.post("/runs/{run_id}/inbox")
+async def post_inbox(run_id: str, data: InboxIn):
+    """一轮在跑时补一句: {status: queued, id} 进收件箱, agent 下一步就会读到;
+    {status: closed} 这一轮已经收尾, 前端照常开新一轮。"""
+    return await ask_runs.post_inbox(run_id, data.text)
+
+
+@router.delete("/runs/{run_id}/inbox/{message_id}")
+async def withdraw_inbox(run_id: str, message_id: int):
+    """撤回还没交给 agent 的补充: {withdrawn: false} = 已经交出去了。"""
+    return {"withdrawn": await ask_runs.withdraw(run_id, message_id)}
+
+
+# --- 子任务(主 agent 派出的子 agent) ---
+
+@router.get("/tasks")
+async def list_tasks(session_id: int):
+    from services import agent_tasks
+    return {"tasks": await agent_tasks.list_session(session_id)}
+
+
+@router.post("/tasks/{task_id}/cancel")
+async def cancel_task(task_id: int):
+    from services import agent_tasks
+    return {"cancelled": agent_tasks.cancel(task_id)}
 
 
 # --- 会话历史 ---

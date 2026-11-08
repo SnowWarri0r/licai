@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef } from 'react'
 import { fetchJSON } from '../hooks/useApi'
-import { MiniMarkdown, DraftAnswer, draftText, sharedPrefix, markFailed, SourcesBlock, ToolCallStrip, startRun, followRun, liveRuns, cancelRun } from './askShared'
+import { MiniMarkdown, DraftAnswer, draftText, sharedPrefix, markFailed, SourcesBlock, ToolCallStrip, startRun, followRun, liveRuns, cancelRun,
+         postInbox, withdrawInbox, listTasks, cancelTask } from './askShared'
+import { TaskStrip, TaskCard, isActive } from './AgentTasks'
 import ImageZoom from './ImageZoom'
 
 // 能力展示型推荐问题 (page 模式空态用), 覆盖 市场风格/资金主线/政策/基本面/同行/筹码
@@ -14,7 +16,29 @@ const MARKET_SUGGESTIONS = [
 // 对话留在组件外: 这一页是条件渲染的(view === 'ask'), 切到别的页就卸载 —— 回来不该是空白。
 // 那一轮本身也不再挂在这根 fetch 上: 执行权在服务端(services/ask_runs.py), 走开只是停止跟看。
 // run 记 {id, cursor}, 回来照游标续看; 整页刷新把这份内存清了, 也还能问服务端要回来。
-const PAGE = { history: [], sessionId: null, run: null }
+// history 里除了问答轮次, 还有后台任务跑完的结果卡片 {kind:'task', task}; 流式事件只往最后一个轮次上写。
+const PAGE = { history: [], sessionId: null, run: null, nextRun: null }
+
+const lastTurn = (h) => { for (let i = h.length - 1; i >= 0; i--) if (h[i].kind !== 'task') return i; return -1 }
+const newTurn = (q, images = []) => ({ q, images, steps: [], thought: '', answer: null, typed: '', done: false, sources: [], charts: [], interjects: [] })
+
+// 库里的会话 → 对话。执行中补充的消息挂到它那一问下面; role=task 是后台任务的结果卡片。
+function turnsFromMessages(msgs) {
+  const out = []
+  for (const m of msgs || []) {
+    const meta = m.meta || {}
+    if (m.role === 'task') { out.push({ kind: 'task', task: { task_id: meta.task_id, title: meta.title, result: m.content, sources: meta.sources || [] } }); continue }
+    if (m.role === 'user' && meta.interject) {
+      const i = lastTurn(out)
+      if (i >= 0) out[i].interjects.push({ id: m.id, text: m.content, state: meta.state === 'merged' ? 'merged' : 'lost' })
+      continue
+    }
+    if (m.role === 'user') { out.push({ ...newTurn(m.content, meta.images || []), done: true }); continue }
+    const i = lastTurn(out)
+    if (i >= 0) { const t = out[i]; t.answer = m.content; t.typed = m.content; t.sources = meta.sources || []; t.charts = meta.charts || [] }
+  }
+  return out
+}
 
 export default function StockAsk({ page = false }) {
   const [q, setQ] = useState('')
@@ -32,6 +56,8 @@ export default function StockAsk({ page = false }) {
   const draftRef = useRef('')   // 本轮已收到的初稿全文(定稿时据此算公共前缀)
   const scrollBox = useRef(null)
   const historyRef = useRef(history)                // 卸载时 setState 会被丢, 得靠这份镜像
+  const [tasks, setTasks] = useState([])            // 本会话的子任务(轮询)
+  const endedRef = useRef(Promise.resolve())        // 当前跟看的那根连接结束时 resolve
   const follow = useRef(true)   // 是否跟随滚到底; 用户往上拖就关掉, 拖回底部再开
 
   useEffect(() => {
@@ -52,7 +78,28 @@ export default function StockAsk({ page = false }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const patchLast = (fn) => setHistory(h => h.map((it, i) => i === h.length - 1 ? fn(it) : it))
+  const patchAt = (idx, fn) => setHistory(h => h.map((it, i) => i === idx ? fn(it) : it))
+  const patchLast = (fn) => setHistory(h => { const k = lastTurn(h); return h.map((it, i) => i === k ? fn(it) : it) })
+
+  // 子任务轮询: 有在跑的(或这一轮还在跑, 可能刚派出)每 4 秒, 否则 20 秒。后台任务跑完 → 结果卡片接进对话。
+  useEffect(() => {
+    let alive = true, timer = null
+    const tick = async () => {
+      const sid = sessionId.current
+      const ts = sid ? await listTasks(sid) : []
+      if (!alive) return
+      if (ts) {
+        setTasks(ts)
+        const have = new Set(historyRef.current.filter(x => x.kind === 'task').map(x => x.task.task_id))
+        const fresh = ts.filter(t => t.background && t.status === 'done' && !have.has(t.task_id))
+        if (fresh.length && sid === sessionId.current) setHistory(h => [...h, ...fresh.map(t => ({ kind: 'task', task: t }))])
+      }
+      const busy = PAGE.run || (ts || []).some(isActive)
+      timer = setTimeout(tick, busy ? 4000 : 20000)
+    }
+    tick()
+    return () => { alive = false; clearTimeout(timer) }
+  }, [])
 
   // 图片缩放到最长边 ≤1280 + JPEG 质量 0.82, 控制 base64 体积; 返回 data URL
   const downscaleImage = (file) => new Promise((resolve) => {
@@ -95,14 +142,15 @@ export default function StockAsk({ page = false }) {
   // 真要停用输入框旁边那个「停」。
   const newChat = () => {
     abortRef.current?.abort(); clearInterval(typer.current)
-    PAGE.run = null; PAGE.history = []; PAGE.sessionId = null
-    sessionId.current = null; setHistory([]); setShowHist(false); setLoading(false)
+    PAGE.run = null; PAGE.nextRun = null; PAGE.history = []; PAGE.sessionId = null
+    sessionId.current = null; setHistory([]); setTasks([]); setShowHist(false); setLoading(false)
   }
 
   const stopRun = () => {
     if (PAGE.run) cancelRun(PAGE.run.id)
-    abortRef.current?.abort(); clearInterval(typer.current); PAGE.run = null
-    patchLast(it => (it.answer == null ? { ...it, err: '已停止', done: true } : { ...it, typed: it.answer, done: true }))
+    abortRef.current?.abort(); clearInterval(typer.current); PAGE.run = null; PAGE.nextRun = null
+    patchLast(it => ({ ...(it.answer == null ? { ...it, err: '已停止', done: true } : { ...it, typed: it.answer, done: true }),
+                       interjects: (it.interjects || []).map(x => x.state === 'queued' ? { ...x, state: 'lost' } : x) }))
     setLoading(false)
   }
 
@@ -112,17 +160,29 @@ export default function StockAsk({ page = false }) {
     const ctrl = new AbortController(); abortRef.current = ctrl
     PAGE.run = { id: runId, cursor }
     // 从头重放就从空初稿拼起; 断点续拉则接着页面上已有的初稿往后拼
-    draftRef.current = cursor ? (historyRef.current.at(-1)?.draft || '') : ''
+    const h0 = historyRef.current
+    draftRef.current = cursor ? (h0[lastTurn(h0)]?.draft || '') : ''
     setLoading(true)
+    let ended
+    endedRef.current = new Promise(r => { ended = r })
     followRun(runId, {
       cursor, signal: ctrl.signal,
       onEvent: (ev) => { if (ev.cursor != null && PAGE.run) PAGE.run.cursor = ev.cursor; handleEv(ev) },
       onEnd: ({ finished, gone }) => {
+        ended()
         if (finished || gone) { PAGE.run = null; setLoading(false) }
+        // 答完之后才到的补充, 服务端已合成一问开了下一轮: 接着跟看那一轮
+        const nxt = PAGE.nextRun
+        if (finished && nxt) {
+          PAGE.nextRun = null
+          setHistory(h => [...h, newTurn(nxt.question)])
+          attach(nxt.run_id, 0)
+          return
+        }
         // 服务端已经不记得它了(跑完太久被清 / 重启过): 原文在库里, 回去取, 别报错
         if (gone && sessionId.current) loadSession(sessionId.current)
       },
-      onError: (err) => { patchLast(it => ({ ...it, err, done: true })); PAGE.run = null; setLoading(false) },
+      onError: (err) => { ended(); patchLast(it => ({ ...it, err, done: true })); PAGE.run = null; setLoading(false) },
     })
   }
 
@@ -132,7 +192,7 @@ export default function StockAsk({ page = false }) {
     const r = (await liveRuns('market')).filter(x => !x.done).pop()
     if (!r) return
     sessionId.current = r.session_id
-    setHistory([{ q: r.question, images: [], steps: [], thought: '', answer: null, typed: '', done: false, sources: [], charts: [] }])
+    setHistory([{ ...newTurn(r.question), interjects: (r.inbox || []).map(m => ({ ...m, state: 'queued' })) }])
     attach(r.run_id, 0)
   }
 
@@ -140,21 +200,19 @@ export default function StockAsk({ page = false }) {
   const loadSession = async (id) => {
     try {
       const s = await fetchJSON(`/api/ask/sessions/${id}`)
-      const turns = []
-      for (const m of (s.messages || [])) {
-        if (m.role === 'user') turns.push({ q: m.content, images: (m.meta && m.meta.images) || [], steps: [], thought: '', answer: null, typed: '', done: true, sources: [], charts: [] })
-        else if (turns.length) {
-          const t = turns[turns.length - 1]
-          t.answer = m.content; t.typed = m.content; t.sources = (m.meta && m.meta.sources) || []; t.charts = (m.meta && m.meta.charts) || []
-        }
-      }
+      const turns = turnsFromMessages(s.messages)
       // 末尾这一问没答案: 问题是开跑时就落库的, 所以要么它还在跑(接着跟看), 要么当时没跑完
-      const tail = turns[turns.length - 1]
+      const tail = turns[lastTurn(turns)]
       const running = tail && tail.answer == null
         ? (await liveRuns()).find(r => r.session_id === id && !r.done) : null
       if (tail && tail.answer == null && !running) { tail.err = '这一问没答完(当时中断了)' }
-      if (tail && running) { tail.done = false }
+      if (tail && running) {
+        tail.done = false
+        const q = new Set((running.inbox || []).map(m => m.id))
+        tail.interjects = tail.interjects.map(x => q.has(x.id) ? { ...x, state: 'queued' } : x)
+      }
       sessionId.current = id; setHistory(turns); setShowHist(false)
+      listTasks(id).then(ts => ts && sessionId.current === id && setTasks(ts))
       if (running) attach(running.run_id, 0)
     } catch { /* ignore */ }
   }
@@ -171,8 +229,10 @@ export default function StockAsk({ page = false }) {
 
   // 复制整段对话为纯文本(贴给开发者优化用)
   const copyConversation = () => {
-    const txt = history.filter(it => it.answer != null).map(it =>
-      `【我问】${it.q}\n【AI答】${it.answer}`).join('\n\n――――――\n\n')
+    const txt = history.filter(it => it.answer != null || it.kind === 'task').map(it => it.kind === 'task'
+      ? `【后台任务 · ${it.task.title}】${it.task.result}`
+      : `【我问】${it.q}${(it.interjects || []).filter(x => x.state === 'merged').map(x => `\n【补充】${x.text}`).join('')}\n【AI答】${it.answer}`)
+      .join('\n\n――――――\n\n')
     navigator.clipboard?.writeText(txt).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500) }).catch(() => {})
   }
 
@@ -190,13 +250,15 @@ export default function StockAsk({ page = false }) {
     PAGE.history = history; PAGE.sessionId = sessionId.current
   }, [history])
 
+  // 打字机钉在开始时的那一轮上: 打字期间可能已经接着开了下一轮(补充续跑 / 新问)
   const typewriter = (full, from = 0) => {
     clearInterval(typer.current)
+    const idx = lastTurn(historyRef.current)
     let n = from
     typer.current = setInterval(() => {
       n = Math.min(full.length, n + 3)   // 每 tick 3 字
-      patchLast(it => ({ ...it, typed: full.slice(0, n) }))   // history 变 → 上面 effect 跟随滚动
-      if (n >= full.length) { clearInterval(typer.current); patchLast(it => ({ ...it, done: true })) }
+      patchAt(idx, it => ({ ...it, typed: full.slice(0, n) }))   // history 变 → 上面 effect 跟随滚动
+      if (n >= full.length) { clearInterval(typer.current); patchAt(idx, it => ({ ...it, done: true })) }
     }, 16)
   }
 
@@ -224,20 +286,55 @@ export default function StockAsk({ page = false }) {
     }
     else if (ev.type === 'sources') patchLast(it => ({ ...it, sources: [...(it.sources || []), ...(ev.sources || [])] }))
     else if (ev.type === 'chart') patchLast(it => ({ ...it, charts: [...(it.charts || []), ev.url] }))
+    // 补充交给 agent 了 / 答完才到的补充转成下一轮(onEnd 时接着跟看)
+    else if (ev.type === 'interject') { const ids = new Set(ev.ids || []); patchLast(it => ({ ...it, interjects: (it.interjects || []).map(x => ids.has(x.id) ? { ...x, state: 'merged' } : x) })) }
+    else if (ev.type === 'next_run') {
+      const ids = new Set(ev.ids || [])
+      PAGE.nextRun = { run_id: ev.run_id, question: ev.question }
+      patchLast(it => ({ ...it, interjects: (it.interjects || []).filter(x => !ids.has(x.id)) }))
+    }
     else if (ev.type === 'error') { draftRef.current = ''; patchLast(it => ({ ...it, err: ev.error, draft: '', stale: '', done: true })) }
   }
 
-  const ask = async (question) => {
+  // 这一轮在跑时发的话进它的收件箱: agent 做完当前这一步就会读到。这一轮恰好在收尾(closed)
+  // 就等它那根连接结束再看: 可能服务端已把更早的补充续成了下一轮(那就投给下一轮), 否则开新一轮。
+  const send = async (question) => {
+    const text = (question ?? q).trim()
+    if (!PAGE.run) return ask(question)
+    if (!text) return
+    setQ('')
+    follow.current = true
+    for (let i = 0; i < 3 && PAGE.run; i++) {
+      const runId = PAGE.run.id
+      let r
+      try { r = await postInbox(runId, text) } catch { r = { status: 'closed' } }
+      if (r.status === 'queued') {
+        patchLast(it => ({ ...it, interjects: [...(it.interjects || []), { id: r.id, text, state: 'queued', runId }] }))
+        return
+      }
+      await Promise.race([endedRef.current, new Promise(res => setTimeout(res, 5000))])
+      await new Promise(res => setTimeout(res, 50))      // onEnd 里接着跟看下一轮是同步的, 让它先落定
+    }
+    return ask(text, true)
+  }
+
+  const withdraw = async (x) => {
+    if (await withdrawInbox(x.runId || PAGE.run?.id, x.id))
+      setHistory(h => h.map(it => it.interjects ? { ...it, interjects: it.interjects.filter(y => y.id !== x.id) } : it))
+  }
+
+  const ask = async (question, force = false) => {
     const text = (question ?? q).trim()
     const imgs = pendImgs
-    if ((!text && !imgs.length) || loading) return
-    // 把已完成的历史轮次(最近4轮)作为上下文带给后端, 支持追问("它/明天呢")
-    const hist = history.filter(it => it.answer && !it.err).slice(-4)
-      .flatMap(it => [{ role: 'user', content: it.q }, { role: 'assistant', content: it.answer }])
+    if ((!text && !imgs.length) || (loading && !force)) return
+    // 把已完成的历史轮次(最近4轮)作为上下文带给后端, 支持追问("它/明天呢"); 执行中补充的话并进那一问
+    const hist = historyRef.current.filter(it => it.kind !== 'task' && it.answer && !it.err).slice(-4)
+      .flatMap(it => [{ role: 'user', content: it.q + (it.interjects || []).filter(x => x.state === 'merged').map(x => `\n(执行中补充: ${x.text})`).join('') },
+                      { role: 'assistant', content: it.answer }])
     const shown = text || '(看图)'
     setQ(''); setPendImgs([]); setLoading(true)
     follow.current = true
-    setHistory(h => [...h, { q: shown, images: imgs, steps: [], thought: '', answer: null, typed: '', done: false, sources: [], charts: [] }])
+    setHistory(h => [...h, newTurn(shown, imgs)])
     try {
       const r = await startRun({ question: shown, history: hist, images: imgs,
                                  session_id: sessionId.current, title: shown, scope: 'market' })
@@ -325,9 +422,22 @@ export default function StockAsk({ page = false }) {
       )}
 
       <div ref={scrollBox} onScroll={onScroll} className={`space-y-3 mb-3 ${page ? 'flex-1 min-h-0 overflow-y-auto pr-1' : (history.length ? 'max-h-[58vh] overflow-y-auto pr-1' : '')}`}>
-        {history.map((it, i) => (
+        {history.map((it, i) => it.kind === 'task' ? <TaskCard key={i} task={it.task} /> : (
           <div key={i}>
             <div className="text-[12px] text-text-bright bg-surface-3 rounded-lg px-3 py-1.5 inline-block">{it.q}</div>
+            {(it.interjects || []).map(x => (
+              <div key={x.id} className="mt-1 flex items-center gap-2">
+                <div className="text-[11.5px] text-text-dim bg-surface-3/60 border border-border-subtle rounded-lg px-2.5 py-1 inline-block">
+                  <span className="text-text-muted mr-1.5">补充</span>{x.text}
+                </div>
+                <span className="text-[10px] text-text-muted">
+                  {x.state === 'merged' ? '已送达' : x.state === 'queued' ? '排队中, 下一步送达' : '未送达'}
+                </span>
+                {x.state === 'queued' && (
+                  <button onClick={() => withdraw(x)} className="text-[10px] text-text-muted hover:text-bear-bright">撤回</button>
+                )}
+              </div>
+            ))}
             {it.images?.length > 0 && (
               <div className="flex flex-wrap gap-1.5 mt-1.5">
                 {it.images.map((src, k) => (
@@ -367,6 +477,7 @@ export default function StockAsk({ page = false }) {
         ))}
       </div>
 
+      <TaskStrip tasks={tasks} onCancel={(id) => { cancelTask(id); setTasks(ts => ts.map(t => t.task_id === id ? { ...t, status: 'cancelled' } : t)) }} />
       {pendImgs.length > 0 && (
         <div className="flex flex-wrap gap-1.5 mb-2">
           {pendImgs.map((src, k) => (
@@ -388,12 +499,12 @@ export default function StockAsk({ page = false }) {
           </svg>
         </button>
         <input value={q} onChange={e => setQ(e.target.value)} onPaste={onPaste}
-          onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) ask() }} disabled={loading}
-          placeholder="例: 这周市场什么风格 / 金钼股份为什么涨 / 也可贴图问"
+          onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) send() }}
+          placeholder={loading ? '补充或追问: 它做完当前这一步就会看到' : '例: 这周市场什么风格 / 金钼股份为什么涨 / 也可贴图问'}
           className="flex-1 text-[12px] px-3 py-2 rounded-lg bg-surface-3 border border-border text-text placeholder:text-text-muted focus:border-accent/50 outline-none disabled:opacity-50" />
-        <button onClick={() => ask()} disabled={loading || (!q.trim() && !pendImgs.length)}
+        <button onClick={() => send()} disabled={loading ? !q.trim() : (!q.trim() && !pendImgs.length)}
           className="text-[12px] px-3.5 py-2 rounded-lg bg-accent/20 text-accent border border-accent/40 hover:bg-accent/30 disabled:opacity-40 disabled:cursor-not-allowed">
-          {loading ? '分析中' : '问'}
+          {loading ? '补充' : '问'}
         </button>
         {loading && (
           <button onClick={stopRun} title="真停掉这一轮(切到别的页不用停, 它会自己跑完)"
@@ -404,7 +515,7 @@ export default function StockAsk({ page = false }) {
       </div>
       <div className="text-[10px] text-text-muted pt-2.5 mt-2 border-t border-border-subtle">
         Agent 自取行情/走势/新闻/大盘情绪后客观解读 · 可发图(截图/K线/持仓)让它看 · 纯解读不构成任何买卖建议
-        {loading && ' · 这一轮跑在后台, 切页/关页都不打断, 答完自动进历史'}
+        {loading && ' · 这一轮跑在后台, 切页/关页都不打断, 答完自动进历史; 跑的时候可以接着补充'}
       </div>
     </div>
   )

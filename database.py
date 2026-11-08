@@ -352,12 +352,32 @@ CREATE TABLE IF NOT EXISTS ask_session (
 CREATE TABLE IF NOT EXISTS ask_message (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id INTEGER NOT NULL,
-    role TEXT NOT NULL,                        -- user | assistant
+    role TEXT NOT NULL,                        -- user | assistant | task(子任务结果卡片, meta.task_id)
     content TEXT NOT NULL,
     meta TEXT DEFAULT '',                      -- JSON: {tools_used, sources}
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_ask_message_session ON ask_message(session_id, id);
+-- 执行中补充的消息也是 role=user, meta.interject = 它补充给的那一轮 run_id,
+-- meta.state = queued(还在收件箱) | merged(已交给那一轮)。前端与会话回顾把它并进上一问, 不算新的一问。
+
+-- 主 agent 派出的子任务(见 services/agent_tasks.py)。每个子任务是一个独立上下文的子 agent,
+-- 跑完结果写这里, 同时作为一条 role=task 的消息进会话。
+CREATE TABLE IF NOT EXISTS agent_task (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER,
+    run_id TEXT DEFAULT '',                    -- 派出它的那一轮
+    title TEXT NOT NULL,
+    brief TEXT NOT NULL,                       -- 主 agent 写给子 agent 的完整任务说明
+    background INTEGER DEFAULT 0,              -- 1 = 后台任务(主对话不等它); 0 = 主 agent 等结果汇总
+    status TEXT NOT NULL DEFAULT 'queued',     -- queued | running | done | failed | cancelled | interrupted
+    result TEXT DEFAULT '',
+    meta TEXT DEFAULT '{}',                    -- JSON: {tools_used, sources, error}
+    created_at REAL,
+    started_at REAL,
+    finished_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_task_session ON agent_task(session_id, id);
 
 -- 一轮 agent 执行的过程流水。答案本身进 ask_message, 这张表存的是"跑的过程":
 -- 调了哪些工具、画了什么图、中途报了什么错。
@@ -1159,14 +1179,91 @@ async def create_ask_session(title: str = "") -> int:
         await db.close()
 
 
-async def add_ask_message(session_id: int, role: str, content: str, meta: str = "") -> None:
+async def add_ask_message(session_id: int, role: str, content: str, meta: str = "") -> int:
     db = await get_db()
     try:
-        await db.execute(
+        cur = await db.execute(
             "INSERT INTO ask_message (session_id, role, content, meta) VALUES (?, ?, ?, ?)",
             (session_id, role, content, meta or ""))
         await db.execute("UPDATE ask_session SET updated_at = CURRENT_TIMESTAMP WHERE id = ?", (session_id,))
         await db.commit()
+        return cur.lastrowid
+    finally:
+        await db.close()
+
+
+async def set_ask_message_meta(message_id: int, meta: str) -> None:
+    db = await get_db()
+    try:
+        await db.execute("UPDATE ask_message SET meta = ? WHERE id = ?", (meta or "", message_id))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def delete_ask_message(message_id: int) -> None:
+    db = await get_db()
+    try:
+        await db.execute("DELETE FROM ask_message WHERE id = ?", (message_id,))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+# --- 子任务 ---
+
+async def create_agent_task(session_id: int | None, run_id: str, title: str, brief: str, background: bool) -> int:
+    import time as _t
+    db = await get_db()
+    try:
+        cur = await db.execute(
+            "INSERT INTO agent_task (session_id, run_id, title, brief, background, created_at) VALUES (?,?,?,?,?,?)",
+            (session_id, run_id or "", title, brief, int(bool(background)), _t.time()))
+        await db.commit()
+        return cur.lastrowid
+    finally:
+        await db.close()
+
+
+async def update_agent_task(task_id: int, **fields) -> None:
+    cols = [k for k in fields if k in ("status", "result", "meta", "started_at", "finished_at", "background")]
+    if not cols:
+        return
+    db = await get_db()
+    try:
+        await db.execute(f"UPDATE agent_task SET {', '.join(c + ' = ?' for c in cols)} WHERE id = ?",
+                         (*[fields[c] for c in cols], task_id))
+        await db.commit()
+    finally:
+        await db.close()
+
+
+async def get_agent_task(task_id: int) -> dict | None:
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT * FROM agent_task WHERE id = ?", (task_id,))
+        r = await cur.fetchone()
+        return dict(r) if r else None
+    finally:
+        await db.close()
+
+
+async def list_agent_tasks(session_id: int, limit: int = 30) -> list[dict]:
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT * FROM agent_task WHERE session_id = ? ORDER BY id DESC LIMIT ?", (session_id, limit))
+        return [dict(r) for r in await cur.fetchall()][::-1]
+    finally:
+        await db.close()
+
+
+async def interrupt_running_agent_tasks() -> int:
+    """启动时把上一进程留下的 queued/running 子任务标成 interrupted(进程没了, 它们不会再有结果)。"""
+    db = await get_db()
+    try:
+        cur = await db.execute("UPDATE agent_task SET status = 'interrupted' WHERE status IN ('queued', 'running')")
+        await db.commit()
+        return cur.rowcount or 0
     finally:
         await db.close()
 
@@ -1194,7 +1291,7 @@ async def get_ask_session(session_id: int) -> dict | None:
         if not s:
             return None
         cur = await db.execute(
-            "SELECT role, content, meta, created_at FROM ask_message WHERE session_id = ? ORDER BY id", (session_id,))
+            "SELECT id, role, content, meta, created_at FROM ask_message WHERE session_id = ? ORDER BY id", (session_id,))
         msgs = [dict(r) for r in await cur.fetchall()]
         return {**dict(s), "messages": msgs}
     finally:
@@ -1205,6 +1302,7 @@ async def delete_ask_session(session_id: int) -> None:
     db = await get_db()
     try:
         await db.execute("DELETE FROM ask_message WHERE session_id = ?", (session_id,))
+        await db.execute("DELETE FROM agent_task WHERE session_id = ?", (session_id,))
         await db.execute("DELETE FROM ask_session WHERE id = ?", (session_id,))
         await db.commit()
     finally:

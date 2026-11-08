@@ -120,6 +120,10 @@ async def lifespan(app: FastAPI):
         _n = await interrupt_running_ask_runs()
         if _n:
             print(f"[startup] 上次没跑完的 agent 轮次 {_n} 条, 已标记为中断")
+        from database import interrupt_running_agent_tasks
+        _n = await interrupt_running_agent_tasks()
+        if _n:
+            print(f"[startup] 上次没跑完的子任务 {_n} 个, 已标记为中断")
     except Exception as e:
         print(f"[startup] 标记中断轮次失败: {e}")
     # 模型、代理、各数据源的已存配置。评测脚本也调这同一个函数, 两边才是同一套取数链路
