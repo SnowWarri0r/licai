@@ -75,3 +75,21 @@ export function TaskCard({ task }) {
     </div>
   )
 }
+
+// 一问下面挂着的执行中补充: 已送达 / 排队中(可撤回) / 未送达
+export function InterjectList({ items, onWithdraw }) {
+  if (!items?.length) return null
+  return items.map(x => (
+    <div key={x.id} className="mt-1 flex items-center gap-2">
+      <div className="text-[11.5px] text-text-dim bg-surface-3/60 border border-border-subtle rounded-lg px-2.5 py-1 inline-block">
+        <span className="text-text-muted mr-1.5">补充</span>{x.text}
+      </div>
+      <span className="text-[10px] text-text-muted">
+        {x.state === 'merged' ? '已送达' : x.state === 'queued' ? '排队中, 下一步送达' : '未送达'}
+      </span>
+      {x.state === 'queued' && (
+        <button onClick={() => onWithdraw(x)} className="text-[10px] text-text-muted hover:text-bear-bright">撤回</button>
+      )}
+    </div>
+  ))
+}

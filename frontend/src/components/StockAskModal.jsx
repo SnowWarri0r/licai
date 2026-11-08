@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import { MiniMarkdown, DraftAnswer, draftText, sharedPrefix, markFailed, SourcesBlock, ToolCallStrip, startRun, startDeepDive, followRun, liveRuns, cancelRun } from './askShared'
+import { MiniMarkdown, DraftAnswer, draftText, sharedPrefix, markFailed, SourcesBlock, ToolCallStrip, startRun, startDeepDive, followRun, liveRuns, cancelRun,
+         cancelTask } from './askShared'
+import { TaskStrip, TaskCard, InterjectList } from './AgentTasks'
+import { lastTurn, newTurn, turnsFromMessages, histForAgent, interject, withdrawFrom, handleInterjectEv, useSessionTasks } from './askTurns'
 import ImageZoom from './ImageZoom'
 
 function pctColor(v) {
@@ -27,22 +30,23 @@ function readDrawerW() {
   return Math.min(Math.max(n, DRAWER_W_MIN), window.innerWidth - 40)
 }
 
-const DRAWER_CACHE = new Map()      // code -> { history, sessionId, run }
+const DRAWER_CACHE = new Map()      // code -> { history, sessionId, run, nextRun }
 const DRAWER_CACHE_MAX = 8
 
-function remember(code, history, sessionId, run) {
+function remember(code, history, sessionId, run, nextRun = null) {
   if (!code) return
   DRAWER_CACHE.delete(code)                       // 删了再插: Map 按插入序, 这样它排到最后
-  DRAWER_CACHE.set(code, { history, sessionId, run })
+  DRAWER_CACHE.set(code, { history, sessionId, run, nextRun })
   while (DRAWER_CACHE.size > DRAWER_CACHE_MAX) DRAWER_CACHE.delete(DRAWER_CACHE.keys().next().value)
 }
 
 // 个股 AI 分析弹窗: 多轮对话, 工具调用胶囊/正文/来源全部复用 askShared, 与"问问市场"样式一致。
+// 与「问问市场」同一套交互(askTurns.js): 回答期间照样能补充, 子任务条与后台任务结果卡片。
 // stock: {code, name, pct, 行业}; initialQuestion: 打开即自动问的第一句(可空)。
 export default function StockAskModal({ stock, onClose, initialQuestion = '' }) {
   const [q, setQ] = useState('')
   const [loading, setLoading] = useState(false)
-  // [{q, steps, answer, typed, done, sources, charts, err}]
+  // 结构见 askTurns.js
   const [history, setHistory] = useState(() => DRAWER_CACHE.get(stock?.code)?.history || [])
   const [shown, setShown] = useState(false)     // 滑入动画: 挂载后置 true → 从右侧划出
   const abortRef = useRef(null)
@@ -54,25 +58,35 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
   const closeTimer = useRef(null)
   const sessionId = useRef(DRAWER_CACHE.get(stock?.code)?.sessionId ?? null)   // 落库用: 同一只票接着同一条会话
   const runRef = useRef(DRAWER_CACHE.get(stock?.code)?.run ?? null)            // {id, cursor}: 关了再开接着看
+  const nextRunRef = useRef(DRAWER_CACHE.get(stock?.code)?.nextRun ?? null)    // 答完才到的补充续成的下一轮
+  const endedRef = useRef(Promise.resolve())        // 当前跟看的那根连接结束时 resolve
   const scope = `stock:${stock?.code || ''}`
 
   // 先播放滑出动画再卸载
   const close = () => { setShown(false); clearTimeout(closeTimer.current); closeTimer.current = setTimeout(onClose, 280) }
 
-  const patchLast = (fn) => setHistory(h => h.map((it, i) => i === h.length - 1 ? fn(it) : it))
+  const patchAt = (idx, fn) => setHistory(h => h.map((it, i) => i === idx ? fn(it) : it))
+  const patchLast = (fn) => setHistory(h => { const k = lastTurn(h); return h.map((it, i) => i === k ? fn(it) : it) })
 
   // 落库(与「问问市场」同一张表)现在归服务端: 问题在开跑那刻就写进会话, 答案跑完写。
   // 为什么非得落: 这个抽屉原来什么都不存, 于是在这儿发生的每一次纠正, 纠正挖掘都看不见 ——
   // 那套"答错了不再错第二遍"的机制对抽屉里的对话完全失效。事后想复盘也没有原文。
   // 而只要落库还挂在前端, "关抽屉"就等于"这一轮从没发生过"。
 
+  // 打字机钉在开始时的那一轮上: 打字期间可能已经接着开了下一轮(补充续跑 / 新问)
+  // 上一轮还没打完就来了下一轮的答案(补充续跑): 先把上一轮直接定格成完整答案, 不然停在半句
+  const typingRef = useRef(null)
   const typewriter = (full, from = 0) => {
     clearInterval(typer.current)
+    const prev = typingRef.current
+    if (prev) patchAt(prev.idx, it => ({ ...it, typed: prev.full, done: true }))
+    const idx = lastTurn(historyRef.current)
+    typingRef.current = { idx, full }
     let n = from
     typer.current = setInterval(() => {
       n = Math.min(full.length, n + 3)
-      patchLast(it => ({ ...it, typed: full.slice(0, n) }))
-      if (n >= full.length) { clearInterval(typer.current); patchLast(it => ({ ...it, done: true })) }
+      patchAt(idx, it => ({ ...it, typed: full.slice(0, n) }))
+      if (n >= full.length) { clearInterval(typer.current); typingRef.current = null; patchAt(idx, it => ({ ...it, done: true })) }
     }, 16)
   }
 
@@ -86,9 +100,11 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
     const el = scrollBox.current
     if (el && follow.current) el.scrollTop = el.scrollHeight
     historyRef.current = history
-    remember(stock?.code, history, sessionId.current, runRef.current)
+    remember(stock?.code, history, sessionId.current, runRef.current, nextRunRef.current)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [history])
+
+  const [tasks, setTasks] = useSessionTasks(sessionId, historyRef, setHistory, () => !!runRef.current)
 
   const handleEv = (ev) => {
     if (ev.type === 'step') patchLast(it => ({ ...it, steps: [...it.steps, { tool: ev.tool, label: ev.label, arg: ev.arg }] }))
@@ -114,6 +130,7 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
       typewriter(full, from)
     }
     else if (ev.type === 'error') { draftRef.current = ''; patchLast(it => ({ ...it, err: ev.error, draft: '', stale: '', done: true })) }
+    else handleInterjectEv(ev, patchLast, (nxt) => { nextRunRef.current = nxt })
   }
 
   // 最后一问的答案从库里补回来(服务端内存里已经没这条 run 了, 但落库是它跑完时就做的)。
@@ -123,15 +140,15 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
     try {
       if (sessionId.current) {
         const s = await (await fetch(`/api/ask/sessions/${sessionId.current}`)).json()
-        const msgs = s.messages || []
-        if (msgs[msgs.length - 1]?.role === 'assistant') last = msgs[msgs.length - 1]
+        const turns = turnsFromMessages(s.messages)
+        last = turns[lastTurn(turns)]
       }
     } catch { /* 取不到当没有 */ }
     patchLast(it => {
       if (it.answer) return { ...it, typed: it.answer, done: true }
-      if (last) return { ...it, answer: last.content, typed: last.content, done: true,
-                         sources: (last.meta && last.meta.sources) || it.sources,
-                         charts: (last.meta && last.meta.charts) || it.charts }
+      if (last?.answer) return { ...it, answer: last.answer, typed: last.answer, done: true,
+                                 sources: last.sources.length ? last.sources : it.sources,
+                                 charts: last.charts.length ? last.charts : it.charts }
       return { ...it, done: true, err: '这一轮没跑完(服务重启过)' }
     })
   }
@@ -142,34 +159,60 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
     const ctrl = new AbortController(); abortRef.current = ctrl
     runRef.current = { id: runId, cursor }
     // 从头重放就从空初稿拼起; 断点续拉则接着页面上已有的初稿往后拼
-    draftRef.current = cursor ? (historyRef.current.at(-1)?.draft || '') : ''
+    const h0 = historyRef.current
+    draftRef.current = cursor ? (h0[lastTurn(h0)]?.draft || '') : ''
     setLoading(true)
+    let ended
+    endedRef.current = new Promise(r => { ended = r })
     followRun(runId, {
       cursor, signal: ctrl.signal,
       onEvent: (ev) => { if (ev.cursor != null && runRef.current) runRef.current.cursor = ev.cursor; handleEv(ev) },
       onEnd: ({ finished, gone }) => {
+        ended()
         if (finished || gone) { runRef.current = null; setLoading(false) }
+        // 答完之后才到的补充, 服务端已合成一问开了下一轮: 接着跟看那一轮
+        const nxt = nextRunRef.current
+        if (finished && nxt) {
+          nextRunRef.current = null
+          setHistory(h => [...h, newTurn(nxt.question)])
+          attach(nxt.run_id, 0)
+          return
+        }
         if (gone) recoverTail()      // 服务端不记得它了 → 答案在库里, 回去取
       },
-      onError: (err) => { patchLast(it => ({ ...it, err, done: true })); runRef.current = null; setLoading(false) },
+      onError: (err) => { ended(); patchLast(it => ({ ...it, err, done: true })); runRef.current = null; setLoading(false) },
     })
   }
 
   const stopRun = () => {
     if (runRef.current) cancelRun(runRef.current.id)
-    abortRef.current?.abort(); clearInterval(typer.current); runRef.current = null
-    patchLast(it => (it.answer == null ? { ...it, err: '已停止', done: true } : { ...it, typed: it.answer, done: true }))
+    abortRef.current?.abort(); clearInterval(typer.current); runRef.current = null; nextRunRef.current = null
+    patchLast(it => ({ ...(it.answer == null ? { ...it, err: '已停止', done: true } : { ...it, typed: it.answer, done: true }),
+                       interjects: (it.interjects || []).map(x => x.state === 'queued' ? { ...x, state: 'lost' } : x) }))
     setLoading(false)
   }
 
-  const ask = async (question) => {
+  // 这一轮在跑时发的话进它的收件箱, agent 做完当前这一步就会读到; 投不进(这一轮已收尾)就开新一轮。
+  // 深挖那条链中途不读收件箱, 补充会在它跑完后合成下一问接着跑。
+  const send = async () => {
+    const text = q.trim()
+    if (!runRef.current) return ask()
+    if (!text) return
+    setQ(''); follow.current = true
+    const r = await interject(() => runRef.current?.id, () => endedRef.current, text)
+    if (r) patchLast(it => ({ ...it, interjects: [...(it.interjects || []), { ...r, text, state: 'queued' }] }))
+    else return ask(text, true)
+  }
+
+  const withdraw = (x) => withdrawFrom(setHistory, x, runRef.current?.id)
+
+  const ask = async (question, force = false) => {
     const text = (question ?? q).trim()
-    if (!text || loading || !stock) return
-    // 已完成轮次作为上下文(最近4轮), 支持追问
-    const hist = history.filter(it => it.answer && !it.err).slice(-4)
-      .flatMap(it => [{ role: 'user', content: it.q }, { role: 'assistant', content: it.answer }])
+    if (!text || (loading && !force) || !stock) return
+    // 已完成轮次作为上下文, 支持追问
+    const hist = histForAgent(historyRef.current)
     setQ(''); setLoading(true); follow.current = true
-    setHistory(h => [...h, { q: text, steps: [], answer: null, typed: '', done: false, sources: [], charts: [] }])
+    setHistory(h => [...h, newTurn(text)])
     try {
       const r = await startRun({
         question: text, agent_question: `${stock.name}(${stock.code}): ${text}`, history: hist,
@@ -188,7 +231,7 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
     if (loading || !stock) return
     const label = `深挖 ${stock.name}: 四层交叉(生意/数/局/雷)`
     setLoading(true); follow.current = true
-    setHistory(h => [...h, { q: label, steps: [], answer: null, typed: '', done: false, sources: [], charts: [] }])
+    setHistory(h => [...h, newTurn(label)])
     try {
       const r = await startDeepDive({ code: stock.code, name: stock.name, session_id: sessionId.current })
       if (r.error) throw new Error(r.error)
@@ -206,7 +249,7 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
     const r = (await liveRuns(scope)).filter(x => !x.done).pop()
     if (!r) return false
     sessionId.current = r.session_id
-    setHistory(h => (h.length ? h : [{ q: r.question, steps: [], answer: null, typed: '', done: false, sources: [], charts: [] }]))
+    setHistory(h => (h.length ? h : [{ ...newTurn(r.question), interjects: (r.inbox || []).map(m => ({ ...m, runId: r.run_id, state: 'queued' })) }]))
     attach(r.run_id, 0)
     return true
   }
@@ -236,12 +279,13 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
       // 这里不能用 setHistory: 组件正在卸载, React 18 会把更新丢掉, updater 根本不跑。
       // 所以读 ref 里那份镜像, 直接写缓存。
       const h = historyRef.current
-      const last = h?.[h.length - 1]
+      const k = lastTurn(h || [])
+      const last = h?.[k]
       if (last?.answer && !last.done) {
-        remember(stock?.code, [...h.slice(0, -1), { ...last, typed: last.answer, done: true }],
-                 sessionId.current, runRef.current)
+        remember(stock?.code, h.map((it, i) => i === k ? { ...last, typed: last.answer, done: true } : it),
+                 sessionId.current, runRef.current, nextRunRef.current)
       } else {
-        remember(stock?.code, h || [], sessionId.current, runRef.current)
+        remember(stock?.code, h || [], sessionId.current, runRef.current, nextRunRef.current)
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -319,9 +363,10 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
               </div>
             </div>
           )}
-          {history.map((it, i) => (
+          {history.map((it, i) => it.kind === 'task' ? <TaskCard key={i} task={it.task} /> : (
             <div key={i}>
               <div className="text-[12px] text-text-bright bg-surface-3 rounded-lg px-3 py-1.5 inline-block">{it.q}</div>
+              <InterjectList items={it.interjects} onWithdraw={withdraw} />
               <div className="mt-2 px-3 py-2.5 rounded-lg bg-accent/8 border border-accent/25">
                 <ToolCallStrip steps={it.steps} settled={it.answer != null || it.done} />
                 {(it.charts || []).length > 0 && (
@@ -352,15 +397,15 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
 
         {/* 输入 */}
         <div className="shrink-0 border-t border-border px-4 py-3">
+          <TaskStrip tasks={tasks} onCancel={(id) => { cancelTask(id); setTasks(ts => ts.map(t => t.task_id === id ? { ...t, status: 'cancelled' } : t)) }} />
           <div className="flex gap-2">
             <input value={q} onChange={e => setQ(e.target.value)} autoFocus
-              onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) ask() }}
-              disabled={loading}
-              placeholder={`问点 ${stock.name} 的事 例: 今天为什么这么走 / 量价怎么看`}
+              onKeyDown={e => { if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) send() }}
+              placeholder={loading ? '补充或追问: 它做完当前这一步就会看到' : `问点 ${stock.name} 的事 例: 今天为什么这么走 / 量价怎么看`}
               className="flex-1 text-[12px] px-3 py-2 rounded-lg bg-surface-3 border border-border text-text placeholder:text-text-muted focus:border-accent/50 outline-none disabled:opacity-50" />
-            <button onClick={() => ask()} disabled={loading || !q.trim()}
+            <button onClick={() => send()} disabled={!q.trim()}
               className="text-[12px] px-3.5 py-2 rounded-lg bg-accent/20 text-accent border border-accent/40 hover:bg-accent/30 disabled:opacity-40 disabled:cursor-not-allowed">
-              {loading ? '分析中' : '问'}
+              {loading ? '补充' : '问'}
             </button>
             {loading && (
               <button onClick={stopRun} title="真停掉这一轮(关抽屉不用停, 它会自己跑完)"
@@ -371,7 +416,7 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
           </div>
           <div className="text-[10px] text-text-muted pt-2 mt-2 border-t border-border-subtle">
             纯客观解读，不构成任何买卖建议
-            {loading && ' · 关掉抽屉它也会在后台跑完并进历史'}
+            {loading && ' · 关掉抽屉它也会在后台跑完并进历史; 跑的时候可以接着补充'}
           </div>
         </div>
       </div>

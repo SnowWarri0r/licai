@@ -279,3 +279,50 @@ def test_blocked_tools_are_refused_at_execution(monkeypatch):
     async def bare():
         return await sa._run_tool({"name": "dispatch_tasks", "input": {}})
     assert "主 agent" in asyncio.run(bare())["error"]
+
+
+def test_follow_up_keeps_drawer_prefix(temp_db, runs, monkeypatch):
+    calls = []
+
+    def agent(gate):
+        async def gen(question, history=None, images=None, state=None):
+            calls.append(question)
+            await gate.wait()
+            yield {"type": "answer", "text": "答"}
+        return gen
+
+    async def main():
+        gate = asyncio.Event()
+        monkeypatch.setattr(runs, "ask_stock_stream", agent(gate))
+        run = await runs.start("量价怎么看", agent_question="虚构甲(300999): 量价怎么看", scope="stock:300999")
+        await runs.post_inbox(run.id, "资金流呢")
+        gate.set()
+        await run.task
+        nxt = runs.get(run.next_run_id)
+        await nxt.task
+        return nxt
+    nxt = asyncio.run(main())
+    assert calls == ["虚构甲(300999): 量价怎么看", "虚构甲(300999): 资金流呢"]
+    assert nxt.scope == "stock:300999" and nxt.question == "资金流呢"
+
+
+def test_next_run_reaches_follower_even_if_stream_emits_done(temp_db, runs, monkeypatch):
+    """真 agent 流自己会发 done; follow 读到 done 就停, next_run 必须排在唯一的 done 之前。"""
+    def agent(gate):
+        async def gen(question, history=None, images=None, state=None):
+            await gate.wait()
+            yield {"type": "answer", "text": "答"}
+            yield {"type": "done"}
+        return gen
+
+    async def main():
+        gate = asyncio.Event()
+        monkeypatch.setattr(runs, "ask_stock_stream", agent(gate))
+        run = await runs.start("量价怎么看")
+        await runs.post_inbox(run.id, "成交额呢")
+        gate.set()
+        seen = [ev["type"] async for ev in runs.follow(run.id, 0)]
+        await runs.get(run.next_run_id).task
+        return seen
+    seen = asyncio.run(main())
+    assert seen == ["answer", "next_run", "done"]

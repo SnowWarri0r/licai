@@ -67,6 +67,7 @@ class Run:
         self.inbox: list[dict] = []        # 执行期间用户补充、还没交给 agent 的消息 [{id, text}]
         self.closed = False                # 事件流已结束: 再来的消息开下一轮, 不进收件箱
         self.next_run_id: Optional[str] = None
+        self.agent_prefix = ""             # 抽屉给 agent 的问题前缀("名称(代码): "), 续跑的下一轮沿用
 
     def take_inbox(self) -> list[dict]:
         out, self.inbox = self.inbox, []
@@ -118,6 +119,10 @@ async def _drive(run: Run, events) -> None:
     agent_ctx.run.set({"run_id": run.id, "session_id": run.session_id, "take_inbox": run.take_inbox, "spawned": 0})
     try:
         async for ev in events:
+            # 事件流自己的 done 不收: 跟看(follow)读到 done 就停, 收尾的 done 由这里在最后统一追加,
+            # 之前还可能有 next_run(答完才到的补充续成的下一轮), 提前收进来前端就收不到它了
+            if ev.get("type") == "done":
+                continue
             run.events.append(ev)
             await run.flush()               # 合并窗口内不重复写
             t = ev.get("type")
@@ -180,7 +185,8 @@ async def _follow_up(run: Run, msgs: list[dict]) -> Run:
     for m in msgs:
         await delete_ask_message(m["id"])
     question = "\n".join(m["text"] for m in msgs)
-    return await start(question, history=await _db_history(run.session_id), session_id=run.session_id,
+    return await start(question, agent_question=(run.agent_prefix + question) if run.agent_prefix else None,
+                       history=await _db_history(run.session_id), session_id=run.session_id,
                        title=run.title, scope=run.scope)
 
 
@@ -309,6 +315,8 @@ async def start(question: str, *, agent_question: Optional[str] = None,
     await add_ask_message(session_id, "user", question,
                           _json.dumps(user_meta, ensure_ascii=False) if user_meta else "")
     run = Run(question, session_id, scope, title or question)
+    if agent_question and question and agent_question.endswith(question):
+        run.agent_prefix = agent_question[:-len(question)]
     _RUNS[run.id] = run
     try:                                    # 先建流水行: 之后每次 flush 都是 UPDATE
         await save_ask_run(run.id, session_id, scope, question, run.started_at)
