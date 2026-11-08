@@ -12,10 +12,10 @@ def test_parse_full_and_wrapped():
 
 
 def test_parse_truncated_salvages_summary_and_complete_items():
-    raw = ('{ "summary": "福莱新材受机器人概念带动活跃", "highlights": [ { "level": "good", "title": "第一条", '
-           '"related": "605488", "impact": "偏强" }, { "level": "good", "title": "第二条", "related": "60548')
+    raw = ('{ "summary": "虚构乙受机器人概念带动活跃", "highlights": [ { "level": "good", "title": "第一条", '
+           '"related": "605999", "impact": "偏强" }, { "level": "good", "title": "第二条", "related": "60599')
     summary, hl = _parse_digest(raw)
-    assert summary == "福莱新材受机器人概念带动活跃"
+    assert summary == "虚构乙受机器人概念带动活跃"
     assert [h["title"] for h in hl] == ["第一条"]
 
 
