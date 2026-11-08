@@ -157,3 +157,19 @@ def daily_lists_all() -> list[dict]:
         except Exception as e:  # noqa: BLE001
             log.warning("analyzer %s daily_lists 出错: %s", name, e)
     return out
+
+
+def risk_flags_all(codes: list[str]) -> dict:
+    """第一个实现了 risk_flags 的插件给出的每日排雷标记(盯盘员用)。都没有或出错 → {"stale": True}。
+    插件约定: risk_flags(codes) -> {date, prev_date, flags: {code: [标记id]}, prev_flags, in_pool: {code: bool},
+    catalog: {flags: {标记id: {label}}, by_count: {post: {"0".."3": {n, ex20, bad, beat}}}, basis}}。"""
+    for name, a in get_analyzers().items():
+        fn = getattr(a, "risk_flags", None)
+        if not fn:
+            continue
+        try:
+            return fn(list(codes)) or {"stale": True}
+        except Exception as e:  # noqa: BLE001
+            log.warning("analyzer %s risk_flags 出错: %s", name, e)
+    return {"stale": True}
+
