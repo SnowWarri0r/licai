@@ -123,3 +123,10 @@ def test_sealed_close_tells_yizi_apart():
     assert [x["detector"] for x in f] == ["sealed_close"] and "普通板" in f[0]["body"] and "一字" not in f[0]["title"]
     f = w.close_findings("605999", "虚构乙", PTS, {**q, "open": 11.0, "low": 11.0}, 10.0, EV, "2026-01-05")
     assert f[0]["title"].endswith("(一字板)") and "一字板" in f[0]["body"]
+
+
+def test_risk_body_notes_lagging_lhb_date():
+    rf = {"date": "2026-01-05", "prev_date": "2026-01-02", "lhb_through": "2026-01-02", "catalog": CAT,
+          "flags": {"300999": ["a", "b"]}, "prev_flags": {}}
+    f = w.risk_findings({"300999": "虚构甲"}, rf, "2026-01-05")[0]
+    assert f["body"].endswith("数据截至 01-05 收盘(龙虎榜截至 01-02)")

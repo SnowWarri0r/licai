@@ -162,6 +162,11 @@ def _labels(cat: dict, flags: list[str]) -> str:
     return " · ".join((names.get(f) or {}).get("label", f) for f in flags)
 
 
+def _lhb_note(rf: dict, date: str) -> str:
+    t = rf.get("lhb_through")
+    return f"(龙虎榜截至 {t[5:]})" if t and t < date else ""
+
+
 def risk_findings(held: dict, rf: dict, date: str) -> list[dict]:
     """held: {6位代码: 名称}; rf: 插件 risk_flags 的返回。命中 ≥ 2 且比上一份多 → 发现。"""
     if rf.get("stale") or rf.get("date") != date:
@@ -171,7 +176,7 @@ def risk_findings(held: dict, rf: dict, date: str) -> list[dict]:
         now, prev = rf["flags"].get(code) or [], rf.get("prev_flags", {}).get(code) or []
         if len(now) < 2 or len(now) <= len(prev):
             continue
-        body = [f"命中: {_labels(cat, now)}", _count_line(cat, len(now)), f"数据截至 {date[5:]} 收盘"]
+        body = [f"命中: {_labels(cat, now)}", _count_line(cat, len(now)), f"数据截至 {date[5:]} 收盘" + _lhb_note(rf, date)]
         out.append({"key": f"risk_hits::{code}::{date}", "detector": "risk_hits", "code": code, "name": name, "level": "warn",
                     "title": f"{name} 排雷命中 {len(now)} 项" + (f"(前一交易日 {len(prev)} 项)" if rf.get("prev_date") else ""),
                     "body": "\n".join(x for x in body if x), "evidence": {"hits": now, "prev_hits": prev, "data_date": date}})
@@ -212,7 +217,7 @@ def fresh_buy_finding(act: dict, name: str, mirror: dict, rf: dict) -> dict:
     cat = rf.get("catalog") or {}
     if not rf.get("stale") and (rf.get("in_pool") or {}).get(code):
         lines.append(f"排雷命中 {len(hits)} 项" + (f": {_labels(cat, hits)}" if hits else "")
-                     + f"(数据截至 {rf['date'][5:]} 收盘)")
+                     + f"(数据截至 {rf['date'][5:]} 收盘{_lhb_note(rf, rf['date']).replace('(', ', ').rstrip(')')})")
         if hits:
             lines.append(_count_line(cat, len(hits)))
     return {"key": f"fresh_buy::{act['id']}", "detector": "fresh_buy", "code": code, "name": name,
