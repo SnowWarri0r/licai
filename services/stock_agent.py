@@ -3455,6 +3455,8 @@ _TOOLS = [
     _watcher.TOOL_GET,
     _agent_tasks.TOOL_DISPATCH,
     _agent_tasks.TOOL_GET,
+    _agent_tasks.TOOL_SCHEDULE,
+    _agent_tasks.TOOL_CANCEL,
     {"name": "calc", "description": "算术兜底(Decimal 精算, 禁止心算时用它)。三种 op: "
      "eval=算表达式(expr, 只支持数字与 + - * / ( ) 和百分号, 如 '(4.36-3.96)/3.96*100'); "
      "market_cap=市值验算(price 现价, shares 股本(亿股), 可选 reported 外部报出的市值(亿), unit 默认'亿')——"
@@ -3587,6 +3589,8 @@ _EXECUTORS = {
     "get_watch_findings": lambda a: _watcher.list_findings(a.get("date") or None),
     "dispatch_tasks": lambda a: _agent_tasks.dispatch(a.get("tasks") or [], bool(a.get("wait", True))),
     "get_tasks": lambda a: _agent_tasks.get(a.get("task_id")),
+    "schedule_task": lambda a: _agent_tasks.schedule(a.get("title", ""), a.get("brief", ""), a.get("run_at", "")),
+    "cancel_scheduled": lambda a: _agent_tasks.cancel_scheduled(a.get("task_id")),
     "calc": lambda a: _tool_calc(a),
     "resolve_stock": lambda a: _tool_resolve_stock(a.get("query", "")),
     "get_quote": lambda a: _tool_get_quote(a.get("code", "")),
@@ -3707,7 +3711,7 @@ def _result_content(out: dict):
 
 
 _ZSXQ_TOOLS = ("get_zsxq_digest", "search_zsxq", "read_zsxq_file")
-_TASK_TOOLS = ("dispatch_tasks", "get_tasks")
+_TASK_TOOLS = ("dispatch_tasks", "get_tasks", "schedule_task", "cancel_scheduled")
 _MAIN_ONLY_TOOLS = (*_TASK_TOOLS, "remember", "save_trade_plan")
 
 # 扩展数据源(provider)供数的工具 → 它依赖的那项能力。provider 没声明该能力就不挂这个工具。
@@ -3780,7 +3784,7 @@ def _system() -> str:
 _TOOL_CN = {
     "load_guide": "读作答规范", "remember": "记住",
     "save_trade_plan": "记交易计划", "get_trade_plans": "查计划执行", "get_watch_findings": "看盯盘员发现",
-    "dispatch_tasks": "派子任务", "get_tasks": "查子任务",
+    "dispatch_tasks": "派子任务", "get_tasks": "查子任务", "schedule_task": "预约任务", "cancel_scheduled": "取消预约",
     "resolve_stock": "解析代码", "get_quote": "查行情", "get_trend": "查走势",
     "get_news": "查新闻", "get_intraday": "查分时", "get_announcements": "查公告", "get_fund_flow": "查资金流", "get_lhb": "查龙虎榜", "get_seat_history": "查席位历史", "get_deep_lhb": "查深度龙虎榜",
     "get_company_profile": "查公司主营", "get_red_flags": "查红线风险", "screen_quality": "跑去劣筛选", "get_capital_allocation": "查资本配置", "get_stock_concepts": "查所属概念", "get_fundamentals": "查基本面", "get_commodity": "查商品价",
@@ -3934,9 +3938,9 @@ def _state_block(state: dict | None) -> str:
                      + "。此轮提到的称呼与其中某只对应时沿用该代码; 用户明确改指别的标的时以新说法为准。")
     tasks = (state or {}).get("tasks") or []
     if tasks:
-        st = {"queued": "排队中", "running": "运行中", "done": "已完成", "failed": "失败", "cancelled": "已取消",
+        st = {"scheduled": "已预约", "queued": "排队中", "running": "运行中", "done": "已完成", "failed": "失败", "cancelled": "已取消",
               "interrupted": "服务重启中断"}
-        lines = [f"#{t['id']} {t['title']}({'后台' if t.get('background') else '并行拆解'}, {st.get(t['status'], t['status'])})"
+        lines = [f"#{t['id']} {t['title']}({'预约 ' + t['run_at'] if t.get('run_at') else ('后台' if t.get('background') else '并行拆解')}, {st.get(t['status'], t['status'])})"
                  + (f": {t['result'][:300]}" if t.get("result") else "") for t in tasks[-6:]]
         parts.append("【本会话派出过的子任务】\n" + "\n".join(lines)
                      + "\n用户提到这些任务时据此回应; 需要某个任务的完整结论用 get_tasks(task_id)。")

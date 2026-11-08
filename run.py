@@ -152,6 +152,8 @@ async def lifespan(app: FastAPI):
     task11 = asyncio.create_task(rule_mine_loop())
     task12 = asyncio.create_task(plan_monitor_loop())
     from services.watcher import watcher_loop
+    from services.agent_tasks import scheduler_loop
+    asyncio.create_task(scheduler_loop())
     task13 = asyncio.create_task(watcher_loop())
     print(f"理财助手已启动: http://localhost:{config.port}")
     yield

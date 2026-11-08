@@ -8,7 +8,7 @@ import { MiniMarkdown } from './askShared'
 const OUTCOME = { ok: '跑成', skipped: '跳过', error: '出错' }
 const TAG = {
   fresh_buy: '新买入', risk_hits: '排雷', tail_pull: '尾盘', sealed_close: '封板', unlock_soon: '解禁',
-  fund_est_miss: '基金估值', fund_drop: '基金跌幅', books_drift: '对账',
+  fund_est_miss: '基金估值', fund_drop: '基金跌幅', books_drift: '对账', scheduled: '预约', notice: '公告',
 }
 const SEEN_KEY = 'watch_seen_ids'
 const hhmm = (iso) => (iso ? iso.slice(5, 16).replace('T', ' ') : '—')

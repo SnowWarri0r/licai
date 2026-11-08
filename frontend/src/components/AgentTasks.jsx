@@ -6,40 +6,47 @@ import { MiniMarkdown, SourcesBlock } from './askShared'
 // TaskCard: 后台任务跑完后进对话的结果卡片(与历史里 role=task 的消息同一样式)。
 
 const STATUS = {
-  queued: '排队中', running: '运行中', done: '已完成', failed: '失败', cancelled: '已取消', interrupted: '服务重启中断',
+  scheduled: '已预约', queued: '排队中', running: '运行中', done: '已完成', failed: '失败', cancelled: '已取消', interrupted: '服务重启中断',
 }
 export const isActive = (t) => t.status === 'queued' || t.status === 'running'
+const isScheduled = (t) => t.status === 'scheduled'
 
 export function TaskStrip({ tasks, onCancel }) {
   const [open, setOpen] = useState(null)        // 展开看结论的那一个 task_id
   const [showDone, setShowDone] = useState(false)
   if (!tasks?.length) return null
   const active = tasks.filter(isActive)
-  const done = tasks.filter(t => !isActive(t))
+  const booked = tasks.filter(isScheduled).sort((a, b) => (a.run_at < b.run_at ? -1 : 1))
+  const done = tasks.filter(t => !isActive(t) && !isScheduled(t))
   return (
     <div className="mb-2 rounded-lg border border-border bg-surface-3/60 px-3 py-2 text-[11px]">
       <div className="flex items-center gap-2 text-text-muted">
         <span className="text-text-dim font-medium">子任务</span>
         {active.length > 0 && <span>{active.length} 个在跑</span>}
+        {booked.length > 0 && <span>{booked.length} 个已预约</span>}
         {done.length > 0 && (
           <button onClick={() => setShowDone(v => !v)} className="hover:text-text">
             已结束 {done.length} 个 {showDone ? '收起' : '展开'}
           </button>
         )}
       </div>
-      {[...active, ...(showDone ? done.slice().reverse() : [])].map(t => (
+      {[...active, ...booked, ...(showDone ? done.slice().reverse() : [])].map(t => (
         <div key={t.task_id} className="mt-1.5">
           <div className="flex items-center gap-2">
-            {isActive(t)
+            {isScheduled(t)
+              ? <span className="w-1.5 h-1.5 rounded-full border border-accent shrink-0" />
+              : isActive(t)
               ? <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse shrink-0" />
               : <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${t.status === 'done' ? 'bg-bull' : 'bg-text-muted'}`} />}
             <span className="text-text truncate">{t.title}</span>
-            <span className="text-text-muted shrink-0">{t.background ? '后台' : '并行'} · {STATUS[t.status] || t.status}</span>
+            <span className="text-text-muted shrink-0">
+              {t.run_at ? `预约 ${t.run_at.slice(5)}` : t.background ? '后台' : '并行'} · {STATUS[t.status] || t.status}
+            </span>
             {isActive(t) && t.steps > 0 && (
               <span className="text-text-muted truncate">已调用 {t.steps} 个工具{t.last_step ? ` · ${t.last_step}` : ''}</span>
             )}
             <span className="flex-1" />
-            {isActive(t)
+            {isActive(t) || isScheduled(t)
               ? <button onClick={() => onCancel(t.task_id)} className="text-text-muted hover:text-bear-bright shrink-0">取消</button>
               : t.result && (
                 <button onClick={() => setOpen(o => o === t.task_id ? null : t.task_id)} className="text-text-muted hover:text-text shrink-0">

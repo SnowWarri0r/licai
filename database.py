@@ -370,7 +370,8 @@ CREATE TABLE IF NOT EXISTS agent_task (
     title TEXT NOT NULL,
     brief TEXT NOT NULL,                       -- 主 agent 写给子 agent 的完整任务说明
     background INTEGER DEFAULT 0,              -- 1 = 后台任务(主对话不等它); 0 = 主 agent 等结果汇总
-    status TEXT NOT NULL DEFAULT 'queued',     -- queued | running | done | failed | cancelled | interrupted
+    status TEXT NOT NULL DEFAULT 'queued',     -- scheduled | queued | running | done | failed | cancelled | interrupted
+    run_at TEXT DEFAULT '',                    -- 预约任务的执行时间(北京时间 YYYY-MM-DD HH:MM); 空 = 立即
     result TEXT DEFAULT '',
     meta TEXT DEFAULT '{}',                    -- JSON: {tools_used, sources, error}
     created_at REAL,
@@ -553,6 +554,10 @@ async def init_db():
                          ("check_on", "INTEGER DEFAULT 0")):
             if col not in pr_cols:
                 await db.execute(f"ALTER TABLE prompt_rule ADD COLUMN {col} {typ}")
+        # Migration: 子任务加预约时间
+        cursor = await db.execute("PRAGMA table_info(agent_task)")
+        if "run_at" not in {row[1] for row in await cursor.fetchall()}:
+            await db.execute("ALTER TABLE agent_task ADD COLUMN run_at TEXT DEFAULT ''")
         # Migration: 盯盘员发现加深挖四列
         cursor = await db.execute("PRAGMA table_info(watch_finding)")
         wf_cols = {row[1] for row in await cursor.fetchall()}
@@ -1239,13 +1244,15 @@ async def delete_ask_message(message_id: int) -> None:
 
 # --- 子任务 ---
 
-async def create_agent_task(session_id: int | None, run_id: str, title: str, brief: str, background: bool) -> int:
+async def create_agent_task(session_id: int | None, run_id: str, title: str, brief: str, background: bool,
+                            run_at: str = "") -> int:
     import time as _t
     db = await get_db()
     try:
         cur = await db.execute(
-            "INSERT INTO agent_task (session_id, run_id, title, brief, background, created_at) VALUES (?,?,?,?,?,?)",
-            (session_id, run_id or "", title, brief, int(bool(background)), _t.time()))
+            "INSERT INTO agent_task (session_id, run_id, title, brief, background, created_at, status, run_at) VALUES (?,?,?,?,?,?,?,?)",
+            (session_id, run_id or "", title, brief, int(bool(background)), _t.time(),
+             "scheduled" if run_at else "queued", run_at or ""))
         await db.commit()
         return cur.lastrowid
     finally:

@@ -326,3 +326,57 @@ def test_next_run_reaches_follower_even_if_stream_emits_done(temp_db, runs, monk
         return seen
     seen = asyncio.run(main())
     assert seen == ["answer", "next_run", "done"]
+
+
+# ── 预约任务 ──────────────────────────────────────────
+
+def test_schedule_validates_and_runs_when_due(temp_db, monkeypatch):
+    from datetime import datetime
+    from database import create_ask_session
+    from services import agent_tasks as at
+    from services import watcher
+    now = datetime(2026, 1, 5, 10, 0, tzinfo=watcher._CST)
+    monkeypatch.setattr(at, "_now", lambda: now)
+    seen = []
+
+    def stream(question):
+        async def gen():
+            seen.append(question)
+            yield {"type": "answer", "text": "**结论**: 没有放量回落\n细节"}
+        return gen()
+    monkeypatch.setattr(at, "_stream", stream)
+    sid = asyncio.run(create_ask_session("t"))
+
+    async def go():
+        bad = [await at.schedule("x", "b", "明天"), await at.schedule("x", "b", "2026-01-05 09:00"),
+               await at.schedule("x", "b", "2026-03-01 09:00")]
+        ok = await at.schedule("看放量", "查虚构甲(300999)收盘是否放量回落", "2026-01-06 15:10")
+        assert await at.run_due(datetime(2026, 1, 6, 15, 9)) == []
+        sent = await at.run_due(datetime(2026, 1, 6, 15, 10))
+        await at.wait(sent, 5)
+        return bad, ok, sent
+    bad, ok, sent = _in_run(go, session_id=sid)
+    assert all("error" in b for b in bad)
+    assert ok["status"] == "scheduled" and ok["run_at"] == "2026-01-06 15:10" and sent == [ok["task_id"]]
+    assert seen[0].startswith("【预约任务】用户预约在 2026-01-06 15:10 执行")
+    assert _msgs(sid)[-1]["role"] == "task"
+    f = asyncio.run(watcher.list_findings())["items"][0]
+    assert f["detector"] == "scheduled" and f["summary"] == "结论: 没有放量回落" and f["title"] == "预约任务完成: 看放量"
+
+
+def test_scheduled_can_be_cancelled_and_late_ones_are_not_run(temp_db, monkeypatch):
+    from datetime import datetime
+    from services import agent_tasks as at
+    from services import watcher
+    monkeypatch.setattr(at, "_now", lambda: datetime(2026, 1, 5, 10, 0, tzinfo=watcher._CST))
+    monkeypatch.setattr(at, "_stream", _fake_sub({}))
+
+    async def go():
+        a = await at.schedule("甲", "b", "2026-01-05 11:00")
+        b = await at.schedule("乙", "b", "2026-01-05 12:00")
+        assert (await at.cancel_scheduled(a["task_id"]))["status"] == "cancelled"
+        assert "error" in await at.cancel_scheduled(a["task_id"])
+        sent = await at.run_due(datetime(2026, 1, 6, 9, 0))                # 乙错过 21 小时
+        return sent, await at.view(a["task_id"]), await at.view(b["task_id"])
+    sent, va, vb = _in_run(go)
+    assert sent == [] and va["status"] == "cancelled" and vb["status"] == "failed" and "错过预约时间" in vb["error"]

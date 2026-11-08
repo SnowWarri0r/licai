@@ -217,7 +217,7 @@ async def list_tasks(session_id: int):
 @router.post("/tasks/{task_id}/cancel")
 async def cancel_task(task_id: int):
     from services import agent_tasks
-    return {"cancelled": agent_tasks.cancel(task_id)}
+    return {"cancelled": await agent_tasks.cancel_any(task_id)}
 
 
 # --- 会话历史 ---

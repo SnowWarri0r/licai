@@ -10,6 +10,10 @@
 - 同时最多跑 _MAX_PARALLEL 个(上游有并发限流), 单次最多派 _MAX_PER_CALL 个, 一轮最多 _MAX_PER_RUN 个。
 - 主 agent 等结果时这一轮被取消(用户点停) → 这批等着汇总的子任务一并取消; 后台任务不受影响。
 - 服务重启时还没跑完的子任务标成 interrupted(run.py), 不自动重跑。
+
+预约任务(schedule_task): 用户在对话里约「以后某个时间再查」。存成 status=scheduled 的子任务(run_at = 北京时间),
+scheduler_loop 每 30 秒把到点的派出去, 跑法同后台任务(结果卡片进原会话), 另在盯盘员面板记一条(detector=scheduled),
+不在那个对话里也看得到。服务重启不丢; 错过 _LATE_LIMIT_H 小时以上的标成 failed 不补跑。同时排着的最多 _MAX_SCHEDULED 个。
 """
 from __future__ import annotations
 
@@ -24,6 +28,7 @@ _MAX_PARALLEL = 3
 _MAX_PER_CALL = 5
 _MAX_PER_RUN = 10
 _WAIT_CAP_S = 300
+_MAX_SCHEDULED, _MAX_AHEAD_DAYS, _LATE_LIMIT_H = 10, 30, 12
 _NOT_TOOLS = ("llm_retry", "self_check")
 
 _sem: asyncio.Semaphore | None = None
@@ -52,6 +57,27 @@ TOOL_DISPATCH = {
     },
 }
 
+TOOL_SCHEDULE = {
+    "name": "schedule_task",
+    "description": "预约一项以后执行的分析: 用户要你在某个时间再查、再看、再核对时用(例: 明天收盘后看看某只票有没有放量回落; "
+                   "下周一开盘前看隔夜美股对持仓的影响)。到点由子 agent 执行, 结果以卡片进入本对话, 并在盯盘员面板记一条。"
+                   "run_at 写北京时间 YYYY-MM-DD HH:MM, 按系统提示里的今天日期换算; 「收盘后」取 15:10, 「开盘前」取 09:00, "
+                   "落在非交易日时顺延到下一个交易日。brief 写成独立完整的任务说明: 标的名称与代码、要核对的条件、交回什么, "
+                   f"执行时子 agent 看不到本对话。最多提前 {_MAX_AHEAD_DAYS} 天, 同时排着的最多 {_MAX_SCHEDULED} 个。"
+                   "预约后回复用户预约的时间与内容。",
+    "input_schema": {"type": "object", "properties": {
+        "title": {"type": "string", "description": "十字以内的任务名"},
+        "brief": {"type": "string", "description": "给子 agent 的完整任务说明"},
+        "run_at": {"type": "string", "description": "北京时间 YYYY-MM-DD HH:MM"}},
+        "required": ["title", "brief", "run_at"]},
+}
+
+TOOL_CANCEL = {
+    "name": "cancel_scheduled",
+    "description": "取消一个还没执行的预约任务。task_id 取自 get_tasks 或本会话子任务列表。",
+    "input_schema": {"type": "object", "properties": {"task_id": {"type": "integer"}}, "required": ["task_id"]},
+}
+
 TOOL_GET = {
     "name": "get_tasks",
     "description": "查本会话派出的子任务与后台任务的状态和结果。用户问起之前派出的后台任务(进度、结论)时用; "
@@ -60,8 +86,9 @@ TOOL_GET = {
 }
 
 
-def brief_prompt(title: str, brief: str) -> str:
-    return ("【子任务】这是主助手为当前对话拆出的一项独立工作, 你的回答会交回主助手汇总, 也会展示给用户。"
+def brief_prompt(title: str, brief: str, run_at: str = "") -> str:
+    return ((f"【预约任务】用户预约在 {run_at} 执行这项分析, 现在到点了; 以工具返回的最新数据为准。\n" if run_at else "") +
+            "【子任务】这是主助手为当前对话拆出的一项独立工作, 你的回答会交回主助手汇总, 也会展示给用户。"
             "只完成下面这一项: 按说明调用工具取数, 回答聚焦任务要求的内容, 结论在前, 数字注明出处与日期。\n"
             f"【任务】{title}\n{brief}")
 
@@ -75,10 +102,15 @@ async def spawn(title: str, brief: str, background: bool) -> int:
     ctx = agent_ctx.run.get() or {}
     sid = ctx.get("session_id")
     tid = await create_agent_task(sid, ctx.get("run_id") or "", title, brief, background)
-    live = {"status": "queued", "steps": 0, "last": "", "done": asyncio.Event()}
-    _LIVE[tid] = live
-    live["task"] = asyncio.create_task(_run(tid, title, brief, sid, background, live))
+    _launch(tid, title, brief, sid, background)
     return tid
+
+
+def _launch(tid: int, title: str, brief: str, session_id, background: bool, run_at: str = "") -> dict:
+    live = {"status": "queued", "steps": 0, "last": "", "done": asyncio.Event(), "run_at": run_at}
+    _LIVE[tid] = live
+    live["task"] = asyncio.create_task(_run(tid, title, brief, session_id, background, live))
+    return live
 
 
 async def _run(tid: int, title: str, brief: str, session_id, background: bool, live: dict) -> None:
@@ -92,7 +124,7 @@ async def _run(tid: int, title: str, brief: str, session_id, background: bool, l
         async with _sem:
             live["status"] = "running"
             await update_agent_task(tid, status="running", started_at=time.time())
-            async for ev in _stream(brief_prompt(title, brief)):
+            async for ev in _stream(brief_prompt(title, brief, live.get("run_at") or "")):
                 t = ev.get("type")
                 if t == "step" and ev.get("tool") not in _NOT_TOOLS:
                     used.append(ev.get("tool"))
@@ -116,6 +148,8 @@ async def _run(tid: int, title: str, brief: str, session_id, background: bool, l
         if answer and (background or live.get("background")) and session_id:
             await add_ask_message(session_id, "task", answer, json.dumps(
                 {"task_id": tid, "title": title, "tools_used": used, "sources": sources[:20]}, ensure_ascii=False))
+        if live.get("run_at"):
+            await _note_scheduled(tid, title, live["run_at"], status, answer, meta.get("error"))
     finally:
         live["status"] = status
         live["done"].set()
@@ -130,6 +164,7 @@ def _view(row: dict, full: bool = True) -> dict:
         meta = {}
     res = row.get("result") or ""
     return {"task_id": row["id"], "title": row["title"], "status": status, "background": bool(row.get("background")),
+            "run_at": row.get("run_at") or "",
             "steps": live.get("steps", len(meta.get("tools_used") or [])), "last_step": live.get("last", ""),
             "result": res if full else res[:600], "error": meta.get("error"), "sources": meta.get("sources") or [],
             "run_id": row.get("run_id") or "", "created_at": row.get("created_at"), "finished_at": row.get("finished_at")}
@@ -162,6 +197,135 @@ def cancel(task_id: int) -> bool:
         return False
     t.cancel()
     return True
+
+
+async def cancel_any(task_id: int) -> bool:
+    """在跑的取消执行; 还没到点的预约直接作废。"""
+    if cancel(task_id):
+        return True
+    row = await get_agent_task(task_id)
+    if row and row["status"] == "scheduled":
+        await update_agent_task(task_id, status="cancelled", finished_at=time.time())
+        return True
+    return False
+
+
+# ---------------- 预约 ----------------
+def _now():
+    from services.watcher import now_cst
+    return now_cst()
+
+
+async def _count_scheduled() -> int:
+    from database import get_db
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT COUNT(*) FROM agent_task WHERE status = 'scheduled'")
+        return (await cur.fetchone())[0]
+    finally:
+        await db.close()
+
+
+def parse_run_at(s: str, now) -> str | None:
+    """'YYYY-MM-DD HH:MM'(北京时间) → 规范串; 格式不对返回 None。"""
+    from datetime import datetime
+    try:
+        t = datetime.strptime((s or "").strip()[:16].replace("T", " "), "%Y-%m-%d %H:%M")
+    except ValueError:
+        return None
+    return t.strftime("%Y-%m-%d %H:%M")
+
+
+async def schedule(title: str, brief: str, run_at: str) -> dict:
+    """schedule_task 工具。"""
+    from datetime import datetime, timedelta
+    ctx = agent_ctx.run.get()
+    if ctx is None or agent_ctx.depth.get() > 0:
+        return {"error": "当前环境不能预约任务"}
+    if not (brief or "").strip():
+        return {"error": "brief 为空"}
+    now = _now()
+    at = parse_run_at(run_at, now)
+    if not at:
+        return {"error": f"run_at 格式应为 YYYY-MM-DD HH:MM(北京时间), 收到 {run_at!r}"}
+    t = datetime.strptime(at, "%Y-%m-%d %H:%M")
+    n = now.replace(tzinfo=None)
+    if t < n + timedelta(minutes=1):
+        return {"error": f"{at} 已经过去了(现在 {n:%Y-%m-%d %H:%M}); 立即执行用 dispatch_tasks"}
+    if t > n + timedelta(days=_MAX_AHEAD_DAYS):
+        return {"error": f"最多提前 {_MAX_AHEAD_DAYS} 天预约"}
+    if await _count_scheduled() >= _MAX_SCHEDULED:
+        return {"error": f"已经排着 {_MAX_SCHEDULED} 个预约任务了, 先取消不需要的(cancel_scheduled)"}
+    title = (title or "预约任务").strip()[:20]
+    tid = await create_agent_task(ctx.get("session_id"), ctx.get("run_id") or "", title, brief.strip(), True, run_at=at)
+    return {"task_id": tid, "title": title, "run_at": at, "status": "scheduled",
+            "note": "已预约; 到点后结果以卡片出现在本对话, 并在盯盘员面板记一条。回复用户时说明预约的时间与要查的内容。"}
+
+
+async def cancel_scheduled(task_id) -> dict:
+    """cancel_scheduled 工具。"""
+    try:
+        tid = int(task_id)
+    except (TypeError, ValueError):
+        return {"error": "task_id 应为整数"}
+    row = await get_agent_task(tid)
+    if not row or row["status"] != "scheduled":
+        return {"error": f"#{tid} 不是还没执行的预约任务"}
+    await cancel_any(tid)
+    return {"task_id": tid, "status": "cancelled"}
+
+
+async def run_due(now=None) -> list[int]:
+    """把到点的预约派出去; 错过太久的标 failed。返回派出的 id。"""
+    from datetime import datetime, timedelta
+    from database import get_db
+    now = (now or _now()).replace(tzinfo=None)
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT * FROM agent_task WHERE status = 'scheduled' AND run_at <> '' AND run_at <= ? ORDER BY run_at",
+                               (now.strftime("%Y-%m-%d %H:%M"),))
+        rows = [dict(r) for r in await cur.fetchall()]
+    finally:
+        await db.close()
+    out = []
+    for r in rows:
+        if datetime.strptime(r["run_at"], "%Y-%m-%d %H:%M") < now - timedelta(hours=_LATE_LIMIT_H):
+            await update_agent_task(r["id"], status="failed", finished_at=time.time(),
+                                    meta=json.dumps({"error": f"错过预约时间 {r['run_at']} 超过 {_LATE_LIMIT_H} 小时(服务没在运行), 没有补跑"},
+                                                    ensure_ascii=False))
+            await _note_scheduled(r["id"], r["title"], r["run_at"], "failed", "", f"错过预约时间 {r['run_at']}, 没有补跑")
+            continue
+        await update_agent_task(r["id"], status="queued")
+        _launch(r["id"], r["title"], r["brief"], r["session_id"], True, run_at=r["run_at"])
+        out.append(r["id"])
+    return out
+
+
+async def _note_scheduled(tid: int, title: str, run_at: str, status: str, answer: str, error) -> None:
+    """预约任务跑完在盯盘员面板记一条(不在原对话里也看得到)。"""
+    import re
+    from services import watcher
+    first = next((ln for ln in (answer or "").splitlines() if ln.strip() and not ln.strip().startswith("#")), "")
+    first = re.sub(r"\*\*|__|`", "", first).strip()
+    ok = status == "done" and answer
+    f = {"key": f"scheduled::{tid}", "detector": "scheduled", "level": "info",
+         "title": f"预约任务{'完成' if ok else '没跑成'}: {title}",
+         "summary": (first[:120] if ok else (error or "执行失败")),
+         "body": (answer if ok else "") + f"\n\n预约时间 {run_at} · 任务 #{tid}",
+         "evidence": {"task_id": tid, "run_at": run_at, "status": status}}
+    try:
+        await watcher.record([f])
+    except Exception as e:  # noqa: BLE001
+        print(f"[agent-tasks] 预约 #{tid} 记盯盘员失败: {e}")
+
+
+async def scheduler_loop():
+    while True:
+        try:
+            await run_due()
+        except Exception as e:  # noqa: BLE001
+            print(f"[agent-tasks] 预约循环出错: {e}")
+        await asyncio.sleep(30)
 
 
 async def dispatch(tasks: list, wait_for: bool) -> dict:
@@ -210,5 +374,5 @@ async def get(task_id: int | None) -> dict:
     sid = ctx.get("session_id")
     if not sid:
         return {"tasks": []}
-    return {"tasks": [{k: v[k] for k in ("task_id", "title", "status", "background", "result")}
+    return {"tasks": [{k: v[k] for k in ("task_id", "title", "status", "background", "run_at", "result")}
                       for v in (_view(r, full=False) for r in await list_agent_tasks(sid))]}

@@ -293,6 +293,7 @@ async def session_state(session_id: int, window: int = 0) -> dict | None:
         tasks = []
     if tasks:
         out["tasks"] = [{"id": t["id"], "title": t["title"], "status": t["status"], "background": bool(t["background"]),
+                         "run_at": t.get("run_at") or "",
                          "result": (t.get("result") or "")[:1200]} for t in tasks]
     return out or None
 
