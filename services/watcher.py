@@ -1,7 +1,8 @@
 """盯盘员: 主动层的统一出口。各检测器只产出「发现」, 这里去重后写进 watch_finding,
 页面顶部列出当天的发现, 问答 agent 经 get_watch_findings 读取。不推飞书。
 
-发现 = {key, detector, code, name, level(info|warn), title, body, evidence}。
+发现 = {key, detector, code, name, level(info|warn), title, summary, body, evidence}。
+title 是标的与事件, summary 是一句话结论(页面只显示这一句, body 是展开后的明细)。
 key 是去重键(检测器 + 标的 + 状态), 同一 key 只记一次; 状态变了就换 key 记新的。
 
 检测器:
@@ -65,10 +66,10 @@ async def record(findings: list[dict], date: str | None = None) -> list[dict]:
     try:
         for f in findings:
             cur = await db.execute(
-                "INSERT OR IGNORE INTO watch_finding (key, date, detector, code, name, level, title, body, evidence, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "INSERT OR IGNORE INTO watch_finding (key, date, detector, code, name, level, title, summary, body, evidence, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (f["key"], date, f["detector"], f.get("code") or "", f.get("name") or "", f.get("level") or "info",
-                 f["title"], f.get("body") or "", json.dumps(f.get("evidence") or {}, ensure_ascii=False),
+                 f["title"], f.get("summary") or "", f.get("body") or "", json.dumps(f.get("evidence") or {}, ensure_ascii=False),
                  now_cst().isoformat(timespec="seconds")))
             if cur.rowcount:
                 fresh.append(f)
@@ -145,6 +146,7 @@ def drift_finding(broker: float, book: float, asset_name: str, date: str) -> dic
         return None
     return {"key": f"books_drift::{date}::{broker:.2f}", "detector": "books_drift", "level": "warn",
             "title": f"{asset_name}和券商对不上",
+            "summary": f"相差 {diff:+,.2f} 元, 可能有成交还没同步",
             "body": f"券商可用金额 {broker:,.2f} / licai 记的 {book:,.2f}, 相差 {diff:+,.2f}, 可能有成交还没同步",
             "evidence": {"broker": broker, "book": book, "diff": round(diff, 2)}}
 
@@ -200,8 +202,11 @@ def risk_findings(held: dict, rf: dict, date: str) -> list[dict]:
         if len(now) < 2 or len(now) <= len(prev):
             continue
         body = [f"命中: {_labels(cat, now)}", _count_line(cat, len(now)), f"数据截至 {date[5:]} 收盘" + _lhb_note(rf, date)]
+        st = ((cat.get("by_count") or {}).get("post") or {}).get(str(min(len(now), 3))) or {}
         out.append({"key": f"risk_hits::{code}::{date}", "detector": "risk_hits", "code": code, "name": name, "level": "warn",
                     "title": f"{name} 排雷命中 {len(now)} 项" + (f"(前一交易日 {len(prev)} 项)" if rf.get("prev_date") else ""),
+                    "summary": _labels(cat, now) + (f"; 历史同类 20 日相对全池 {st['ex20'] * 100:+.1f}%, 跌超 15% 的占 {st['bad'] * 100:.0f}%"
+                                                    if st else ""),
                     "body": "\n".join(x for x in body if x), "evidence": {"hits": now, "prev_hits": prev, "data_date": date}})
     return out
 
@@ -266,7 +271,11 @@ def fresh_buy_finding(acts: list[dict], name: str, mirror: dict, rf: dict) -> di
                      + f"(数据截至 {rf['date'][5:]} 收盘{_lhb_note(rf, rf['date']).replace('(', ', ').rstrip(')')})")
         if hits:
             lines.append(_count_line(cat, len(hits)))
-    return {"key": f"fresh_buy::{code}::{act['trade_date']}::{','.join(str(a['id']) for a in acts)}",
+    means = [m["mean20_pct"] for m in ms]
+    summary = "; ".join(x for x in (
+        (f"你同类买入之后 20 日平均 {min(means):+.1f}%" + (f" ~ {max(means):+.1f}%" if len(means) > 1 else "")) if means else "",
+        (f"排雷命中 {len(hits)} 项" if hits else "") if not rf.get("stale") else "") if x)
+    return {"key": f"fresh_buy::{code}::{act['trade_date']}::{','.join(str(a['id']) for a in acts)}", "summary": summary,
             "detector": "fresh_buy", "code": code, "name": name,
             "level": "warn" if len(hits) >= 2 else "info", "title": f"新买入 {name}",
             "body": "\n".join(x for x in lines if x),
@@ -329,6 +338,7 @@ def close_findings(code: str, name: str, pts: list[dict], q: dict, lim_pct: floa
         lines = ((ev.get("sealed_close") or {}).get("yizi" if yizi else "normal")) or []
         out.append({"key": f"sealed_close::{code}::{date}", "detector": "sealed_close", "code": code, "name": name,
                     "level": "info", "title": f"{name} 收盘封住涨停" + ("(一字板)" if yizi else ""),
+                    "summary": (lines[0] if lines else f"收盘 {close:g}, 涨停价 {up:g}"),
                     "body": "\n".join([f"收盘 {close:g}, 涨停价 {up:g}"] + lines),
                     "evidence": {"close": close, "limit": up, "yizi": yizi}})
         return out
@@ -341,6 +351,7 @@ def close_findings(code: str, name: str, pts: list[dict], q: dict, lim_pct: floa
     if tail >= thr:
         out.append({"key": f"tail_pull::{code}::{date}", "detector": "tail_pull", "code": code, "name": name,
                     "level": "warn", "title": f"{name} 尾盘 30 分钟 {tail * 100:+.1f}%",
+                    "summary": (((ev.get("tail_pull") or {}).get("lines") or [f"14:30 {p1430:g} → 收盘 {close:g}"])[0]),
                     "body": "\n".join([f"14:30 {p1430:g} → 收盘 {close:g}"] + ((ev.get("tail_pull") or {}).get("lines") or [])),
                     "evidence": {"p1430": p1430, "close": close, "tail30": round(tail, 4)}})
     return out
@@ -404,6 +415,7 @@ def unlock_findings(code: str, name: str, events: list[dict], today_: str) -> li
             continue
         out.append({"key": f"unlock_soon::{code}::{e['date']}", "detector": "unlock_soon", "code": code, "name": name,
                     "level": "warn", "title": f"{name} {e['date'][5:]} 限售解禁, 占流通市值 {pct:.1f}%",
+                    "summary": ("就在今天" if n == 0 else f"还有 {n} 个交易日") + f" · {e.get('detail') or '限售股'}".split(",")[0],
                     "body": f"{e.get('detail') or '限售股'}; " + ("就在今天" if n == 0 else f"还有 {n} 个交易日")
                             + "\n数据: 东财限售解禁表, 以公司公告为准",
                     "evidence": {"date": e["date"], "pct": pct, "trading_days": n}})
@@ -460,6 +472,33 @@ async def log_fund_estimates(funds: list[dict]) -> None:
         await db.close()
 
 
+_FUND_NOISE = ("(QDII)", "（QDII）", "QDII", "人民币", "发起式", "联接", "混合", "股票", "指数", "债券", "精选")
+
+
+def short_fund_name(name: str) -> str:
+    """基金全称 → 页面用的短名: 去掉类型与币种字样, 保留份额类别(A/C)。"""
+    n = name or ""
+    for w in _FUND_NOISE:
+        n = n.replace(w, "")
+    return n.strip() or name
+
+
+def _merge_classes(items: list[tuple]) -> list[tuple]:
+    """[(全称, 比较键, 值)] → [(短名, 值)]: 同一只基金的 A/C 份额数字一样时合成一行(短名写成 xxA/C)。"""
+    import re
+    out: dict = {}
+    for name, key, val in items:
+        sn = short_fund_name(name)
+        m = re.match(r"(.*?)([A-Z])$", sn)
+        base, cls = (m.group(1), m.group(2)) if m else (sn, "")
+        k = (base, key)
+        if k in out:
+            out[k][0].append(cls)
+        else:
+            out[k] = [[cls], val]
+    return [(base + "/".join(c for c in classes if c), val) for (base, _), (classes, val) in out.items()]
+
+
 def est_miss_findings(rows: list[dict]) -> list[dict]:
     """rows: fund_est_log 里已公布的记录。偏差大的按净值日合成一条。"""
     by: dict = {}
@@ -470,11 +509,14 @@ def est_miss_findings(rows: list[dict]) -> list[dict]:
     out = []
     for nd, xs in sorted(by.items()):
         xs.sort(key=lambda x: x[0]["code"])
-        lines = [f"{r['name'] or r['code']}: 净值 {r['actual_pct']:+.2f}%, 估值 {r['est_pct']:+.2f}%"
+        grp = _merge_classes([(r["name"] or r["code"], (round(r["actual_pct"], 2), round(r["est_pct"], 2)), (r, err)) for r, err in xs])
+        lines = [f"{nm}: 净值 {r['actual_pct']:+.2f}%, 估值 {r['est_pct']:+.2f}%"
                  + (f"(前十大加权 {r['top10_pct']:+.2f}%)" if r.get("top10_pct") is not None else "")
-                 + f", 差 {err:+.2f}%, 这只平时日均误差约 {r.get('mae') or 0:.2f}%" for r, err in xs]
+                 + f", 差 {err:+.2f}%, 平时日均误差约 {r.get('mae') or 0:.2f}%" for nm, (r, err) in grp]
+        worst_nm, (wr, werr) = max(grp, key=lambda g: abs(g[1][1]))
         out.append({"key": f"fund_est_miss::{nd}::{','.join(r['code'] for r, _ in xs)}", "detector": "fund_est_miss",
-                    "level": "info", "title": f"{nd[5:]} 基金估值偏差大: {len(xs)} 只",
+                    "level": "info", "title": f"{nd[5:]} 基金估值偏差大: {len(grp)} 只",
+                    "summary": f"偏差最大 {worst_nm}: 估 {wr['est_pct']:+.2f}%, 实际 {wr['actual_pct']:+.2f}%",
                     "body": "\n".join(lines + [f"偏差大 = 超过平时日均误差的 {EST_MISS_K:g} 倍且不小于 {EST_MISS_FLOOR:g}%"]),
                     "evidence": {"nav_date": nd, "errs": {r["code"]: round(err, 2) for r, err in xs}}})
     return out
@@ -533,16 +575,19 @@ def drop_findings(hits: list[tuple[str, str, dict]]) -> list[dict]:
     out = []
     for nd, xs in sorted(by.items()):
         xs.sort()
-        lines = []
-        for code, name, h in xs:
+        grp = _merge_classes([(name, (h.get("day", {}).get("pct"), h.get("5d", {}).get("pct")), h) for _code, name, h in xs])
+        lines, short = [], []
+        for nm, h in grp:
             parts = []
             if "day" in h:
                 parts.append(f"当日 {h['day']['pct']:+.2f}%(近两年最差 1% 的线 {h['day']['line']:+.2f}%)")
             if "5d" in h:
                 parts.append(f"近 5 个净值日 {h['5d']['pct']:+.2f}%(近两年最差 2% 的线 {h['5d']['line']:+.2f}%)")
-            lines.append(f"{name}: " + ", ".join(parts))
+            lines.append(f"{nm}: " + ", ".join(parts))
+            short.append(f"{nm} " + (f"{h['5d']['pct']:+.1f}%(5 日)" if "5d" in h else f"{h['day']['pct']:+.1f}%(当日)"))
         out.append({"key": f"fund_drop::{nd}::{','.join(c for c, _, _ in xs)}", "detector": "fund_drop", "level": "warn",
-                    "title": f"{nd[5:]} 基金净值跌幅超出常见范围: {len(xs)} 只",
+                    "title": f"{nd[5:]} 基金净值跌幅超出常见范围: {len(grp)} 只",
+                    "summary": "; ".join(short),
                     "body": "\n".join(lines + ["常见范围按每只基金自己近两年的净值涨跌算"]),
                     "evidence": {"nav_date": nd, "hits": {c: h for c, _, h in xs}}})
     return out

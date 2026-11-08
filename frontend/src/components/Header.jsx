@@ -1,3 +1,5 @@
+import WatchFindings from './WatchFindings'
+
 export default function Header({ marketOpen, lastUpdate, onRefresh, onSettings }) {
   return (
     <header className="sticky top-0 z-50 border-b border-border bg-surface/80 backdrop-blur-xl">
@@ -23,6 +25,7 @@ export default function Header({ marketOpen, lastUpdate, onRefresh, onSettings }
               {lastUpdate.toLocaleTimeString('zh-CN')}
             </span>
           )}
+          <WatchFindings />
           <button onClick={onRefresh}
             className="px-3 py-1 rounded-md border border-border text-text-dim hover:text-text hover:border-text-muted transition-colors cursor-pointer">
             刷新

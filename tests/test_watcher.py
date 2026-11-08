@@ -383,3 +383,18 @@ def test_status_lists_detectors_and_slow_tasks(db, monkeypatch):
     assert [d["detector"] for d in st["detectors"]] == [x[0] for x in w.SCHEDULE]
     assert any(p["who"] == "子任务" and "慢任务" in p["text"] for p in st["problems"])
     assert any(p["who"] == "基金估值偏差/净值跌幅" and p["text"].startswith("该跑没跑") for p in st["problems"])
+
+
+def test_summaries_and_share_class_merge():
+    assert w.short_fund_name("虚构全球成长精选混合(QDII)人民币A") == "虚构全球成长A"
+    rows = [{**_est("000991", "2026-01-05", -29.1, -2.9, top=-9.6), "name": "虚构全球成长混合(QDII)人民币A"},
+            {**_est("000992", "2026-01-05", -29.1, -2.9, top=-9.6), "name": "虚构全球成长混合(QDII)人民币C"},
+            {**_est("000993", "2026-01-05", -16.4, -4.2), "name": "虚构产业升级股票发起式(QDII)C"}]
+    f = w.est_miss_findings(rows)[0]
+    assert f["title"].endswith("2 只") and f["body"].count("虚构全球成长A/C") == 1
+    assert f["summary"] == "偏差最大 虚构全球成长A/C: 估 -29.10%, 实际 -2.90%"
+    act = {"id": 7, "stock_code": "300999", "shares": 100.0, "price": 10.0, "trade_date": "2026-01-05"}
+    mir = {"matches": [{"dim": "甲", "label": "x", "n_done": 9, "mean20_pct": -6.3, "win20": 0.2, "metric": ""},
+                       {"dim": "乙", "label": "y", "n_done": 9, "mean20_pct": -10.3, "win20": 0.2, "metric": ""}]}
+    rf = {"date": "2026-01-02", "catalog": CAT, "flags": {"300999": ["a", "b", "c"]}, "in_pool": {"300999": True}}
+    assert w.fresh_buy_finding([act], "虚构甲", mir, rf)["summary"] == "你同类买入之后 20 日平均 -10.3% ~ -6.3%; 排雷命中 3 项"

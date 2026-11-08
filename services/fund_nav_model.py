@@ -125,11 +125,27 @@ def _with_today(kind: str, sym: str, bars: list[dict], now=None) -> list[dict]:
     return bars + [{"date": today, "close": float(q["price"]), "live": True}]
 
 
+_SPLIT_JUMP, _SPLIT_FIT = 35.0, 25.0
+_SPLIT_RATIOS = (2, 3, 4, 5, 8, 10, 20)
+
+
+def _split_fix(pct: float) -> float | None:
+    """单日涨跌超过 ±35% 多半是没复权的拆股/合股(新浪美股日 K 不复权, 例: 3 拆 1 显示成 -70%)。
+    试整数拆合比例, 折算后落在 ±25% 内就用折算值; 都对不上返回 None(这一天不用)。"""
+    if abs(pct) <= _SPLIT_JUMP:
+        return pct
+    r = 1 + pct / 100
+    adj = min((x for k in _SPLIT_RATIOS for x in (r * k, r / k)), key=lambda x: abs(x - 1))   # 取折算后变动最小的比例
+    return (adj - 1) * 100 if abs(adj - 1) * 100 <= _SPLIT_FIT else None
+
+
 def _returns(bars: list[dict]) -> dict:
     out = {}
     for a, b in zip(bars[:-1], bars[1:]):
         if a["close"] > 0:
-            out[b["date"][:10]] = (b["close"] / a["close"] - 1) * 100
+            v = _split_fix((b["close"] / a["close"] - 1) * 100)
+            if v is not None:
+                out[b["date"][:10]] = v
     return out
 
 

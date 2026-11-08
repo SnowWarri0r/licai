@@ -42,3 +42,13 @@ def test_futures_bar_uses_last_close_not_settlement():
         out = F._with_today("cn", "nf_AU0", bars, now=now)
         assert out[-1] == {"date": "2026-01-06", "close": 820.0, "live": True}
         assert F._with_today("cn", "nf_AU0", bars, now=datetime(2026, 1, 6, 21, 30)) == bars   # 夜盘属于下一交易日
+
+
+def test_returns_undo_unadjusted_split():
+    from services import fund_nav_model as M
+    bars = [{"date": "2026-01-02", "close": 450.41}, {"date": "2026-01-05", "close": 131.9},    # 3 拆 1 且当天跌 12%
+            {"date": "2026-01-06", "close": 133.0}, {"date": "2026-01-07", "close": 1330.0},  # 1 合 10 当天 0%
+            {"date": "2026-01-08", "close": 40.0}]                                           # 对不上任何比例
+    r = M._returns(bars)
+    assert round(r["2026-01-05"], 1) == -12.1 and abs(r["2026-01-07"]) < 1e-9 and "2026-01-08" not in r
+    assert round(r["2026-01-06"], 2) == 0.83

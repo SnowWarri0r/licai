@@ -5,7 +5,6 @@ import Header from './components/Header'
 import Sidebar, { NAV } from './components/Sidebar'
 import Dashboard from './components/Dashboard'
 import RiskBanner from './components/RiskBanner'
-import WatchFindings from './components/WatchFindings'
 import StaleBundleNotice from './components/StaleBundleNotice'
 import UnifiedPortfolio from './components/UnifiedPortfolio'
 import Rankings from './components/Rankings'
@@ -318,7 +317,6 @@ export default function App() {
           <div className="shrink-0">
             <Dashboard holdings={holdings} />
             <RiskBanner holdings={holdings} />
-            <WatchFindings />
           </div>
 
           {/* 视图内容: 唯一滚动区 — 侧边栏/顶栏/仪表盘全部固定 */}
