@@ -130,17 +130,32 @@ async def list_findings(date: str | None = None, include_dismissed: bool = False
 
 
 # ---------------- 检测器 ----------------
-async def _broker_cash(cmd: str) -> float | None:
-    """跑配置的命令读券商可用金额; 命令失败、超时或输出不是数都返回 None。"""
+async def _broker_cash_read(cmd: str) -> tuple[float | None, str]:
+    """跑配置的命令读券商可用金额 → (金额, 读不到的原因)。命令非零退出时, 原因取它 stderr 的第一行
+    (读取脚本按情况写明: 找不到客户端进程 / 读不到窗口里的表 / 表里没有可用金额), 没写就报退出码。"""
+    p = None
     try:
         p = await asyncio.create_subprocess_exec(*shlex.split(cmd), stdout=asyncio.subprocess.PIPE,
-                                                 stderr=asyncio.subprocess.DEVNULL)
-        out, _ = await asyncio.wait_for(p.communicate(), timeout=30)
-        if p.returncode != 0:
-            return None
-        return float(out.decode().strip().replace(",", ""))
-    except (asyncio.TimeoutError, ValueError, OSError):
-        return None
+                                                 stderr=asyncio.subprocess.PIPE)
+        out, err = await asyncio.wait_for(p.communicate(), timeout=30)
+    except asyncio.TimeoutError:
+        if p and p.returncode is None:
+            p.kill()
+        return None, "读取命令 30 秒没返回(客户端界面卡住或无响应)"
+    except OSError as e:
+        return None, f"读取命令跑不起来: {e}"
+    if p.returncode != 0:
+        why = next((ln.strip() for ln in err.decode(errors="replace").splitlines() if ln.strip()), "")
+        return None, why[:120] or f"读取命令退出码 {p.returncode}"
+    txt = out.decode(errors="replace").strip()
+    try:
+        return float(txt.replace(",", "")), ""
+    except ValueError:
+        return None, f"读取命令输出的不是数字: {txt[:40]!r}"
+
+
+async def _broker_cash(cmd: str) -> float | None:
+    return (await _broker_cash_read(cmd))[0]
 
 
 def drift_finding(broker: float, book: float, asset_name: str, date: str) -> dict | None:
@@ -164,9 +179,9 @@ async def check_books_drift() -> dict | None:
     asset = await get_external_asset(int(aid))
     if not asset:
         raise Skip(f"对照的现金资产 #{aid} 不存在")
-    broker = await _broker_cash(cmd)
+    broker, why = await _broker_cash_read(cmd)
     if broker is None:
-        raise Skip("读不到券商可用金额(客户端没开, 或读取命令出错)")
+        raise Skip(f"读不到券商可用金额: {why}")
     date = today()
     book = float(asset.get("manual_value") or 0)
     note(f"券商 {broker:,.2f} / 账本 {book:,.2f}")

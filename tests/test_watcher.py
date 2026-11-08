@@ -37,6 +37,9 @@ def test_broker_cash_reads_number_and_fails_quietly():
     assert asyncio.run(w._broker_cash("echo 12,345.67")) == 12345.67
     assert asyncio.run(w._broker_cash("false")) is None                # 客户端没开: 非零退出
     assert asyncio.run(w._broker_cash("echo 没有")) is None
+    v, why = asyncio.run(w._broker_cash_read("sh -c 'echo 窗口里读不到表, 客户端可能锁屏了 >&2; exit 4'"))
+    assert v is None and why == "窗口里读不到表, 客户端可能锁屏了"
+    assert asyncio.run(w._broker_cash_read("false"))[1] == "读取命令退出码 1"
 
 
 def test_cash_cmd_never_read_from_db(db, monkeypatch):
@@ -45,7 +48,7 @@ def test_cash_cmd_never_read_from_db(db, monkeypatch):
     asyncio.run(database.set_config("watch_cash_cmd", "touch /nonexistent/x"))
     asyncio.run(database.set_config("watch_cash_asset_id", "1"))
     ran = []
-    monkeypatch.setattr(w, "_broker_cash", lambda cmd: ran.append(cmd))
+    monkeypatch.setattr(w, "_broker_cash_read", lambda cmd: ran.append(cmd))
     with pytest.raises(w.Skip) as e:
         asyncio.run(w.check_books_drift())
     assert e.value.expected and ran == []
