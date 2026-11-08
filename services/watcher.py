@@ -203,10 +203,11 @@ async def check_risk_hits() -> list[dict]:
 _MIRROR_SKIP = ("买入价相对前一日收盘",)       # mirror 这一项用查询时的实时价, 同步晚于成交时不代表这笔买入
 
 
-def fresh_buy_finding(act: dict, name: str, mirror: dict, rf: dict) -> dict:
-    """act: position_actions 一行; mirror: entry_review.mirror 的返回; rf: risk_flags 的返回。"""
+def fresh_buy_finding(acts: list[dict], name: str, mirror: dict, rf: dict) -> dict:
+    """acts: 同一只票同一天的买入流水(分几单买的合成一条); mirror: entry_review.mirror 的返回; rf: risk_flags 的返回。"""
+    act = acts[0]
     code = act["stock_code"]
-    lines = [f"{act['trade_date'][5:]} 买入 {act['shares']:g} 股 @{act['price']:g}"]
+    lines = [f"{act['trade_date'][5:]} 买入 " + " / ".join(f"{a['shares']:g} 股 @{a['price']:g}" for a in acts)]
     ms = [m for m in (mirror.get("matches") or []) if m.get("dim") not in _MIRROR_SKIP and m.get("n_done")]
     if ms:
         lines.append("你历史上同类买入之后 20 个交易日(只看自己的记录):")
@@ -220,10 +221,11 @@ def fresh_buy_finding(act: dict, name: str, mirror: dict, rf: dict) -> dict:
                      + f"(数据截至 {rf['date'][5:]} 收盘{_lhb_note(rf, rf['date']).replace('(', ', ').rstrip(')')})")
         if hits:
             lines.append(_count_line(cat, len(hits)))
-    return {"key": f"fresh_buy::{act['id']}", "detector": "fresh_buy", "code": code, "name": name,
+    return {"key": f"fresh_buy::{code}::{act['trade_date']}::{','.join(str(a['id']) for a in acts)}",
+            "detector": "fresh_buy", "code": code, "name": name,
             "level": "warn" if len(hits) >= 2 else "info", "title": f"新买入 {name}",
             "body": "\n".join(x for x in lines if x),
-            "evidence": {"action_id": act["id"], "hits": hits, "mirror_total": mirror.get("total")}}
+            "evidence": {"action_ids": [a["id"] for a in acts], "hits": hits, "mirror_total": mirror.get("total")}}
 
 
 async def check_fresh_buys() -> list[dict]:
@@ -249,13 +251,19 @@ async def check_fresh_buys() -> list[dict]:
     if acts:
         held = await _held_a_shares()
         rf = analyzers.risk_flags_all([a["stock_code"] for a in acts])
+        groups: dict = {}
         for a in acts:
+            groups.setdefault((a["stock_code"], a["trade_date"]), []).append(a)
+        for (code, day), g in groups.items():
+            g = await _day_buys(code, day) or g          # 当天这只票的全部买入, 不只水位之后的
             try:
-                m = await mirror(a["stock_code"])
+                m = await mirror(code)
             except Exception as e:  # noqa: BLE001
-                print(f"[watcher] mirror {a['stock_code']} 失败: {e}")
+                print(f"[watcher] mirror {code} 失败: {e}")
                 m = {}
-            out.append(fresh_buy_finding(a, held.get(a["stock_code"]) or a["stock_code"], m, rf))
+            f = fresh_buy_finding(g, held.get(code) or code, m, rf)
+            await _supersede_buy(code, day, f["key"])
+            out.append(f)
     fresh = await record(out) if out else []
     await set_config("watch_last_action_id", str(top))
     return fresh
@@ -313,6 +321,27 @@ async def check_close_events() -> list[dict]:
             continue
         out += close_findings(code, name, m.get("points") or [], quotes.get(code) or {}, _limit_pct(code, name), ev, date)
     return await record(out, date) if out else []
+
+
+async def _day_buys(code: str, day: str) -> list[dict]:
+    db = await get_db()
+    try:
+        cur = await db.execute("SELECT id, stock_code, action_type, shares, price, trade_date FROM position_actions "
+                               "WHERE stock_code = ? AND trade_date = ? AND action_type IN ('BUY', 'ADD') ORDER BY id", (code, day))
+        return [dict(r) for r in await cur.fetchall()]
+    finally:
+        await db.close()
+
+
+async def _supersede_buy(code: str, day: str, keep_key: str):
+    """同一只票同一天后来又买了: 早先那条新买入提醒收起, 由合并后的新一条替代。"""
+    db = await get_db()
+    try:
+        await db.execute("UPDATE watch_finding SET dismissed = 1 WHERE detector = 'fresh_buy' AND code = ? "
+                         "AND key LIKE ? AND key <> ? AND dismissed = 0", (code, f"fresh_buy::{code}::{day}::%", keep_key))
+        await db.commit()
+    finally:
+        await db.close()
 
 
 def _days_ago(n: int) -> str:

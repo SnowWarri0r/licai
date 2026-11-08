@@ -69,7 +69,8 @@ def test_fresh_buy_finding_drops_realtime_dim_and_adds_hits():
     mir = {"matches": [{"dim": "买入价相对前一日收盘", "label": "涨 2%~5% 时买", "n_done": 9, "mean20_pct": -1, "win20": 0.3, "metric": "绝对涨跌"},
                        {"dim": "买入前 20 个交易日的涨跌", "label": "+20% 以上", "n_done": 12, "mean20_pct": -6.5, "win20": 0.25, "metric": "绝对涨跌"}]}
     rf = {"date": "2026-01-02", "catalog": CAT, "flags": {"300999": ["a", "b", "c"]}, "in_pool": {"300999": True}}
-    f = w.fresh_buy_finding(act, "虚构甲", mir, rf)
+    f = w.fresh_buy_finding([act, {**act, "id": 8, "shares": 200.0, "price": 12.5}], "虚构甲", mir, rf)
+    assert "买入 500 股 @12.3 / 200 股 @12.5" in f["body"] and f["key"] == "fresh_buy::300999::2026-01-05::7,8"
     assert "涨 2%~5%" not in f["body"] and "12 次, 平均 -6.5%, 赚钱 25%" in f["body"]
     assert f["level"] == "warn" and "排雷命中 3 项" in f["body"] and "01-02 收盘" in f["body"]
 
@@ -98,9 +99,14 @@ def test_fresh_buys_first_run_sets_watermark_then_reports_new(db, monkeypatch):
     asyncio.run(add("300999", "BUY"))
     assert asyncio.run(w.check_fresh_buys()) == []                       # 第一次只记水位
     asyncio.run(add("300999", "BUY"))
+    asyncio.run(add("300999", "BUY"))
     asyncio.run(add("300999", "SELL"))
     out = asyncio.run(w.check_fresh_buys())
-    assert [f["detector"] for f in out] == ["fresh_buy"] and out[0]["title"] == "新买入 虚构甲"
+    assert [f["detector"] for f in out] == ["fresh_buy"] and out[0]["title"] == "新买入 虚构甲"   # 两单合成一条
+    asyncio.run(add("300999", "BUY"))                                    # 同一天又买一单: 旧的收起, 只留最新合并的
+    asyncio.run(w.check_fresh_buys())
+    items = asyncio.run(w.list_findings())["items"]
+    assert len(items) == 1 and items[0]["body"].count("100 股 @10") == 4    # 当天 4 单都列出(含水位前那单)
     assert asyncio.run(w.check_fresh_buys()) == []                       # 水位已推进
 
 
