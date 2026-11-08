@@ -457,7 +457,13 @@ CREATE TABLE IF NOT EXISTS watch_finding (
     body TEXT DEFAULT '',
     evidence TEXT DEFAULT '{}',                -- JSON
     created_at TEXT,
-    dismissed INTEGER DEFAULT 0
+    dismissed INTEGER DEFAULT 0,
+    -- 深挖(见 services/watch_dig.py): ''=没考虑过 | skipped=判定不必查 | queued | running
+    -- | done=查到补充(dig_result 展示) | silent=查过没有补充(不展示) | failed | interrupted
+    dig_status TEXT DEFAULT '',
+    dig_reason TEXT DEFAULT '',                -- 为什么查/不查(判定给的一句话, 或"用户要求")
+    dig_task_id INTEGER,                       -- agent_task.id
+    dig_result TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_watch_finding_date ON watch_finding(date);
 
@@ -533,6 +539,13 @@ async def init_db():
                          ("check_on", "INTEGER DEFAULT 0")):
             if col not in pr_cols:
                 await db.execute(f"ALTER TABLE prompt_rule ADD COLUMN {col} {typ}")
+        # Migration: 盯盘员发现加深挖四列
+        cursor = await db.execute("PRAGMA table_info(watch_finding)")
+        wf_cols = {row[1] for row in await cursor.fetchall()}
+        for col, typ in (("dig_status", "TEXT DEFAULT ''"), ("dig_reason", "TEXT DEFAULT ''"),
+                         ("dig_task_id", "INTEGER"), ("dig_result", "TEXT DEFAULT ''")):
+            if col not in wf_cols:
+                await db.execute(f"ALTER TABLE watch_finding ADD COLUMN {col} {typ}")
         # Migration: kline_cache 加成交额列(老库只有 volume)
         cursor = await db.execute("PRAGMA table_info(kline_cache)")
         kc_cols = {row[1] for row in await cursor.fetchall()}

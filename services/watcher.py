@@ -22,6 +22,7 @@ key 是去重键(检测器 + 标的 + 状态), 同一 key 只记一次; 状态�
                落在近两年 5 日累计最差 2%; 同一净值日的合成一条。
 观察池里的票(已持有的算持仓)标题前加「观察池」, 级别统一 info, 页面上排在持仓之后。
 基金两项每天(含周末, QDII 的净值和美股收盘都会落在周末) 9:00~23:00 跑, 其余只在 A 股交易日跑。
+新记下的发现交给 watch_dig 判断要不要派子 agent 查原因, 查到补充挂在那条发现下(dig_status / dig_result)。
 """
 from __future__ import annotations
 
@@ -40,7 +41,7 @@ TOOL_GET = {
     "name": "get_watch_findings",
     "description": "取盯盘员记下的发现: 持仓与观察池的排雷命中、收盘事件、临近解禁, 基金估值与净值偏差大、基金净值跌幅超出常见范围, "
                    "账本与券商对不上等, 每条带事实、历史同类统计与数据截至日; "
-                   "观察池的发现标题以「观察池」开头。用户问'我持仓/自选有什么要注意的/盯盘员说了什么/账对上了吗'时用。date 留空=今天。",
+                   "观察池的发现标题以「观察池」开头; dig_result 非空的是盯盘员事后派子 agent 查到的成因。用户问'我持仓/自选有什么要注意的/盯盘员说了什么/账对上了吗'时用。date 留空=今天。",
     "input_schema": {"type": "object", "properties": {"date": {"type": "string", "description": "YYYY-MM-DD"}}},
 }
 
@@ -105,9 +106,13 @@ async def list_findings(date: str | None = None, include_dismissed: bool = False
         rows = [dict(r) for r in await cur.fetchall()]
     finally:
         await db.close()
+    from services.watch_dig import DIGGABLE
     for r in rows:
         r["evidence"] = json.loads(r.get("evidence") or "{}")
         r["dismissed"] = bool(r.get("dismissed"))
+        r["diggable"] = r["detector"] in DIGGABLE
+        if r.get("dig_status") != "done":       # 只有查到补充的才给正文; 没补充的不出声
+            r["dig_result"] = ""
     rows.sort(key=lambda r: r["evidence"].get("scope") == "watchlist")      # 持仓的在前, 各自按写入顺序
     return {"date": date, "items": rows}
 
@@ -584,11 +589,26 @@ def _days_ago(n: int) -> str:
     return (now_cst() - timedelta(days=n)).strftime("%Y-%m-%d")
 
 
+async def _dig(fresh: list[dict]) -> None:
+    from services import watch_dig
+    try:
+        await watch_dig.consider(fresh)
+    except Exception as e:  # noqa: BLE001
+        print(f"[watcher] 深挖判定出错: {e}")
+
+
 async def watcher_loop():
     """每 10 分钟。A 股交易日: 9:00~20:00 看新买入与临近解禁; 15:05~20:00 看持仓与观察池的尾盘拉升/收盘封板;
     15:20~20:00 核现金; 16:45~20:00 看持仓与观察池的排雷命中(私仓收盘任务写完当日标记后)。
     每天 9:00~23:00 看基金估值偏差与净值跌幅(净值傍晚到夜里陆续公布)。"""
     from services.market_data import _is_a_share_trading_day
+    from services import watch_dig
+    try:
+        n = await watch_dig.interrupt_stale()
+        if n:
+            print(f"[watcher] 上次没查完的深挖 {n} 条, 已标记为中断")
+    except Exception as e:  # noqa: BLE001
+        print(f"[watcher] 标记中断深挖失败: {e}")
     while True:
         try:
             n = now_cst()
@@ -599,9 +619,12 @@ async def watcher_loop():
                                         (1005, 1200, check_risk_hits, False), (540, 1380, check_funds, True)):
                 if lo <= t <= hi and (trading or any_day):
                     try:
-                        await fn()
+                        fresh = await fn()
                     except Exception as e:
                         print(f"[watcher] {fn.__name__} 出错: {e}")
+                        continue
+                    if isinstance(fresh, list) and fresh:
+                        asyncio.create_task(_dig(fresh))
             await asyncio.sleep(600)
         except Exception as e:
             print(f"[watcher] Loop error: {e}")

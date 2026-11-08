@@ -228,3 +228,81 @@ def test_grouped_finding_superseded_when_more_funds_join(db):
     asyncio.run(w._record_grouped(b, "fund_est_miss"))
     items = asyncio.run(w.list_findings())["items"]
     assert [i["key"] for i in items] == ["fund_est_miss::2026-01-05::000991,000992"]
+
+
+# ---------------- 深挖 ----------------
+def test_dig_parsing():
+    from services import watch_dig as wd
+    assert wd.parse_result("【有补充】\n主因是前十大外的港股仓位下跌") == ("done", "主因是前十大外的港股仓位下跌")
+    assert wd.parse_result("【无补充】\n查了公告与新闻, 没有新信息")[0] == "silent"
+    assert wd.parse_result("") == ("failed", "")
+    assert wd.parse_judgement('先说明一下\n{"items": [{"id": 3, "dig": true, "why": "成因不明"}, {"id": "4", "dig": false}]}') \
+        == {3: (True, "成因不明"), 4: (False, "")}
+    assert wd.parse_judgement("没有 JSON") == {}
+    f = {"date": "2026-01-05", "detector": "fund_drop", "code": "", "title": "01-05 基金净值跌幅超出常见范围: 1 只",
+         "body": "虚构甲: 当日 -4%", "evidence": '{"nav_date": "2026-01-05"}'}
+    b = wd.brief_for(f)
+    assert "get_etf_xray" in b and "【有补充】" in b and "虚构甲: 当日 -4%" in b
+
+
+def test_consider_judges_caps_and_collects(db, monkeypatch):
+    from services import watch_dig as wd
+    import services.agent_tasks as at
+    monkeypatch.setattr(at, "_LIVE", {})
+    monkeypatch.setattr(at, "_sem", None)
+    def stream(question):
+        async def gen():
+            yield {"type": "answer", "text": "【有补充】\n港股仓位拖累" if "【提醒】跌0" in question else "【无补充】\n没查到"}
+        return gen()
+    monkeypatch.setattr(at, "_stream", stream)
+    judged = []
+
+    def judge(cands, dug):
+        judged.append([c["id"] for c in cands])
+        return {c["id"]: (c["detector"] != "unlock_soon", "成因不明") for c in cands}
+    monkeypatch.setattr(wd, "_judge_sync", judge)
+    fs = [{"key": f"fund_drop::2026-01-05::00099{i}", "detector": "fund_drop", "title": f"跌{i}", "evidence": {}} for i in range(2)]
+    fs += [{"key": "unlock_soon::300999::2026-01-09", "detector": "unlock_soon", "code": "300999", "title": "解禁", "evidence": {}},
+           {"key": "books_drift::x", "detector": "books_drift", "title": "对不上", "evidence": {}}]
+
+    async def go():
+        await w.record(fs)
+        sent = await wd.consider(fs)
+        await asyncio.sleep(0.1)
+        again = await wd.consider(fs)                                     # 已考虑过的不再判
+        items = (await w.list_findings())["items"]
+        return sent, again, items
+    sent, again, items = asyncio.run(go())
+    assert len(sent) == 2 and again == [] and len(judged) == 1 and len(judged[0]) == 3   # books_drift 不进候选
+    st = {i["title"]: (i["dig_status"], i["dig_result"], i["diggable"]) for i in items}
+    assert st["跌0"] == ("done", "港股仓位拖累", True)
+    assert st["跌1"] == ("silent", "", True)                               # 没补充: 页面拿不到正文
+    assert st["解禁"][0] == "skipped" and st["对不上"] == ("", "", False)
+
+
+def test_dig_now_skips_judge_and_daily_cap(db, monkeypatch):
+    from services import watch_dig as wd
+    import services.agent_tasks as at
+    monkeypatch.setattr(at, "_LIVE", {})
+    monkeypatch.setattr(at, "_sem", None)
+    monkeypatch.setattr(wd, "DAILY_CAP", 0)
+
+    def stream(question):
+        async def gen():
+            yield {"type": "answer", "text": "【有补充】\n公告: 股东减持"}
+        return gen()
+    monkeypatch.setattr(at, "_stream", stream)
+    monkeypatch.setattr(wd, "_judge_sync", lambda c, d: (_ for _ in ()).throw(AssertionError("不该判定")))
+    f = {"key": "risk_hits::300999::2026-01-05", "detector": "risk_hits", "code": "300999", "name": "虚构甲", "title": "排雷", "evidence": {}}
+
+    async def go():
+        await w.record([f])
+        assert await wd.consider([f]) == []                                # 自动的被每日上限挡住
+        fid = (await w.list_findings())["items"][0]["id"]
+        await wd._set(fid, dig_status="")
+        r = await wd.dig_now(fid)
+        await asyncio.sleep(0.1)
+        return r, await wd.dig_now(fid), (await w.list_findings())["items"][0]
+    r, r2, item = asyncio.run(go())
+    assert r == {"status": "queued"} and r2 == {"status": "done"}
+    assert item["dig_result"] == "公告: 股东减持" and item["dig_reason"] == "用户要求"
