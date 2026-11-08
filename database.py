@@ -424,6 +424,23 @@ CREATE TABLE IF NOT EXISTS user_memory (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- 盯盘员的发现(见 services/watcher.py)。key 去重; dismissed=1 = 用户收起或被同检测器的新状态取代。
+CREATE TABLE IF NOT EXISTS watch_finding (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    key TEXT NOT NULL UNIQUE,
+    date TEXT NOT NULL,                        -- 交易日 YYYY-MM-DD(北京时间)
+    detector TEXT NOT NULL,
+    code TEXT DEFAULT '',
+    name TEXT DEFAULT '',
+    level TEXT DEFAULT 'info',                 -- info | warn
+    title TEXT NOT NULL,
+    body TEXT DEFAULT '',
+    evidence TEXT DEFAULT '{}',                -- JSON
+    created_at TEXT,
+    dismissed INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_watch_finding_date ON watch_finding(date);
+
 -- 交易计划: 用户收盘后定的次日计划(见 services/trade_plan.py)。只对 plan_date 当天有效。
 CREATE TABLE IF NOT EXISTS trade_plan (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

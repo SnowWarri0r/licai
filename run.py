@@ -41,6 +41,7 @@ from api.portfolio_routes import router as portfolio_router
 from api.market_routes import router as market_router
 from api.settings_routes import router as settings_router
 from api.plan_routes import router as plan_router
+from api.watch_routes import router as watch_router
 from api.assets_routes import router as assets_router
 from api.briefing_routes import router as briefing_router
 from api.sector_routes import router as sector_router
@@ -146,6 +147,8 @@ async def lifespan(app: FastAPI):
     task10 = asyncio.create_task(_symbol_dict_prewarm())
     task11 = asyncio.create_task(rule_mine_loop())
     task12 = asyncio.create_task(plan_monitor_loop())
+    from services.watcher import watcher_loop
+    task13 = asyncio.create_task(watcher_loop())
     print(f"理财助手已启动: http://localhost:{config.port}")
     yield
     task1.cancel()
@@ -160,6 +163,7 @@ async def lifespan(app: FastAPI):
     task10.cancel()
     task11.cancel()
     task12.cancel()
+    task13.cancel()
 
 
 app = FastAPI(title="理财助手", lifespan=lifespan)
@@ -196,6 +200,7 @@ app.include_router(portfolio_router)
 app.include_router(market_router)
 app.include_router(settings_router)
 app.include_router(plan_router)
+app.include_router(watch_router)
 app.include_router(assets_router)
 app.include_router(briefing_router)
 app.include_router(sector_router)
