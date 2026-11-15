@@ -2923,6 +2923,34 @@ async def _tool_etf_xray(query: str = "") -> dict:
     return await etf_xray.theme_scan(q, 5)
 
 
+async def _tool_period_review(period: str = "") -> dict:
+    """期间复盘: 某年/某月的交易次数与换手、费用、持有期分布、买点之后的结果。"""
+    from services.period_review import build
+    try:
+        d = await build(period)
+    except Exception as e:
+        return {"error": f"期间复盘失败: {type(e).__name__}: {e}"}
+    if d.get("empty"):
+        return d
+    tr, fe, ho, en = d["trading"], d["fees"], d["holding"], d["entries"]
+    return {
+        "期间": d["period"], "可选年份": d["years"], "可选月份": d["months"][:24],
+        "交易": {"买入决策数": tr["n_buy"], "卖出决策数": tr["n_sell"], "买入额": tr["buy_amt"],
+                 "卖出额": tr["sell_amt"], "期间平均总资产": tr["avg_assets"], "换手率%": tr["turnover_pct"],
+                 "换手率口径": tr["turnover_note"], "分市场": tr["by_market"]},
+        "费用": {"合计": fe["total"], "占成交额%": fe["pct_of_traded"], "已实现毛利": fe["realized_gross"],
+                 "费用占已实现毛利%": fe["pct_of_realized"]},
+        "持有期": {"卖出次数": ho["n_sells"], "中位持有天数": ho["median_days"],
+                   "分档": [{"持有": g["label"], "次数": g["n"], "成本": g["cost"], "已实现毛利": g["pnl"],
+                            "收益率%": g["ret_pct"], "赚钱占比": g["win"]} for g in ho["groups"] if g["n"]]},
+        "买点之后": {"买入次数": en["n"], "已满20日": en["n_done"], "5日平均%": en["mean5_pct"],
+                     "20日平均%": en["mean20_pct"], "20日中位%": en["median20_pct"], "20日赚钱占比": en["win20"],
+                     "20日相对中证1000超额平均%": en["mean_ex20_pct"],
+                     **({"状态": "买点回看首次计算中, 本栏暂空, 稍后再查"} if en.get("pending") else {})},
+        "note": d["note"] + " 样本少的档偶然性大, 作答时带上次数。",
+    }
+
+
 async def _tool_exposure(min_pct: float = 0.5, as_of: str = "") -> dict:
     """穿透敞口(同源风险): 基金拆到季报前十大, 算同一标的/同一行业的真实合计。
 
@@ -3523,6 +3551,8 @@ _TOOLS = [
      "input_schema": {"type": "object", "properties": {}}},
     {"name": "get_exposure", "description": "查**穿透后的真实敞口**(同源风险): 把持有的基金/ETF 拆到季报前十大, 把直持个股与基金间接持有的同一标的合起来算, 再按行业归并。回答'我实际押了多少在X上/持仓是不是重复下注/买的这几只基金是不是同一注/哪个方向敞口过大/分散得够不够'时用。只按名字或板块看会漏——「山金国际」名字里没有金属字样, 基金名也不说它拿了什么票。口径: 只到前十大(占基金净值约 25%~50%), 所以给出的是**下限**; 拉不到明细的基金单列, 不等于敞口为 0。结构同源看这个, 走势同源(相关性)是另一回事。传 as_of=YYYY-MM-DD 可回看**那天**的结构(复盘用: 当下的敞口里已经没有那天清掉的票了; 结果里的 basis 写明那天的估值来路, warnings 首条也会标出这是回看)。",
      "input_schema": {"type": "object", "properties": {"min_pct": {"type": "number", "description": "可选, 只看占总资产 ≥ 这个百分比的标的, 默认 0.5"}, "as_of": {"type": "string", "description": "可选, YYYY-MM-DD; 回看那天的持仓结构, 留空=当下"}}}},
+    {"name": "get_period_review", "description": "期间复盘(按年或按月汇总交易本身): 买入/卖出决策数、成交额与换手率、交易费用合计及其占成交额和已实现毛利的比例、卖出按持有天数分档的已实现毛利与赚钱占比、买点回看在该期间的 5/20 日结果。回答'今年/这个月交易了多少次、换手多高、手续费花了多少、我拿得太短吗、短线和长拿哪个赚、年度复盘/月度总结'时用。范围是个股(含港美股)与场内 ETF, 场外基金不计; 已实现毛利不扣费不含分红, 费用单列。",
+     "input_schema": {"type": "object", "properties": {"period": {"type": "string", "description": "YYYY 或 YYYY-MM; 留空 = 最近有成交的年份"}}}},
     {"name": "get_trades", "description": "查用户成交记录(含个股/场内ETF/场外基金): 传 code→该标的买卖/加减仓/分红或申赎流水(A股另给综合成本/已实现盈亏/持有天数, 同日有买有卖=做T); 不传→最近全部成交(三类合并)。可用 start/end(YYYY-MM-DD)按成交日期筛区间('这周/6月/上个月'自己换算成日期传)。回答'我什么时候买的、成本多少、做过几次T、这票赚没赚、持有多久、最近/某段时间交易了啥、哪些买入是定投'时用(定投计划自动买入的行带 来源=定投)。",
      "input_schema": {"type": "object", "properties": {"code": {"type": "string", "description": "可选; 留空看全部"}, "start": {"type": "string", "description": "可选, 起始日 YYYY-MM-DD"}, "end": {"type": "string", "description": "可选, 截止日 YYYY-MM-DD"}}}},
     {"name": "get_market_sentiment", "description": "查大盘打板情绪(涨停数/连板高度/炸板率/赚钱效应/热点板块)、全市场涨跌家数(几家上涨几家下跌, 含沪/深/北分市场)和涨跌分布直方图(每1%一档的家数, 看下跌集中在哪个深度), 回答'今天普跌吗/多少家在跌/跌得有多深/赚钱效应', 判断是个股原因还是大盘普涨普跌; 也用于判断市场风格(打板赚钱效应高=追涨/动量有效; 炸板率高+亏钱效应=高位分歧/反转)。另带 涨停质量: 逐只涨停的封单额(=买一挂单额, 真实盘口量)聚合出封单合计/中位数/一字板只数/尾盘才封只数/开过板只数/封单最厚前五/封单扎堆(按行业)/题材扎堆(按当日炒作主线, 如数字货币·光模块·机器人) —— 只数只告诉你有多少票涨停, 封单额才告诉你那些涨停有多硬(同样52个涨停, 57亿封单和20亿封单是两个盘); 题材扎堆看资金主线扎在哪个方向。接了扩展数据源时另带 扩展源情绪(第二数据源): 跳水榜(冲高跳水=资金出逃)/多空风向标(量能较昨同期%)/该源官方市场评价, 是东财口径之外的交叉印证。问'今天打板情绪强不强/涨停结实吗/封单怎么样/在炒什么主线/资金扎堆哪个题材/有没有票冲高跳水/量能是放还是缩/情绪比昨天好还是差'时看这一块。",
@@ -3625,6 +3655,7 @@ _EXECUTORS = {
     "get_thesis": lambda a: _tool_get_thesis(a.get("code", "")),
     "get_asset_allocation": lambda a: _tool_asset_allocation(),
     "get_exposure": lambda a: _tool_exposure(float(a.get("min_pct") or 0.5), a.get("as_of", "")),
+    "get_period_review": lambda a: _tool_period_review(str(a.get("period") or "")),
     "get_trades": lambda a: _tool_trades(a.get("code", ""), a.get("start", ""), a.get("end", "")),
     "get_market_sentiment": lambda a: _tool_market_sentiment(),
     "get_etf_xray": lambda a: _tool_etf_xray(a.get("query", "")),
@@ -3830,7 +3861,7 @@ _TOOL_CN = {
     "get_sector_momentum": "看板块动量", "get_hot_rank": "看资金热度",
     "get_hot_concepts": "看热门概念", "get_board_stocks": "查板块龙头", "get_market_news": "看政策快讯", "web_search": "联网搜索",
     "get_chain_quote": "产业链量价", "read_url": "读网页全文", "get_global_indices": "看全球指数", "get_coiled_stocks": "扫横盘蓄势",
-    "calc": "精确计算", "get_exposure": "看穿透敞口", "get_etf_xray": "透视ETF成分", "get_plate_bidding": "看竞价异动",
+    "calc": "精确计算", "get_exposure": "看穿透敞口", "get_period_review": "看期间复盘", "get_etf_xray": "透视ETF成分", "get_plate_bidding": "看竞价异动",
     "get_hot_themes": "看热门题材", "get_inst_position": "查机构持仓",
 }
 

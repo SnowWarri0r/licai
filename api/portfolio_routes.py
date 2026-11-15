@@ -322,6 +322,13 @@ async def entry_review(force: int = 0):
     return await build(force=bool(force))
 
 
+@router.get("/period-review")
+async def period_review(period: str = ""):
+    """期间复盘: period=YYYY 或 YYYY-MM(留空取最近有成交的年份)。交易与换手、费用、持有期分布、买点之后的结果。"""
+    from services.period_review import build
+    return await build(period)
+
+
 @router.get("/risk")
 async def portfolio_risk(force: int = 0):
     """组合风险: 下一个交易日 / 5 个交易日 95% 最坏亏损(元) + 各持仓贡献 + 回测突破率。"""
