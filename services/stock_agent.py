@@ -2942,7 +2942,10 @@ async def _tool_exposure(min_pct: float = 0.5, as_of: str = "") -> dict:
         "直持个股数": d["n_stocks"], "基金数(已合并A/C份额)": d["n_funds"],
         "行业穿透": [{"行业": g["industry"], "合计": g["mv"], "占总资产%": g["pct"],
                      "其中直持": g["direct_mv"], "其中经基金间接": g["indirect_mv"],
-                     "成分": g["members"]} for g in (d.get("industries") or [])[:8]],
+                     "成分": g["members"],
+                     **({"港美股按GICS子行业并入": [f"{m['name']}({m['gics']})" for m in g["mapped"]]}
+                        if g.get("mapped") else {})}
+                    for g in (d.get("industries") or [])[:8]],
         "标的穿透": [{"标的": it["name"], "代码": it["code"], "合计": it["total_mv"],
                      "占总资产%": it["pct"], "直持": it["direct_mv"], "间接": it["indirect_mv"],
                      "来源数": it["n_sources"],

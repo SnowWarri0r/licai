@@ -280,14 +280,24 @@ async def look_through(min_pct: float = 0.5, as_of: str | None = None) -> dict:
     # ── 4.5) 行业层面的穿透敞口 ──
     # 这一层才是原来那套关键词最致命的漏洞: 「中金黄金」能靠名字认出是黄金, 「山金国际」
     # 认不出, 于是两只加起来近四成的贵金属敞口一条都不报。这里按东财行业归并, 名字里有
-    # 没有金属字样都不影响。港美股底层拿不到 A 股行业表, 单独归一档并说明, 不硬凑。
+    # 没有金属字样都不影响。港美股按 GICS 子行业映射到申万二级, 只并一一对应的。
     imap = {}
     try:
         from services.etf_xray import industry_map
         imap = await asyncio.to_thread(industry_map)
     except Exception:
         imap = {}
-    industries = _by_industry(items, funds, imap, total, uncovered)
+    # 港美股底层按 GICS 子行业映射到申万二级(一一对应的才并, 其余归「海外·子行业」)
+    ovs = {}
+    try:
+        from services.overseas_industry import label_for
+        xs = [it for it in items if not _is_cn(it.get("market"))
+              and str(it.get("market") or "").upper() in ("HK", "US")]
+        labels = await asyncio.gather(*[asyncio.to_thread(label_for, it["code"], it["market"]) for it in xs])
+        ovs = {it["key"]: lab for it, lab in zip(xs, labels)}
+    except Exception:
+        ovs = {}
+    industries = _by_industry(items, funds, imap, total, uncovered, ovs)
 
     # ── 5) 基金两两重叠度(十大以内): Σ min(w_i, w_j) ──
     pairs = []
@@ -332,7 +342,7 @@ async def look_through(min_pct: float = 0.5, as_of: str | None = None) -> dict:
 
 
 def _by_industry(items: list[dict], funds: list[dict], imap: dict,
-                 total: float, uncovered: list[dict]) -> list[dict]:
+                 total: float, uncovered: list[dict], ovs: dict | None = None) -> list[dict]:
     """按东财行业把穿透后的敞口归堆, 并记下每堆是账本里的**哪几行**扛着。
 
     holders 是这里的重点: 界面要把「↔同源」打在持仓行上, 而间接敞口对应的行是那只基金,
@@ -343,11 +353,15 @@ def _by_industry(items: list[dict], funds: list[dict], imap: dict,
     for it in items:
         code = str(it.get("code") or "")
         if _is_cn(it.get("market")) or (code.isdigit() and len(code) == 6):
-            ind = (imap.get(code) or ("", "", 0))[1] or "未知行业"
+            ind, sub = (imap.get(code) or ("", "", 0))[1] or "未知行业", None
         else:
-            ind = f"海外({it.get('market') or '?'}·未归行业)"
+            # 港美股: ovs[key] = (申万二级 或 「海外·子行业」, GICS 子行业), 见 overseas_industry
+            ind, sub = (ovs or {}).get(it.get("key")) or (f"海外({it.get('market') or '?'}·未归行业)", None)
         g = inds.setdefault(ind, {"industry": ind, "mv": 0.0, "direct_mv": 0.0,
                                   "indirect_mv": 0.0, "members": [], "holders": {}})
+        if sub and not ind.startswith("海外"):
+            # 跨市场并进申万行业的, 记下原始 GICS 子行业, 让读的人知道这一堆是按映射并的
+            g.setdefault("mapped", []).append({"name": it["name"], "gics": sub})
         g["mv"] += it["total_mv"]
         g["direct_mv"] += it["direct_mv"]
         g["indirect_mv"] += it["indirect_mv"]
