@@ -13,6 +13,8 @@ def clear_module_state():
     """Reset module globals before each test."""
     saved_env = {
         "LLM_BASE_URL": os.environ.pop("LLM_BASE_URL", None),
+        "LLM_API_FORMAT": os.environ.pop("LLM_API_FORMAT", None),
+        "OPENAI_API_KEY": os.environ.pop("OPENAI_API_KEY", None),
         "LLM_API_KEY": os.environ.pop("LLM_API_KEY", None),
         "LLM_API_KEY_HEADER": os.environ.pop("LLM_API_KEY_HEADER", None),
         "LLM_API_KEY_PREFIX": os.environ.pop("LLM_API_KEY_PREFIX", None),
@@ -21,6 +23,7 @@ def clear_module_state():
         "ANTHROPIC_API_KEY": os.environ.pop("ANTHROPIC_API_KEY", None),
     }
     # Reset module state
+    llm._api_format = "anthropic"
     llm._base_url = llm._DEFAULT_BASE_URL
     llm._api_key = ""
     llm._api_key_header = llm._DEFAULT_API_KEY_HEADER

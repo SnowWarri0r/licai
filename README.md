@@ -419,13 +419,15 @@ python scripts/seed_demo.py --peek      # 只生成 portfolio.demo.db, 不改动
 
 <h3 id="大模型">大模型</h3>
 
-早盘简报、问问市场、AI 解读与 AI 复盘需要大模型。客户端遵循 Anthropic Messages API 协议，支持官方 API 与兼容该协议的第三方端点。
+早盘简报、问问市场、AI 解读与 AI 复盘需要大模型。客户端支持三种协议：Anthropic Messages、OpenAI Responses、OpenAI Chat Completions，官方 API 与各类中转站均可接入。
 
 | 方式 | 配置 |
 |---|---|
 | Claude Code OAuth | 安装并登录 Claude Code CLI，服务自动从 macOS 钥匙串读取凭证 |
 | Anthropic API key | `export ANTHROPIC_API_KEY=sk-ant-...` |
-| 兼容端点 | `LLM_BASE_URL`、`LLM_API_KEY`，以及按需设置 `LLM_API_KEY_HEADER`、`LLM_API_KEY_PREFIX`、`LLM_MODEL_MAP` |
+| 兼容端点 / 中转站 | `LLM_API_FORMAT`（`anthropic` / `openai-responses` / `openai-chat`）、`LLM_BASE_URL`、`LLM_API_KEY`，以及按需设置 `LLM_API_KEY_HEADER`、`LLM_API_KEY_PREFIX`、`LLM_MODEL_MAP` |
+
+请求地址为 Base URL 加上协议路径（`/v1/messages`、`/v1/responses`、`/v1/chat/completions`），Base URL 已以 `/v1` 结尾时不重复拼接。OpenAI 两种协议默认以 `Authorization: Bearer` 鉴权，`LLM_API_KEY` 未设置时读取 `OPENAI_API_KEY`。`LLM_MODEL_MAP` 既可映射 `smart` / `balanced` / `fast`，也可映射完整模型名（如 `{"claude-opus-5-5": "gpt-5"}`），使代码中指定的模型改发到中转站提供的模型。联网搜索（web_search）是 Anthropic 服务端工具，仅在 Anthropic 官方端点启用；提示缓存与自适应思考同样只对官方端点开启。
 
 以上各项也可在设置页的「LLM 配置」中填写，优先级为环境变量 > 设置页 > 默认值。问答 agent 启用了提示缓存；服务端过载（429 / 529）时按指数退避重试，超时不重试。
 

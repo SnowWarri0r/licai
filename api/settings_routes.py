@@ -341,6 +341,7 @@ _LLM_TEST_COOLDOWN_S = 5  # minimum seconds between test calls
 
 
 class LLMConfig(BaseModel):
+    api_format: str = "anthropic"
     base_url: str = ""
     api_key: str = ""
     api_key_header: str = "x-api-key"
@@ -348,6 +349,12 @@ class LLMConfig(BaseModel):
     proxy: str = ""
     model_map: dict[str, str] = {}
     update_api_key: bool = True  # True = apply api_key field; False = keep existing key
+
+    @field_validator("api_format")
+    @classmethod
+    def validate_api_format(cls, v: str) -> str:
+        from services.llm_formats import normalize_format
+        return normalize_format(v)
 
     @field_validator("base_url")
     @classmethod
@@ -370,6 +377,7 @@ async def get_llm_config_api():
     config = llm_client.get_llm_config()
     # overlay DB-stored values for fields that env var may override
     db_base_url = await get_config("llm_base_url")
+    db_api_format = await get_config("llm_api_format")
     db_api_key_header = await get_config("llm_api_key_header")
     db_api_key_prefix = await get_config("llm_api_key_prefix")
     db_proxy = await get_config("llm_proxy")
@@ -382,6 +390,8 @@ async def get_llm_config_api():
         except Exception:
             pass
     return {
+        "api_format": config["api_format"],
+        "db_api_format": db_api_format or "anthropic",
         "base_url": config["base_url"],
         "has_api_key": config["has_api_key"],
         "api_key_header": config["api_key_header"],
@@ -401,6 +411,7 @@ async def get_llm_config_api():
 async def save_llm_config_api(data: LLMConfig):
     """保存 LLM 配置到 DB 并应用."""
     import json
+    await set_config("llm_api_format", data.api_format)
     await set_config("llm_base_url", data.base_url)
     if data.update_api_key and data.api_key:
         await set_config("llm_api_key", data.api_key)
@@ -413,6 +424,7 @@ async def save_llm_config_api(data: LLMConfig):
         await set_config("llm_model_map", "")
 
     llm_client.configure_llm(
+        api_format=data.api_format,
         base_url=data.base_url,
         api_key=data.api_key if data.update_api_key else "",
         api_key_header=data.api_key_header,

@@ -15,6 +15,7 @@ from services import llm_client
 async def apply_saved_config() -> None:
     # Restore saved LLM config (多厂商: base_url / key / header / prefix / proxy / model_map)
     llm_base_url = await get_config("llm_base_url")
+    llm_api_format = await get_config("llm_api_format")
     llm_api_key = await get_config("llm_api_key")
     llm_api_key_header = await get_config("llm_api_key_header")
     llm_api_key_prefix = await get_config("llm_api_key_prefix")
@@ -32,6 +33,7 @@ async def apply_saved_config() -> None:
         llm_proxy = await get_config("llm_proxy_url") or ""
     llm_client.configure_llm(
         base_url=llm_base_url or "",
+        api_format=llm_api_format or "",
         api_key=llm_api_key or "",
         api_key_header=llm_api_key_header or "",
         api_key_prefix=llm_api_key_prefix or "",

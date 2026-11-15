@@ -420,13 +420,15 @@ Everything below is optional. Without it, the related UI hides itself or explain
 
 <h3 id="llm">LLM</h3>
 
-The morning briefing, Q&A agent, AI commentary and AI review need an LLM. The client speaks the Anthropic Messages API and works with the official API or any compatible endpoint.
+The morning briefing, Q&A agent, AI commentary and AI review need an LLM. The client speaks three protocols: Anthropic Messages, OpenAI Responses and OpenAI Chat Completions, so it works with official APIs as well as relay / gateway endpoints.
 
 | Method | Configuration |
 |---|---|
 | Claude Code OAuth | Install and log in to the Claude Code CLI; credentials are read from the macOS keychain |
 | Anthropic API key | `export ANTHROPIC_API_KEY=sk-ant-...` |
-| Compatible endpoint | `LLM_BASE_URL`, `LLM_API_KEY`, and as needed `LLM_API_KEY_HEADER`, `LLM_API_KEY_PREFIX`, `LLM_MODEL_MAP` |
+| Compatible endpoint / relay | `LLM_API_FORMAT` (`anthropic` / `openai-responses` / `openai-chat`), `LLM_BASE_URL`, `LLM_API_KEY`, and as needed `LLM_API_KEY_HEADER`, `LLM_API_KEY_PREFIX`, `LLM_MODEL_MAP` |
+
+The request URL is the base URL plus the protocol path (`/v1/messages`, `/v1/responses`, `/v1/chat/completions`); a base URL that already ends in `/v1` is not doubled. Both OpenAI protocols authenticate with `Authorization: Bearer` by default and fall back to `OPENAI_API_KEY` when `LLM_API_KEY` is unset. `LLM_MODEL_MAP` maps `smart` / `balanced` / `fast` as well as full model names (e.g. `{"claude-opus-5-5": "gpt-5"}`), redirecting models named in code to whatever the relay serves. Web search is an Anthropic server tool and is only enabled on the official Anthropic endpoint; prompt caching and adaptive thinking are likewise official-endpoint only.
 
 These can also be set under "LLM 配置" in settings; precedence is environment variable > settings page > default. The agent uses prompt caching; server overload (429 / 529) is retried with exponential backoff, timeouts are not retried.
 

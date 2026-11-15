@@ -1,7 +1,17 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../hooks/useApi'
 
+const FORMATS = [
+  { value: 'anthropic', label: 'Anthropic Messages', url: 'https://api.anthropic.com', path: '/v1/messages',
+    map: '{"smart":"claude-opus-5-5","fast":"claude-sonnet-5-5"}' },
+  { value: 'openai-responses', label: 'OpenAI Responses', url: 'https://api.openai.com/v1', path: '/v1/responses',
+    map: '{"smart":"gpt-5","balanced":"gpt-5","fast":"gpt-5-mini"}' },
+  { value: 'openai-chat', label: 'OpenAI Chat Completions', url: 'https://中转站域名/v1', path: '/v1/chat/completions',
+    map: '{"smart":"deepseek-chat","balanced":"deepseek-chat","fast":"deepseek-chat"}' },
+]
+
 export function LLMConfigSection() {
+  const [apiFormat, setApiFormat] = useState('anthropic')
   const [baseUrl, setBaseUrl] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [apiKeyHeader, setApiKeyHeader] = useState('x-api-key')
@@ -15,9 +25,13 @@ export function LLMConfigSection() {
 
   useEffect(() => {
     api.getLLMConfig().then(d => {
+      const f = d.db_api_format || 'anthropic'
+      setApiFormat(f)
       setBaseUrl(d.db_base_url || '')
       setDbHasKey(d.has_api_key)
-      setApiKeyHeader(d.db_api_key_header || 'x-api-key')
+      // OpenAI 协议下 x-api-key 是"没改过"的默认值, 后端按 Authorization: Bearer 发, 这里显示为空
+      const h = d.db_api_key_header || 'x-api-key'
+      setApiKeyHeader(f !== 'anthropic' && h === 'x-api-key' ? '' : h)
       setApiKeyPrefix(d.db_api_key_prefix || '')
       setProxy(d.db_proxy || '')
       setModelMap(d.db_model_map && Object.keys(d.db_model_map).length ? JSON.stringify(d.db_model_map, null, 2) : '')
@@ -36,6 +50,7 @@ export function LLMConfigSection() {
         }
       }
       await api.saveLLMConfig({
+        api_format: apiFormat,
         base_url: baseUrl.trim(),
         api_key: apiKey.trim() || (dbHasKey ? '****' : ''),
         api_key_header: apiKeyHeader.trim() || 'x-api-key',
@@ -69,20 +84,40 @@ export function LLMConfigSection() {
     setTesting(false)
   }
 
+  const fmt = FORMATS.find(f => f.value === apiFormat) || FORMATS[0]
+  const isOpenAI = apiFormat !== 'anthropic'
+
   return (
     <>
       <label className="text-[12px] text-text-dim font-semibold">LLM 配置</label>
       <p className="text-[11px] text-text-muted mb-2 leading-relaxed">
-        支持 Anthropic 协议兼容的 API 端点（DeepSeek / 硅基流动 / OpenRouter 等）。
-        不配置则走原有 Anthropic 官方 + Keychain OAuth。
+        支持 Anthropic Messages、OpenAI Responses、OpenAI Chat Completions 三种协议，官方端点与中转站均可。
+        选 Anthropic 且不填 key 时走 Anthropic 官方 + Keychain OAuth。联网搜索只在 Anthropic 官方端点可用。
       </p>
 
       <div className="grid grid-cols-1 gap-2 mb-2">
         <div>
+          <label className="text-[11px] text-text-muted">接口格式</label>
+          <select value={apiFormat} aria-label="接口格式"
+            onChange={e => {
+              const v = e.target.value
+              setApiFormat(v)
+              if (v !== 'anthropic' && apiKeyHeader === 'x-api-key') setApiKeyHeader('')
+              if (v === 'anthropic' && !apiKeyHeader) setApiKeyHeader('x-api-key')
+            }}
+            className="w-full bg-bg border border-border rounded px-3 py-1.5 text-[12px] text-text outline-none focus:border-accent">
+            {FORMATS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
+          </select>
+          <p className="text-[10px] text-text-muted mt-0.5">
+            请求地址 = Base URL + {fmt.path}；Base URL 已以 /v1 结尾时不再重复拼接
+          </p>
+        </div>
+
+        <div>
           <label className="text-[11px] text-text-muted">API Base URL</label>
           <input
             className="w-full bg-bg border border-border rounded px-3 py-1.5 text-[12px] text-text font-mono outline-none focus:border-accent"
-            placeholder="https://api.anthropic.com"
+            placeholder={fmt.url}
             value={baseUrl} onChange={e => setBaseUrl(e.target.value)}
           />
         </div>
@@ -92,7 +127,7 @@ export function LLMConfigSection() {
             <label className="text-[11px] text-text-muted">API Key Header</label>
             <input
               className="w-full bg-bg border border-border rounded px-3 py-1.5 text-[12px] text-text font-mono outline-none focus:border-accent"
-              placeholder="x-api-key"
+              placeholder={isOpenAI ? 'Authorization' : 'x-api-key'}
               value={apiKeyHeader} onChange={e => setApiKeyHeader(e.target.value)}
             />
           </div>
@@ -100,7 +135,7 @@ export function LLMConfigSection() {
             <label className="text-[11px] text-text-muted">API Key Prefix（如 Bearer）</label>
             <input
               className="w-full bg-bg border border-border rounded px-3 py-1.5 text-[12px] text-text font-mono outline-none focus:border-accent"
-              placeholder="留空或填 Bearer"
+              placeholder={isOpenAI ? '默认 Bearer' : '留空或填 Bearer'}
               value={apiKeyPrefix} onChange={e => setApiKeyPrefix(e.target.value)}
             />
           </div>
@@ -128,10 +163,12 @@ export function LLMConfigSection() {
           <label className="text-[11px] text-text-muted">模型别名映射（JSON，可选）</label>
           <textarea rows={3}
             className="w-full bg-bg border border-border rounded px-3 py-1.5 text-[12px] text-text font-mono outline-none focus:border-accent resize-none"
-            placeholder='{"smart":"deepseek-chat","balanced":"deepseek-chat","fast":"deepseek-chat"}'
+            placeholder={fmt.map}
             value={modelMap} onChange={e => setModelMap(e.target.value)}
           />
-          <p className="text-[10px] text-text-muted mt-0.5">逻辑名: smart / balanced / fast → 实际模型名</p>
+          <p className="text-[10px] text-text-muted mt-0.5">
+            逻辑名 smart / balanced / fast → 实际模型名；也可直接映射完整模型名（如 "claude-opus-5-5": "gpt-5"），代码里写死的模型名会被改发到映射后的模型
+          </p>
         </div>
       </div>
 

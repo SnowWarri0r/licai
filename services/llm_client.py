@@ -1,6 +1,16 @@
-"""Anthropic-协议兼容 LLM 客户端 (多厂商支持).
+"""LLM 客户端: Anthropic Messages / OpenAI Responses / OpenAI Chat Completions 三种协议。
 
-支持的厂商示例:
+上层(agent 主循环与各调用方)只认 Anthropic Messages 的结构; 选了 OpenAI 协议时由
+services/llm_formats 在出站/回包两头翻译, 上层无感。
+
+api_format(LLM_API_FORMAT / 设置页):
+  anthropic         POST {base}/v1/messages           (默认; 官方、DeepSeek/anthropic 等兼容端点)
+  openai-responses  POST {base}/v1/responses          (OpenAI 官方、支持 Responses 的中转站)
+  openai-chat       POST {base}/v1/chat/completions   (绝大多数中转站 / one-api / new-api / 本地推理)
+base_url 已经以 /v1 结尾时不再重复拼 /v1。OpenAI 两种格式默认用 Authorization: Bearer 鉴权,
+凭证取 LLM_API_KEY / 设置页 key, 再退到 OPENAI_API_KEY; 不走 Keychain OAuth。
+
+Anthropic 协议支持的厂商示例:
   - Anthropic 官方:  base_url=https://api.anthropic.com,  header=x-api-key
   - DeepSeek:        base_url=https://api.deepseek.com, header=Authorization, prefix=Bearer
   - 硅基流动:         base_url=https://api.siliconflow.cn, header=Authorization, prefix=Bearer
@@ -10,6 +20,7 @@
 配置优先级 (每一项): 环境变量 > DB 配置 > 默认值
 
 环境变量:
+  LLM_API_FORMAT       协议: anthropic / openai-responses / openai-chat
   LLM_BASE_URL         API 基础地址 (不含 /v1/messages)
   LLM_API_KEY          通用 API key
   LLM_API_KEY_HEADER   鉴权 header 名, 默认 x-api-key
@@ -38,6 +49,8 @@ from urllib.parse import urlparse
 
 import requests
 
+from services import llm_formats as _fmt
+
 logger = logging.getLogger(__name__)
 
 
@@ -58,6 +71,10 @@ _DEFAULT_BASE_URL = "https://api.anthropic.com"
 _DEFAULT_API_KEY_HEADER = "x-api-key"
 
 # ── 运行时可变状态 ─────────────────────────────────────
+try:
+    _api_format: str = _fmt.normalize_format(os.environ.get("LLM_API_FORMAT"))
+except ValueError:
+    _api_format = _fmt.ANTHROPIC
 _base_url: str = os.environ.get("LLM_BASE_URL", "") or _DEFAULT_BASE_URL
 _api_key: str = os.environ.get("LLM_API_KEY", "")
 _api_key_header: str = os.environ.get("LLM_API_KEY_HEADER", "") or _DEFAULT_API_KEY_HEADER
@@ -195,14 +212,20 @@ def configure_llm(
     api_key_prefix: str = "",
     proxy: str = "",
     model_map: dict[str, str] | None = None,
+    api_format: str = "",
 ):
     """运行时更新 LLM 配置 (从 DB 加载后调用)。
 
     环境变量优先级最高, 这里只设置 '没被 env var 覆盖' 的项。
     """
-    global _base_url, _api_key, _api_key_header, _api_key_prefix, _proxy_url, _model_map
+    global _base_url, _api_key, _api_key_header, _api_key_prefix, _proxy_url, _model_map, _api_format
 
     with _config_lock:
+        if not os.environ.get("LLM_API_FORMAT") and api_format:
+            try:
+                _api_format = _fmt.normalize_format(api_format)
+            except ValueError as e:
+                logger.warning("%s, 保持 %s", e, _api_format)
         if not os.environ.get("LLM_BASE_URL") and base_url:
             _base_url = base_url
         if not os.environ.get("LLM_API_KEY") and api_key:
@@ -221,6 +244,7 @@ def configure_llm(
 def get_llm_config() -> dict:
     """返回当前 LLM 配置 (脱敏, 用于 Settings API)."""
     return {
+        "api_format": _api_format,
         "base_url": _base_url,
         "api_key": _mask_key(_api_key) if _api_key else "",
         "has_api_key": bool(_api_key),
@@ -228,7 +252,8 @@ def get_llm_config() -> dict:
         "api_key_prefix": _api_key_prefix,
         "proxy": _proxy_url,
         "model_map": _model_map,
-        "using_oauth_fallback": not _api_key and not os.environ.get("ANTHROPIC_API_KEY", "").strip(),
+        "using_oauth_fallback": (_api_format == _fmt.ANTHROPIC and not _api_key
+                                 and not os.environ.get("ANTHROPIC_API_KEY", "").strip()),
     }
 
 
@@ -279,8 +304,14 @@ CLAUDE_CODE_HEADERS = {
 _cached_token: str | None = None
 
 
+def _is_openai() -> bool:
+    return _api_format != _fmt.ANTHROPIC
+
+
 def _is_anthropic_official() -> bool:
-    """Check if we're talking to api.anthropic.com."""
+    """Check if we're talking to api.anthropic.com (with the Anthropic protocol)."""
+    if _is_openai():
+        return False
     try:
         netloc = urlparse(_base_url).netloc
         return netloc == "api.anthropic.com"
@@ -289,8 +320,12 @@ def _is_anthropic_official() -> bool:
 
 
 def _build_api_url() -> str:
-    """Build the full Messages API URL."""
-    url = _base_url.rstrip("/") + "/v1/messages"
+    """按协议拼完整地址。base_url 已带版本段(…/v1、…/api/v3)时直接接路径, 不再补 /v1 ——
+    中转站文档里给的地址多半就是 https://host/v1。"""
+    base = _base_url.rstrip("/")
+    if not re.search(r"/v\d+[a-z]*$", base):
+        base += "/v1"
+    url = base + _fmt.PATHS[_api_format]
     if _is_anthropic_official():
         url += "?beta=true"
     return url
@@ -309,6 +344,14 @@ def _resolve_auth() -> tuple[str, bool]:
     # ── 通用 API key (优先) ──
     if _api_key:
         return _api_key, False
+
+    # ── OpenAI 协议: 只认显式 key, 订阅 OAuth 不适用 ──
+    if _is_openai():
+        env_key = os.environ.get("OPENAI_API_KEY", "").strip()
+        if env_key:
+            return env_key, False
+        raise RuntimeError(
+            f"API 格式为 {_api_format}, 需要配置 API key (设置页 / LLM_API_KEY / OPENAI_API_KEY)。")
 
     # ── Anthropic 官方 API key (兼容旧版) ──
     env_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
@@ -346,6 +389,16 @@ def _build_headers(token: str, is_oauth: bool) -> dict:
     if is_oauth:
         headers = {**CLAUDE_CODE_HEADERS, "Authorization": f"Bearer {token}"}
         headers["X-Claude-Code-Session-Id"] = str(uuid.uuid4())
+        return headers
+
+    # ── OpenAI 协议: 默认 Bearer; 显式配了别的头(如 Azure 的 api-key)就照用 ──
+    if _is_openai():
+        headers = {"Content-Type": "application/json"}
+        hdr = _api_key_header if _api_key_header.lower() != _DEFAULT_API_KEY_HEADER else "Authorization"
+        if hdr.lower() == "authorization":
+            headers["Authorization"] = f"{(_api_key_prefix or 'Bearer').strip()} {token}"
+        else:
+            headers[hdr] = token
         return headers
 
     # ── 通用 API key 模式 ──
@@ -664,6 +717,16 @@ def call_claude(
 
     On 401 (OAuth expired): flush cache, re-resolve once.
     """
+    if _is_openai():
+        data = call_claude_messages([{"role": "user", "content": user_prompt}], system, model, max_tokens)
+        text = "".join(p.get("text", "") for p in data.get("content", []) if p.get("type") == "text")
+        if (not text and data.get("stop_reason") == "max_tokens"
+                and max_tokens < _NO_TEXT_RETRY_CAP and not _retried):
+            bigger = min(max_tokens * 4, _NO_TEXT_RETRY_CAP)
+            logger.warning("LLM 正文为空(预算 %d 被推理用完), 放大到 %d 重试", max_tokens, bigger)
+            return call_claude(user_prompt, system, model, bigger, _retried=True)
+        return text
+
     model = resolve_model(model)
     token, is_oauth = _resolve_auth()
     headers = _build_headers(token, is_oauth)
@@ -793,10 +856,15 @@ def call_claude_messages(
 
     返回原始响应 dict (调用方自行看 stop_reason / content 里的 tool_use 块)。
     用于 agent loop。出错抛异常 (不走 CLI 兜底——CLI 不支持 tools)。
+
+    OpenAI 两种协议: 请求翻译出去、响应翻译回同样的形状; thinking/effort 不发(非推理模型见到
+    reasoning 参数会 400), 流式照常支持。
     """
     model = resolve_model(model)
     token, is_oauth = _resolve_auth()
     headers = _build_headers(token, is_oauth)
+    if _is_openai():
+        return _call_openai(headers, messages, system, model, max_tokens, tools, on_text)
     system_blocks = _build_system(system, is_oauth)
 
     payload = {
@@ -833,6 +901,47 @@ def call_claude_messages(
     return data
 
 
+def _call_openai(headers, messages, system, model, max_tokens, tools, on_text) -> dict:
+    streaming = on_text is not None
+    build = _fmt.to_responses_request if _api_format == _fmt.OPENAI_RESPONSES else _fmt.to_chat_request
+    payload = build(messages, system, model, max_tokens, tools, stream=streaming)
+    resp = _post_with_retry(headers, payload)
+    if not resp.ok:
+        if resp.status_code == 401:
+            raise RuntimeError(f"LLM API 401 鉴权失败 ({_base_url}): {_safe_error_body(resp)}")
+        _raise_for_status(resp)
+    if streaming:
+        data = _read_openai_stream(resp, on_text)
+    else:
+        raw = resp.json()
+        data = _fmt.from_responses(raw) if _api_format == _fmt.OPENAI_RESPONSES else _fmt.from_chat(raw)
+    _record_usage(data, model)
+    return data
+
+
+def _read_openai_stream(resp, on_text) -> dict:
+    """读 OpenAI 两种协议的 SSE(data: {...} 行, Chat 以 data: [DONE] 收尾), 拼回非流式形状。"""
+    acc = (_fmt.ResponsesStream if _api_format == _fmt.OPENAI_RESPONSES else _fmt.ChatStream)(on_text)
+    try:
+        for raw in resp.iter_lines(decode_unicode=False):
+            line = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+            if not line.startswith("data:"):
+                continue
+            body = line[5:].strip()
+            if not body or body == "[DONE]":
+                continue
+            acc.feed(json.loads(body))
+        return acc.result()
+    except _fmt.StreamError as e:
+        if e.overloaded:
+            raise LLMOverloaded(str(e), 529) from e
+        raise RuntimeError(str(e)) from e
+    except _RETRYABLE_EXC as e:
+        raise LLMOverloaded(f"LLM 流式响应中途断开: {type(e).__name__}", 0) from e
+    finally:
+        resp.close()
+
+
 # ── 连接测试 ───────────────────────────────────────────
 
 def test_connection() -> dict:
@@ -844,6 +953,12 @@ def test_connection() -> dict:
     try:
         # _resolve_auth 在未配置任何凭证时会 raise(无 LLM_API_KEY/ANTHROPIC_API_KEY/OAuth)。
         # 放进 try 里, 让"未配置"返回优雅的 {ok:false, error:...} 而不是抛出 500。
+        if _is_openai():
+            # Responses 要求 max_output_tokens ≥ 16
+            call_claude_messages([{"role": "user", "content": "Say ok"}], "Reply with just 'ok'.",
+                                 model, 16)
+            return {"ok": True, "latency_ms": round((time.time() - t0) * 1000), "model": model,
+                    "error": ""}
         token, is_oauth = _resolve_auth()
         headers = _build_headers(token, is_oauth)
         system_blocks = _build_system("Reply with just 'ok'.", is_oauth)
