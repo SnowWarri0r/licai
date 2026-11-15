@@ -86,10 +86,11 @@ def _live_quotes(syms: list[str]) -> dict:
     """cn 类因子的实时行情(新浪 hq, 与宏观面板同源); 失败返回 {}。"""
     import re
     from services.market_data import _parse_macro_line, _requests
+    from services import market_data as _md
     if _live.get("ts", 0) > time.time() - 30 and set(syms) <= set(_live.get("q", {})):
         return _live["q"]
     try:
-        r = _requests.get("https://hq.sinajs.cn/list=" + ",".join(syms), headers={"Referer": "https://finance.sina.com.cn"}, timeout=6)
+        r = _md.sina_get("https://hq.sinajs.cn/list=" + ",".join(syms), headers={"Referer": "https://finance.sina.com.cn"}, timeout=6)
         r.encoding = "gbk"
         q = {}
         for line in r.text.strip().split("\n"):

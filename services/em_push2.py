@@ -5,7 +5,7 @@
 每次失败再睡 0.3 秒, 一次 get_fund_flow 就耗 8-9 秒、get_hot_concepts 6 秒(2026-10-27 实测),
 一道题里几个工具叠起来全压在问答的关键路径上。
 
-现在: 一次调用里每次尝试都是"连上即断", 就判定整组在限流, 之后 COOL_S 秒内所有调用直接返回
+现在: 一次调用里每次尝试都是"连上即断"或返回非 JSON 的错误页(502 等), 就判定整组不可用, 之后 COOL_S 秒内所有调用直接返回
 None, 各调用方照旧走自己的兜底源(新浪 / 东财数据中心 / 腾讯)。超时不算限流(可能只是网慢),
 不触发熔断; 偶发掐首连只要后面有一次连上就不算。
 """
@@ -53,12 +53,13 @@ def get_json(path: str, params: dict, hosts: list | None = None, tries: int | No
         except requests.exceptions.ConnectionError:
             refused += 1
             continue
-        except ValueError:                          # 返回了非 JSON(维护页之类)
+        except ValueError:                          # 返回了非 JSON(502 / 维护页之类), 与连上即断同样算主机不可用
+            refused += 1
             continue
         if ok is None or ok(j):
             return j
     if refused == tries:
         with _lock:
             _down_until = time.time() + COOL_S
-        logger.warning("东财 push2 主机 %d 次尝试全部连上即断, 判定限流, %d 秒内改走备用源", tries, COOL_S)
+        logger.warning("东财 push2 主机 %d 次尝试全部连上即断或返回错误页, 判定不可用, %d 秒内改走备用源", tries, COOL_S)
     return None

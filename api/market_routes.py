@@ -1060,7 +1060,8 @@ def _fetch_sentiment_sync():
     try:
         import requests as _rq
         import re as _re
-        rr = _rq.get("https://hq.sinajs.cn/list=sh000001,sz399106",
+        from services import market_data as _md
+        rr = _md.sina_get("https://hq.sinajs.cn/list=sh000001,sz399106",
                      headers={"Referer": "https://finance.sina.com.cn"}, timeout=6)
         rr.encoding = "gbk"
         amt_today, vol_today = 0.0, 0.0

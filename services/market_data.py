@@ -10,6 +10,7 @@ import asyncio
 import json
 import os
 import re
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -32,6 +33,47 @@ import akshare as ak
 import pandas as pd
 
 from config import config
+
+
+# ── 新浪熔断 ──────────────────────────────────────────────
+# 新浪(hq.sinajs.cn)抽风时单次请求要 5~15 秒, 而失败结果不进缓存, 每个调用方都会重新等一轮
+# 超时: 一页几十只票的行情就叠成几分钟, 把整页请求拖死。连续 SINA_FAIL_LIMIT 次超时/连不上后,
+# SINA_COOLDOWN 秒内对新浪的调用立刻失败(抛 ConnectionError 的子类, 现有 except 照常接住,
+# 走各自的兜底); 冷却过后放一个请求试探, 成功即恢复, 失败再冷却一轮。
+SINA_FAIL_LIMIT = 3
+SINA_COOLDOWN = 180
+_sina_lock = threading.Lock()
+_sina_state = {"fails": 0, "open_until": 0.0}
+
+
+class SinaUnavailable(_requests.ConnectionError):
+    """新浪处于熔断冷却期, 本次请求未发出。"""
+
+
+def sina_status() -> dict:
+    with _sina_lock:
+        left = _sina_state["open_until"] - time.time()
+        return {"open": left > 0, "cooldown_left": max(0, round(left)), "fails": _sina_state["fails"]}
+
+
+def sina_get(url: str, **kwargs):
+    """requests.get 的新浪专用版本, 带熔断。参数与 requests.get 相同。"""
+    with _sina_lock:
+        if _sina_state["open_until"] > time.time():
+            raise SinaUnavailable("新浪行情熔断中")
+    try:
+        resp = _requests.get(url, **kwargs)
+    except (_requests.Timeout, _requests.ConnectionError):
+        with _sina_lock:
+            _sina_state["fails"] += 1
+            if _sina_state["fails"] >= SINA_FAIL_LIMIT and _sina_state["open_until"] <= time.time():
+                _sina_state["open_until"] = time.time() + SINA_COOLDOWN
+                print(f"[market_data] 新浪连续 {_sina_state['fails']} 次超时/连不上, 暂停 {SINA_COOLDOWN} 秒")
+        raise
+    with _sina_lock:
+        _sina_state["fails"] = 0
+        _sina_state["open_until"] = 0.0
+    return resp
 
 # In-memory cache: {key: (data, timestamp)}
 _cache: dict[str, tuple] = {}
@@ -67,7 +109,7 @@ def get_fx_info(currency: str) -> dict:
     if cached is not None:
         return cached
     try:
-        resp = _requests.get(
+        resp = sina_get(
             f"https://hq.sinajs.cn/list={symbol}",
             headers={"Referer": "https://finance.sina.com.cn"},
             timeout=5,
@@ -360,7 +402,7 @@ def _fetch_sina_quotes(stock_codes: list[str]) -> dict:
     url = f"https://hq.sinajs.cn/list={','.join(symbols)}"
     headers = {"Referer": "https://finance.sina.com.cn"}
 
-    resp = _requests.get(url, headers=headers, timeout=10)
+    resp = sina_get(url, headers=headers, timeout=10)
     resp.encoding = "gbk"
     text = resp.text
 
@@ -427,8 +469,68 @@ def _fetch_sina_quotes(stock_codes: list[str]) -> dict:
     return result
 
 
+def _parse_tencent_quotes(text: str) -> dict:
+    """腾讯 qt.gtimg.cn 批量行情 → 与 _fetch_sina_quotes 同结构。字段(~ 分隔, 实测):
+    [1]名称 [2]代码 [3]现价 [4]昨收 [5]开盘 [6]成交量(手) [33]最高 [34]最低 [37]成交额(万元) [38]换手率%"""
+    out = {}
+    for line in text.strip().split(";"):
+        m = re.search(r'v_(?:sh|sz|bj)(\d{6})="(.*)"', line)
+        if not m:
+            continue
+        f = m.group(2).split("~")
+        if len(f) < 39:
+            continue
+        try:
+            num = lambda i: float(f[i]) if f[i] not in ("", "-") else 0.0  # noqa: E731
+            price, prev, high, low = num(3), num(4), num(33), num(34)
+            out[m.group(1)] = {
+                "stock_code": m.group(1), "stock_name": f[1], "market": "A", "currency": "CNY", "fx_rate": 1.0,
+                "price": price, "open": num(5), "high": high, "low": low, "prev_close": prev,
+                "volume": num(6) * 100, "amount": num(37) * 10000,
+                "change_pct": round((price - prev) / prev * 100, 2) if prev > 0 and price > 0 else 0,
+                "amplitude": round((high - low) / prev * 100, 2) if prev > 0 and high > 0 and low > 0 else 0,
+                "turnover_rate": num(38), "source": "tencent",
+            }
+        except (ValueError, IndexError):
+            continue
+    return out
+
+
+def _fetch_tencent_foreign(market: str, symbol: str) -> dict | None:
+    """港股/美股个股行情的备用源(新浪超时或熔断时用)。腾讯 r_hk<5位> / us<代码>, 字段排列同 A 股:
+    [1]名称 [3]现价 [4]昨收 [5]开盘 [6]成交量(股) [30]时刻 [33]最高 [34]最低 [37]成交额(原币)。
+    美股盘前盘后价不在这一行里, 兜底结果不带 ext_hours。"""
+    key = f"r_hk{symbol.zfill(5)}" if market == "HK" else f"us{symbol.upper()}"
+    resp = _requests.get(f"https://qt.gtimg.cn/q={key}", timeout=6)
+    resp.encoding = "gbk"
+    m = re.search(r'="(.*)"', resp.text)
+    f = m.group(1).split("~") if m else []
+    if len(f) < 38:
+        return None
+    num = lambda i: float(f[i]) if f[i] not in ("", "-") else 0.0  # noqa: E731
+    price, prev, high, low = num(3), num(4), num(33), num(34)
+    if price <= 0:
+        return None
+    return {"stock_name": f[1] or symbol, "price": price, "open": num(5), "high": high, "low": low,
+            "prev_close": prev, "volume": num(6), "amount": num(37),
+            "change_pct": round((price - prev) / prev * 100, 2) if prev > 0 else 0,
+            "amplitude": round((high - low) / prev * 100, 2) if prev > 0 and high and low else 0,
+            "turnover_rate": 0, "market": market, "currency": "HKD" if market == "HK" else "USD",
+            "as_of": f[30], "source": "tencent"}
+
+
+def _fetch_tencent_quotes(stock_codes: list[str]) -> dict:
+    """A 股实时行情的备用源(新浪超时或熔断时用)。"""
+    codes = [normalize_stock_code(c) for c in stock_codes if is_a_share(c)]
+    if not codes:
+        return {}
+    resp = _requests.get("https://qt.gtimg.cn/q=" + ",".join(_sina_symbol(c) for c in codes), timeout=6)
+    resp.encoding = "gbk"
+    return _parse_tencent_quotes(resp.text)
+
+
 async def get_realtime_quotes(stock_codes: list[str]) -> dict:
-    """Get real-time quotes for A/HK/US stock holdings via Sina Finance."""
+    """Get real-time quotes for A/HK/US stock holdings via Sina Finance (A 股取不到时退到腾讯)."""
     if not stock_codes:
         return {}
 
@@ -445,7 +547,20 @@ async def get_realtime_quotes(stock_codes: list[str]) -> dict:
 
         result = {}
         if a_codes:
-            result.update(await asyncio.to_thread(_fetch_sina_quotes, a_codes))
+            # A 股新浪失败(含熔断)只影响 A 股这一段, 不连累港美股; 缺的再向腾讯补
+            try:
+                got = await asyncio.to_thread(_fetch_sina_quotes, a_codes)
+            except Exception as e:  # noqa: BLE001
+                if not isinstance(e, SinaUnavailable):
+                    print(f"[market_data] Sina A 股行情失败, 改用腾讯: {e}")
+                got = {}
+            missing = [c for c in a_codes if c not in got]
+            if missing:
+                try:
+                    got.update(await asyncio.to_thread(_fetch_tencent_quotes, missing))
+                except Exception as e:  # noqa: BLE001
+                    print(f"[market_data] 腾讯 A 股行情也失败: {e}")
+            result.update(got)
 
         async def fetch_one(code: str):
             market, symbol = split_stock_code(code)
@@ -455,6 +570,11 @@ async def get_realtime_quotes(stock_codes: list[str]) -> dict:
                 q = await asyncio.to_thread(_fetch_us_stock_quote, symbol)
             else:
                 q = None
+            if not q and market in ("HK", "US"):
+                try:
+                    q = await asyncio.to_thread(_fetch_tencent_foreign, market, symbol)
+                except Exception as e:  # noqa: BLE001
+                    print(f"[market_data] 腾讯 {market}.{symbol} 行情也失败: {e}")
             if not q:
                 return None
             fx = get_fx_info(q.get("currency", "CNY"))
@@ -1134,7 +1254,7 @@ def _fetch_futures_quote(symbol: str) -> dict | None:
     """Fetch real-time futures quote from Sina. symbol like 'CU0' (主力合约)."""
     try:
         url = f"https://hq.sinajs.cn/list=nf_{symbol}"
-        resp = _requests.get(url, headers={"Referer": "https://finance.sina.com.cn"}, timeout=5)
+        resp = sina_get(url, headers={"Referer": "https://finance.sina.com.cn"}, timeout=5)
         resp.encoding = "gbk"
         text = resp.text.strip()
         match = re.match(r'var hq_str_nf_\w+="(.*)";', text)
@@ -1162,7 +1282,7 @@ def _fetch_overseas_quote(symbol: str) -> dict | None:
     """
     try:
         url = f"https://hq.sinajs.cn/list=hf_{symbol}"
-        resp = _requests.get(url, headers={"Referer": "https://finance.sina.com.cn"}, timeout=5)
+        resp = sina_get(url, headers={"Referer": "https://finance.sina.com.cn"}, timeout=5)
         # Sina 外盘 returns text in GBK with Chinese name; response.text decoded fine but name is garbled
         resp.encoding = "gbk"
         text = resp.text.strip()
@@ -1234,7 +1354,7 @@ def _fetch_hk_stock_quote(code: str) -> dict | None:
     hk00700 也延时)。rt_ 取不到时退回延时行, 时刻照实带在 quote_time 里。"""
     for prefix in ("rt_hk", "hk"):
         try:
-            resp = _requests.get(f"https://hq.sinajs.cn/list={prefix}{code}",
+            resp = sina_get(f"https://hq.sinajs.cn/list={prefix}{code}",
                                  headers={"Referer": "https://finance.sina.com.cn"}, timeout=5)
             resp.encoding = "gbk"
             q = _parse_sina_hk(code, resp.text.strip())
@@ -1243,6 +1363,8 @@ def _fetch_hk_stock_quote(code: str) -> dict | None:
                     q["delayed"] = True
                 return q
         except Exception as e:
+            if isinstance(e, SinaUnavailable):
+                return None
             print(f"[hk-stock] {prefix}{code} failed: {e}")
     return None
 
@@ -1363,7 +1485,7 @@ def _fetch_us_stock_quote(symbol: str) -> dict | None:
     """
     try:
         url = f"https://hq.sinajs.cn/list=gb_{symbol.lower()}"
-        resp = _requests.get(url, headers={"Referer": "https://finance.sina.com.cn"}, timeout=5)
+        resp = sina_get(url, headers={"Referer": "https://finance.sina.com.cn"}, timeout=5)
         resp.encoding = "gbk"
         text = resp.text.strip()
         m = re.match(r'var hq_str_gb_\w+="(.*)";', text)
@@ -1424,7 +1546,8 @@ def _fetch_us_stock_quote(symbol: str) -> dict | None:
             }
         return out
     except Exception as e:
-        print(f"[us-stock] {symbol} failed: {e}")
+        if not isinstance(e, SinaUnavailable):
+            print(f"[us-stock] {symbol} failed: {e}")
         return None
 
 
@@ -1432,7 +1555,7 @@ def _fetch_hk_index_quote(symbol: str = "HSI") -> dict | None:
     """香港指数 via Sina. symbol like 'HSI' (恒生), 'HSCEI' (国企)."""
     try:
         url = f"https://hq.sinajs.cn/list=hkHSI" if symbol == "HSI" else f"https://hq.sinajs.cn/list=int_hangseng"
-        resp = _requests.get(url, headers={"Referer": "https://finance.sina.com.cn"}, timeout=5)
+        resp = sina_get(url, headers={"Referer": "https://finance.sina.com.cn"}, timeout=5)
         resp.encoding = "gbk"
         text = resp.text.strip()
         # hkHSI format: ... contains last and prev_close
@@ -1531,7 +1654,7 @@ def _fetch_indices_sina() -> list[dict]:
         "sh000688": "科创50",
     }
     url = f"https://hq.sinajs.cn/list={','.join(symbols.keys())}"
-    resp = _requests.get(url, headers={"Referer": "https://finance.sina.com.cn"}, timeout=5)
+    resp = sina_get(url, headers={"Referer": "https://finance.sina.com.cn"}, timeout=5)
     resp.encoding = "gbk"
     result = []
     for line in resp.text.strip().split("\n"):
@@ -1749,7 +1872,7 @@ def _fetch_macro_sina() -> dict:
     """一次批量拉所有宏观符号, 按 group 分桶返回."""
     syms = [s for _, s, _ in MACRO_SYMBOLS]
     url = f"https://hq.sinajs.cn/list={','.join(syms)}"
-    resp = _requests.get(url, headers={"Referer": "https://finance.sina.com.cn"}, timeout=8)
+    resp = sina_get(url, headers={"Referer": "https://finance.sina.com.cn"}, timeout=8)
     resp.encoding = "gbk"
     parsed: dict[str, dict] = {}
     for line in resp.text.strip().split("\n"):

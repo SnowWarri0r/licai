@@ -285,7 +285,8 @@ def _fetch_usdcny_sync() -> float:
     if time.time() - _USDCNY_TS[0] < 3600 and _USDCNY_CACHE:
         return _USDCNY_CACHE.get("rate", 7.2)
     try:
-        r = _requests.get("https://hq.sinajs.cn/list=USDCNY",
+        from services import market_data as _md
+        r = _md.sina_get("https://hq.sinajs.cn/list=USDCNY",
                           headers={"Referer": "https://finance.sina.com.cn"}, timeout=5)
         r.encoding = "gbk"
         m = re.search(r'"([\d.]+),', r.text)
