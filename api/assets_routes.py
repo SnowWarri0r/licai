@@ -225,6 +225,7 @@ async def _enrich(asset: dict) -> dict:
         # 仅对场外基金 (NAV 是 T+1, 盘中看不到今日) 才需要代理推测;
         # 场内 ETF 本身有二级市场实时成交价 (quote.change_pct 即今日真实涨跌), 无需代理。
         if quote is not None and not _is_onchain_etf(asset["code"]):
+            proxy = None
             try:
                 from services.fund_proxy import get_fund_proxy
                 proxy = await get_fund_proxy(asset["code"])
@@ -249,7 +250,9 @@ async def _enrich(asset: dict) -> dict:
                 await ensure_fit(asset["code"], nm)
                 bond = ("债" in nm or "固收" in nm)
                 top = None
-                if quote.get("proxy_details") is not None:
+                # quote 来自缓存且会被原地改写, 上一轮成功留下的 proxy_details 还在; 本轮 proxy 取失败时
+                # 不能据此去读 proxy(否则 None.get 崩掉, 回归估算整段被跳过), 没有前十大加权就按 None 估
+                if proxy and quote.get("proxy_details") is not None:
                     top = proxy.get("abs_weighted_change_pct") if bond else proxy.get("weighted_change_pct")
                 est = estimate(asset["code"], quote.get("nav_date") or "", top)
                 if est is not None:
