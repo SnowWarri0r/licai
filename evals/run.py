@@ -57,6 +57,34 @@ def _dump(row: dict) -> str:
         return ""
 
 
+def _seed_copy(db_path: str, case: dict) -> str:
+    """把用例的过往会话(past)与个股档案(notes)写进账本的临时副本, 返回副本路径。
+    原账本只读不动; 副本里先清掉已有档案, 档案索引只反映用例给的内容。"""
+    import sqlite3
+    import tempfile
+    fd, path = tempfile.mkstemp(suffix=".eval.db")
+    os.close(fd)
+    src = sqlite3.connect(db_path)
+    dst = sqlite3.connect(path)
+    src.backup(dst)
+    src.close()
+    from database import SCHEMA
+    dst.executescript(SCHEMA)          # 老账本可能还没有 stock_note 表
+    dst.execute("DELETE FROM stock_note")
+    for title, at, msgs in case.get("past") or []:
+        cur = dst.execute("INSERT INTO ask_session (title, created_at, updated_at) VALUES (?, ?, ?)", (title, at, at))
+        for role, content in msgs:
+            dst.execute("INSERT INTO ask_message (session_id, role, content, created_at) VALUES (?, ?, ?, ?)",
+                        (cur.lastrowid, role, content, at))
+    for n in case.get("notes") or []:
+        dst.execute("INSERT INTO stock_note (code, name, kind, text, quote, said_on, session_id) "
+                    "VALUES (?, ?, ?, ?, ?, ?, 0)",
+                    (n["code"], n["name"], n["kind"], n["text"], n.get("quote", ""), n.get("said_on", "")))
+    dst.commit()
+    dst.close()
+    return path
+
+
 async def run_one(case, verbose=False, ground=None, context=True):
     import services.stock_agent as sa
     import services.llm_client as llm
@@ -87,12 +115,20 @@ async def run_one(case, verbose=False, ground=None, context=True):
     state = case.get("state") if context else None
     real_active = um.active_sync
     um.active_sync = lambda: memory
+    import config as _config
+    real_db = _config.config.db_path
+    seeded = _seed_copy(real_db, case) if context and (case.get("past") or case.get("notes")) else None
+    if seeded:
+        _config.config.db_path = seeded
     try:
         r = await sa.ask_stock(question, history=case.get("history"),
                                **({"state": state} if state else {}))
     finally:
         um.active_sync = real_active
         sa._load_guide = real_load
+        if seeded:
+            _config.config.db_path = real_db
+            os.unlink(seeded)
     used = llm.get_usage_stats()
     ans, tools = (r.get("answer") or ""), (r.get("tools_used") or [])
 

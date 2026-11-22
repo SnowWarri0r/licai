@@ -371,9 +371,9 @@ _memory_dream_date = ""
 
 
 async def memory_dream_loop():
-    """每天收盘后(20:40 起)整理一次用户画像: 回看当天新会话, 提出新增/改写/合并的待确认提案。
+    """每天收盘后(20:40 起)整理一次: 回看新会话, 对用户画像提出待确认提案, 再更新个股档案。
 
-    没有新的用户消息时不调模型。提案在设置页「AI 记住的关于你」里确认。
+    没有新消息时不调模型。画像提案在设置页「AI 记住的关于你」里确认; 档案直接生效, 可在设置页删条目。
     """
     global _memory_dream_date
     from datetime import datetime, timezone, timedelta
@@ -384,11 +384,15 @@ async def memory_dream_loop():
             t = cst_now.hour * 60 + cst_now.minute
             if 1240 <= t <= 1320 and today != _memory_dream_date:
                 _memory_dream_date = today        # 先占位: 失败也不在同一窗口内反复重试
-                from services import memory_dream
+                from services import memory_dream, stock_notes
                 st = await memory_dream.run()
                 print(f"[memory] 夜间整理: 读 {st['messages']} 条消息, 新提案 {st['proposed']}, "
                       f"核对不过丢弃 {st['dropped']}, 重复 {st['dup']}, 失败 {st['failed']}"
                       + (f" ({st['note']})" if st.get('note') else ""))
+                sn = await stock_notes.run()
+                print(f"[memory] 个股档案: 读 {sn['messages']} 条消息, 新增 {sn['added']}, 作废 {sn['superseded']}, "
+                      f"核对不过丢弃 {sn['dropped']}, 未读完 {sn['remaining']} 块, 失败 {sn['failed']}"
+                      + (f" ({sn['note']})" if sn.get('note') else ""))
             await asyncio.sleep(600)
         except Exception as e:
             print(f"[memory] Loop error: {e}")

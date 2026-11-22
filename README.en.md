@@ -391,6 +391,7 @@ About 50 base tools; [Knowledge Planet](#knowledge-planet) adds 3 and an [extens
 | User memory | The agent can remember preferences and how you refer to things; writes made after reading external text require confirmation, and memories can be reviewed and deleted in settings |
 | Past Q&A recall | Searches earlier conversations across sessions by stock name or keyword, returning dates and snippets, and can read back a whole session; quotes carry their date and market facts are re-checked with current data |
 | Nightly consolidation | After 20:40 each day, reviews the day's new conversations and proposes additions, rewrites, merges or removals for user memory; each proposal cites the user's words, kept only if the quote appears verbatim in that user message, and takes effect after confirmation |
+| Stock notes | The nightly pass also extracts, from Q&A transcripts, each stock's business, value-chain position, relationships, dated events, conclusions reached at the time and the user's own views, one page per stock with source and date on every entry; market figures and positions/trades are excluded. The system prompt carries only an index of stocks that have notes, and the agent reads a page on demand; entries can be reviewed and deleted in settings |
 
 **Safety boundaries**: sub-agents that process third-party text (such as full announcements) can only use tools that query public data by code, with parameters limited to codes, dates and numbers; the text is wrapped in random delimiters and declared non-executable. Tool restrictions apply both when tools are offered and when they are executed.
 
@@ -545,6 +546,7 @@ licai/
 │   ├── user_memory         # user memory
 │   ├── ask_recall          # past Q&A recall
 │   ├── memory_dream        # nightly memory consolidation
+│   ├── stock_notes         # per-stock notes
 │   ├── watcher             # watcher detectors
 │   ├── watch_dig           # watcher follow-up digging
 │   ├── watch_health        # watcher self-check

@@ -62,14 +62,18 @@ def _norm(s: str) -> str:
 
 # ── 纯函数部分(可单测) ──────────────────────────────
 
-def build_chunks(msgs: list[dict], titles: dict[int, str] | None = None) -> list[dict]:
+def build_chunks(msgs: list[dict], titles: dict[int, str] | None = None, *,
+                 chunk_chars: int | None = None, assistant_cap: int = ASSISTANT_HEAD,
+                 assistant_ids: bool = False) -> list[dict]:
     """msgs: [{id, session_id, role, content, created_at}] 按 id 升序。按会话成段, 再按字数切块。
-    返回 [{"text", "last_id", "user_ids"}]; 一个会话不跨块(除非它自己就超长)。"""
+    返回 [{"text", "last_id", "user_ids", "msg_ids"}]; 一个会话不跨块(除非它自己就超长)。
+    assistant_ids=True 时助手消息也带编号(个股档案要引用助手当时的结论)。"""
     titles = titles or {}
+    limit = chunk_chars or CHUNK_CHARS
     by_sess: dict[int, list[dict]] = {}
     for m in msgs:
         by_sess.setdefault(m["session_id"], []).append(m)
-    chunks, cur, size, last, uids = [], [], 0, 0, set()
+    chunks, cur, size, last, uids, mids = [], [], 0, 0, set(), set()
     for sid in sorted(by_sess, key=lambda s: by_sess[s][0]["id"]):
         lines = [f"## 会话 {sid} {titles.get(sid, '')}".rstrip()]
         for m in by_sess[sid]:
@@ -78,17 +82,19 @@ def build_chunks(msgs: list[dict], titles: dict[int, str] | None = None) -> list
             if m["role"] == "user":
                 lines.append(f"[msg {m['id']} · {day} · 用户] {text[:USER_CAP]}")
             elif m["role"] == "assistant":
-                lines.append(f"[助手] {text[:ASSISTANT_HEAD]}{'…' if len(text) > ASSISTANT_HEAD else ''}")
+                tag = f"[msg {m['id']} · {day} · 助手]" if assistant_ids else "[助手]"
+                lines.append(f"{tag} {text[:assistant_cap]}{'…' if len(text) > assistant_cap else ''}")
         block = "\n".join(lines) + "\n"
-        if cur and size + len(block) > CHUNK_CHARS:
-            chunks.append({"text": "".join(cur), "last_id": last, "user_ids": uids})
-            cur, size, uids = [], 0, set()
+        if cur and size + len(block) > limit:
+            chunks.append({"text": "".join(cur), "last_id": last, "user_ids": uids, "msg_ids": mids})
+            cur, size, uids, mids = [], 0, set(), set()
         cur.append(block)
         size += len(block)
         last = max(last, max(m["id"] for m in by_sess[sid]))
         uids |= {m["id"] for m in by_sess[sid] if m["role"] == "user"}
+        mids |= {m["id"] for m in by_sess[sid]}
     if cur:
-        chunks.append({"text": "".join(cur), "last_id": last, "user_ids": uids})
+        chunks.append({"text": "".join(cur), "last_id": last, "user_ids": uids, "msg_ids": mids})
     return chunks
 
 

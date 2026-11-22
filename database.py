@@ -434,6 +434,23 @@ CREATE TABLE IF NOT EXISTS prompt_rule (
 );
 CREATE INDEX IF NOT EXISTS idx_prompt_rule_status ON prompt_rule(status, id);
 
+-- 个股档案: 一只票一页, 夜间整理从过往问答原文提取的结构性认识(见 services/stock_notes.py)。
+CREATE TABLE IF NOT EXISTS stock_note (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT NOT NULL,
+    name TEXT DEFAULT '',
+    kind TEXT NOT NULL,                        -- 主营 | 产业链 | 关联 | 事件 | 结论 | 用户
+    text TEXT NOT NULL,
+    quote TEXT DEFAULT '',                     -- 依据: 出处消息里的原文摘录
+    msg_id INTEGER,
+    session_id INTEGER,
+    said_on TEXT DEFAULT '',                   -- 出处消息的日期
+    status TEXT NOT NULL DEFAULT 'active',     -- active | superseded | deleted
+    reason TEXT DEFAULT '',                    -- 作废原因
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_stock_note_code ON stock_note(code, status);
+
 -- 用户画像记忆: 用户亲口说过、跨会话成立的事实(见 services/user_memory.py)。
 -- 删除/覆盖只改 status, 留痕可查。
 CREATE TABLE IF NOT EXISTS user_memory (

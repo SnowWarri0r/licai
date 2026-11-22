@@ -15,6 +15,7 @@ import services.llm_client as _llm
 import services.answer_guard as _guard
 import services.user_memory as _user_memory
 import services.ask_recall as _ask_recall
+import services.stock_notes as _stock_notes
 import services.sina_boards as _sina_boards
 import services.em_dataapi as _em_dataapi
 import services.em_push2 as _em_push2
@@ -3483,6 +3484,7 @@ _TOOLS = [
     _LOAD_GUIDE_TOOL,
     _user_memory.TOOL,
     _ask_recall.TOOL,
+    _stock_notes.TOOL,
     _trade_plan.TOOL_SAVE,
     _trade_plan.TOOL_GET,
     _watcher.TOOL_GET,
@@ -3622,6 +3624,7 @@ _EXECUTORS = {
     "search_past_asks": lambda a: _ask_recall.search(
         str(a.get("query") or ""), a.get("session_id"),
         exclude_session=(_agent_ctx.run.get() or {}).get("session_id")),
+    "get_stock_notes": lambda a: _stock_notes.lookup(str(a.get("code") or "")),
     "save_trade_plan": lambda a: _trade_plan.add_plans(a.get("plans") or []),
     "get_trade_plans": lambda a: _trade_plan.review(a.get("date") or None),
     "get_watch_findings": lambda a: _watch_findings_for_agent(a.get("date") or None),
@@ -3849,13 +3852,15 @@ def _system() -> str:
     learned = render_rules(active_rules_sync())
     # 带第三方原文的子 agent 不放用户画像: 原文里的指令即使生效, 也没有个人信息可复述
     profile = "" if _agent_ctx.untrusted.get() else _user_memory.render(_user_memory.active_sync())
-    return _SYSTEM + learned + profile + (
+    # 档案只放一行索引(哪些票有档案), 整页按需用 get_stock_notes 读: 注入层要小
+    notes = "" if _agent_ctx.untrusted.get() else _stock_notes.render_index(_stock_notes.index_sync())
+    return _SYSTEM + learned + profile + notes + (
         f"\n【今天】{d.isoformat()} 周{wk}; 本周一={monday}, 本月1号={d.replace(day=1).isoformat()}。"
         f"用户问时间范围时据此换算 start/end。\n【交易日状态】{mkt}")
 
 
 _TOOL_CN = {
-    "load_guide": "读作答规范", "remember": "记住", "search_past_asks": "翻过往问答",
+    "load_guide": "读作答规范", "remember": "记住", "search_past_asks": "翻过往问答", "get_stock_notes": "读个股档案",
     "save_trade_plan": "记交易计划", "get_trade_plans": "查计划执行", "get_watch_findings": "看盯盘员发现",
     "dispatch_tasks": "派子任务", "get_tasks": "查子任务", "schedule_task": "预约任务", "cancel_scheduled": "取消预约",
     "resolve_stock": "解析代码", "get_quote": "查行情", "get_trend": "查走势",

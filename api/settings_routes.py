@@ -517,6 +517,35 @@ async def memory_list():
             "last_dream": await memory_dream.last_run()}
 
 
+@router.get("/notes")
+async def notes_list():
+    """个股档案: 按票分组的生效条目 + 上次整理结果。"""
+    from services import stock_notes as sn
+    rows = await sn.entries()
+    groups: dict = {}
+    for r in rows:
+        g = groups.setdefault(r["code"], {"code": r["code"], "name": r["name"], "entries": []})
+        g["name"] = g["name"] or r["name"]
+        g["entries"].append({k: r[k] for k in ("id", "kind", "text", "quote", "said_on", "session_id")})
+    stocks = sorted(groups.values(), key=lambda g: -max(e["id"] for e in g["entries"]))
+    return {"stocks": stocks, "n_entries": len(rows), "last_run": await sn.last_run()}
+
+
+@router.post("/notes/build")
+async def notes_build():
+    """立刻整理一轮档案(最多 4 块, 未读完的下次接着)。要调模型。"""
+    from services import stock_notes as sn
+    return await sn.run()
+
+
+@router.delete("/notes/{eid}")
+async def notes_delete(eid: int):
+    from services import stock_notes as sn
+    if not await sn.delete_entry(eid):
+        raise HTTPException(status_code=404, detail=f"没有生效中的档案条目 #{eid}")
+    return {"ok": True, "id": eid}
+
+
 @router.post("/memory/dream")
 async def memory_dream_now():
     """立刻整理一次(平时每天 20:40 后自动跑)。要调模型; 只读上次之后的新消息。"""
