@@ -17,7 +17,11 @@ import json
 ANTHROPIC = "anthropic"
 OPENAI_RESPONSES = "openai-responses"
 OPENAI_CHAT = "openai-chat"
-FORMATS = (ANTHROPIC, OPENAI_RESPONSES, OPENAI_CHAT)
+# 不是线上协议: 经本机 Claude Code(services/cc_bridge)调用, 不发 HTTP
+CLAUDE_CODE = "claude-code"
+# 经本机 Codex CLI 的 ChatGPT 登录调用(services/llm_codex), 走 Responses 协议
+CODEX = "codex"
+FORMATS = (ANTHROPIC, OPENAI_RESPONSES, OPENAI_CHAT, CLAUDE_CODE, CODEX)
 
 # 各协议相对 /v1 的路径
 PATHS = {
@@ -36,6 +40,10 @@ def normalize_format(fmt: str | None) -> str:
         return OPENAI_RESPONSES
     if f in ("openai-chat", "chat", "chat-completions", "openai", "openai-compatible"):
         return OPENAI_CHAT
+    if f in ("claude-code", "cc", "claude-code-cli", "claude-code-tui"):
+        return CLAUDE_CODE
+    if f in ("codex", "chatgpt", "chatgpt-codex"):
+        return CODEX
     raise ValueError(f"不支持的 API 格式: {fmt!r}, 可选 {', '.join(FORMATS)}")
 
 

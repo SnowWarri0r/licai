@@ -8,6 +8,10 @@ const FORMATS = [
     map: '{"smart":"gpt-5","balanced":"gpt-5","fast":"gpt-5-mini"}' },
   { value: 'openai-chat', label: 'OpenAI Chat Completions', url: 'https://中转站域名/v1', path: '/v1/chat/completions',
     map: '{"smart":"deepseek-chat","balanced":"deepseek-chat","fast":"deepseek-chat"}' },
+  { value: 'claude-code', label: '本机 Claude Code（订阅）', url: '', path: '',
+    map: '{"smart":"claude-opus-5-5","fast":"claude-sonnet-5-5"}' },
+  { value: 'codex', label: '本机 Codex（ChatGPT 订阅）', url: '', path: '',
+    map: '{"smart":"gpt-6-astra","fast":"gpt-6-luna"}' },
 ]
 
 export function LLMConfigSection() {
@@ -86,13 +90,15 @@ export function LLMConfigSection() {
 
   const fmt = FORMATS.find(f => f.value === apiFormat) || FORMATS[0]
   const isOpenAI = apiFormat !== 'anthropic'
+  const isCC = apiFormat === 'claude-code' || apiFormat === 'codex'
 
   return (
     <>
       <label className="text-[12px] text-text-dim font-semibold">LLM 配置</label>
       <p className="text-[11px] text-text-muted mb-2 leading-relaxed">
         支持 Anthropic Messages、OpenAI Responses、OpenAI Chat Completions 三种协议，官方端点与中转站均可。
-        选 Anthropic 且不填 key 时走 Anthropic 官方 + Keychain OAuth。联网搜索只在 Anthropic 官方端点可用。
+        选 Anthropic 且不填 key 时走 Anthropic 官方 + Keychain OAuth。选「本机 Claude Code」时由本机已登录的
+        Claude Code 交互模式代为请求，使用它自己的订阅额度与联网搜索；选「本机 Codex」时用本机 Codex 的 ChatGPT 登录。联网搜索只在 Anthropic 官方端点与本机 Claude Code 下可用。
       </p>
 
       <div className="grid grid-cols-1 gap-2 mb-2">
@@ -109,9 +115,15 @@ export function LLMConfigSection() {
             {FORMATS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
           </select>
           <p className="text-[10px] text-text-muted mt-0.5">
-            请求地址 = Base URL + {fmt.path}；Base URL 已以 /v1 结尾时不再重复拼接
+            {apiFormat === 'claude-code'
+              ? '需要本机已安装并登录 Claude Code（终端里运行过一次 claude）。每段对话占用一个后台 Claude Code 进程，空闲 10 分钟后回收'
+              : apiFormat === 'codex'
+              ? '需要本机 Codex 已用 ChatGPT 账号登录（codex login）。按 Codex CLI 的请求格式发到 ChatGPT 后端；不在映射里的 Claude 模型名改用 Codex 配置的默认模型；不支持联网搜索'
+              : <>请求地址 = Base URL + {fmt.path}；Base URL 已以 /v1 结尾时不再重复拼接</>}
           </p>
         </div>
+
+        {!isCC && <>
 
         <div>
           <label className="text-[11px] text-text-muted">API Base URL</label>
@@ -158,6 +170,7 @@ export function LLMConfigSection() {
             value={proxy} onChange={e => setProxy(e.target.value)}
           />
         </div>
+        </>}
 
         <div>
           <label className="text-[11px] text-text-muted">模型别名映射（JSON，可选）</label>

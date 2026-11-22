@@ -305,7 +305,40 @@ _cached_token: str | None = None
 
 
 def _is_openai() -> bool:
-    return _api_format != _fmt.ANTHROPIC
+    return _api_format in (_fmt.OPENAI_RESPONSES, _fmt.OPENAI_CHAT)
+
+
+def _is_claude_code() -> bool:
+    return _api_format == _fmt.CLAUDE_CODE
+
+
+def _is_codex() -> bool:
+    return _api_format == _fmt.CODEX
+
+
+def _call_codex(messages, system, model, tools, effort, on_text) -> dict:
+    from services import llm_codex
+    model = llm_codex.pick_model(model)
+    try:
+        data = llm_codex.call(messages, system, model, tools, effort=effort, on_text=on_text)
+    except llm_codex.CodexAuthError as e:
+        raise RuntimeError(str(e)) from e
+    except _fmt.StreamError as e:
+        if e.overloaded:
+            raise LLMOverloaded(str(e), 529) from e
+        raise RuntimeError(str(e)) from e
+    except _RETRYABLE_EXC as e:
+        raise LLMOverloaded(f"ChatGPT 后端连接中断: {type(e).__name__}", 0) from e
+    _record_usage(data, model)
+    return data
+
+
+def _cc_error(e: Exception) -> Exception:
+    """cc_bridge 的错误换成上层认得的: 限流/过载按 LLMOverloaded, 让 agent 循环照常等待重试。"""
+    from services import cc_bridge
+    if isinstance(e, cc_bridge.CCApiError) and (e.status in (429, 529) or e.status >= 500):
+        return LLMOverloaded(f"Claude Code: {e}", status=e.status)
+    return RuntimeError(f"Claude Code: {e}")
 
 
 def _is_anthropic_official() -> bool:
@@ -325,7 +358,7 @@ def _build_api_url() -> str:
     base = _base_url.rstrip("/")
     if not re.search(r"/v\d+[a-z]*$", base):
         base += "/v1"
-    url = base + _fmt.PATHS[_api_format]
+    url = base + _fmt.PATHS.get(_api_format, "/messages")
     if _is_anthropic_official():
         url += "?beta=true"
     return url
@@ -717,7 +750,13 @@ def call_claude(
 
     On 401 (OAuth expired): flush cache, re-resolve once.
     """
-    if _is_openai():
+    if _is_claude_code():
+        from services import cc_bridge
+        try:
+            return cc_bridge.call_text(user_prompt, system, resolve_model(model))
+        except (cc_bridge.CCError, cc_bridge.CCApiError) as e:
+            raise _cc_error(e) from e
+    if _is_openai() or _is_codex():
         data = call_claude_messages([{"role": "user", "content": user_prompt}], system, model, max_tokens)
         text = "".join(p.get("text", "") for p in data.get("content", []) if p.get("type") == "text")
         if (not text and data.get("stop_reason") == "max_tokens"
@@ -861,6 +900,17 @@ def call_claude_messages(
     reasoning 参数会 400), 流式照常支持。
     """
     model = resolve_model(model)
+    if _is_claude_code():
+        # 思考由 Claude Code 自己按自适应开; max_tokens 不由这里控制
+        from services import cc_bridge
+        try:
+            data = cc_bridge.call_messages(messages, system, model, tools, effort=effort, on_text=on_text)
+        except (cc_bridge.CCError, cc_bridge.CCApiError) as e:
+            raise _cc_error(e) from e
+        _record_usage(data, model)
+        return data
+    if _is_codex():
+        return _call_codex(messages, system, model, tools, effort, on_text)
     token, is_oauth = _resolve_auth()
     headers = _build_headers(token, is_oauth)
     if _is_openai():
@@ -953,6 +1003,21 @@ def test_connection() -> dict:
     try:
         # _resolve_auth 在未配置任何凭证时会 raise(无 LLM_API_KEY/ANTHROPIC_API_KEY/OAuth)。
         # 放进 try 里, 让"未配置"返回优雅的 {ok:false, error:...} 而不是抛出 500。
+        if _is_claude_code():
+            from services import cc_bridge
+            if not cc_bridge.available():
+                raise RuntimeError("找不到本机的 claude 命令; 先安装 Claude Code 并登录")
+            call_claude("Say ok", "Reply with just 'ok'.", model, 16)
+            return {"ok": True, "latency_ms": round((time.time() - t0) * 1000), "model": model,
+                    "error": ""}
+        if _is_codex():
+            from services import llm_codex
+            if not llm_codex.available():
+                raise RuntimeError("本机 Codex 没有用 ChatGPT 账号登录; 在终端里运行 codex login")
+            model = llm_codex.pick_model(model)
+            call_claude("Say ok", "Reply with just 'ok'.", model, 16)
+            return {"ok": True, "latency_ms": round((time.time() - t0) * 1000), "model": model,
+                    "error": ""}
         if _is_openai():
             # Responses 要求 max_output_tokens ≥ 16
             call_claude_messages([{"role": "user", "content": "Say ok"}], "Reply with just 'ok'.",

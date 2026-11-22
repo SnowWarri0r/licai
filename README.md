@@ -423,17 +423,34 @@ python scripts/seed_demo.py --peek      # 只生成 portfolio.demo.db, 不改动
 
 <h3 id="大模型">大模型</h3>
 
-早盘简报、问问市场、AI 解读与 AI 复盘需要大模型。客户端支持三种协议：Anthropic Messages、OpenAI Responses、OpenAI Chat Completions，官方 API 与各类中转站均可接入。
+早盘简报、问问市场、AI 解读与 AI 复盘需要大模型。客户端支持三种协议：Anthropic Messages、OpenAI Responses、OpenAI Chat Completions，官方 API 与各类中转站均可接入；也可以借用本机已登录的 Claude Code 或 Codex 的订阅。
 
 | 方式 | 配置 |
 |---|---|
+| 本机 Claude Code | `LLM_API_FORMAT=claude-code`。在伪终端中驱动本机交互式 Claude Code，请求由它以自身的登录与身份发出，详见下文 |
+| 本机 Codex | `LLM_API_FORMAT=codex`。读取本机 Codex 的 ChatGPT 登录，按 Codex CLI 的请求格式调用，详见下文 |
 | Claude Code OAuth | 安装并登录 Claude Code CLI，服务自动从 macOS 钥匙串读取凭证 |
 | Anthropic API key | `export ANTHROPIC_API_KEY=sk-ant-...` |
 | 兼容端点 / 中转站 | `LLM_API_FORMAT`（`anthropic` / `openai-responses` / `openai-chat`）、`LLM_BASE_URL`、`LLM_API_KEY`，以及按需设置 `LLM_API_KEY_HEADER`、`LLM_API_KEY_PREFIX`、`LLM_MODEL_MAP` |
 
-请求地址为 Base URL 加上协议路径（`/v1/messages`、`/v1/responses`、`/v1/chat/completions`），Base URL 已以 `/v1` 结尾时不重复拼接。OpenAI 两种协议默认以 `Authorization: Bearer` 鉴权，`LLM_API_KEY` 未设置时读取 `OPENAI_API_KEY`。`LLM_MODEL_MAP` 既可映射 `smart` / `balanced` / `fast`，也可映射完整模型名（如 `{"claude-opus-5-5": "gpt-5"}`），使代码中指定的模型改发到中转站提供的模型。联网搜索（web_search）是 Anthropic 服务端工具，仅在 Anthropic 官方端点启用；提示缓存与自适应思考同样只对官方端点开启。
+请求地址为 Base URL 加上协议路径（`/v1/messages`、`/v1/responses`、`/v1/chat/completions`），Base URL 已以 `/v1` 结尾时不重复拼接。OpenAI 两种协议默认以 `Authorization: Bearer` 鉴权，`LLM_API_KEY` 未设置时读取 `OPENAI_API_KEY`。`LLM_MODEL_MAP` 既可映射 `smart` / `balanced` / `fast`，也可映射完整模型名（如 `{"claude-opus-5-5": "gpt-5"}`），使代码中指定的模型改发到中转站提供的模型。联网搜索（web_search）是 Anthropic 服务端工具，仅在 Anthropic 官方端点与本机 Claude Code 下启用；提示缓存与自适应思考同样只对官方端点开启。
 
 以上各项也可在设置页的「LLM 配置」中填写，优先级为环境变量 > 设置页 > 默认值。问答 agent 启用了提示缓存；服务端过载（429 / 529）时按指数退避重试，超时不重试。
+
+**本机 Claude Code**（`services/cc_bridge`）：
+
+- 每段对话对应一个在伪终端中运行的交互式 Claude Code 进程。系统提示经 `--system-prompt-file` 传入，Claude Code 自带的工具全部关闭，只保留联网搜索（WebSearch）。消息以括号粘贴写入输入框后回车。
+- 问答 agent 的工具注册为一个 stdio MCP 服务。Claude Code 发起调用时，MCP 端挂起，把调用交回 agent 自己的循环执行，拿到结果后再放行。因此回答期间补充、答案自检和子 agent 的工具白名单都照常生效。
+- 回复从预加载脚本（`tap.js`，经 `BUN_OPTIONS=--preload` 载入）抄录的主请求流中读取，支持逐字输出；会话记录只用于确认消息已发出、发现 API 报错。
+- 历史与某个进程已处理的前缀一致时，只把新增部分交给该进程：工具结果交回挂起的调用，新问题粘贴进输入框。对不上时新起进程，把整段历史写成一条消息。
+- 进程空闲 10 分钟后回收，同时最多 6 个；单次问答类调用（资讯解读、夜间整理等）同时最多 3 个。服务退出时一并结束这些进程。
+- 需要本机已安装并登录 Claude Code。工作目录为 `~/.cache/licai/cc-bridge/work`，第一次运行时会自动确认信任该目录。
+
+**本机 Codex**（`services/llm_codex.py`）：
+
+- 请求发往 ChatGPT 后端的 `/codex/responses`，只流式、不留存。顶层 instructions 使用 Codex 自己的系统提示（取自 `~/.codex/models_cache.json`），调用方的系统提示作为第一条 developer 消息。请求头带 Codex CLI 的 originator 与 User-Agent，会话缓存按 `session-id` 头归并。
+- 访问令牌快过期时用刷新令牌换新，并写回 `~/.codex/auth.json` 供 Codex 继续使用。写回前持文件锁，并确认文件里仍是刷新前那份登录。
+- 代码中指定的 Claude 模型名不在 Codex 模型列表里时，改用 Codex 配置的默认模型，也可用 `LLM_MODEL_MAP` 指定。不支持联网搜索。
 
 <h3 id="网络代理">网络代理</h3>
 
@@ -597,6 +614,8 @@ licai/
 │   ├── market_data         # 行情接口
 │   ├── external_assets     # 基金、港美股、数字资产、期货报价
 │   ├── llm_client          # 大模型客户端(多端点)
+│   ├── llm_codex           # 经本机 Codex 的 ChatGPT 登录调用
+│   ├── cc_bridge/          # 经本机交互式 Claude Code 调用(伪终端 + MCP 工具转交)
 │   ├── proxy_config        # 网络代理
 │   ├── origin_guard        # 来源与 Host 校验
 │   ├── mcp_http            # 最小 MCP 客户端

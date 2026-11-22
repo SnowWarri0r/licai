@@ -3825,7 +3825,8 @@ async def _active_tools() -> list:
     elif _agent_ctx.run.get() is None:
         tools = [t for t in tools if t.get("name") not in _TASK_TOOLS]
     try:
-        if _llm._is_anthropic_official():
+        # 经本机 Claude Code 时联网搜索由它自带的 WebSearch 执行
+        if _llm._is_anthropic_official() or _llm._is_claude_code():
             return tools
     except Exception:
         pass

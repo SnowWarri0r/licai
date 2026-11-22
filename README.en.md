@@ -424,17 +424,34 @@ Everything below is optional. Without it, the related UI hides itself or explain
 
 <h3 id="llm">LLM</h3>
 
-The morning briefing, Q&A agent, AI commentary and AI review need an LLM. The client speaks three protocols: Anthropic Messages, OpenAI Responses and OpenAI Chat Completions, so it works with official APIs as well as relay / gateway endpoints.
+The morning briefing, Q&A agent, AI commentary and AI review need an LLM. The client speaks three protocols: Anthropic Messages, OpenAI Responses and OpenAI Chat Completions, so it works with official APIs as well as relay / gateway endpoints. It can also use the subscription of a Claude Code or Codex that is signed in on the same machine.
 
 | Method | Configuration |
 |---|---|
+| Local Claude Code | `LLM_API_FORMAT=claude-code`. Drives the local interactive Claude Code in a pseudo-terminal, so requests go out under its own sign-in and identity; see below |
+| Local Codex | `LLM_API_FORMAT=codex`. Uses the local Codex's ChatGPT sign-in and sends requests the way Codex CLI does; see below |
 | Claude Code OAuth | Install and log in to the Claude Code CLI; credentials are read from the macOS keychain |
 | Anthropic API key | `export ANTHROPIC_API_KEY=sk-ant-...` |
 | Compatible endpoint / relay | `LLM_API_FORMAT` (`anthropic` / `openai-responses` / `openai-chat`), `LLM_BASE_URL`, `LLM_API_KEY`, and as needed `LLM_API_KEY_HEADER`, `LLM_API_KEY_PREFIX`, `LLM_MODEL_MAP` |
 
-The request URL is the base URL plus the protocol path (`/v1/messages`, `/v1/responses`, `/v1/chat/completions`); a base URL that already ends in `/v1` is not doubled. Both OpenAI protocols authenticate with `Authorization: Bearer` by default and fall back to `OPENAI_API_KEY` when `LLM_API_KEY` is unset. `LLM_MODEL_MAP` maps `smart` / `balanced` / `fast` as well as full model names (e.g. `{"claude-opus-5-5": "gpt-5"}`), redirecting models named in code to whatever the relay serves. Web search is an Anthropic server tool and is only enabled on the official Anthropic endpoint; prompt caching and adaptive thinking are likewise official-endpoint only.
+The request URL is the base URL plus the protocol path (`/v1/messages`, `/v1/responses`, `/v1/chat/completions`); a base URL that already ends in `/v1` is not doubled. Both OpenAI protocols authenticate with `Authorization: Bearer` by default and fall back to `OPENAI_API_KEY` when `LLM_API_KEY` is unset. `LLM_MODEL_MAP` maps `smart` / `balanced` / `fast` as well as full model names (e.g. `{"claude-opus-5-5": "gpt-5"}`), redirecting models named in code to whatever the relay serves. Web search is an Anthropic server tool and is only enabled on the official Anthropic endpoint and through local Claude Code; prompt caching and adaptive thinking are likewise official-endpoint only.
 
 These can also be set under "LLM 配置" in settings; precedence is environment variable > settings page > default. The agent uses prompt caching; server overload (429 / 529) is retried with exponential backoff, timeouts are not retried.
+
+**Local Claude Code** (`services/cc_bridge`):
+
+- Each conversation gets an interactive Claude Code process running in a pseudo-terminal. The system prompt goes in through `--system-prompt-file`; Claude Code's own tools are all turned off except web search (WebSearch). Messages are written into the prompt as a bracketed paste, then sent with Enter.
+- The agent's tools are registered as a stdio MCP server. When Claude Code calls one, the MCP side holds the call and hands it back to the agent's own loop; the result releases it. Mid-answer additions, answer self-checks and sub-agent tool allowlists therefore work as before.
+- Replies are read from the main request stream, copied by a preloaded script (`tap.js`, loaded through `BUN_OPTIONS=--preload`), so text streams as it is written. The session transcript is only used to confirm a message was sent and to catch API errors.
+- When the history matches what a process has already handled, only the new part goes to that process: tool results release the held calls, and a new question is pasted in. Otherwise a new process starts with the whole history written as one message.
+- Processes are reclaimed after 10 idle minutes, with at most 6 at once; one-shot calls (news commentary, nightly consolidation and the like) run at most 3 at a time. All of them end with the server.
+- Claude Code must be installed and signed in. The working directory is `~/.cache/licai/cc-bridge/work`; trust in it is confirmed automatically on the first run.
+
+**Local Codex** (`services/llm_codex.py`):
+
+- Requests go to the ChatGPT backend's `/codex/responses`, streamed and not stored. Top-level instructions are Codex's own system prompt (from `~/.codex/models_cache.json`), with the caller's system prompt as the first developer message. Headers carry Codex CLI's originator and User-Agent, and prompt caching is grouped by the `session-id` header.
+- An access token about to expire is refreshed with the refresh token, and the new tokens are written back to `~/.codex/auth.json` for Codex to keep using. The write holds a file lock and first checks the file still holds the sign-in the refresh started from.
+- A Claude model name used in code that Codex does not list is replaced with Codex's configured default model, or with whatever `LLM_MODEL_MAP` names. Web search is not available.
 
 <h3 id="network-proxy">Network proxy</h3>
 
@@ -576,6 +593,8 @@ licai/
 │   ├── market_data         # market data
 │   ├── external_assets     # funds, HK/US stocks, digital assets, futures quotes
 │   ├── llm_client          # LLM client (multiple endpoints)
+│   ├── llm_codex           # calls through the local Codex's ChatGPT sign-in
+│   ├── cc_bridge/          # calls through the local interactive Claude Code (pty + MCP tool handoff)
 │   ├── proxy_config        # network proxy
 │   ├── origin_guard        # origin and Host validation
 │   ├── mcp_http            # minimal MCP client
