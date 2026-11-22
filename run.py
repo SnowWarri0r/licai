@@ -55,7 +55,7 @@ from services.coiled_scanner import coiled_prewarm_loop
 from services.portfolio_curve import curve_prewarm_loop
 from api.broker_routes import router as broker_router
 from api.ws import (router as ws_router, price_monitor_loop, backup_loop, briefing_loop,
-                    dca_loop, eod_summary_loop, rule_mine_loop)
+                    dca_loop, eod_summary_loop, rule_mine_loop, memory_dream_loop)
 from services import feishu_notify
 
 
@@ -150,6 +150,7 @@ async def lifespan(app: FastAPI):
     task9 = asyncio.create_task(eod_summary_loop())
     task10 = asyncio.create_task(_symbol_dict_prewarm())
     task11 = asyncio.create_task(rule_mine_loop())
+    asyncio.create_task(memory_dream_loop())
     task12 = asyncio.create_task(plan_monitor_loop())
     from services.watcher import watcher_loop
     from services.agent_tasks import scheduler_loop

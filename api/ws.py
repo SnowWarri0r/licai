@@ -365,3 +365,31 @@ async def rule_mine_loop():
         except Exception as e:
             print(f"[rules] Loop error: {e}")
             await asyncio.sleep(1800)
+
+
+_memory_dream_date = ""
+
+
+async def memory_dream_loop():
+    """每天收盘后(20:40 起)整理一次用户画像: 回看当天新会话, 提出新增/改写/合并的待确认提案。
+
+    没有新的用户消息时不调模型。提案在设置页「AI 记住的关于你」里确认。
+    """
+    global _memory_dream_date
+    from datetime import datetime, timezone, timedelta
+    while True:
+        try:
+            cst_now = datetime.now(timezone.utc) + timedelta(hours=8)
+            today = cst_now.strftime("%Y-%m-%d")
+            t = cst_now.hour * 60 + cst_now.minute
+            if 1240 <= t <= 1320 and today != _memory_dream_date:
+                _memory_dream_date = today        # 先占位: 失败也不在同一窗口内反复重试
+                from services import memory_dream
+                st = await memory_dream.run()
+                print(f"[memory] 夜间整理: 读 {st['messages']} 条消息, 新提案 {st['proposed']}, "
+                      f"核对不过丢弃 {st['dropped']}, 重复 {st['dup']}, 失败 {st['failed']}"
+                      + (f" ({st['note']})" if st.get('note') else ""))
+            await asyncio.sleep(600)
+        except Exception as e:
+            print(f"[memory] Loop error: {e}")
+            await asyncio.sleep(1800)

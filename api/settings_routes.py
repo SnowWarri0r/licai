@@ -510,10 +510,18 @@ async def rules_decide(rule_id: int, decision: str):
 
 @router.get("/memory")
 async def memory_list():
-    from services import user_memory as um
+    from services import user_memory as um, memory_dream
     items = await um.list_all()
     return {"items": items, "n_active": sum(1 for m in items if m["status"] == "active"),
-            "n_pending": sum(1 for m in items if m["status"] == "pending")}
+            "n_pending": sum(1 for m in items if m["status"] == "pending"),
+            "last_dream": await memory_dream.last_run()}
+
+
+@router.post("/memory/dream")
+async def memory_dream_now():
+    """立刻整理一次(平时每天 20:40 后自动跑)。要调模型; 只读上次之后的新消息。"""
+    from services import memory_dream
+    return await memory_dream.run()
 
 
 @router.post("/memory/{mid}/approve")

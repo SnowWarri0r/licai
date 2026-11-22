@@ -389,6 +389,8 @@ About 50 base tools; [Knowledge Planet](#knowledge-planet) adds 3 and an [extens
 | Reading rules | Cases where the user corrected the agent are mined from history and drafted into candidate rules and pre-answer checks, every Monday. They take effect only after approval under "AI 读盘规则" in settings (or `python scripts/rules.py`) |
 | Tool-gap ledger | Errors, empty results, stale data (by trading day) or all-zero key fields are recorded; `python scripts/tool_gaps.py` shows the summary |
 | User memory | The agent can remember preferences and how you refer to things; writes made after reading external text require confirmation, and memories can be reviewed and deleted in settings |
+| Past Q&A recall | Searches earlier conversations across sessions by stock name or keyword, returning dates and snippets, and can read back a whole session; quotes carry their date and market facts are re-checked with current data |
+| Nightly consolidation | After 20:40 each day, reviews the day's new conversations and proposes additions, rewrites, merges or removals for user memory; each proposal cites the user's words, kept only if the quote appears verbatim in that user message, and takes effect after confirmation |
 
 **Safety boundaries**: sub-agents that process third-party text (such as full announcements) can only use tools that query public data by code, with parameters limited to codes, dates and numbers; the text is wrapped in random delimiters and declared non-executable. Tool restrictions apply both when tools are offered and when they are executed.
 
@@ -541,6 +543,8 @@ licai/
 │   ├── answer_guard        # deterministic pre-answer checks
 │   ├── rule_forge          # drafting reading rules from user corrections
 │   ├── user_memory         # user memory
+│   ├── ask_recall          # past Q&A recall
+│   ├── memory_dream        # nightly memory consolidation
 │   ├── watcher             # watcher detectors
 │   ├── watch_dig           # watcher follow-up digging
 │   ├── watch_health        # watcher self-check

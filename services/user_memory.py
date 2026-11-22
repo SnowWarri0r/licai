@@ -133,17 +133,53 @@ async def delete(mid: int) -> bool:
         return cur.rowcount > 0
 
 
+def _ids(raw) -> list[int]:
+    return [int(x) for x in str(raw or "").split(",") if x.strip().isdigit()]
+
+
 async def approve(mid: int) -> bool:
-    """批准一条待确认的记录; 它若是覆盖某条的, 同时把那条作废。"""
+    """批准一条待确认的记录。
+
+    覆盖某条的: 那条作废; 合并提案(also_replaces)另把列出的几条一并作废;
+    fact 为空的是删除提案: 作废目标后, 提案本身也不进画像(记为 deleted)。"""
     import aiosqlite
     async with aiosqlite.connect(_db_path()) as db:
-        cur = await db.execute("SELECT replaces FROM user_memory WHERE id = ? AND status = 'pending'", (mid,))
+        cur = await db.execute("SELECT replaces, fact, also_replaces FROM user_memory "
+                               "WHERE id = ? AND status = 'pending'", (mid,))
         row = await cur.fetchone()
         if not row:
             return False
-        if row[0]:
+        replaces, fact, also = row
+        for old in ([replaces] if replaces else []) + _ids(also):
             await db.execute("UPDATE user_memory SET status = 'replaced' WHERE id = ? AND status = 'active'",
-                             (row[0],))
-        await db.execute("UPDATE user_memory SET status = 'active' WHERE id = ?", (mid,))
+                             (old,))
+        await db.execute("UPDATE user_memory SET status = ? WHERE id = ?",
+                         ("active" if (fact or "").strip() else "deleted", mid))
         await db.commit()
         return True
+
+
+async def propose(fact: str, *, replaces: int | None = None, also_replaces: list[int] | None = None,
+                  note: str = "", session_id: int | None = None, origin: str = "dream") -> int | None:
+    """存一条待确认的提案(夜间整理用), 不直接生效。fact 为空 + replaces = 建议删除那一条。
+    与已有的生效/待确认条目文字相同的不重复存, 返回 None。"""
+    import aiosqlite
+    fact = _clean(fact)
+    if not fact and not replaces:
+        return None
+    async with aiosqlite.connect(_db_path()) as db:
+        if fact:
+            cur = await db.execute("SELECT 1 FROM user_memory WHERE fact = ? AND status IN ('active', 'pending')",
+                                   (fact,))
+        else:
+            cur = await db.execute("SELECT 1 FROM user_memory WHERE fact = '' AND replaces = ? "
+                                   "AND status = 'pending'", (replaces,))
+        if await cur.fetchone():
+            return None
+        cur = await db.execute(
+            "INSERT INTO user_memory (fact, status, session_id, replaces, origin, note, also_replaces) "
+            "VALUES (?, 'pending', ?, ?, ?, ?, ?)",
+            (fact, session_id, replaces, origin, (note or "")[:400],
+             ",".join(str(i) for i in also_replaces or [])))
+        await db.commit()
+        return cur.lastrowid

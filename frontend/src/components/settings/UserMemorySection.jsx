@@ -25,9 +25,26 @@ export function UserMemorySection() {
     } finally { setBusy(0) }
   }
 
+  const dream = async () => {
+    setBusy(-1); setMsg('整理中, 约半分钟…')
+    try {
+      const r = await fetchJSON('/api/settings/memory/dream', { method: 'POST' })
+      await load()
+      setMsg(r.note ? r.note : `读了 ${r.messages} 条消息, 新提案 ${r.proposed} 条` +
+        (r.dropped ? `, 依据核对不过丢弃 ${r.dropped} 条` : '') + (r.failed ? ', 模型调用失败, 下次接着读' : ''))
+    } catch (e) {
+      setMsg(String(e.message || e))
+    } finally { setBusy(0) }
+  }
+
   const items = data?.items || []
   const pending = items.filter(m => m.status === 'pending')
   const active = items.filter(m => m.status === 'active')
+  const byId = Object.fromEntries(items.map(m => [m.id, m]))
+  const ld = data?.last_dream
+  // 提案改动了哪几条已有画像
+  const targets = (m) => [m.replaces, ...String(m.also_replaces || '').split(',')]
+    .map(x => Number(x)).filter(Boolean).map(id => byId[id]).filter(Boolean)
 
   return (
     <div>
@@ -43,18 +60,33 @@ export function UserMemorySection() {
       <p className="text-[11px] text-text-muted mt-1 mb-2">
         你在对话里交代的长期事实(比如哪些扣款是定投), 换会话也记得。
         它读过网页/新闻/行情后记下的条目可能不是你的原话, <b>确认了才生效</b>。
+        每天 20:40 后会回看当天的对话做一次整理, 提出新增、改写、合并, 同样确认了才生效。
       </p>
+      <div className="flex items-center gap-2 mb-2 text-[11px] text-text-muted">
+        <button onClick={dream} disabled={busy !== 0}
+          className="px-2 py-0.5 rounded border border-border text-text-dim hover:text-text disabled:opacity-50 cursor-pointer">
+          现在整理一次
+        </button>
+        {ld && <span>上次整理 {ld.at}{ld.note ? ` · ${ld.note}` : ` · 读 ${ld.messages} 条 · 提案 ${ld.proposed}`}</span>}
+      </div>
       {pending.map(m => (
         <div key={m.id} className="mb-2 p-2 rounded-lg border border-accent/25 bg-bg/40">
-          <div className="text-[12px] text-text-bright">{m.fact}</div>
+          {targets(m).length > 0 && (
+            <div className="text-[11px] text-text-muted mb-1">
+              {!m.fact ? '建议删除' : targets(m).length > 1 ? '合并以下几条' : '改写'}:
+              {targets(m).map(t => <div key={t.id} className="line-through decoration-text-muted/60">{t.fact}</div>)}
+            </div>
+          )}
+          {m.fact && <div className="text-[12px] text-text-bright">{targets(m).length > 0 && '→ '}{m.fact}</div>}
+          {m.note && <div className="text-[10.5px] text-text-muted mt-1">{m.origin === 'dream' && '夜间整理 · '}{m.note}</div>}
           <div className="flex items-center gap-2 mt-1.5">
             <button onClick={() => act(m.id, 'approve')} disabled={busy === m.id}
               className="text-[11px] px-2 py-0.5 rounded bg-accent/20 text-accent border border-accent/40 hover:bg-accent/30 disabled:opacity-50 cursor-pointer">
-              确认
+              {m.fact ? '确认' : '确认删除'}
             </button>
             <button onClick={() => act(m.id, 'delete')} disabled={busy === m.id}
               className="text-[11px] px-2 py-0.5 rounded border border-border text-text-dim hover:text-text disabled:opacity-50 cursor-pointer">
-              删除
+              不要
             </button>
           </div>
         </div>

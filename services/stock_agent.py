@@ -14,6 +14,7 @@ import time as _time
 import services.llm_client as _llm
 import services.answer_guard as _guard
 import services.user_memory as _user_memory
+import services.ask_recall as _ask_recall
 import services.sina_boards as _sina_boards
 import services.em_dataapi as _em_dataapi
 import services.em_push2 as _em_push2
@@ -3481,6 +3482,7 @@ async def _tool_earnings(code: str = "") -> dict:
 _TOOLS = [
     _LOAD_GUIDE_TOOL,
     _user_memory.TOOL,
+    _ask_recall.TOOL,
     _trade_plan.TOOL_SAVE,
     _trade_plan.TOOL_GET,
     _watcher.TOOL_GET,
@@ -3617,6 +3619,9 @@ async def _async_value(v):
 _EXECUTORS = {
     "load_guide": lambda a: _async_value(_load_guide(a.get("topics"))),
     "remember": lambda a: _user_memory.remember(a),
+    "search_past_asks": lambda a: _ask_recall.search(
+        str(a.get("query") or ""), a.get("session_id"),
+        exclude_session=(_agent_ctx.run.get() or {}).get("session_id")),
     "save_trade_plan": lambda a: _trade_plan.add_plans(a.get("plans") or []),
     "get_trade_plans": lambda a: _trade_plan.review(a.get("date") or None),
     "get_watch_findings": lambda a: _watch_findings_for_agent(a.get("date") or None),
@@ -3850,7 +3855,7 @@ def _system() -> str:
 
 
 _TOOL_CN = {
-    "load_guide": "读作答规范", "remember": "记住",
+    "load_guide": "读作答规范", "remember": "记住", "search_past_asks": "翻过往问答",
     "save_trade_plan": "记交易计划", "get_trade_plans": "查计划执行", "get_watch_findings": "看盯盘员发现",
     "dispatch_tasks": "派子任务", "get_tasks": "查子任务", "schedule_task": "预约任务", "cancel_scheduled": "取消预约",
     "resolve_stock": "解析代码", "get_quote": "查行情", "get_trend": "查走势",
