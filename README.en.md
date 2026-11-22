@@ -78,7 +78,7 @@ The server listens on `0.0.0.0:8888` by default. Other devices on the same netwo
 
 ## Features
 
-The sidebar is split by one question: does it concern my own money or not. The Q&A agent and settings sit at the bottom; the watcher opens from the top bar.
+The sidebar is split by one question: does it concern my own money or not. The Q&A agent, AI memory and settings sit at the bottom; the watcher opens from the top bar.
 
 | Group | Page | Contents |
 |---|---|---|
@@ -95,7 +95,8 @@ The sidebar is split by one question: does it concern my own money or not. The Q
 | | Macro | 11 groups: global indices, AI compute, FX, metals, energy and chemicals, agriculture, etc. |
 | | News | [Five-source news feed with AI commentary](#news-and-event-calendar) |
 | Bottom | Ask the market | [Market Q&A agent](#market-qa-agent) |
-| | Settings | Feishu push, local proxy, exchange credentials, LLM config, Knowledge Planet, extension data source, AI reading rules, user memory |
+| | AI memory | Three tabs: profile, stock notes and answer rules; counts of items awaiting confirmation or review show as a sidebar badge |
+| | Settings | Feishu push, local proxy, exchange credentials, LLM config, Knowledge Planet, extension data source |
 
 Pages use hash routes (e.g. `#portfolio`, `#rankings`) that can be bookmarked or shared.
 
@@ -375,10 +376,10 @@ About 50 base tools; [Knowledge Planet](#knowledge-planet) adds 3 and an [extens
 
 - **Server-side runs**: each turn runs on the server; switching pages, closing the drawer or refreshing does not stop it, and the result is saved to history. Run events are persisted, so after a restart an unfinished turn is marked interrupted and its completed steps remain visible.
 - **Follow-ups while answering**: the input stays open; additions go to the turn's inbox and are read at the next step. Additions arriving after the answer are merged into a new question automatically.
-- **Sub-agents**: the main agent can dispatch sub-agents with separate contexts via `dispatch_tasks`, either in parallel for aggregation or as background tasks whose results return to the conversation as cards.
+- **Sub-agents**: the main agent can dispatch sub-agents with separate contexts via `dispatch_tasks`, either in parallel for aggregation or as background tasks whose results return to the conversation as cards. Sub-agents cannot dispatch further tasks or write to the profile or trade plans; at most 3 run at once, 5 per dispatch and 10 per turn.
 - **Scheduled tasks**: a query can be scheduled for a later time in conversation. Schedules survive restarts; a background sub-agent runs them on time and posts the result to the original conversation and the watcher panel.
 - **Inline components**: "name (code)" in answers opens the stock detail; K-line, intraday and comparison charts render in place.
-- **Stock drawer**: any stock can open the same chat panel.
+- **Stock drawer**: any stock can open the same chat panel, with the same mid-answer additions, sub-task bar and result cards.
 
 **Quality controls**
 
