@@ -519,11 +519,22 @@ async def memory_list():
             "last_dream": await memory_dream.last_run()}
 
 
+@router.get("/memory/badge")
+async def memory_badge():
+    """侧栏「AI 记忆」角标: 等用户处理的条数(待确认画像 + 待复核画像 + 待审规则)。"""
+    from services import user_memory as um, rule_forge as rf
+    items = await um.list_all()
+    rules = await rf.list_rules()
+    return {"pending": sum(1 for m in items if m["status"] == "pending"),
+            "stale": sum(1 for m in items if m.get("stale")),
+            "rules": sum(1 for r in rules if r["status"] == "pending")}
+
+
 @router.get("/notes")
-async def notes_list():
-    """个股档案: 按票分组的生效条目 + 上次整理结果。"""
+async def notes_list(code: str = ""):
+    """个股档案: 按票分组的生效条目 + 上次整理结果。传 code 只取这一只。"""
     from services import stock_notes as sn
-    rows = await sn.entries()
+    rows = await sn.entries(sn._code(code) if code else "")
     groups: dict = {}
     for r in rows:
         g = groups.setdefault(r["code"], {"code": r["code"], "name": r["name"], "entries": []})

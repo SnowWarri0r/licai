@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { fetchJSON } from '../../hooks/useApi'
+import { memoryChanged } from '../memory/memoryEvents'
 
 /* 规则编译出的出答案前检查: 适用条件 + 判据 + 违反时打回给 AI 的原话。批准后由答案护栏执行,
    不满足就打回补查/改写。打回的原话会进模型上下文, 所以审批时必须完整显示。 */
@@ -68,6 +69,7 @@ export function PromptRulesSection() {
     try {
       await fetchJSON(`/api/settings/rules/${id}/${decision}`, { method: 'POST' })
       await load()
+      memoryChanged()
       setMsg(decision === 'approve' ? '已进 prompt, 下一次问答生效' : '已否决, 不进 prompt')
     } catch (e) {
       setMsg(String(e.message || e))
@@ -100,6 +102,7 @@ export function PromptRulesSection() {
     setMining(true); setMsg('挖掘中(要调模型, 十几秒)…')
     try {
       const r = await fetchJSON('/api/settings/rules/mine', { method: 'POST' })
+      memoryChanged()
       setMsg(`新纠正 ${r.corrections} 条 → 新增候选 ${r.added}(其中编译出检查 ${r.compiled || 0}), 判为非规则 ${r.skipped}, 重复 ${r.dup}, 失败 ${r.failed}`)
       await load()
     } catch (e) {

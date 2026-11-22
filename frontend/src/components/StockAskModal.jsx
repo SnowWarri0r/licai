@@ -5,6 +5,8 @@ import { MiniMarkdown, DraftAnswer, draftText, sharedPrefix, markFailed, Sources
 import { TaskStrip, TaskCard, InterjectList } from './AgentTasks'
 import { lastTurn, newTurn, turnsFromMessages, histForAgent, interject, withdrawFrom, handleInterjectEv, useSessionTasks } from './askTurns'
 import ImageZoom from './ImageZoom'
+import { NotePage } from './memory/NotesTab'
+import { fetchJSON } from '../hooks/useApi'
 
 function pctColor(v) {
   if (v > 0) return 'text-bear'
@@ -61,6 +63,15 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
   const nextRunRef = useRef(DRAWER_CACHE.get(stock?.code)?.nextRun ?? null)    // 答完才到的补充续成的下一轮
   const endedRef = useRef(Promise.resolve())        // 当前跟看的那根连接结束时 resolve
   const scope = `stock:${stock?.code || ''}`
+
+  // 这只票的个股档案(夜间整理从过往问答里提取的), 抽屉头部一个开关展开看
+  const [notes, setNotes] = useState(null)
+  const [showNotes, setShowNotes] = useState(false)
+  useEffect(() => {
+    if (!stock?.code) return
+    fetchJSON(`/api/settings/notes?code=${encodeURIComponent(stock.code)}`)
+      .then(d => setNotes((d.stocks || [])[0] || null)).catch(() => setNotes(null))
+  }, [stock?.code])
 
   // 先播放滑出动画再卸载
   const close = () => { setShown(false); clearTimeout(closeTimer.current); closeTimer.current = setTimeout(onClose, 280) }
@@ -340,6 +351,13 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
             <span className={`text-[13px] font-mono font-semibold ${pctColor(stock.pct)}`}>{stock.pct >= 0 ? '+' : ''}{stock.pct}%</span>
           )}
           {stock['行业'] && <span className="text-[10.5px] text-text-dim ml-1">{stock['行业']}</span>}
+          {notes && (
+            <button onClick={() => setShowNotes(v => !v)} title="从过往问答里整理的这只票的档案"
+              className={`ml-1 text-[10.5px] px-1.5 py-[1px] rounded border cursor-pointer ${showNotes
+                ? 'border-accent/50 text-accent bg-accent/10' : 'border-border text-text-dim hover:text-text'}`}>
+              档案 {notes.entries.length}
+            </button>
+          )}
           <button onClick={deepDive} disabled={loading}
             title="四层视角在同一份事实上各自成文, 再挑出彼此的冲突点与证伪条件。约 3 分半, 期间可以关掉抽屉"
             className="ml-auto text-[11px] px-2 py-[3px] rounded-full border border-accent/40 bg-accent/10 text-accent hover:bg-accent/20 disabled:opacity-40 disabled:cursor-not-allowed">
@@ -347,6 +365,13 @@ export default function StockAskModal({ stock, onClose, initialQuestion = '' }) 
           </button>
           <button onClick={close} className="text-text-dim hover:text-text text-[20px] leading-none px-1">×</button>
         </div>
+
+        {showNotes && notes && (
+          <div className="shrink-0 max-h-[45%] overflow-y-auto px-4 py-3 border-b border-border-subtle bg-bg/40">
+            <div className="text-[10.5px] text-text-muted mb-2">过往问答里整理的档案, 每条注明当时的日期; 行情以当下为准。在侧栏「AI 记忆」里可以删改。</div>
+            <NotePage stock={notes} />
+          </div>
+        )}
 
         {/* 对话流 */}
         <div ref={scrollBox} onScroll={onScroll} className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-3">

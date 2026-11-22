@@ -9,6 +9,8 @@ import StaleBundleNotice from './components/StaleBundleNotice'
 import UnifiedPortfolio from './components/UnifiedPortfolio'
 import Rankings from './components/Rankings'
 import StockAsk from './components/StockAsk'
+import MemoryPage from './components/memory/MemoryPage'
+import { useMemoryBadge } from './components/memory/memoryEvents'
 import { GlobalStockModal } from './components/ask/stockOpener'
 import TradePlans, { PlanToast, PLAN_EVENT } from './components/TradePlans'
 import Settings from './components/Settings'
@@ -90,6 +92,7 @@ function CardShell({ title, sub, children }) {
 
 export default function App() {
   const [holdings, setHoldings] = useState([])
+  const memoryBadge = useMemoryBadge()
   const [marketOpen, setMarketOpen] = useState(false)
   const [editTarget, setEditTarget] = useState(null)
   const [historyTarget, setHistoryTarget] = useState(null)
@@ -295,6 +298,12 @@ export default function App() {
       </div>
     ),
 
+    memory: () => (
+      <div className={`${PAD} max-w-[1100px]`}>
+        <MemoryPage />
+      </div>
+    ),
+
     settings: () => (
       <div className={`${PAD} max-w-[900px]`}>
         <Settings onClose={() => setView('portfolio')} />
@@ -312,7 +321,8 @@ export default function App() {
       />
 
       <div className="flex flex-1 min-h-0">
-        <Sidebar active={view} onNav={setView} open={sidebarOpen} onToggle={() => setSidebarOpen(o => !o)} />
+        <Sidebar active={view} onNav={setView} open={sidebarOpen} onToggle={() => setSidebarOpen(o => !o)}
+          badges={{ memory: memoryBadge }} />
 
         <main className="flex-1 min-w-0 flex flex-col min-h-0">
           {/* 仪表盘概览条 + 风险条: 固定在内容区顶部, 不随内容滚动 */}

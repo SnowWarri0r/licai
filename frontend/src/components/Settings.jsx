@@ -4,9 +4,6 @@ import { AttributionSection } from './settings/AttributionSection'
 import { ProviderSection } from './settings/ProviderSection'
 import { LLMConfigSection } from './settings/LLMConfigSection'
 import { OkxSpotSection } from './settings/OkxSpotSection'
-import { PromptRulesSection } from './settings/PromptRulesSection'
-import { UserMemorySection } from './settings/UserMemorySection'
-import { StockNotesSection } from './settings/StockNotesSection'
 import { ProxySection } from './settings/ProxySection'
 import { ZsxqSection } from './settings/ZsxqSection'
 
@@ -221,20 +218,6 @@ export default function Settings({ onClose }) {
           </div>
         )}
 
-        {/* 从纠正里沉淀出来的规则(待审队列) */}
-        <div className="mt-2 pt-4 border-t border-border">
-          <PromptRulesSection />
-        </div>
-
-        {/* AI 记住的关于用户的事实(画像), 待确认的在这里批 */}
-        <div className="mt-2 pt-4 border-t border-border">
-          <UserMemorySection />
-        </div>
-
-        {/* 个股档案(夜间整理从过往问答提取, 一只票一页) */}
-        <div className="mt-2 pt-4 border-t border-border">
-          <StockNotesSection />
-        </div>
 
         {/* 开源许可 */}
         <div className="mt-2 pt-4 border-t border-border">

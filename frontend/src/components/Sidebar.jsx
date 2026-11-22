@@ -7,6 +7,8 @@ const ICONS = {
   macro: <><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z" /><path d="M12 12v9M4 7.5l8 4.5 8-4.5" /></>,
   news: <><rect x="5" y="4" width="14" height="16" rx="2" /><path d="M8 9h8M8 12h8M8 15h5" /></>,
   review: <><path d="M7 4h8l4 4v12H7zM15 4v4h4M10 13h6M10 16.5h4" /></>,
+  // AI 记忆: 一页纸上带书签角 —— 记下来的东西
+  memory: <><path d="M7 3h10a1 1 0 011 1v17l-6-4-6 4V4a1 1 0 011-1z" /><path d="M10 8h4M10 11h4" /></>,
   ask: <><rect x="4" y="5" width="16" height="12" rx="2" /><path d="M8 21l4-4M8 9h8M8 12h5" /></>,
   settings: <><circle cx="12" cy="12" r="3" /><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1" /></>,
   cashflow: <><path d="M3 7h18v10H3z" /><circle cx="12" cy="12" r="2.5" /><path d="M7 12h.01M17 12h.01" /></>,
@@ -42,6 +44,7 @@ export const NAV = [
   ] },
   { group: null, items: [
     { key: 'ask',      label: '问问市场' },
+    { key: 'memory',   label: 'AI 记忆' },
     { key: 'settings', label: '设置' },
   ] },
 ]
@@ -56,7 +59,7 @@ if (import.meta.env.DEV) {
   if (orphan.length) console.warn(`Sidebar: 这些图标已无对应 NAV 项: ${orphan.join(', ')}`)
 }
 
-export default function Sidebar({ active, onNav, open, onToggle }) {
+export default function Sidebar({ active, onNav, open, onToggle, badges = {} }) {
   return (
     <aside className={`shrink-0 border-r border-border bg-surface/60 backdrop-blur-xl flex flex-col transition-[width] duration-200 ${open ? 'w-44' : 'w-14'}`}>
       <button onClick={onToggle} title={open ? '收起' : '展开'}
@@ -80,14 +83,22 @@ export default function Sidebar({ active, onNav, open, onToggle }) {
               : si > 0 && <div className="mx-3 my-2 border-t border-border-subtle" />}
             {sec.items.map(n => {
               const on = active === n.key
+              const badge = badges[n.key] || 0
               return (
                 <button key={n.key} onClick={() => onNav(n.key)} title={n.label}
                   className={`w-full flex items-center gap-3 px-4 h-11 text-left transition-colors
                     ${on ? 'text-accent bg-accent/12 border-r-2 border-accent' : 'text-text-dim hover:text-text hover:bg-surface-3/50 border-r-2 border-transparent'}`}>
-                  <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
-                    {ICONS[n.key]}
-                  </svg>
+                  <span className="relative shrink-0 flex">
+                    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                      {ICONS[n.key]}
+                    </svg>
+                    {/* 折叠时没有文字位, 角标缩成图标右上角一个点 */}
+                    {!open && badge > 0 && <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-accent" />}
+                  </span>
                   {open && <span className="text-[13px] font-medium">{n.label}</span>}
+                  {open && badge > 0 && (
+                    <span className="ml-auto text-[10px] leading-none px-1.5 py-[3px] rounded-full bg-accent/20 text-accent">{badge}</span>
+                  )}
                 </button>
               )
             })}
