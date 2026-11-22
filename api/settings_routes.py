@@ -514,6 +514,8 @@ async def memory_list():
     items = await um.list_all()
     return {"items": items, "n_active": sum(1 for m in items if m["status"] == "active"),
             "n_pending": sum(1 for m in items if m["status"] == "pending"),
+            "n_stale": sum(1 for m in items if m.get("stale")),
+            "review_days": um.REVIEW_DAYS,
             "last_dream": await memory_dream.last_run()}
 
 
@@ -560,6 +562,28 @@ async def memory_approve(mid: int):
     if not await um.approve(mid):
         raise HTTPException(status_code=404, detail=f"没有待确认的 #{mid}")
     return {"ok": True, "id": mid}
+
+
+@router.post("/memory/{mid}/confirm")
+async def memory_confirm(mid: int):
+    """阶段性条目仍成立: 日期更新到今天, 重新计时。"""
+    from services import user_memory as um
+    if not await um.confirm(mid):
+        raise HTTPException(status_code=404, detail=f"没有生效中的阶段性条目 #{mid}")
+    return {"ok": True, "id": mid}
+
+
+class MemoryPhase(BaseModel):
+    phase: bool
+
+
+@router.post("/memory/{mid}/phase")
+async def memory_phase(mid: int, body: MemoryPhase):
+    """改条目类型: 阶段性(到期提醒复核)或长期。"""
+    from services import user_memory as um
+    if not await um.set_phase(mid, body.phase):
+        raise HTTPException(status_code=404, detail=f"没有 #{mid}")
+    return {"ok": True, "id": mid, "phase": body.phase}
 
 
 @router.delete("/memory/{mid}")

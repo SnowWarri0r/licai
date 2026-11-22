@@ -174,3 +174,43 @@ def test_approve_merge_and_delete_proposals(temp_db):
 def test_readonly_skips(temp_db, monkeypatch):
     monkeypatch.setenv("AGENT_MEMORY_READONLY", "1")
     assert asyncio.run(md.run())["note"].startswith("评测模式")
+
+
+def test_validate_phase_and_confirm():
+    meta = {1: {"as_of": "2026-09-01", "review_days": 30}, 2: {"as_of": "", "review_days": 0}}
+    active = {1: "用户近期没有额外资金", 2: "用户要求回答简短"}
+    ops = [
+        {"op": "confirm", "id": 1, "msg": 3, "quote": "每月扣款都是定投"},
+        {"op": "confirm", "id": 2, "msg": 3, "quote": "每月扣款都是定投"},   # 长期条目不收 confirm
+        {"op": "confirm", "id": 1, "msg": 3, "quote": "编的"},
+        {"op": "add", "fact": "用户这个月在等资金到账", "msg": 3, "quote": "别当成主动加仓", "phase": True},
+        {"op": "update", "id": 1, "fact": "用户近期有一笔资金到账", "msg": 3, "quote": "别当成主动加仓"},
+    ]
+    ok, dropped = md.validate(ops, USER, active, meta)
+    day = USER[3]["date"]
+    assert ok[0] == {"confirm": 1, "as_of": day}
+    assert ok[1]["phase"] and ok[1]["as_of"] == day
+    assert ok[2]["phase"] and ok[2]["replaces"] == 1               # 改写阶段性条目, 仍是阶段性
+    assert len(dropped) == 2
+
+
+def test_run_applies_confirm_directly(temp_db, monkeypatch):
+    _seed(temp_db, SESSIONS)
+    import sqlite3
+    con = sqlite3.connect(temp_db)
+    con.execute("INSERT INTO user_memory (fact, status, as_of, review_days) "
+                "VALUES ('用户场外扣款是定投', 'active', '2026-08-01', 30)")
+    con.commit()
+    con.close()
+    from services import llm_client
+    seen = []
+
+    def fake(prompt, *a, **k):
+        seen.append(prompt)
+        return json.dumps({"ops": [{"op": "confirm", "id": 1, "msg": 3, "quote": "扣款都是定投"}]},
+                          ensure_ascii=False)
+    monkeypatch.setattr(llm_client, "call_claude", fake)
+    st = asyncio.run(md.run())
+    assert st["confirmed"] == 1 and st["proposed"] == 0
+    assert "[阶段性, 截至 2026-08-01]" in seen[0]
+    assert um.active_sync()[0]["as_of"] == "2026-10-12"

@@ -462,6 +462,8 @@ CREATE TABLE IF NOT EXISTS user_memory (
     origin TEXT DEFAULT '',                    -- '' = 对话中 remember; dream = 夜间整理提出
     note TEXT DEFAULT '',                      -- 依据: 用户原话摘录 / 合并或删除的理由
     also_replaces TEXT DEFAULT '',             -- 合并提案: 批准时一并作废的其他条目 id(逗号分隔)
+    as_of TEXT DEFAULT '',                     -- 阶段性条目: 最近一次确认仍成立的日期(YYYY-MM-DD)
+    review_days INTEGER DEFAULT 0,             -- 0 = 长期成立; >0 = 阶段性, as_of 之后这么多天到期待复核
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -580,6 +582,9 @@ async def init_db():
         for col in ("origin", "note", "also_replaces"):
             if col not in um_cols:
                 await db.execute(f"ALTER TABLE user_memory ADD COLUMN {col} TEXT DEFAULT ''")
+        for col, typ in (("as_of", "TEXT DEFAULT ''"), ("review_days", "INTEGER DEFAULT 0")):
+            if col not in um_cols:
+                await db.execute(f"ALTER TABLE user_memory ADD COLUMN {col} {typ}")
         # Migration: 子任务加预约时间
         cursor = await db.execute("PRAGMA table_info(agent_task)")
         if "run_at" not in {row[1] for row in await cursor.fetchall()}:

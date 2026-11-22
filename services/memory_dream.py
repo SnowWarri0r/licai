@@ -8,6 +8,9 @@
   add     新会话里用户交代的长期事实
   update  用户的新说法更新或推翻了某条已有画像(给出新表述); fact 为空即建议删除
   merge   已有画像里说同一件事的几条合成一条
+  confirm 用户重申某条阶段性状态仍成立: 把它的日期推到那条消息的日期(只改日期不改内容, 直接生效)
+
+阶段性状态(资金是否充裕、近期仓位安排)带日期记录, 超过 user_memory.REVIEW_DAYS 天没再确认就标为待复核。
 
 依据用代码核对, 不靠模型自觉: add/update 引用的原话必须逐字出现在所给编号的那条**用户**消息里
 (助手回答里混着第三方工具文本, 不能作为画像依据); 引用的已有画像编号必须是生效中的。
@@ -47,11 +50,13 @@ SYSTEM = (
     "3. merge: 【已有画像】中表达同一件事的多条, 合成一条。\n"
     "依据: add 与 update 必须给出用户消息编号 msg, 以及从该条用户消息中逐字复制的原话 quote(4 到 80 字)。"
     "merge 的依据就是被合并的那几条画像。\n"
+    "4. confirm: 用户在新会话里重申【已有画像】中某条标了「阶段性」的状态仍然成立时, 给出该条编号与依据, 系统把它的日期更新到那条消息的日期。\n"
     "fact 写成一句第三人称陈述, 以「用户」开头, 160 字以内, 只陈述事实。"
-    "阶段性的状态(资金是否充裕、近期的仓位安排)在 fact 中写明时点, 如「截至 2026-07」。\n"
-    "只输出一行 JSON: {\"ops\": [{\"op\": \"add\", \"fact\": \"…\", \"msg\": 编号, \"quote\": \"…\"}, "
+    "会随时间变化的阶段性状态(资金是否充裕、近期的仓位安排)在 add/update 中加 \"phase\": true, 系统按引用消息的日期记录时点并到期提醒复核。\n"
+    "只输出一行 JSON: {\"ops\": [{\"op\": \"add\", \"fact\": \"…\", \"msg\": 编号, \"quote\": \"…\", \"phase\": false}, "
     "{\"op\": \"update\", \"id\": 画像编号, \"fact\": \"…\", \"msg\": 编号, \"quote\": \"…\"}, "
-    "{\"op\": \"merge\", \"ids\": [画像编号, …], \"fact\": \"…\"}]}。"
+    "{\"op\": \"merge\", \"ids\": [画像编号, …], \"fact\": \"…\"}, "
+    "{\"op\": \"confirm\", \"id\": 画像编号, \"msg\": 编号, \"quote\": \"…\"}]}。"
     "JSON 字符串内部需要引号时用「」。"
 )
 
@@ -101,12 +106,20 @@ def build_chunks(msgs: list[dict], titles: dict[int, str] | None = None, *,
 def render_memory(items: list[dict]) -> str:
     if not items:
         return "(暂无)"
-    return "\n".join(f"#{m['id']} {m['fact']}" for m in items)
+    def tag(m):
+        if not int(m.get("review_days") or 0):
+            return ""
+        return f" [阶段性, 截至 {m.get('as_of') or '?'}]"
+    return "\n".join(f"#{m['id']} {m['fact']}{tag(m)}" for m in items)
 
 
-def validate(ops, user_msgs: dict[int, dict], active: dict[int, str]) -> tuple[list[dict], list[str]]:
+def validate(ops, user_msgs: dict[int, dict], active: dict[int, str],
+             meta: dict[int, dict] | None = None) -> tuple[list[dict], list[str]]:
     """核对模型提出的每条操作。user_msgs: {msg_id: {"content", "session_id", "date"}} —— 只含本块的用户消息;
-    active: {画像id: fact}。返回 (通过的提案, 丢弃原因)。"""
+    active: {画像id: fact}; meta: {画像id: {"as_of", "review_days"}}。返回 (通过的操作, 丢弃原因)。
+    confirm 通过的形如 {"confirm": id, "as_of": 日期}, 其余是待确认提案。"""
+    meta = meta or {}
+    is_phase = lambda i: bool(int((meta.get(i) or {}).get("review_days") or 0))
     ok, dropped = [], []
     if not isinstance(ops, list):
         return ok, ["ops 不是列表"]
@@ -116,7 +129,7 @@ def validate(ops, user_msgs: dict[int, dict], active: dict[int, str]) -> tuple[l
             continue
         kind = op.get("op")
         fact = um._clean(str(op.get("fact") or ""))
-        if kind in ("add", "update"):
+        if kind in ("add", "update", "confirm"):
             try:
                 mid = int(op.get("msg"))
             except (TypeError, ValueError):
@@ -131,6 +144,17 @@ def validate(ops, user_msgs: dict[int, dict], active: dict[int, str]) -> tuple[l
                 dropped.append(f"{kind}: 引文不在 msg {mid} 原话里")
                 continue
             note = f"{msg['date']} 会话 {msg['session_id']} 用户原话: 「{quote}」"
+            if kind == "confirm":
+                try:
+                    rid = int(op.get("id"))
+                except (TypeError, ValueError):
+                    dropped.append("confirm: 缺 id")
+                    continue
+                if rid not in active or not is_phase(rid):
+                    dropped.append(f"confirm: #{rid} 不是生效中的阶段性画像")
+                    continue
+                ok.append({"confirm": rid, "as_of": msg["date"]})
+                continue
             if kind == "add":
                 if not fact:
                     dropped.append("add: fact 为空")
@@ -139,7 +163,8 @@ def validate(ops, user_msgs: dict[int, dict], active: dict[int, str]) -> tuple[l
                     dropped.append("add: 与已有画像相同")
                     continue
                 ok.append({"fact": fact, "replaces": None, "also": [], "note": note,
-                           "session_id": msg["session_id"]})
+                           "session_id": msg["session_id"], "phase": bool(op.get("phase")),
+                           "as_of": msg["date"]})
             else:
                 try:
                     rid = int(op.get("id"))
@@ -153,7 +178,8 @@ def validate(ops, user_msgs: dict[int, dict], active: dict[int, str]) -> tuple[l
                     dropped.append(f"update: #{rid} 没有变化")
                     continue
                 ok.append({"fact": fact, "replaces": rid, "also": [], "session_id": msg["session_id"],
-                           "note": ("建议删除。" if not fact else "建议改写。") + note})
+                           "note": ("建议删除。" if not fact else "建议改写。") + note,
+                           "phase": bool(op.get("phase")) or is_phase(rid), "as_of": msg["date"]})
         elif kind == "merge":
             try:
                 ids = sorted({int(i) for i in op.get("ids") or []})
@@ -163,8 +189,11 @@ def validate(ops, user_msgs: dict[int, dict], active: dict[int, str]) -> tuple[l
             if len(ids) < 2 or any(i not in active for i in ids) or not fact:
                 dropped.append("merge: 至少两条生效中的画像且给出合并后表述")
                 continue
+            phased = [i for i in ids if is_phase(i)]
             ok.append({"fact": fact, "replaces": ids[0], "also": ids[1:], "session_id": None,
-                       "note": "合并 " + "、".join(f"#{i}" for i in ids) + " 为一条。"})
+                       "note": "合并 " + "、".join(f"#{i}" for i in ids) + " 为一条。",
+                       "phase": bool(phased),     # 合并后的日期取几条里最早的, 宁可早到期
+                       "as_of": min((str(meta[i].get("as_of") or "") for i in phased), default="")})
         else:
             dropped.append(f"未知操作 {kind!r}")
     return ok[:MAX_OPS], dropped
@@ -202,7 +231,8 @@ async def _load(after_id: int) -> tuple[list[dict], dict[int, str]]:
 async def run(max_chunks: int = MAX_CHUNKS) -> dict:
     """整理一次。从上次的水位接着读新消息; 每块成功后才推进水位, 失败的块下次重读。"""
     from services import llm_client
-    st = {"chunks": 0, "messages": 0, "proposed": 0, "dropped": 0, "dup": 0, "failed": 0, "reasons": []}
+    st = {"chunks": 0, "messages": 0, "proposed": 0, "confirmed": 0, "dropped": 0, "dup": 0, "failed": 0,
+          "reasons": []}
     if um._readonly():
         st["note"] = "评测模式, 不整理"
         return st
@@ -214,9 +244,11 @@ async def run(max_chunks: int = MAX_CHUNKS) -> dict:
         return st
     for chunk in build_chunks(msgs, titles)[:max_chunks]:
         items = await um.list_all()
-        active = {m["id"]: m["fact"] for m in items if m["status"] == "active"}
+        live = sorted((m for m in items if m["status"] == "active"), key=lambda m: m["id"])
+        active = {m["id"]: m["fact"] for m in live}
+        meta = {m["id"]: m for m in live}
         pending = [m for m in items if m["status"] == "pending"]
-        prompt = ("【已有画像】(生效中)\n" + render_memory([{"id": i, "fact": f} for i, f in active.items()])
+        prompt = ("【已有画像】(生效中)\n" + render_memory(live)
                   + "\n\n【待确认中的提案】(已提过, 不必重复)\n"
                   + render_memory([m for m in pending if m["fact"]])
                   + "\n\n【新会话】\n" + chunk["text"])
@@ -232,12 +264,16 @@ async def run(max_chunks: int = MAX_CHUNKS) -> dict:
         user_msgs = {m["id"]: {"content": m["content"], "session_id": m["session_id"],
                                "date": str(m["created_at"] or "")[:10]}
                      for m in msgs if m["id"] in chunk["user_ids"]}
-        good, dropped = validate(ops, user_msgs, active)
+        good, dropped = validate(ops, user_msgs, active, meta)
         st["dropped"] += len(dropped)
         st["reasons"] += dropped[:5]
         for g in good:
+            if "confirm" in g:
+                st["confirmed"] += int(await um.confirm(g["confirm"], g["as_of"]))
+                continue
             rid = await um.propose(g["fact"], replaces=g["replaces"], also_replaces=g["also"],
-                                   note=g["note"], session_id=g["session_id"])
+                                   note=g["note"], session_id=g["session_id"],
+                                   phase=g["phase"], as_of=g["as_of"])
             if rid:
                 st["proposed"] += 1
             else:

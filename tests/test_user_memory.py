@@ -98,3 +98,34 @@ def test_taint_is_allowlist_based():
     assert um.tainted(["get_quote"])
     assert um.tainted(["some_new_tool_added_later"])
     assert um.tainted(["web_search"])
+
+
+def test_phase_item_goes_stale_and_confirm_renews(temp_db):
+    r = asyncio.run(um.remember({"fact": "用户近期没有额外资金", "phase": True}))
+    m = um.active_sync()[0]
+    assert m["review_days"] == um.REVIEW_DAYS and m["as_of"] == um.today()
+    old = {**m, "as_of": "2026-01-01"}
+    assert um.stale(old, "2026-03-01") and not um.stale(old, "2026-01-20")
+    assert "已 59 天未复核" in um.render([old], "2026-03-01")
+    assert "截至 2026-01-01)" in um.render([old], "2026-01-20")
+    assert "阶段性" not in um.render([{"id": 1, "fact": "用户偏好表格", "review_days": 0}]).split("\n", 2)[2]
+    import sqlite3
+    con = sqlite3.connect(temp_db)
+    con.execute("UPDATE user_memory SET as_of = '2026-01-01' WHERE id = ?", (r["id"],))
+    con.commit(); con.close()
+    assert [x["stale"] for x in asyncio.run(um.list_all())] == [True]
+    assert asyncio.run(um.confirm(r["id"], "2025-12-01"))          # 只往后推, 不改早
+    assert um.active_sync()[0]["as_of"] == "2026-01-01"
+    assert asyncio.run(um.confirm(r["id"]))
+    assert um.active_sync()[0]["as_of"] == um.today()
+
+
+def test_set_phase_toggle(temp_db):
+    r = asyncio.run(um.remember({"fact": "用户偏好表格"}))
+    assert um.active_sync()[0]["review_days"] == 0
+    assert not asyncio.run(um.confirm(r["id"]))                    # 长期条目没有复核一说
+    asyncio.run(um.set_phase(r["id"], True))
+    m = um.active_sync()[0]
+    assert m["review_days"] == um.REVIEW_DAYS and m["as_of"] == um.today()
+    asyncio.run(um.set_phase(r["id"], False))
+    assert um.active_sync()[0]["review_days"] == 0

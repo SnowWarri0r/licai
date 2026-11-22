@@ -17,9 +17,15 @@ export function UserMemorySection() {
     setBusy(id)
     try {
       if (kind === 'approve') await fetchJSON(`/api/settings/memory/${id}/approve`, { method: 'POST' })
+      else if (kind === 'confirm') await fetchJSON(`/api/settings/memory/${id}/confirm`, { method: 'POST' })
+      else if (kind === 'phase' || kind === 'longterm')
+        await fetchJSON(`/api/settings/memory/${id}/phase`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ phase: kind === 'phase' }) })
       else await fetchJSON(`/api/settings/memory/${id}`, { method: 'DELETE' })
       await load()
-      setMsg(kind === 'approve' ? '已生效, 下一次问答带上' : '已删除')
+      setMsg({ approve: '已生效, 下一次问答带上', confirm: '已确认仍成立, 重新计时',
+        phase: `已标为阶段性, ${data?.review_days || 30} 天后提醒复核`, longterm: '已改为长期' }[kind] || '已删除')
     } catch (e) {
       setMsg(String(e.message || e))
     } finally { setBusy(0) }
@@ -31,7 +37,7 @@ export function UserMemorySection() {
       const r = await fetchJSON('/api/settings/memory/dream', { method: 'POST' })
       await load()
       setMsg(r.note ? r.note : `读了 ${r.messages} 条消息, 新提案 ${r.proposed} 条` +
-        (r.dropped ? `, 依据核对不过丢弃 ${r.dropped} 条` : '') + (r.failed ? ', 模型调用失败, 下次接着读' : ''))
+        (r.confirmed ? `, ${r.confirmed} 条阶段性状态已确认仍成立` : '') + (r.dropped ? `, 依据核对不过丢弃 ${r.dropped} 条` : '') + (r.failed ? ', 模型调用失败, 下次接着读' : ''))
     } catch (e) {
       setMsg(String(e.message || e))
     } finally { setBusy(0) }
@@ -40,6 +46,10 @@ export function UserMemorySection() {
   const items = data?.items || []
   const pending = items.filter(m => m.status === 'pending')
   const active = items.filter(m => m.status === 'active')
+    .sort((a, b) => (b.stale ? 1 : 0) - (a.stale ? 1 : 0))
+  const nStale = active.filter(m => m.stale).length
+  const base = 'text-[10px] px-1 rounded border disabled:opacity-50 cursor-pointer shrink-0'
+  const btn = `${base} border-border text-text-muted`
   const byId = Object.fromEntries(items.map(m => [m.id, m]))
   const ld = data?.last_dream
   // 提案改动了哪几条已有画像
@@ -54,6 +64,7 @@ export function UserMemorySection() {
           <span className="ml-2 text-[11px] font-normal">
             <span className={pending.length ? 'text-accent' : 'text-text-muted'}>待确认 {pending.length}</span>
             <span className="text-text-muted"> · 已生效 {active.length}</span>
+            {nStale > 0 && <span className="text-accent"> · 待复核 {nStale}</span>}
           </span>
         )}
       </label>
@@ -61,6 +72,7 @@ export function UserMemorySection() {
         你在对话里交代的长期事实(比如哪些扣款是定投), 换会话也记得。
         它读过网页/新闻/行情后记下的条目可能不是你的原话, <b>确认了才生效</b>。
         每天 20:40 后会回看当天的对话做一次整理, 提出新增、改写、合并, 同样确认了才生效。
+        资金、近期仓位这类会变的情况记为<b>阶段性</b>, 带日期, 超过 {data?.review_days || 30} 天没再提起就请你复核一次。
       </p>
       <div className="flex items-center gap-2 mb-2 text-[11px] text-text-muted">
         <button onClick={dream} disabled={busy !== 0}
@@ -77,7 +89,8 @@ export function UserMemorySection() {
               {targets(m).map(t => <div key={t.id} className="line-through decoration-text-muted/60">{t.fact}</div>)}
             </div>
           )}
-          {m.fact && <div className="text-[12px] text-text-bright">{targets(m).length > 0 && '→ '}{m.fact}</div>}
+          {m.fact && <div className="text-[12px] text-text-bright">{targets(m).length > 0 && '→ '}{m.fact}
+            {m.review_days > 0 && <span className="ml-1 text-[10.5px] text-text-muted">阶段性 · 截至 {m.as_of}</span>}</div>}
           {m.note && <div className="text-[10.5px] text-text-muted mt-1">{m.origin === 'dream' && '夜间整理 · '}{m.note}</div>}
           <div className="flex items-center gap-2 mt-1.5">
             <button onClick={() => act(m.id, 'approve')} disabled={busy === m.id}
@@ -95,10 +108,28 @@ export function UserMemorySection() {
         <p className="text-[11px] text-text-muted">还没有记下任何事实。</p>
       )}
       {active.map(m => (
-        <div key={m.id} className="mt-1.5 text-[11px] flex items-start gap-1">
-          <span className="text-text-dim flex-1">{m.fact}</span>
+        <div key={m.id} className={`mt-1.5 text-[11px] flex items-start gap-1 ${m.stale ? 'p-1.5 rounded border border-accent/30 bg-bg/40' : ''}`}>
+          <span className="flex-1">
+            <span className={m.stale ? 'text-text-bright' : 'text-text-dim'}>{m.fact}</span>
+            {m.review_days > 0 && (
+              <span className={`ml-1 text-[10px] ${m.stale ? 'text-accent' : 'text-text-muted'}`}>
+                阶段性 · 截至 {m.as_of || '?'}{m.stale && ` · ${m.age_days} 天没再提起, 还成立吗`}
+              </span>
+            )}
+          </span>
+          {m.stale && (
+            <button onClick={() => act(m.id, 'confirm')} disabled={busy === m.id}
+              className={`${base} bg-accent/20 text-accent border-accent/40 hover:bg-accent/30`}>
+              仍成立
+            </button>
+          )}
+          <button onClick={() => act(m.id, m.review_days > 0 ? 'longterm' : 'phase')} disabled={busy === m.id}
+            title={m.review_days > 0 ? '改为长期成立, 不再提醒复核' : '标为会变化的阶段性状态, 到期提醒复核'}
+            className={`${btn} hover:text-text`}>
+            {m.review_days > 0 ? '改长期' : '标阶段性'}
+          </button>
           <button onClick={() => act(m.id, 'delete')} disabled={busy === m.id}
-            className="text-[10px] px-1 rounded border border-border text-text-muted hover:text-bear disabled:opacity-50 cursor-pointer shrink-0">
+            className={`${btn} hover:text-bear`}>
             删除
           </button>
         </div>
